@@ -2,9 +2,14 @@
 
 All notable changes to Collie are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and the project uses
-[Semantic Versioning](https://semver.org/). The newest `## [x.y.z]` heading **must** match the
+[Semantic Versioning](https://semver.org/). The newest `## [version]` heading **must** match the
 `version` in `herdr-plugin.toml`, `package.json`, and `web/package.json` (enforced by
 `scripts/check-version.sh`). See [`CLAUDE.md`](./CLAUDE.md) → *Versioning* for the bump policy.
+
+## [0.14.1+ys.1] - 2026-07-21
+
+### Changed
+- Young Security releases now use `+ys.N` build metadata while preserving upstream precedence (ce072db)
 
 ## [0.14.1] - 2026-07-21
 
