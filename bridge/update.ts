@@ -37,10 +37,12 @@ export function parseSemverTag(tag: string): [number, number, number] | null {
   return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
 }
 
-/** Compare two dotted `X.Y.Z` versions (no leading `v`). Returns -1 / 0 / 1. */
+/** Compare two dotted `X.Y.Z` versions (no leading `v`). SemVer build metadata does not affect
+ *  precedence, so a Young Security build such as `0.14.1+ys.1` compares equal to `0.14.1`.
+ *  Returns -1 / 0 / 1. */
 export function compareSemver(a: string, b: string): number {
-  const pa = a.split(".").map(Number);
-  const pb = b.split(".").map(Number);
+  const pa = a.split("+", 1)[0]!.split(".").map(Number);
+  const pb = b.split("+", 1)[0]!.split(".").map(Number);
   for (let i = 0; i < 3; i++) {
     const d = (pa[i] ?? 0) - (pb[i] ?? 0);
     if (d !== 0) return d < 0 ? -1 : 1;

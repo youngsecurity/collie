@@ -20,6 +20,12 @@ describe("compareSemver", () => {
     expect(compareSemver("0.11.0", "0.11.0")).toBe(0);
     expect(compareSemver("0.11.2", "0.11.10")).toBe(-1); // numeric, not lexical
   });
+
+  it("ignores Young Security build metadata for precedence", () => {
+    expect(compareSemver("0.14.1+ys.1", "0.14.1")).toBe(0);
+    expect(compareSemver("0.14.1+ys.1", "0.14.2")).toBe(-1);
+    expect(compareSemver("0.14.2", "0.14.1+ys.1")).toBe(1);
+  });
 });
 
 describe("parseSemverTag / latestReleaseTag", () => {

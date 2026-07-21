@@ -1,7 +1,8 @@
 # CLAUDE.md — working agreement for this repo
 
-**Collie** (repo `AltanS/collie`) — a phone web UI for your Herdr agent herd, served over
-Tailscale. A mobile-first PWA (Vite + React + TS + Tailwind v4 + shadcn) plus a Bun/TS bridge that
+**Collie** (Young Security fork: `youngsecurity/collie`; upstream: `AltanS/collie`) — a phone web UI
+for your Herdr agent herd, served over Tailscale. A mobile-first PWA (Vite + React + TS + Tailwind
+v4 + shadcn) plus a Bun/TS bridge that
 talks to Herdr's Unix socket, letting you monitor and reply to agents from a phone. The Herdr
 plugin id is `herdr.collie` (manifest: `herdr-plugin.toml`). Orientation:
 [`README.md`](./README.md) · [`ARCHITECTURE.md`](./ARCHITECTURE.md) · verified API
@@ -9,20 +10,25 @@ plugin id is `herdr.collie` (manifest: `herdr-plugin.toml`). Orientation:
 
 ## Versioning — MANDATORY
 
-This plugin is **SemVer**ed, and the version is **enforced**, so it never silently drifts.
+This plugin is **SemVer**ed, and the version is **enforced**, so it never silently drifts. Young
+Security releases use `X.Y.Z+ys.N`: `X.Y.Z` identifies the upstream base and `N` identifies the
+fork release. SemVer build metadata deliberately has the same precedence as its upstream base, and
+the update checker ignores the `+ys.N` part when comparing against upstream releases.
 
 **The version lives in three files that must always agree, plus a matching CHANGELOG entry:**
 `herdr-plugin.toml` (canonical — Herdr reads it) · `package.json` · `web/package.json` ·
-newest `## [x.y.z]` heading in `CHANGELOG.md`.
+newest `## [X.Y.Z+ys.N]` heading in `CHANGELOG.md`.
 
 **Before committing any functional change** (anything under `bridge/`, `web/src/`, `scripts/`, or the
 manifest) you MUST:
 
-1. **Bump** the version in all three files to the same number:
-   - **PATCH** (`0.2.0 → 0.2.1`): bug fix / internal refactor, no behavior change.
-   - **MINOR** (`0.2.0 → 0.3.0`): new backward-compatible capability.
-   - **MAJOR** (`0.2.0 → 1.0.0`): breaking change to config, API, or behavior.
-2. **Add a `CHANGELOG.md` entry** under a new `## [x.y.z] - YYYY-MM-DD` heading (Added / Changed /
+1. **Bump** the version in all three files to the same Young Security version:
+   - Keep the upstream base and increment the fork counter for fork-only work
+     (`0.14.1+ys.1 → 0.14.1+ys.2`).
+   - When adopting a newer upstream release, use its version and reset the fork counter
+     (`0.14.1+ys.2 → 0.14.2+ys.1`).
+   - Never publish a bare `X.Y.Z` version from this fork.
+2. **Add a `CHANGELOG.md` entry** under a new `## [X.Y.Z+ys.N] - YYYY-MM-DD` heading (Added / Changed /
    Fixed). Use the real date. **Style: super crisp and short** — one line per change, no prose
    paragraphs, and cite the feature's short commit hash at the end of the line (`… (abc1234)`).
    Land features as their own commits first, then cut the release commit so the entry can cite them.
@@ -38,11 +44,12 @@ line — do it as part of the change, not after**:
   Escape hatch for a single commit: `SKIP_VERSION_CHECK=1 git commit …`.
 
 **Tag the release when you push it.** Cutting a release means the three version files + the newest
-`CHANGELOG.md` heading agree on `x.y.z` (steps 1–3). When that release lands on `main` and you push,
-**always push a matching annotated git tag with it** — `git tag -a vX.Y.Z -m "Collie X.Y.Z" && git
-push origin vX.Y.Z` (or `git push --follow-tags` so the tag ships *with* the release). One `v<x.y.z>`
-tag per shipped version on the remote. Not hook-enforced — it's on you. (Adding/adjusting this note is
-a doc-only change and needs no version bump.)
+`CHANGELOG.md` heading agree on `X.Y.Z+ys.N` (steps 1–3). When that release lands on `main` and you
+push, **always push a matching annotated git tag with it** —
+`git tag -a 'vX.Y.Z+ys.N' -m 'Collie X.Y.Z+ys.N' && git push origin 'vX.Y.Z+ys.N'` (or
+`git push --follow-tags` so the tag ships *with* the release). One tag per shipped version on the
+remote. Not hook-enforced — it's on you. (Adding/adjusting this note is a doc-only change and needs no
+version bump.)
 
 **Update notice (user-facing).** The app's in-app update banner links to the newest release's GitHub
 page and shows the command to run. Pushing a `v*` tag auto-creates that GitHub Release (with the

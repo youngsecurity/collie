@@ -1,6 +1,7 @@
 name: Release
 
-# Every pushed vX.Y.Z tag becomes a GitHub Release whose notes carry the update commands — the
+# Every pushed SemVer tag (including fork build metadata such as vX.Y.Z+ys.N) becomes a GitHub
+# Release whose notes carry the update commands — the
 # in-app update banner links here, so the page a user lands on tells them exactly how to update.
 on:
   push:
@@ -21,9 +22,10 @@ jobs:
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
           notes="$RUNNER_TEMP/notes.md"
-          # This version's CHANGELOG block: everything between its `## [x.y.z]` heading and the next.
-          awk -v ver="$version" '
-            $0 ~ ("^## \\[" ver "\\]") { grab = 1; next }
+          # This version's CHANGELOG block: everything between its exact `## [version]` heading and
+          # the next. Prefix matching avoids treating SemVer `+` build metadata as an awk regex.
+          awk -v "heading=## [$version]" '
+            index($0, heading) == 1 { grab = 1; next }
             grab && /^## \[/ { exit }
             grab { print }
           ' CHANGELOG.md > "$RUNNER_TEMP/changelog.md" || true
