@@ -24,9 +24,9 @@ manifest) you MUST:
 
 1. **Bump** the version in all three files to the same Young Security version:
    - Keep the upstream base and increment the fork counter for fork-only work
-     (`0.14.1+ys.1 → 0.14.1+ys.2`).
+     (`0.14.0+ys.1 → 0.14.0+ys.2`).
    - When adopting a newer upstream release, use its version and reset the fork counter
-     (`0.14.1+ys.2 → 0.14.2+ys.1`).
+     (`0.14.0+ys.2 → 0.14.1+ys.1`).
    - Never publish a bare `X.Y.Z` version from this fork.
 2. **Add a `CHANGELOG.md` entry** under a new `## [X.Y.Z+ys.N] - YYYY-MM-DD` heading (Added / Changed /
    Fixed). Use the real date. **Style: super crisp and short** — one line per change, no prose
