@@ -37,6 +37,7 @@ fi
 if [ -f "${CONFIG_DIR}/.env" ]; then set -a; . "${CONFIG_DIR}/.env"; set +a; fi
 
 PORT="${COLLIE_PORT:-8787}"
+HOST="${COLLIE_HOST:-127.0.0.1}"
 SOCKET="${HERDR_SOCKET_PATH:-${HOME}/.config/herdr/herdr.sock}"
 # How tailscale serve exposes the bridge: "https" (default, needs a cert from the control
 # server) or "http" (plain HTTP over the tailnet — use this on Headscale / .internal domains).
@@ -94,7 +95,7 @@ self_dnsname() {
 
 bridge_url() {
   local name; name="$(self_dnsname)"
-  if [ -z "$name" ]; then echo "http://127.0.0.1:${PORT} (Tailscale name unavailable)"; return; fi
+  if [ -z "$name" ]; then echo "http://${HOST}:${PORT} (Tailscale name unavailable)"; return; fi
   if [ "$SERVE_MODE" = "http" ]; then echo "http://${name}:${PORT}"; else echo "https://${name}"; fi
 }
 
@@ -113,7 +114,7 @@ collie_version() {
   [ -n "$v" ] && echo "${v} (manifest; web not built)" || echo "unknown"
 }
 
-# True once the bridge accepts a TCP connection on its loopback port — i.e. the HTTP server is
+# True once the bridge accepts a TCP connection on its configured host and port — i.e. the HTTP server is
 # actually up, not merely that the unit went "active". Uses bash's /dev/tcp (no curl dependency);
 # polls for up to ~5s to cover a just-launched service still binding.
 bridge_ready() {
@@ -121,7 +122,7 @@ bridge_ready() {
   for i in $(seq 1 25); do
     # Open the probe socket on fd 3, then close both directions so the fd never leaks. `&&` (not `;`)
     # is load-bearing: a refused connection must short-circuit, else the trailing close would mask it.
-    if (exec 3<>"/dev/tcp/127.0.0.1/${PORT}" && exec 3>&- 3<&-) 2>/dev/null; then
+    if (exec 3<>"/dev/tcp/${HOST}/${PORT}" && exec 3>&- 3<&-) 2>/dev/null; then
       return 0
     fi
     sleep 0.2
@@ -145,10 +146,10 @@ print_status_banner() {
   if bridge_ready; then
     echo "  ✓ Collie is running  ·  v${ver}"
   else
-    echo "  ⚠ Collie isn't answering on :${PORT} yet (v${ver}) — check 'collie-ctl.sh logs'"
+    echo "  ⚠ Collie isn't answering on ${HOST}:${PORT} yet (v${ver}) — check 'collie-ctl.sh logs'"
   fi
   echo "    service   ${svc}"
-  echo "    local     http://127.0.0.1:${PORT}"
+  echo "    local     http://${HOST}:${PORT}"
   if [ "${COLLIE_SKIP_SERVE:-}" = "1" ]; then
     if [ -n "${COLLIE_PUBLIC_URL:-}" ]; then
       echo "    proxy     ${COLLIE_PUBLIC_URL}"
