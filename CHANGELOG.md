@@ -6,6 +6,11 @@ All notable changes to Collie are recorded here. The format follows
 `version` in `herdr-plugin.toml`, `package.json`, and `web/package.json` (enforced by
 `scripts/check-version.sh`). See [`CLAUDE.md`](./CLAUDE.md) → *Versioning* for the bump policy.
 
+## [0.14.1] - 2026-07-21
+
+### Fixed
+- Status banner and readiness probe now use `COLLIE_HOST` instead of a hard-coded loopback address (6054d8c)
+
 ## [0.14.0] - 2026-07-21
 
 ### Added
