@@ -6,6 +6,14 @@ All notable changes to Collie are recorded here. The format follows
 `version` in `herdr-plugin.toml`, `package.json`, and `web/package.json` (enforced by
 `scripts/check-version.sh`). See [`CLAUDE.md`](./CLAUDE.md) → *Versioning* for the bump policy.
 
+## [0.14.1+ys.1] - 2026-07-22
+
+### Changed
+- Adopted upstream Collie 0.14.1 (d6f79cf)
+
+### Fixed
+- `self_dnsname` now parses Tailscale status with Bun instead of requiring Node (a61f3d1)
+
 ## [0.14.0+ys.2] - 2026-07-22
 
 ### Changed
