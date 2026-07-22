@@ -112,7 +112,8 @@ export function AgentChat({
   const connecting = isConnecting({ bridge, error, stalled });
   const { newTab } = useSpaceActions();
   // Single display-prefs instance: the View controls (in <Composer>) write it, the mirror reads it.
-  const { prefs, setWrap, stepFontSize, setRawTerminal } = useDisplayPrefs();
+  const { prefs, setWrap, stepFontSize, setRawTerminal, setTerminalAppearance } =
+    useDisplayPrefs();
   // Raw-terminal escape hatch: when on, every Claude grammar is bypassed and the plain mirror shows,
   // so a mis-detected/mis-rendered dialog can always be driven by hand with the keys pad.
   const grammarsOn = !prefs.rawTerminal;
@@ -600,6 +601,7 @@ export function AgentChat({
             onAtBottomChange={setFollowing}
             hasNew={hasNew}
             className="px-2 py-3"
+            style={{ backgroundColor: prefs.terminal.background || undefined }}
           >
             {display ? (
               <>
@@ -624,6 +626,7 @@ export function AgentChat({
                   text={display}
                   wrap={prefs.wrap}
                   fontSize={prefs.fontSize}
+                  appearance={prefs.terminal}
                   query={findOpen ? findQuery : ""}
                   currentMatch={findOpen ? currentMatch : -1}
                   onMatchCount={findOpen ? handleMatchCount : undefined}
@@ -687,6 +690,7 @@ export function AgentChat({
             setWrap={setWrap}
             stepFontSize={stepFontSize}
             setRawTerminal={setRawTerminal}
+            setTerminalAppearance={setTerminalAppearance}
             onSent={onSent}
             // Find-in-output lives in the composer's View row now (the header was the wrong home for it).
             // Enabled only when there's buffered output to search; opening it freezes the tail (openFind).

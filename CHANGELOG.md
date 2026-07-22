@@ -6,6 +6,14 @@ All notable changes to Collie are recorded here. The format follows
 `version` in `herdr-plugin.toml`, `package.json`, and `web/package.json` (enforced by
 `scripts/check-version.sh`). See [`CLAUDE.md`](./CLAUDE.md) → *Versioning* for the bump policy.
 
+## [0.14.1+ys.2] - 2026-07-22
+
+### Added
+- Device-local terminal appearance preferences for font family, default foreground, and background, including a MesloLGS NF Matrix preset and live preview
+
+### Changed
+- Terminal appearance defaults now apply without overriding explicit ANSI and Oh My Posh truecolor output
+
 ## [0.14.1+ys.1] - 2026-07-22
 
 ### Changed

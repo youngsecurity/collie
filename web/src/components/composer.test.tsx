@@ -28,10 +28,16 @@ function renderComposer(overrides: Partial<ComponentProps<typeof Composer>> = {}
     text: "pane output",
     terminalDraft: null,
     rawTerminalDraft: null,
-    prefs: { wrap: true, fontSize: 11, rawTerminal: false },
+    prefs: {
+      wrap: true,
+      fontSize: 11,
+      rawTerminal: false,
+      terminal: { fontFamily: "", foreground: "", background: "" },
+    },
     setWrap: vi.fn(),
     stepFontSize: vi.fn(),
     setRawTerminal: vi.fn(),
+    setTerminalAppearance: vi.fn(),
     onSent: vi.fn(),
     ...overrides,
   };
@@ -157,10 +163,16 @@ describe("Composer — send", () => {
       text: "pane output",
       terminalDraft: null,
       rawTerminalDraft: null,
-      prefs: { wrap: true, fontSize: 11, rawTerminal: false },
+      prefs: {
+        wrap: true,
+        fontSize: 11,
+        rawTerminal: false,
+        terminal: { fontFamily: "", foreground: "", background: "" },
+      },
       setWrap: vi.fn(),
       stepFontSize: vi.fn(),
       setRawTerminal: vi.fn(),
+      setTerminalAppearance: vi.fn(),
       onSent: vi.fn(),
     };
     const router = createMemoryRouter([
@@ -237,10 +249,16 @@ function renderDraftHarness(overrides: Partial<ComponentProps<typeof Composer>> 
       gone: false,
       readOnly: false,
       text: "pane output",
-      prefs: { wrap: true, fontSize: 11, rawTerminal: false },
+      prefs: {
+        wrap: true,
+        fontSize: 11,
+        rawTerminal: false,
+        terminal: { fontFamily: "", foreground: "", background: "" },
+      },
       setWrap: vi.fn(),
       stepFontSize: vi.fn(),
       setRawTerminal: vi.fn(),
+      setTerminalAppearance: vi.fn(),
       onSent: vi.fn(),
       ...rest,
       terminalDraft: stable,
@@ -509,10 +527,16 @@ describe("Composer — in-flight echo suppression (match-last-sent)", () => {
       text: "pane output",
       terminalDraft: draft,
       rawTerminalDraft: draft,
-      prefs: { wrap: true, fontSize: 11, rawTerminal: false },
+      prefs: {
+        wrap: true,
+        fontSize: 11,
+        rawTerminal: false,
+        terminal: { fontFamily: "", foreground: "", background: "" },
+      },
       setWrap: vi.fn(),
       stepFontSize: vi.fn(),
       setRawTerminal: vi.fn(),
+      setTerminalAppearance: vi.fn(),
       onSent: vi.fn(),
     };
     return (
@@ -808,5 +832,83 @@ describe("Composer — quick dock (in-flow, matches the keys dock)", () => {
     expect(props.onSent).toHaveBeenCalled();
     // fire() closes the dock after sending.
     expect(screen.queryByRole("button", { name: "continue" })).not.toBeInTheDocument();
+  });
+});
+
+describe("Composer — terminal appearance", () => {
+  it("opens the appearance sheet and applies the Matrix preset", async () => {
+    const user = userEvent.setup();
+    const setTerminalAppearance = vi.fn();
+    renderComposer({ setTerminalAppearance });
+
+    await user.click(screen.getByRole("button", { name: "Terminal appearance" }));
+    expect(screen.getByRole("dialog", { name: "Terminal appearance" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Terminal font family")).toHaveValue("");
+
+    await user.click(screen.getByRole("button", { name: "Use Matrix preset" }));
+    expect(setTerminalAppearance).toHaveBeenCalledWith({
+      fontFamily: "MesloLGS NF",
+      foreground: "#00ff00",
+      background: "#000000",
+    });
+  });
+
+  it("lets the user configure font, foreground, and background independently", async () => {
+    const user = userEvent.setup();
+    const setTerminalAppearance = vi.fn();
+    renderComposer({ setTerminalAppearance });
+
+    await user.click(screen.getByRole("button", { name: "Terminal appearance" }));
+    fireEvent.change(screen.getByLabelText("Terminal font family"), {
+      target: { value: "Cascadia Mono" },
+    });
+    fireEvent.change(screen.getByLabelText("Terminal foreground color"), {
+      target: { value: "#112233" },
+    });
+    fireEvent.change(screen.getByLabelText("Terminal background color"), {
+      target: { value: "#445566" },
+    });
+
+    expect(setTerminalAppearance).toHaveBeenNthCalledWith(1, {
+      fontFamily: "Cascadia Mono",
+      foreground: "",
+      background: "",
+    });
+    expect(setTerminalAppearance).toHaveBeenNthCalledWith(2, {
+      fontFamily: "",
+      foreground: "#112233",
+      background: "",
+    });
+    expect(setTerminalAppearance).toHaveBeenNthCalledWith(3, {
+      fontFamily: "",
+      foreground: "",
+      background: "#445566",
+    });
+  });
+
+  it("lets the user restore app-theme defaults", async () => {
+    const user = userEvent.setup();
+    const setTerminalAppearance = vi.fn();
+    renderComposer({
+      prefs: {
+        wrap: true,
+        fontSize: 11,
+        rawTerminal: false,
+        terminal: {
+          fontFamily: "MesloLGS NF",
+          foreground: "#00ff00",
+          background: "#000000",
+        },
+      },
+      setTerminalAppearance,
+    });
+
+    await user.click(screen.getByRole("button", { name: "Terminal appearance" }));
+    await user.click(screen.getByRole("button", { name: "Reset terminal appearance" }));
+    expect(setTerminalAppearance).toHaveBeenCalledWith({
+      fontFamily: "",
+      foreground: "",
+      background: "",
+    });
   });
 });

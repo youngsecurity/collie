@@ -2,6 +2,7 @@ import { Fragment, memo, useEffect, useMemo, useRef } from "react";
 import type { CSSProperties } from "react";
 
 import { cn } from "@/lib/utils";
+import type { TerminalAppearance } from "@/hooks/use-display-prefs";
 import { parseAnsi, type AnsiSegment } from "@/lib/ansi";
 import { buildBlocks } from "@/lib/harness";
 import {
@@ -39,6 +40,8 @@ export interface AnsiOutputProps {
   wrap?: boolean;
   /** Monospace font size in px. Default 11. */
   fontSize?: number;
+  /** Device-local terminal font and default colors. Explicit ANSI segment colors still win. */
+  appearance?: TerminalAppearance;
   /** Active find query. Empty (the default) = not searching: the fast, allocation-free render path. */
   query?: string;
   /** Index of the focused match — highlighted stronger and scrolled into view. -1 = none. */
@@ -106,6 +109,7 @@ export const AnsiOutput = memo(function AnsiOutput({
   className,
   wrap = false,
   fontSize = 11,
+  appearance,
   query = "",
   currentMatch = -1,
   onMatchCount,
@@ -161,12 +165,33 @@ export const AnsiOutput = memo(function AnsiOutput({
     currentRef.current?.scrollIntoView({ block: "center", behavior: "auto" });
   }, [currentMatch, matches]);
 
-  // Muted = box-drawing / rule glyphs. Use muted-foreground (readable on dark) and drop ANSI dim
-  // opacity so table borders stay visible — var(--border) + dim made them nearly invisible on mobile.
+  // Muted = box-drawing / rule glyphs. Keep explicit ANSI colors authoritative. An uncolored rule
+  // follows the configured terminal foreground when present, otherwise preserve Collie's readable
+  // muted fallback. Drop ANSI dim opacity so table borders remain visible on mobile.
   const styleFor = (s: AnsiSegment): CSSProperties =>
     s.muted
-      ? { ...s.style, color: "var(--muted-foreground)", fontWeight: 400, opacity: 1 }
+      ? {
+          ...s.style,
+          color: (s.style.color ?? appearance?.foreground) || "var(--muted-foreground)",
+          fontWeight: 400,
+          opacity: 1,
+        }
       : s.style;
+
+  // Inline styles intentionally outrank the generic `font-mono` / `text-foreground` utilities. The
+  // custom properties also make inverse-video's fallback colors follow this terminal appearance.
+  // ANSI segment spans carry their own inline colors, so explicit Oh My Posh truecolor remains
+  // authoritative over the configured default foreground/background.
+  const preStyle: CSSProperties & { "--foreground"?: string; "--background"?: string } = {
+    fontSize: `${fontSize}px`,
+    fontFamily: appearance?.fontFamily
+      ? `${appearance.fontFamily}, var(--font-mono)`
+      : undefined,
+    color: appearance?.foreground || undefined,
+    backgroundColor: appearance?.background || undefined,
+    "--foreground": appearance?.foreground || undefined,
+    "--background": appearance?.background || undefined,
+  };
 
   const prompt = promptBlock ? (
     <PromptSelectBlock
@@ -200,7 +225,7 @@ export const AnsiOutput = memo(function AnsiOutput({
     return (
       <>
         {rawBlocks.length > 0 && (
-          <pre className={preClass(wrap, className)} style={{ fontSize: `${fontSize}px` }}>
+          <pre className={preClass(wrap, className)} style={preStyle}>
             {rawBlocks.map((block, bi) => (
               <Fragment key={bi}>
                 {bi > 0 ? "\n" : null}
@@ -278,7 +303,7 @@ export const AnsiOutput = memo(function AnsiOutput({
   return (
     <>
       {rawBlocks.length > 0 && (
-        <pre className={preClass(wrap, className)} style={{ fontSize: `${fontSize}px` }}>
+        <pre className={preClass(wrap, className)} style={preStyle}>
           {rawBlocks.map(renderBlock)}
         </pre>
       )}

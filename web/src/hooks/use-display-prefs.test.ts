@@ -9,7 +9,12 @@ describe("useDisplayPrefs", () => {
 
   it("returns defaults when localStorage is empty", () => {
     const { result } = renderHook(() => useDisplayPrefs());
-    expect(result.current.prefs).toEqual({ wrap: false, fontSize: 12, rawTerminal: false });
+    expect(result.current.prefs).toEqual({
+      wrap: false,
+      fontSize: 12,
+      rawTerminal: false,
+      terminal: { fontFamily: "", foreground: "", background: "" },
+    });
   });
 
   it("persists wrap=true and reloads it on mount", () => {
@@ -29,7 +34,12 @@ describe("useDisplayPrefs", () => {
   it("loads persisted prefs from localStorage on mount", () => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ wrap: false, fontSize: 14, rawTerminal: true }));
     const { result } = renderHook(() => useDisplayPrefs());
-    expect(result.current.prefs).toEqual({ wrap: false, fontSize: 14, rawTerminal: true });
+    expect(result.current.prefs).toEqual({
+      wrap: false,
+      fontSize: 14,
+      rawTerminal: true,
+      terminal: { fontFamily: "", foreground: "", background: "" },
+    });
   });
 
   it("persists rawTerminal and reloads it on mount (the escape hatch survives a reload)", () => {
@@ -40,6 +50,46 @@ describe("useDisplayPrefs", () => {
     expect(JSON.parse(localStorage.getItem(STORAGE_KEY)!).rawTerminal).toBe(true);
     const { result: reloaded } = renderHook(() => useDisplayPrefs());
     expect(reloaded.current.prefs.rawTerminal).toBe(true);
+  });
+
+  it("persists terminal font and colors and reloads them on mount", () => {
+    const { result } = renderHook(() => useDisplayPrefs());
+    act(() =>
+      result.current.setTerminalAppearance({
+        fontFamily: "MesloLGS NF",
+        foreground: "#00ff00",
+        background: "#000000",
+      }),
+    );
+    expect(result.current.prefs.terminal).toEqual({
+      fontFamily: "MesloLGS NF",
+      foreground: "#00ff00",
+      background: "#000000",
+    });
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEY)!).terminal).toEqual(
+      result.current.prefs.terminal,
+    );
+    const { result: reloaded } = renderHook(() => useDisplayPrefs());
+    expect(reloaded.current.prefs.terminal).toEqual(result.current.prefs.terminal);
+  });
+
+  it("rejects invalid persisted colors and control characters in font names", () => {
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        terminal: {
+          fontFamily: "  MesloLGS\u0000 NF  ",
+          foreground: "red; background:url(evil)",
+          background: "#ABCDEF",
+        },
+      }),
+    );
+    const { result } = renderHook(() => useDisplayPrefs());
+    expect(result.current.prefs.terminal).toEqual({
+      fontFamily: "MesloLGS NF",
+      foreground: "",
+      background: "#abcdef",
+    });
   });
 
   it("setFontSize clamps below minimum to 9", () => {
@@ -75,12 +125,22 @@ describe("useDisplayPrefs", () => {
   it("falls back to defaults on malformed JSON", () => {
     localStorage.setItem(STORAGE_KEY, "not-json{{{");
     const { result } = renderHook(() => useDisplayPrefs());
-    expect(result.current.prefs).toEqual({ wrap: false, fontSize: 12, rawTerminal: false });
+    expect(result.current.prefs).toEqual({
+      wrap: false,
+      fontSize: 12,
+      rawTerminal: false,
+      terminal: { fontFamily: "", foreground: "", background: "" },
+    });
   });
 
   it("falls back to defaults when stored value is not an object", () => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(42));
     const { result } = renderHook(() => useDisplayPrefs());
-    expect(result.current.prefs).toEqual({ wrap: false, fontSize: 12, rawTerminal: false });
+    expect(result.current.prefs).toEqual({
+      wrap: false,
+      fontSize: 12,
+      rawTerminal: false,
+      terminal: { fontFamily: "", foreground: "", background: "" },
+    });
   });
 });

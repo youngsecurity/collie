@@ -214,6 +214,15 @@ Chrome → ⋮ menu → *Add to Home screen* (or *Install app*). Installing (and
 HTTPS origin the default serve mode already provides; over `COLLIE_SERVE_MODE=http` the page works,
 but service worker and install silently no-op.
 
+#### Terminal appearance
+
+Open a pane and tap the palette button in the **View** row to configure the terminal mirror's font
+family, default foreground, and background. These preferences are stored in that browser's local
+storage, so each phone or desktop browser can use its own appearance. The Matrix preset selects
+`MesloLGS NF` with green (`#00ff00`) on black; explicit ANSI and Oh My Posh truecolor output still
+take precedence. Custom fonts must already be installed on the device running the browser, because
+Collie cannot inherit a Windows Terminal profile or load fonts from the host machine.
+
 ### Is it actually working?
 
 A sixty-second check, host side then phone side:

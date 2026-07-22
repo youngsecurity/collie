@@ -1,9 +1,14 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import type { ChangeEvent, ReactNode } from "react";
 import { useRevalidator } from "react-router";
-import { AArrowDown, AArrowUp, Check, ImagePlus, Keyboard, Loader2, Search, Send, Slash, Terminal, WrapText, X, Zap } from "lucide-react";
+import { AArrowDown, AArrowUp, Check, ImagePlus, Keyboard, Loader2, Palette, RotateCcw, Search, Send, Slash, Terminal, WrapText, X, Zap } from "lucide-react";
 
-import type { DisplayPrefs } from "@/hooks/use-display-prefs";
+import {
+  DEFAULT_TERMINAL_APPEARANCE,
+  MATRIX_TERMINAL_APPEARANCE,
+  type DisplayPrefs,
+  type TerminalAppearance,
+} from "@/hooks/use-display-prefs";
 import { usePendingConfirm } from "@/hooks/use-pending-confirm";
 import { setStatus } from "@/lib/status";
 import { Button } from "@/components/ui/button";
@@ -12,6 +17,7 @@ import { NavTray } from "@/components/nav-tray";
 import { CommandPalette } from "@/components/command-palette";
 import { QuickActionsContent } from "@/components/quick-actions";
 import { SectionLabel } from "@/components/ui/section-label";
+import { BottomSheet } from "@/components/ui/sheet";
 import * as api from "@/lib/api";
 import { commandsFor } from "@/lib/agent-commands";
 import { isDestructiveInput } from "@/lib/destructive";
@@ -52,6 +58,7 @@ interface ComposerProps {
   setWrap: (wrap: boolean) => void;
   stepFontSize: (delta: number) => void;
   setRawTerminal: (raw: boolean) => void;
+  setTerminalAppearance: (appearance: TerminalAppearance) => void;
   /** Snap the mirror to the live tail (follow + revalidate + scroll) after a successful send. */
   onSent: () => void;
   /** Open find-in-output (freezes the tail in AgentChat). Undefined when there's no buffered output
@@ -111,7 +118,7 @@ function ComposerDock({
 }
 
 export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Composer(
-  { paneId, session, agent, isShell, gone, readOnly, text, terminalDraft, rawTerminalDraft, prefs, setWrap, stepFontSize, setRawTerminal, onSent, onOpenFind },
+  { paneId, session, agent, isShell, gone, readOnly, text, terminalDraft, rawTerminalDraft, prefs, setWrap, stepFontSize, setRawTerminal, setTerminalAppearance, onSent, onOpenFind },
   ref,
 ) {
   const revalidator = useRevalidator();
@@ -140,6 +147,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const [previewLatched, setPreviewLatched] = useState(false);
   // Composer sheets are mutually exclusive — at most one open (Keys / Quick / Agent).
   const [drawer, setDrawer] = useState<ComposerDrawer>(null);
+  const [appearanceOpen, setAppearanceOpen] = useState(false);
   const closeDrawer = () => setDrawer(null);
   // Two-tap guard for destructive commands (rm -rf, force-push, …): the first tap arms a "Really
   // send?" state on the Send button (auto-disarms after 3 s), the second actually sends. Same shared
@@ -443,6 +451,22 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
                 <Search className="size-3.5" />
               </Button>
             )}
+            <Button
+              variant={
+                prefs.terminal.fontFamily ||
+                prefs.terminal.foreground ||
+                prefs.terminal.background
+                  ? "secondary"
+                  : "ghost"
+              }
+              size="icon"
+              className="h-7 w-7 text-muted-foreground"
+              onClick={() => setAppearanceOpen(true)}
+              aria-label="Terminal appearance"
+              title="Terminal font and colors"
+            >
+              <Palette className="size-3.5" />
+            </Button>
             {/* Raw-terminal escape hatch: turns off the block renderer (native prompt buttons, chrome
                 strip, status strip) so a mis-parsed dialog can always be driven by hand with the keys
                 pad. Highlighted when active so it's obvious the plain mirror is showing. */}
@@ -633,6 +657,123 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           )}
         </div>
       </div>
+
+      <BottomSheet
+        open={appearanceOpen}
+        onClose={() => setAppearanceOpen(false)}
+        title="Terminal appearance"
+      >
+        <div className="space-y-5">
+          <div className="space-y-1.5">
+            <label htmlFor="terminal-font-family" className="text-xs font-medium">
+              Font family
+            </label>
+            <input
+              id="terminal-font-family"
+              aria-label="Terminal font family"
+              list="terminal-font-suggestions"
+              value={prefs.terminal.fontFamily}
+              onChange={(e) =>
+                setTerminalAppearance({ ...prefs.terminal, fontFamily: e.target.value })
+              }
+              onBlur={(e) =>
+                setTerminalAppearance({ ...prefs.terminal, fontFamily: e.target.value.trim() })
+              }
+              placeholder="Collie default"
+              autoComplete="off"
+              className="h-10 w-full rounded-md border border-input bg-transparent px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/50"
+            />
+            <datalist id="terminal-font-suggestions">
+              <option value="MesloLGS NF" />
+              <option value="JetBrains Mono" />
+              <option value="Cascadia Mono" />
+              <option value="Cascadia Code" />
+              <option value="Roboto Mono" />
+              <option value="Consolas" />
+            </datalist>
+            <p className="text-[11px] leading-snug text-muted-foreground">
+              The font must be installed on this device. Browser apps cannot inherit the host's
+              Windows Terminal profile.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <label className="space-y-1.5 text-xs font-medium">
+              <span>Foreground</span>
+              <span className="flex h-10 items-center gap-2 rounded-md border border-input px-2">
+                <input
+                  type="color"
+                  aria-label="Terminal foreground color"
+                  value={prefs.terminal.foreground || "#00ff00"}
+                  onChange={(e) =>
+                    setTerminalAppearance({ ...prefs.terminal, foreground: e.target.value })
+                  }
+                  className="size-7 cursor-pointer border-0 bg-transparent p-0"
+                />
+                <code className="text-[11px] font-normal text-muted-foreground">
+                  {prefs.terminal.foreground || "App theme"}
+                </code>
+              </span>
+            </label>
+            <label className="space-y-1.5 text-xs font-medium">
+              <span>Background</span>
+              <span className="flex h-10 items-center gap-2 rounded-md border border-input px-2">
+                <input
+                  type="color"
+                  aria-label="Terminal background color"
+                  value={prefs.terminal.background || "#000000"}
+                  onChange={(e) =>
+                    setTerminalAppearance({ ...prefs.terminal, background: e.target.value })
+                  }
+                  className="size-7 cursor-pointer border-0 bg-transparent p-0"
+                />
+                <code className="text-[11px] font-normal text-muted-foreground">
+                  {prefs.terminal.background || "Transparent"}
+                </code>
+              </span>
+            </label>
+          </div>
+
+          <div
+            aria-label="Terminal appearance preview"
+            className="overflow-x-auto rounded-md border border-border p-3 text-xs leading-[1.35] whitespace-pre"
+            style={{
+              fontFamily: prefs.terminal.fontFamily
+                ? `${prefs.terminal.fontFamily}, var(--font-mono)`
+                : undefined,
+              color: prefs.terminal.foreground || undefined,
+              backgroundColor: prefs.terminal.background || undefined,
+            }}
+          >
+            {"┏[ devusr from  carl][main]\n┖[~/project]\n└─Δ"}
+          </div>
+
+          <div className="flex gap-2">
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              className="flex-1"
+              onClick={() => setTerminalAppearance(MATRIX_TERMINAL_APPEARANCE)}
+              aria-label="Use Matrix preset"
+            >
+              <Palette className="size-3.5" />
+              Matrix preset
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="flex-1"
+              onClick={() => setTerminalAppearance(DEFAULT_TERMINAL_APPEARANCE)}
+              aria-label="Reset terminal appearance"
+            >
+              <RotateCcw className="size-3.5" />
+              Reset
+            </Button>
+          </div>
+        </div>
+      </BottomSheet>
 
       {/* Slash-command palette */}
       <CommandPalette
