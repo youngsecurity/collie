@@ -6,6 +6,14 @@ All notable changes to Collie are recorded here. The format follows
 `version` in `herdr-plugin.toml`, `package.json`, and `web/package.json` (enforced by
 `scripts/check-version.sh`). See [`CLAUDE.md`](./CLAUDE.md) → *Versioning* for the bump policy.
 
+## [0.14.0+ys.2] - 2026-07-22
+
+### Changed
+- Remote peers now require an explicit canonical `COLLIE_PUBLIC_HOSTS` match, independent of `COLLIE_ALLOWED_ORIGINS`
+
+### Fixed
+- Loopback Host values are trusted only for direct requests from an actual loopback socket peer, closing both remote and local-proxy `Host: localhost` bypasses
+
 ## [0.14.0+ys.1] - 2026-07-21
 
 ### Changed

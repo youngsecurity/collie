@@ -72,9 +72,55 @@ const SECURITY_HEADERS: Record<string, string> = {
   "referrer-policy": "no-referrer",
 };
 
-// Loopback Host/Origin forms (with an optional port). Loopback is always trusted — only tailscaled
-// (or a co-located proxy) can reach the bridge's port, so a loopback caller is the on-host operator.
+// Loopback Host/Origin forms (with an optional port). A loopback Host is trusted only when the
+// socket peer is also loopback; Host is client-controlled and cannot establish client location.
 const LOOPBACK_HOST = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/;
+const FORWARDING_HEADERS = new Set(["forwarded", "via"]);
+
+export function canonicalizeHost(host: string): string | null {
+  // Reject surrounding whitespace rather than normalizing it away. HTTP Host is an authority value,
+  // and accepting parser-trimmed variants creates avoidable parser-differential behavior.
+  if (!host || host !== host.trim()) return null;
+  const raw = host;
+  // WHATWG URL parsing intentionally accepts authority prefixes and backslashes. HTTP Host does
+  // not, so reject those and other delimiter/control forms before using URL for canonicalization.
+  if (raw.includes("/") || /[\\\s@?#%,]/.test(raw)) return null;
+  try {
+    const parsed = new URL(`http://${raw}`);
+    if (parsed.username || parsed.password || parsed.pathname !== "/" || parsed.search || parsed.hash) {
+      return null;
+    }
+    let hostname = parsed.hostname.toLowerCase();
+    if (hostname.endsWith(".")) hostname = hostname.slice(0, -1);
+    if (!hostname) return null;
+    return parsed.port ? `${hostname}:${parsed.port}` : hostname;
+  } catch {
+    return null;
+  }
+}
+
+export function isLoopbackAddress(address: string | null): boolean {
+  if (!address) return false;
+  const normalized = address.toLowerCase();
+  return (
+    normalized === "::1" ||
+    normalized === "0:0:0:0:0:0:0:1" ||
+    /^127\./.test(normalized) ||
+    /^::ffff:127\./.test(normalized)
+  );
+}
+
+export function hasForwardingHeaders(req: Request): boolean {
+  // Header values are never used to grant access. Their presence only proves that a loopback socket
+  // peer may be a local reverse proxy rather than the original client, so the local-only exception
+  // must not apply. Treat every X-Forwarded-* extension as a proxy marker, not just common names.
+  let forwarded = false;
+  req.headers.forEach((_value, name) => {
+    const lower = name.toLowerCase();
+    if (FORWARDING_HEADERS.has(lower) || lower.startsWith("x-forwarded-")) forwarded = true;
+  });
+  return forwarded;
+}
 
 const PANE_ROUTE = /^\/api\/pane\/([^/]+)(?:\/(reply|keys|upload|close|rename))?$/;
 // A tab supports rename + close — an action group like the pane route. The `/api/tab` POST above
@@ -102,7 +148,16 @@ export function startServer(opts: {
     // Content-Length is absent or false. The upload handler still does its own precise check.
     maxRequestBodySize: MAX_REQUEST_BODY_BYTES,
 
-    async fetch(req) {
+    async fetch(req, bunServer) {
+      const peerAddress = bunServer.requestIP(req)?.address ?? null;
+      const hostGate = checkHostAccess(
+        req.headers.get("host") ?? "",
+        cfg,
+        peerAddress,
+        hasForwardingHeaders(req),
+      );
+      if (!hostGate.ok) return text(hostGate.reason, 403);
+
       const url = new URL(req.url);
       const { pathname } = url;
 
@@ -115,7 +170,7 @@ export function startServer(opts: {
 
       // ── Live state (polled by the client) ────────────────────────────────
       if (pathname === "/api/snapshot") {
-        const gate = checkAccess(req, cfg);
+        const gate = checkAccess(req, cfg, "read", peerAddress);
         if (!gate.ok) return text(gate.reason, 403);
         const rt = registry.get(sessionName);
         if (!rt) return unknownSession();
@@ -143,14 +198,14 @@ export function startServer(opts: {
 
       // ── Structural creates: new tab / new space (each opens a fresh shell pane) ──
       if (pathname === "/api/tab" && req.method === "POST") {
-        const denied = guard(req, cfg, "write");
+        const denied = guard(req, cfg, "write", peerAddress);
         if (denied) return denied;
         const rt = registry.get(sessionName);
         if (!rt) return unknownSession();
         return createTab(rt.herdr, rt.engine, req, audit, deviceAuth(req, cfg).device, rt.name);
       }
       if (pathname === "/api/workspace" && req.method === "POST") {
-        const denied = guard(req, cfg, "write");
+        const denied = guard(req, cfg, "write", peerAddress);
         if (denied) return denied;
         const rt = registry.get(sessionName);
         if (!rt) return unknownSession();
@@ -160,7 +215,7 @@ export function startServer(opts: {
       // ── Tab actions: rename (set its label) / close (kill it + every pane in it) ──
       const tabMatch = pathname.match(TAB_ACTION_ROUTE);
       if (tabMatch && req.method === "POST") {
-        const denied = guard(req, cfg, "write");
+        const denied = guard(req, cfg, "write", peerAddress);
         if (denied) return denied;
         const rt = registry.get(sessionName);
         if (!rt) return unknownSession();
@@ -178,7 +233,7 @@ export function startServer(opts: {
         const action = paneMatch[2];
         // Reading a pane is allowed for any access-gated client; every action (reply/keys/upload/
         // close) types into or restructures a terminal, so it additionally needs an authorised device.
-        const denied = guard(req, cfg, action ? "write" : "read");
+        const denied = guard(req, cfg, action ? "write" : "read", peerAddress);
         if (denied) return denied;
         const rt = registry.get(sessionName);
         if (!rt) return unknownSession();
@@ -206,7 +261,7 @@ export function startServer(opts: {
       if (pathname === "/api/subscribe" && req.method === "POST") {
         // Read-level: registering for push isn't terminal-driving, so a read-only device may still
         // subscribe to notifications.
-        const denied = guard(req, cfg, "read");
+        const denied = guard(req, cfg, "read", peerAddress);
         if (denied) return denied;
         let body: unknown;
         try {
@@ -220,7 +275,7 @@ export function startServer(opts: {
       }
       if (pathname === "/api/notifications/snooze" && req.method === "POST") {
         // Managing your own notification quiet-hours isn't terminal-driving — read-level, like subscribe.
-        const denied = guard(req, cfg, "read");
+        const denied = guard(req, cfg, "read", peerAddress);
         if (denied) return denied;
         let body: unknown;
         try {
@@ -244,12 +299,12 @@ export function startServer(opts: {
         // Which agent statuses push (bridge-wide). Read-level like snooze — managing your own
         // notification preferences isn't terminal-driving.
         if (req.method === "GET") {
-          const denied = guard(req, cfg, "read");
+          const denied = guard(req, cfg, "read", peerAddress);
           if (denied) return denied;
           return json(notifyPrefs.current(), req.headers.get("accept-encoding"));
         }
         if (req.method === "POST") {
-          const denied = guard(req, cfg, "read");
+          const denied = guard(req, cfg, "read", peerAddress);
           if (denied) return denied;
           let body: unknown;
           try {
@@ -271,7 +326,7 @@ export function startServer(opts: {
         // Force an immediate upstream check (the "check for updates" button), instead of waiting for
         // the periodic timer. Read-level — checking a version isn't terminal-driving — and idempotent
         // (the monitor de-dupes concurrent checks). Returns the fresh status the client revalidates on.
-        const denied = guard(req, cfg, "read");
+        const denied = guard(req, cfg, "read", peerAddress);
         if (denied) return denied;
         await updateMonitor.checkRelease();
         return json(updateMonitor.status(), req.headers.get("accept-encoding"));
@@ -329,8 +384,14 @@ export function startupWarnings(cfg: Config): string[] {
   }
   if (cfg.publicHosts.length === 0) {
     warnings.push(
-      `[bridge] WARNING: COLLIE_PUBLIC_HOSTS is empty — Host-header validation is OFF (DNS rebinding not blocked). Set it to your MagicDNS name, especially under plain-HTTP serve mode or behind a reverse proxy.`,
+      `[bridge] WARNING: COLLIE_PUBLIC_HOSTS is empty — remote requests will be denied. Set it to each externally reachable host or host:port value.`,
     );
+  } else {
+    for (const host of cfg.publicHosts) {
+      if (!canonicalizeHost(host)) {
+        warnings.push(`[bridge] WARNING: invalid COLLIE_PUBLIC_HOSTS entry: ${host}`);
+      }
+    }
   }
   return warnings;
 }
@@ -774,12 +835,10 @@ async function uploadPane(
 
 /**
  * Access gate for the API:
- *  - Host allowlist (opt-in): when COLLIE_PUBLIC_HOSTS is set, the request's Host header must be a
- *    loopback form, one of those hosts, or the host of an allowed origin — otherwise rejected,
- *    BEFORE any Origin logic (fail-closed). This defeats DNS rebinding, where a browser is tricked
- *    into sending Host==Origin==evil.example so a bare same-origin check trivially passes — acute
- *    under COLLIE_SERVE_MODE=http (no TLS). Empty COLLIE_PUBLIC_HOSTS keeps the legacy behaviour so
- *    existing deployments don't break (see the startup warning).
+ *  - Host allowlist: a remote peer's canonical Host must appear explicitly in COLLIE_PUBLIC_HOSTS.
+ *    Loopback Host forms are accepted only from a direct request whose actual socket peer is
+ *    loopback. Forwarding headers disable that local-only exception. This check runs BEFORE Origin
+ *    logic (fail-closed) to defeat DNS rebinding.
  *  - Same-origin only (Origin host must equal Host) — defeats cross-site requests/CSRF. Browsers
  *    omit Origin on same-origin GETs (so the snapshot poll passes); they send it on POSTs.
  *    localhost and explicitly-configured origins are also allowed.
@@ -793,29 +852,31 @@ export function checkAccess(
   req: Request,
   cfg: Config,
   level: "read" | "write" = "read",
+  peerAddress: string | null = null,
 ): { ok: true } | { ok: false; reason: string } {
   const host = req.headers.get("host") ?? "";
-
-  // Host-header allowlist — only when the operator opted in (COLLIE_PUBLIC_HOSTS non-empty). Fail
-  // closed, before the Origin logic, so a rebinding request (Host==Origin==evil) never reaches it.
-  if (cfg.publicHosts.length > 0 && !isHostAllowed(host, cfg)) {
-    return { ok: false, reason: "host not allowed" };
-  }
+  const hostGate = checkHostAccess(host, cfg, peerAddress, hasForwardingHeaders(req));
+  if (!hostGate.ok) return hostGate;
+  const canonicalRequestHost = canonicalizeHost(host)!;
 
   const origin = req.headers.get("origin");
   if (origin) {
-    let originHost = "";
+    let originHost: string | null = null;
     try {
-      originHost = new URL(origin).host;
+      originHost = canonicalizeHost(new URL(origin).host);
     } catch {
       return { ok: false, reason: "bad origin" };
     }
+    if (!originHost) return { ok: false, reason: "bad origin" };
     const allowed =
-      originHost === host ||
+      originHost === canonicalRequestHost ||
       LOOPBACK_HOST.test(originHost) ||
       cfg.allowedOrigins.includes(origin);
     if (!allowed) return { ok: false, reason: "cross-origin rejected" };
-  } else if (level === "write" && !LOOPBACK_HOST.test(host)) {
+  } else if (
+    level === "write" &&
+    !(LOOPBACK_HOST.test(canonicalRequestHost) && isLoopbackAddress(peerAddress))
+  ) {
     // A write with no Origin header from a non-loopback Host isn't a real browser request — refuse.
     return { ok: false, reason: "origin required" };
   }
@@ -829,22 +890,40 @@ export function checkAccess(
   return { ok: true };
 }
 
+export function checkHostAccess(
+  host: string,
+  cfg: Config,
+  peerAddress: string | null,
+  forwarded: boolean = false,
+): { ok: true } | { ok: false; reason: string } {
+  // Loopback-only deployments keep working without configuration, but an empty allowlist never
+  // opens a remotely reachable bridge.
+  if (cfg.publicHosts.length === 0 && !isLoopbackAddress(peerAddress)) {
+    return { ok: false, reason: "host allowlist required" };
+  }
+  if (!isHostAllowed(host, cfg, peerAddress, forwarded)) {
+    return { ok: false, reason: "host not allowed" };
+  }
+  return { ok: true };
+}
+
 /**
- * Whether a Host header is one the bridge will answer to under the opt-in host allowlist: a loopback
- * form, an explicit COLLIE_PUBLIC_HOSTS entry, or the host of a configured allowed origin. Pure +
- * exported for tests.
+ * Whether a Host header is one the bridge will answer to: an explicit COLLIE_PUBLIC_HOSTS entry, or
+ * a loopback form from an actual loopback socket peer on a direct, non-forwarded request. Origin
+ * configuration is deliberately separate. Pure + exported for tests.
  */
-export function isHostAllowed(host: string, cfg: Config): boolean {
-  if (!host) return false;
-  if (LOOPBACK_HOST.test(host)) return true;
-  if (cfg.publicHosts.includes(host)) return true;
-  return cfg.allowedOrigins.some((o) => {
-    try {
-      return new URL(o).host === host;
-    } catch {
-      return false;
-    }
-  });
+export function isHostAllowed(
+  host: string,
+  cfg: Config,
+  peerAddress: string | null = null,
+  forwarded: boolean = false,
+): boolean {
+  const canonicalHost = canonicalizeHost(host);
+  if (!canonicalHost) return false;
+  if (LOOPBACK_HOST.test(canonicalHost)) {
+    return isLoopbackAddress(peerAddress) && !forwarded;
+  }
+  return cfg.publicHosts.some((candidate) => canonicalizeHost(candidate) === canonicalHost);
 }
 
 /**
@@ -853,8 +932,13 @@ export function isHostAllowed(host: string, cfg: Config): boolean {
  * terminal or creates panes — must additionally come from an authorised device (see
  * {@link deviceAuth}). Returns a 403 Response to short-circuit on denial, or null to proceed.
  */
-function guard(req: Request, cfg: Config, level: "read" | "write"): Response | null {
-  const gate = checkAccess(req, cfg, level);
+function guard(
+  req: Request,
+  cfg: Config,
+  level: "read" | "write",
+  peerAddress: string | null,
+): Response | null {
+  const gate = checkAccess(req, cfg, level, peerAddress);
   if (!gate.ok) return text(gate.reason, 403);
   if (level === "write" && !deviceAuth(req, cfg).authorized) {
     return text("device not authorised", 403);

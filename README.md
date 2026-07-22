@@ -102,11 +102,11 @@ It's built single-user and tailnet-only. The defenses:
   any other device is read-only. Off by default; revoke a device by dropping it from the list.
   See [Deployment variants](#deployment-variants) for the proxy this requires.
 - **Same-origin gate + strict CSP**; pane output renders as React text nodes, never `innerHTML`.
-- **Optional Host allowlist** — set `COLLIE_PUBLIC_HOSTS` to the exact host(s) you serve on (e.g.
-  your MagicDNS name) and the bridge rejects any request addressed to another Host before the
-  origin logic runs. **Strongly recommended, and effectively mandatory with
-  `COLLIE_SERVE_MODE=http`** — without TLS, DNS rebinding can otherwise make a hostile page
-  same-origin with the bridge.
+- **Required remote Host allowlist** — set `COLLIE_PUBLIC_HOSTS` to every exact host or `host:port`
+  you serve on (for example, your IP, FQDN, and MagicDNS name). Remote requests are denied when the
+  list is empty. Values are canonicalized before exact comparison, allowed origins do not expand the
+  list, and a loopback Host is accepted only from an actual loopback socket peer on a direct,
+  non-forwarded request.
 
 > 🚫 **Never `tailscale funnel` this** — funnel exposes it to the public internet; `serve` keeps it
 > tailnet-only. There is no scenario where funneling Collie is correct.
@@ -236,13 +236,14 @@ $ scripts/collie-ctl.sh logs        # journal timestamps trimmed here
 [push] disabled (no VAPID keys configured)
 [bridge] listening on http://127.0.0.1:8787  (poll 1500ms)
 [bridge] WARNING: COLLIE_TRUSTED_USER is empty — any tailnet device/user that reaches the bridge gets full write access. Set it to your tailnet login (see README → Variant A).
-[bridge] WARNING: COLLIE_PUBLIC_HOSTS is empty — Host-header validation is OFF (DNS rebinding not blocked). Set it to your MagicDNS name, especially under COLLIE_SERVE_MODE=http.
+[bridge] WARNING: COLLIE_PUBLIC_HOSTS is empty — remote requests will be denied. Set it to each externally reachable host or host:port value.
 ```
 
-**Both WARNINGs are expected on a fresh install** — that's the bridge telling you it's running
-open-by-default on your tailnet. [Configure](#configure) closes both. (The loopback URL in the log
-is also correct: the bridge itself only ever binds `127.0.0.1` — `tailscale serve` is what makes it
-reachable.)
+**Both WARNINGs are expected on a fresh install.** The identity warning says who could control
+Collie after ingress is configured; the Host warning means remote requests remain blocked until you
+explicitly list their addresses. [Configure](#configure) both before publishing the bridge. (The
+loopback URL in this example is correct: `127.0.0.1` is the default bind, and `tailscale serve`
+publishes it without exposing the bridge directly.)
 
 On the phone: your agents are listed, and the footer build stamp (`v0.9.0 · debcff9 · …`) matches
 `scripts/collie-ctl.sh version`. If the page loads but stays empty, that's the same-origin gate —
@@ -262,13 +263,15 @@ The unit is `enable`d, so with lingering it starts at boot with your user manage
 
 ## Configure
 
-Out of the box Collie runs **open single-user**: anyone on your tailnet who can reach the URL has
-full control — that's exactly what the two startup WARNINGs are about. Close both in one sitting:
+Out of the box Collie runs **single-user and remote-deny-by-default**: loopback access works, but a
+remote Host must be listed before the bridge will answer it. Once ingress is configured, anyone who
+can reach an allowed Host has full control unless the identity gate is also configured. Address both
+startup warnings in one sitting:
 
 ```bash
 # in your .env
-COLLIE_TRUSTED_USER=you@example.com           # your tailnet login — the bridge rejects anyone else
-COLLIE_PUBLIC_HOSTS=myhost.tail1234.ts.net    # exact host(s) you serve on — blocks DNS rebinding
+COLLIE_TRUSTED_USER=you@example.com                   # your tailnet login — the bridge rejects anyone else
+COLLIE_PUBLIC_HOSTS=myhost.tail1234.ts.net,10.0.0.25:8787  # every exact remote host — blocks DNS rebinding
 ```
 
 Config is a `.env` in the plugin's config dir — find it with

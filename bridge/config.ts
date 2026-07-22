@@ -107,12 +107,12 @@ export interface Config {
   /** Extra allowed request origins beyond localhost (e.g. your MagicDNS https origin). */
   allowedOrigins: string[];
   /**
-   * Host-header allowlist (`host` or `host:port` values). When non-empty, the operator has opted
-   * in to strict Host validation: any request whose `Host` header isn't a loopback form, one of
-   * these, or a host parsed from {@link allowedOrigins} is rejected before the Origin check. This
-   * closes the DNS-rebinding hole (Host==Origin==evil.com would otherwise pass), which matters most
-   * under `COLLIE_SERVE_MODE=http` (no TLS). Empty = validation off (legacy behaviour) — set this
-   * to your MagicDNS name (`collie.<tailnet>.ts.net`), especially in http serve mode.
+   * Explicit Host-header allowlist (`host` or `host:port` values). Remote peers are denied when this
+   * list is empty, and every remote request must match one of these entries after canonicalization.
+   * Loopback Host forms are accepted only when the actual socket peer is loopback and the request
+   * was not forwarded by a local proxy. This list is deliberately independent of
+   * {@link allowedOrigins} and closes the DNS-rebinding hole where
+   * Host and Origin are both attacker-controlled.
    */
   publicHosts: string[];
   /** Web Push (VAPID). All three required to enable push; otherwise push is disabled. */

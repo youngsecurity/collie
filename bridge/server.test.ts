@@ -21,10 +21,8 @@ import type { PaneRead } from "./herdr-client.ts";
 // regression here silently opens remote shell access, so it gets the most direct coverage.
 
 function req(headers: Record<string, string>): Request {
-  const lower: Record<string, string> = {};
-  for (const [k, v] of Object.entries(headers)) lower[k.toLowerCase()] = v;
   return {
-    headers: { get: (name: string) => lower[name.toLowerCase()] ?? null },
+    headers: new Headers(headers),
   } as unknown as Request;
 }
 
@@ -42,7 +40,7 @@ function cfg(overrides: Partial<Config> = {}): Config {
     deviceHeader: "",
     deviceAllowlist: [],
     allowedOrigins: [],
-    publicHosts: [],
+    publicHosts: ["collie.example.ts.net", "h", "anything"],
     vapidPublic: "",
     vapidPrivate: "",
     vapidSubject: "mailto:admin@example.com",
@@ -150,27 +148,41 @@ describe("checkAccess — Host-header validation (COLLIE_PUBLIC_HOSTS)", () => {
     ).toEqual({ ok: true });
   });
 
-  test("loopback Host always passes even with publicHosts set (read and write)", () => {
-    expect(checkAccess(req({ host: "127.0.0.1:8787" }), c)).toEqual({ ok: true });
-    expect(checkAccess(req({ host: "localhost:8787" }), c, "write")).toEqual({ ok: true });
+  test("remote peers cannot bypass the allowlist with a loopback Host", () => {
+    expect(checkAccess(req({ host: "127.0.0.1:8787" }), c, "read", "10.0.0.50")).toEqual({
+      ok: false,
+      reason: "host not allowed",
+    });
+    expect(checkAccess(req({ host: "localhost:8787" }), c, "write", "10.0.0.50")).toEqual({
+      ok: false,
+      reason: "host not allowed",
+    });
   });
 
-  test("a Host derived from an allowed origin passes", () => {
+  test("allowed origins do not implicitly expand the Host allowlist", () => {
     const c2 = cfg({
       publicHosts: ["collie.example.ts.net"],
       allowedOrigins: ["https://collie.example.com"],
     });
     expect(
-      checkAccess(req({ origin: "https://collie.example.com", host: "collie.example.com" }), c2),
-    ).toEqual({ ok: true });
+      checkAccess(
+        req({ origin: "https://collie.example.com", host: "collie.example.com" }),
+        c2,
+        "read",
+        "10.0.0.50",
+      ),
+    ).toEqual({ ok: false, reason: "host not allowed" });
   });
 
-  test("empty publicHosts keeps legacy behaviour (Host==Origin==evil still passes reads)", () => {
-    // Without opting in, an evil host that also sets a matching Origin passes the bare same-origin
-    // check — the documented legacy hole COLLIE_PUBLIC_HOSTS closes. Proves the default is unchanged.
+  test("remote peers require an explicit public Host allowlist", () => {
     expect(
-      checkAccess(req({ origin: "https://evil.example.com", host: "evil.example.com" }), cfg()),
-    ).toEqual({ ok: true });
+      checkAccess(
+        req({ origin: "https://evil.example.com", host: "evil.example.com" }),
+        cfg({ publicHosts: [] }),
+        "read",
+        "10.0.0.50",
+      ),
+    ).toEqual({ ok: false, reason: "host allowlist required" });
   });
 });
 
@@ -182,8 +194,29 @@ describe("checkAccess — Origin required for writes", () => {
     });
   });
 
-  test("write with no Origin from loopback is allowed (curl on the host)", () => {
-    expect(checkAccess(req({ host: "127.0.0.1:8787" }), cfg(), "write")).toEqual({ ok: true });
+  test("write with no Origin from loopback is allowed for a loopback peer", () => {
+    expect(checkAccess(req({ host: "127.0.0.1:8787" }), cfg(), "write", "127.0.0.1")).toEqual({
+      ok: true,
+    });
+  });
+
+  test("a loopback proxy peer cannot grant a forwarded request the loopback exception", () => {
+    for (const forwardingHeader of [
+      "forwarded",
+      "via",
+      "x-forwarded-for",
+      "x-forwarded-port",
+      "x-forwarded-server",
+    ]) {
+      expect(
+        checkAccess(
+          req({ host: "localhost:8787", [forwardingHeader]: "proxy-marker" }),
+          cfg(),
+          "write",
+          "127.0.0.1",
+        ),
+      ).toEqual({ ok: false, reason: "host not allowed" });
+    }
   });
 
   test("read with no Origin from a non-loopback Host still passes (the snapshot poll)", () => {
@@ -202,19 +235,41 @@ describe("checkAccess — Origin required for writes", () => {
 });
 
 describe("isHostAllowed", () => {
-  test("loopback forms are always allowed", () => {
+  test("loopback forms are allowed only for an actual loopback peer", () => {
     const c = cfg({ publicHosts: ["a.ts.net"] });
-    expect(isHostAllowed("127.0.0.1:8787", c)).toBe(true);
-    expect(isHostAllowed("localhost", c)).toBe(true);
-    expect(isHostAllowed("[::1]:8787", c)).toBe(true);
+    expect(isHostAllowed("127.0.0.1:8787", c, "127.0.0.1")).toBe(true);
+    expect(isHostAllowed("localhost", c, "::1")).toBe(true);
+    expect(isHostAllowed("[::1]:8787", c, "::ffff:127.0.0.1")).toBe(true);
+    expect(isHostAllowed("localhost:8787", c, "10.0.0.50")).toBe(false);
   });
 
-  test("configured public host and allowed-origin host pass; anything else fails", () => {
-    const c = cfg({ publicHosts: ["a.ts.net"], allowedOrigins: ["https://b.example.com"] });
-    expect(isHostAllowed("a.ts.net", c)).toBe(true);
-    expect(isHostAllowed("b.example.com", c)).toBe(true);
-    expect(isHostAllowed("evil.com", c)).toBe(false);
-    expect(isHostAllowed("", c)).toBe(false);
+  test("canonicalizes configured, incoming, and same-origin hostnames", () => {
+    const c = cfg({ publicHosts: ["CARL.HOME.YOUNGSECURITY.NET:8787"] });
+    expect(isHostAllowed("carl.home.youngsecurity.net:8787", c, "10.0.0.50")).toBe(true);
+    expect(isHostAllowed("carl.home.youngsecurity.net.:8787", c, "10.0.0.50")).toBe(true);
+    expect(
+      checkAccess(
+        req({
+          origin: "http://carl.home.youngsecurity.net.:8787",
+          host: "CARL.HOME.YOUNGSECURITY.NET:8787",
+        }),
+        c,
+        "read",
+        "10.0.0.50",
+      ),
+    ).toEqual({ ok: true });
+  });
+
+  test("configured public host passes; anything else or malformed fails", () => {
+    const c = cfg({ publicHosts: ["a.ts.net"] });
+    expect(isHostAllowed("a.ts.net", c, "10.0.0.50")).toBe(true);
+    expect(isHostAllowed("evil.com", c, "10.0.0.50")).toBe(false);
+    expect(isHostAllowed("", c, "10.0.0.50")).toBe(false);
+    expect(isHostAllowed("//a.ts.net", c, "10.0.0.50")).toBe(false);
+    expect(isHostAllowed("\\\\a.ts.net", c, "10.0.0.50")).toBe(false);
+    expect(isHostAllowed("a.ts.net/path", c, "10.0.0.50")).toBe(false);
+    expect(isHostAllowed("a.ts.net\t", c, "10.0.0.50")).toBe(false);
+    expect(isHostAllowed(" a.ts.net", c, "10.0.0.50")).toBe(false);
   });
 });
 
@@ -432,6 +487,11 @@ describe("startupWarnings — security-posture nags", () => {
   test("populated publicHosts: no Host-validation warning", () => {
     const ws = startupWarnings(cfg({ publicHosts: ["collie.example.ts.net"] }));
     expect(has(ws, "COLLIE_PUBLIC_HOSTS")).toBe(false);
+  });
+
+  test("invalid publicHosts entries are reported", () => {
+    const ws = startupWarnings(cfg({ publicHosts: ["collie.example.ts.net", "bad.example/path"] }));
+    expect(has(ws, "invalid COLLIE_PUBLIC_HOSTS entry: bad.example/path")).toBe(true);
   });
 });
 
