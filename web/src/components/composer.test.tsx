@@ -705,6 +705,63 @@ describe("Composer — quick keys / image attach", () => {
   });
 });
 
+describe("Composer — clipboard image paste", () => {
+  it("uploads a pasted image the same way the picker does and appends its path", async () => {
+    server.use(
+      http.post(/\/api\/pane\/[^/]+\/upload$/, () => HttpResponse.json({ ok: true, path: "/tmp/shot.png" })),
+    );
+    renderComposer();
+    const box = screen.getByPlaceholderText(/type a reply/i);
+    const file = new File(["x"], "shot.png", { type: "image/png" });
+    const item = { kind: "file", type: "image/png", getAsFile: () => file };
+
+    fireEvent.paste(box, { clipboardData: { items: [item] } });
+
+    await waitFor(() => expect(box).toHaveValue("/tmp/shot.png"));
+  });
+
+  it("ignores a second rapid image paste while the first upload is still in flight", async () => {
+    let finishUpload!: () => void;
+    const gate = new Promise<void>((resolve) => (finishUpload = resolve));
+    let uploadCalls = 0;
+    server.use(
+      http.post(/\/api\/pane\/[^/]+\/upload$/, async () => {
+        uploadCalls += 1;
+        await gate;
+        return HttpResponse.json({ ok: false, error: "upload failed" });
+      }),
+    );
+    renderComposer();
+    const box = screen.getByPlaceholderText(/type a reply/i);
+    const first = new File(["first"], "first.png", { type: "image/png" });
+    const second = new File(["second"], "second.png", { type: "image/png" });
+
+    fireEvent.paste(box, {
+      clipboardData: { items: [{ kind: "file", type: "image/png", getAsFile: () => first }] },
+    });
+    fireEvent.paste(box, {
+      clipboardData: { items: [{ kind: "file", type: "image/png", getAsFile: () => second }] },
+    });
+
+    await waitFor(() => expect(uploadCalls).toBe(1));
+    expect(isReloadHeld()).toBe(true);
+    finishUpload();
+    await waitFor(() => expect(isReloadHeld()).toBe(false));
+    expect(box).toHaveValue("");
+  });
+
+  it("leaves a plain-text paste alone — no upload, nothing written by the paste handler", () => {
+    renderComposer();
+    const box = screen.getByPlaceholderText(/type a reply/i);
+    const item = { kind: "string", type: "text/plain", getAsFile: () => null };
+
+    fireEvent.paste(box, { clipboardData: { items: [item] } });
+
+    expect(box).toHaveValue("");
+    expect(screen.queryByText(/Image added/i)).not.toBeInTheDocument();
+  });
+});
+
 describe("Composer — keys dock (in-flow, not an overlay)", () => {
   it("tapping Keys docks the NavTray in the normal flow (no fixed overlay) and toggles it closed", async () => {
     const user = userEvent.setup();

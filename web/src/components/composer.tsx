@@ -1,5 +1,5 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
-import type { ChangeEvent, ReactNode } from "react";
+import type { ChangeEvent, ClipboardEvent, ReactNode } from "react";
 import { useRevalidator } from "react-router";
 import { AArrowDown, AArrowUp, Check, ImagePlus, Keyboard, Loader2, Palette, RotateCcw, Search, Send, Slash, Terminal, WrapText, X, Zap } from "lucide-react";
 
@@ -128,6 +128,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const uploadInFlightRef = useRef(false);
   // Pending-send preview: set on a successful send, cleared when the mirror catches up (next text
   // update) or after a 6s safety timeout. Shows "You sent: …" so the user knows the message landed.
   const [lastSent, setLastSent] = useState<string | null>(null);
@@ -389,10 +390,10 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   }
 
   // Upload an image; on success append its host path to the composer so the user can add context.
-  async function onPickImage(e: ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    e.target.value = ""; // allow re-picking the same file
-    if (!file || locked) return;
+  // Shared by the file picker and clipboard paste.
+  async function uploadImage(file: File) {
+    if (locked || uploadInFlightRef.current) return;
+    uploadInFlightRef.current = true;
     setUploading(true);
     try {
       const res = await api.uploadImage(paneId, file, session);
@@ -407,7 +408,34 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     } catch (err) {
       setStatus(err instanceof Error ? err.message : String(err), "error");
     } finally {
+      uploadInFlightRef.current = false;
       setUploading(false);
+    }
+  }
+
+  async function onPickImage(e: ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // allow re-picking the same file
+    if (!file) return;
+    await uploadImage(file);
+  }
+
+  // Paste an image straight from the clipboard (e.g. a screenshot) the same way the picker does.
+  // Only intercepts when the clipboard actually carries an image file — a plain text paste (the
+  // common case) falls through untouched.
+  function onPasteImage(e: ClipboardEvent<HTMLTextAreaElement>) {
+    if (locked || uploadInFlightRef.current) return;
+    const items = e.clipboardData.items;
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (item.kind === "file" && item.type.startsWith("image/")) {
+        const file = item.getAsFile();
+        if (file) {
+          e.preventDefault();
+          void uploadImage(file);
+          return;
+        }
+      }
     }
   }
 
@@ -616,6 +644,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
                 onSendClick();
               }
             }}
+            onPaste={onPasteImage}
             placeholder={
               gone
                 ? "Pane is gone"
