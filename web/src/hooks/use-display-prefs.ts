@@ -40,9 +40,10 @@ export const MATRIX_TERMINAL_APPEARANCE: TerminalAppearance = {
   background: "#000000",
 };
 
-const STORAGE_KEY = "collie:display-prefs:v3";
-const FONT_MIN = 9;
-const FONT_MAX = 16;
+const STORAGE_KEY = "collie:display-prefs:v4";
+const LEGACY_STORAGE_KEY = "collie:display-prefs:v3";
+export const FONT_MIN = 9;
+export const FONT_MAX = 16;
 const DEFAULTS: DisplayPrefs = {
   wrap: false,
   fontSize: 12,
@@ -78,19 +79,32 @@ function clampFont(n: number): number {
   return Math.max(FONT_MIN, Math.min(FONT_MAX, Math.round(n)));
 }
 
+function parsePrefs(raw: string): DisplayPrefs | null {
+  const parsed: unknown = JSON.parse(raw);
+  if (typeof parsed !== "object" || parsed === null) return null;
+  const p = parsed as Record<string, unknown>;
+  return {
+    wrap: typeof p.wrap === "boolean" ? p.wrap : DEFAULTS.wrap,
+    fontSize: typeof p.fontSize === "number" ? clampFont(p.fontSize) : DEFAULTS.fontSize,
+    rawTerminal: typeof p.rawTerminal === "boolean" ? p.rawTerminal : DEFAULTS.rawTerminal,
+    terminal: cleanTerminalAppearance(p.terminal),
+  };
+}
+
 function loadPrefs(): DisplayPrefs {
   try {
-    const raw = typeof localStorage !== "undefined" ? localStorage.getItem(STORAGE_KEY) : null;
-    if (!raw) return DEFAULTS;
-    const parsed: unknown = JSON.parse(raw);
-    if (typeof parsed !== "object" || parsed === null) return DEFAULTS;
-    const p = parsed as Record<string, unknown>;
-    return {
-      wrap: typeof p.wrap === "boolean" ? p.wrap : DEFAULTS.wrap,
-      fontSize: typeof p.fontSize === "number" ? clampFont(p.fontSize) : DEFAULTS.fontSize,
-      rawTerminal: typeof p.rawTerminal === "boolean" ? p.rawTerminal : DEFAULTS.rawTerminal,
-      terminal: cleanTerminalAppearance(p.terminal),
-    };
+    if (typeof localStorage === "undefined") return DEFAULTS;
+
+    const current = localStorage.getItem(STORAGE_KEY);
+    if (current) return parsePrefs(current) ?? DEFAULTS;
+
+    const legacy = localStorage.getItem(LEGACY_STORAGE_KEY);
+    if (!legacy) return DEFAULTS;
+
+    const migrated = parsePrefs(legacy);
+    if (!migrated) return DEFAULTS;
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated));
+    return migrated;
   } catch {
     return DEFAULTS;
   }
