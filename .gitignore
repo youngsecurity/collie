@@ -37,6 +37,7 @@ Thumbs.db
 
 # Agent / local tooling state
 .claude/
+.hermes/
 .tracker/
 
 # Bug-repro screenshots — evidence for a fix, not documentation. Keep them local;
