@@ -4,7 +4,7 @@ import { useCallback, useState } from "react";
 // Safe to call in SSR contexts (localStorage guarded throughout).
 
 export interface DisplayPrefs {
-  /** Whether the mirror wraps long lines (default: false — preserves column alignment like desktop Herdr; enable Wrap in View for prose). */
+  /** Whether the mirror wraps long lines (default: false — preserves column-faithful TUI output). */
   wrap: boolean;
   /** Font size in px for the mirror pre (default: 12, range: 9–16). */
   fontSize: number;
@@ -17,6 +17,18 @@ export interface DisplayPrefs {
   rawTerminal: boolean;
   /** Device-local terminal mirror appearance. Empty values inherit Collie's app theme/font stack. */
   terminal: TerminalAppearance;
+  /**
+   * Whether a tap on the terminal mirror focuses the composer (default: true).
+   *
+   * On, it is the fastest path from reading to replying — the whole mirror is one big "start typing"
+   * target. Off, the mirror is a document: taps land on the text, so you can put a caret in it, and
+   * the keyboard only appears when you tap the composer itself. Reported from the outside as the
+   * mirror "absorbing the click", by someone expecting to interact with a line rather than reply to
+   * it — which Collie cannot offer (herdr's `pane.read` strips the OSC 8 hyperlinks a terminal like
+   * Termux makes tappable, so the link target never reaches us). Getting out of the way is the part
+   * that IS ours to give.
+   */
+  tapToFocus: boolean;
 }
 
 export interface TerminalAppearance {
@@ -40,6 +52,9 @@ export const MATRIX_TERMINAL_APPEARANCE: TerminalAppearance = {
   background: "#000000",
 };
 
+// NOT bumped for `tapToFocus`: parsePrefs defaults each field independently, so a v4 payload written
+// before it existed keeps wrap, size, raw-terminal, and terminal appearance. The v3 migration retains
+// Young Security appearance settings saved before the fork moved to upstream's v4 key.
 const STORAGE_KEY = "collie:display-prefs:v4";
 const LEGACY_STORAGE_KEY = "collie:display-prefs:v3";
 export const FONT_MIN = 9;
@@ -49,6 +64,7 @@ const DEFAULTS: DisplayPrefs = {
   fontSize: 12,
   rawTerminal: false,
   terminal: DEFAULT_TERMINAL_APPEARANCE,
+  tapToFocus: true,
 };
 
 const HEX_COLOR = /^#[0-9a-f]{6}$/i;
@@ -88,6 +104,7 @@ function parsePrefs(raw: string): DisplayPrefs | null {
     fontSize: typeof p.fontSize === "number" ? clampFont(p.fontSize) : DEFAULTS.fontSize,
     rawTerminal: typeof p.rawTerminal === "boolean" ? p.rawTerminal : DEFAULTS.rawTerminal,
     terminal: cleanTerminalAppearance(p.terminal),
+    tapToFocus: typeof p.tapToFocus === "boolean" ? p.tapToFocus : DEFAULTS.tapToFocus,
   };
 }
 
@@ -132,6 +149,8 @@ export interface UseDisplayPrefsReturn {
   setRawTerminal: (raw: boolean) => void;
   /** Replace the terminal mirror appearance after normalising font and color values. */
   setTerminalAppearance: (appearance: TerminalAppearance) => void;
+  /** Toggle or explicitly set whether a mirror tap focuses the composer. */
+  setTapToFocus: (tapToFocus: boolean) => void;
 }
 
 export function useDisplayPrefs(): UseDisplayPrefsReturn {
@@ -179,6 +198,14 @@ export function useDisplayPrefs(): UseDisplayPrefsReturn {
     });
   }, []);
 
+  const setTapToFocus = useCallback((tapToFocus: boolean) => {
+    setPrefs((p) => {
+      const next: DisplayPrefs = { ...p, tapToFocus };
+      savePrefs(next);
+      return next;
+    });
+  }, []);
+
   return {
     prefs,
     setWrap,
@@ -186,5 +213,6 @@ export function useDisplayPrefs(): UseDisplayPrefsReturn {
     stepFontSize,
     setRawTerminal,
     setTerminalAppearance,
+    setTapToFocus,
   };
 }
