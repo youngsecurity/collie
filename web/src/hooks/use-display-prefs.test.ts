@@ -2,7 +2,7 @@ import { renderHook, act } from "@testing-library/react";
 import { useDisplayPrefs } from "./use-display-prefs";
 
 // Minimal localStorage stub — Vitest/jsdom includes a real one but this ensures it's clean per test.
-const STORAGE_KEY = "collie:display-prefs:v3";
+const STORAGE_KEY = "collie:display-prefs:v4";
 
 describe("useDisplayPrefs", () => {
   beforeEach(() => localStorage.clear());
