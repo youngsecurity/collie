@@ -6,6 +6,14 @@ set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"
 
+# Everything below this line runs test suites, and git has exported GIT_DIR (and, depending on the
+# hook, GIT_INDEX_FILE and friends) into this process. Those override repository discovery for every
+# git command a suite runs — `-C` included — which is how the ctl suite once re-initialised the
+# developer's own checkout instead of its sandbox. That suite now defends itself; this drops the
+# variables once, for every suite the hook runs, so the next one to shell out to git inherits a clean
+# environment rather than a trap. ROOT is resolved above, while they still apply.
+unset "${!GIT_@}" 2>/dev/null || true
+
 # ── Typecheck (the Vite build does NOT typecheck; catch it before it ships) ──
 if [ "${SKIP_TYPECHECK:-}" = "1" ]; then
   echo "pre-push: SKIP_TYPECHECK=1 — skipping typecheck" >&2
@@ -38,6 +46,15 @@ echo "pre-push: running backend test suite (bun test ./bridge)…" >&2
 if ! (cd "$ROOT" && bun test ./bridge); then
   cat >&2 <<'EOF'
 ✗ pre-push: backend tests failed — push aborted.
+  Fix the failing tests, or override once with: SKIP_TESTS=1 git push
+EOF
+  exit 1
+fi
+
+echo "pre-push: running control-script lifecycle suite (collie-ctl.test.sh)…" >&2
+if ! (cd "$ROOT" && bash scripts/collie-ctl.test.sh); then
+  cat >&2 <<'EOF'
+✗ pre-push: collie-ctl lifecycle tests failed — push aborted.
   Fix the failing tests, or override once with: SKIP_TESTS=1 git push
 EOF
   exit 1

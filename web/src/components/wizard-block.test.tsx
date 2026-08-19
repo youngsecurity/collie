@@ -180,11 +180,12 @@ describe("submitWizardKeys — race guard (one keystroke per tap)", () => {
       paneId: "w1:p1",
       requestedLines: 600,
       detectedRevision: 7,
+      agent: "claude",
       wizard: model,
       keys: ["2"],
     });
     expect(res).toEqual({ status: "sent" });
-    expect(mockSendKeys).toHaveBeenCalledWith("w1:p1", ["2"], undefined);
+    expect(mockSendKeys).toHaveBeenCalledWith("w1:p1", ["2"], undefined, model.signature);
   });
 
   it("rejects (no send) when the wizard advanced to another step underfoot", async () => {
@@ -199,6 +200,7 @@ describe("submitWizardKeys — race guard (one keystroke per tap)", () => {
       paneId: "w1:p1",
       requestedLines: 600,
       detectedRevision: 7,
+      agent: "claude",
       wizard: model,
       keys: ["2"],
     });
@@ -219,6 +221,7 @@ describe("submitWizardKeys — race guard (one keystroke per tap)", () => {
       paneId: "w1:p1",
       requestedLines: 600,
       detectedRevision: 0,
+      agent: "claude",
       wizard: model,
       keys: ["1"],
     });
@@ -238,6 +241,7 @@ describe("submitWizardKeys — race guard (one keystroke per tap)", () => {
       paneId: "w1:p1",
       requestedLines: 600,
       detectedRevision: 8,
+      agent: "claude",
       wizard: model,
       keys: ["1"],
     });
@@ -258,10 +262,35 @@ describe("submitWizardKeys — race guard (one keystroke per tap)", () => {
       paneId: "w1:p1",
       requestedLines: 600,
       detectedRevision: 5,
+      agent: "claude",
       wizard: model,
       keys: ["3"],
     });
     expect(res).toEqual({ status: "error", error: "agent busy" });
+  });
+
+  it("maps a bridge prompt_changed conflict to changed", async () => {
+    const model = fixtureModel("claude--wizard-q1.txt");
+    mockFetchPane.mockResolvedValue({
+      paneId: "w1:p1",
+      text: fixtureText("claude--wizard-q1.txt"),
+      truncated: false,
+      revision: 5,
+    });
+    mockSendKeys.mockResolvedValue({
+      ok: false,
+      error: "prompt changed",
+      code: "prompt_changed",
+    });
+    const res = await submitWizardKeys({
+      paneId: "w1:p1",
+      requestedLines: 600,
+      detectedRevision: 5,
+      agent: "claude",
+      wizard: model,
+      keys: ["3"],
+    });
+    expect(res).toEqual({ status: "changed" });
   });
 });
 
@@ -278,6 +307,7 @@ function Harness({ wizard, detectedRevision }: { wizard: WizardModel; detectedRe
       paneId: "w1:p1",
       requestedLines: 600,
       detectedRevision,
+      agent: "claude",
       wizard,
       keys,
     });
@@ -308,7 +338,7 @@ describe("WizardBlock — wired tap (component → handler → api)", () => {
     await user.click(screen.getByRole("button", { name: /Tests/ }));
 
     await waitFor(() => expect(screen.getByTestId("status")).toHaveTextContent("Sent"));
-    expect(mockSendKeys).toHaveBeenCalledWith("w1:p1", ["3"], undefined);
+    expect(mockSendKeys).toHaveBeenCalledWith("w1:p1", ["3"], undefined, model.signature);
   });
 
   it("a stale tap surfaces a 'wizard changed' notice and sends nothing", async () => {

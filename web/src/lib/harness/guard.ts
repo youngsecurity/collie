@@ -1,10 +1,12 @@
-// Model-GENERIC race-guard machinery, factored out of the three harness action files
-// (prompt-action, wizard-action, preview-action). Every one of them tapped a menu/wizard/dialog
-// button that types into a REAL terminal, and the pane may have moved on between render and tap —
-// so before sending they all re-fetch the pane, confirm the revision, and re-derive the model to
-// compare against what the user tapped. That skeleton (fresh read → parse → detect → unconditional
-// revision check → structural-equality check) is identical across all three; only the model type
-// M, its detector, and its equality function differ. Those become the generic parameters here.
+// Model-GENERIC race-guard machinery: the skeleton every dialog tap runs (fresh read → parse →
+// re-derive → unconditional revision check → structural-equality check), parameterised on the model
+// type M, its detector, and its equality function.
+//
+// Nothing here knows a harness OR a block kind — it is deliberately one layer below that. The layer
+// that binds the three parameters is lib/dialog-guard.ts: it supplies the detector (the pane's own
+// adapter, via the registry) and the comparator (the kind's contract, via harness/dialog-contract),
+// and it is the only caller the action modules see. Keeping the mechanism here and the wiring there
+// is what lets this file stay free of both the registry and the models.
 
 import { fetchPane } from "../api";
 import { parseAnsi } from "../ansi";
@@ -20,6 +22,16 @@ export type ActionResult =
   | { status: "changed" }
   | { status: "error"; error: string };
 
+/**
+ * What {@link entryGuard} returns. Discriminated on `ok`, the same shape the bridge side uses for
+ * `PromptBindingResult`, `ExpectedPrompt` and `PromptBindingCheck`, so both ends of this feature
+ * read alike. The passing case carries its payload instead of borrowing a type that reads as a
+ * failure, and no call site has to reason about truthiness to tell the two apart.
+ */
+export type GuardOutcome =
+  | { ok: true; region: string }
+  | { ok: false; result: ActionResult };
+
 /** Test seam for the verification polls' pacing. */
 export type Sleep = (ms: number) => Promise<void>;
 export const defaultSleep: Sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -31,6 +43,7 @@ export const POLL_DELAY_MS = 350;
 
 /** Derive the on-screen dialog model from a fresh pane's styled lines (null = no dialog there). */
 type Detect<M> = (lines: StyledLine[]) => M | null;
+type RegionOf<M> = (model: M) => string;
 
 /** One fresh read + re-derivation. Returns the model (null = no dialog on screen). */
 export async function readModel<M>(
@@ -45,9 +58,15 @@ export async function readModel<M>(
 
 /**
  * The shared entry guard: a FRESH pane read, the UNCONDITIONAL revision check, and a full model
- * re-derivation compared (via `equals`) against `tapped` — what the user actually tapped. Returns a
- * terminal `ActionResult` when the guard fails ("changed") or the read errors, or `null` when the
- * guard passes and the caller may proceed to send.
+ * re-derivation compared (via `equals`) against `tapped` — what the user actually tapped.
+ *
+ * Returns a {@link GuardOutcome}: `{ ok: false, result }` when the guard refused (`"changed"`) or
+ * the read failed, and `{ ok: true, region }` when it passed, carrying the verified region (via
+ * `regionOf`) that the caller binds to its write.
+ *
+ * The region the caller gets back is the one derived from THIS fresh read, so it describes the pane
+ * as of a moment ago, not as of the render the user tapped. That is deliberate: the client guard has
+ * already established the two are the same dialog, and the bridge needs the current text to find it.
  */
 export async function entryGuard<M>(
   args: {
@@ -61,25 +80,29 @@ export async function entryGuard<M>(
   tapped: M,
   detect: Detect<M>,
   equals: (a: M, b: M) => boolean,
-): Promise<ActionResult | null> {
+  regionOf: RegionOf<M>,
+): Promise<GuardOutcome> {
   let fresh;
   try {
     fresh = await readModel(args.paneId, args.requestedLines, args.session, detect);
   } catch (e) {
-    return { status: "error", error: e instanceof Error ? e.message : String(e) };
+    const error = e instanceof Error ? e.message : String(e);
+    return { ok: false, result: { status: "error", error } };
   }
 
   // Revision check is UNCONDITIONAL: a 304 only means "unchanged since the last poll", and polls
   // keep advancing the ETag cache under a frozen mirror — it does NOT vouch for the snapshot the
   // user actually tapped on. The cached 304 body carries its revision, so this covers both paths.
-  if (fresh.revision !== args.detectedRevision) return { status: "changed" };
+  if (fresh.revision !== args.detectedRevision) return { ok: false, result: { status: "changed" } };
   // EMPIRICAL (Herdr 0.7.x, live-verified 2026-07-05): pane.read's `revision` is a stub upstream —
   // it is always 0, even for actively-changing panes. The gate above is therefore defense-in-depth
   // for future Herdr versions, NOT load-bearing. So the model re-derivation below runs on EVERY
   // path, including 304: the fresh (= latest cached) text is exactly what a tap on a possibly
   // frozen mirror must be compared against. One parse per tap — taps are rare, correctness isn't.
-  if (!fresh.model || !equals(fresh.model, tapped)) return { status: "changed" };
-  return null;
+  if (!fresh.model || !equals(fresh.model, tapped)) {
+    return { ok: false, result: { status: "changed" } };
+  }
+  return { ok: true, region: regionOf(fresh.model) };
 }
 
 /**

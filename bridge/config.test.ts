@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
-import { loadConfig } from "./config.ts";
+import { defaultSocketPath, loadConfig } from "./config.ts";
 
 // loadConfig is the deployment contract — env vars in, a resolved Config out. Pure (just reads
 // process.env + homedir), so we drive it by mutating the environment and restoring it after.
@@ -12,6 +14,16 @@ const KEYS = [
   "COLLIE_POLL_IDLE_MS",
   "COLLIE_NOTIFY_DELAY_MS",
   "COLLIE_READ_LINES",
+  "COLLIE_TRANSCRIPT",
+  "COLLIE_TRANSCRIPT_ROOT",
+  "COLLIE_CODEX_ROOT",
+  "COLLIE_PI_ROOT",
+  "COLLIE_OPENCODE_ROOT",
+  // Each harness's own home var participates in journal-root resolution, so the suite must own them
+  // too — otherwise a developer with CODEX_HOME set gets different results than CI.
+  "CODEX_HOME",
+  "PI_CODING_AGENT_DIR",
+  "XDG_DATA_HOME",
   "COLLIE_SUBMIT_KEYS",
   "COLLIE_TRUSTED_USER",
   "COLLIE_DEVICE_HEADER",
@@ -26,6 +38,7 @@ const KEYS = [
   "COLLIE_SKIP_SERVE",
   "HERDR_SOCKET_PATH",
   "HERDR_PLUGIN_STATE_DIR",
+  "COLLIE_HERDR_DIAL",
 ];
 
 let saved: Record<string, string | undefined>;
@@ -54,6 +67,13 @@ describe("loadConfig", () => {
     expect(cfg.pollMs).toBe(1500);
     expect(cfg.pollIdleMs).toBe(12_000);
     expect(cfg.readLines).toBe(200);
+    // Transcript history defaults ON — it's the only scrollback a Claude pane can ever have.
+    expect(cfg.transcript).toBe(true);
+    // One root by default, and it is a list of one rather than a special case (issue #92).
+    expect(cfg.journalRoots.claude).toHaveLength(1);
+    expect(cfg.journalRoots.claude[0]).toEndWith("/.claude/projects");
+    // OpenCode keeps ONE sqlite database at the top of its XDG data dir — no per-session files.
+    expect(cfg.journalRoots.opencode).toEqual([join(homedir(), ".local", "share", "opencode")]);
     expect(cfg.submitKeys).toEqual(["Enter"]);
     expect(cfg.trustedUser).toBe("");
     expect(cfg.allowedOrigins).toEqual([]);
@@ -103,6 +123,76 @@ describe("loadConfig", () => {
     expect(loadConfig().skipServe).toBe(false);
     process.env.COLLIE_SKIP_SERVE = "";
     expect(loadConfig().skipServe).toBe(false);
+  });
+
+  test("parses COLLIE_TRANSCRIPT as a boolean toggle (default ON)", () => {
+    for (const off of ["off", "0", "false", "no", "OFF"]) {
+      process.env.COLLIE_TRANSCRIPT = off;
+      expect(loadConfig().transcript).toBe(false);
+    }
+    for (const on of ["on", "1", "true", "yes"]) {
+      process.env.COLLIE_TRANSCRIPT = on;
+      expect(loadConfig().transcript).toBe(true);
+    }
+    // Garbage falls back to the default — a typo must not silently remove the only scrollback a
+    // Claude pane has.
+    process.env.COLLIE_TRANSCRIPT = "banana";
+    expect(loadConfig().transcript).toBe(true);
+  });
+
+  // COLLIE_TRANSCRIPT_ROOT predates the per-harness split and meant Claude's root — it keeps meaning
+  // exactly that, so an existing deployment's env survives the change untouched.
+  test("COLLIE_TRANSCRIPT_ROOT relocates the CLAUDE journal root", () => {
+    process.env.COLLIE_TRANSCRIPT_ROOT = "/srv/claude/projects";
+    expect(loadConfig().journalRoots.claude).toEqual(["/srv/claude/projects"]);
+  });
+
+  // The multi-profile case from issue #92: CLAUDE_CONFIG_DIR gives each Claude profile its own
+  // projects tree, so one root can only ever serve half the herd's history.
+  test("COLLIE_TRANSCRIPT_ROOT takes several roots, comma-separated and in order", () => {
+    process.env.COLLIE_TRANSCRIPT_ROOT = "/srv/work/projects,/srv/personal/projects";
+    expect(loadConfig().journalRoots.claude).toEqual([
+      "/srv/work/projects",
+      "/srv/personal/projects",
+    ]);
+  });
+
+  test("whitespace and empty entries around the separators are dropped", () => {
+    process.env.COLLIE_TRANSCRIPT_ROOT = " /a/projects , , /b/projects ,";
+    expect(loadConfig().journalRoots.claude).toEqual(["/a/projects", "/b/projects"]);
+  });
+
+  // An empty value used to become a root of `""` — which resolves against the bridge's cwd, not a
+  // journal. Falling back to the default is both safer and what the operator meant.
+  test("an empty value falls back to the default root", () => {
+    process.env.COLLIE_TRANSCRIPT_ROOT = "   ";
+    expect(loadConfig().journalRoots.claude).toEqual([join(homedir(), ".claude", "projects")]);
+  });
+
+  test("every harness root takes a list, not just Claude's", () => {
+    process.env.COLLIE_CODEX_ROOT = "/a/sessions,/b/sessions";
+    process.env.COLLIE_PI_ROOT = "/c/sessions,/d/sessions";
+    process.env.COLLIE_OPENCODE_ROOT = "/e/opencode,/f/opencode";
+    const cfg = loadConfig();
+    expect(cfg.journalRoots.codex).toEqual(["/a/sessions", "/b/sessions"]);
+    expect(cfg.journalRoots.pi).toEqual(["/c/sessions", "/d/sessions"]);
+    expect(cfg.journalRoots.opencode).toEqual(["/e/opencode", "/f/opencode"]);
+  });
+
+  test("each harness's own home var relocates its journal root", () => {
+    process.env.CODEX_HOME = "/srv/codex";
+    process.env.PI_CODING_AGENT_DIR = "/srv/pi";
+    process.env.XDG_DATA_HOME = "/srv/share";
+    const cfg = loadConfig();
+    expect(cfg.journalRoots.codex).toEqual(["/srv/codex/sessions"]);
+    expect(cfg.journalRoots.pi).toEqual(["/srv/pi/sessions"]);
+    expect(cfg.journalRoots.opencode).toEqual(["/srv/share/opencode"]);
+  });
+
+  test("an explicit COLLIE_* root beats the harness's home var", () => {
+    process.env.CODEX_HOME = "/srv/codex";
+    process.env.COLLIE_CODEX_ROOT = "/elsewhere/rollouts";
+    expect(loadConfig().journalRoots.codex).toEqual(["/elsewhere/rollouts"]);
   });
 
   test("reads the per-device auth header and allowlist", () => {
@@ -176,5 +266,39 @@ describe("loadConfig", () => {
     const cfg = loadConfig();
     expect(cfg.trustedUser).toBe("me@example.com");
     expect(cfg.host).toBe("0.0.0.0");
+  });
+
+  test("dial mode defaults to auto and accepts a forced dialer", () => {
+    expect(loadConfig().dialMode).toBe("auto");
+    process.env.COLLIE_HERDR_DIAL = "net";
+    expect(loadConfig().dialMode).toBe("net");
+    process.env.COLLIE_HERDR_DIAL = "BUN"; // case-insensitive
+    expect(loadConfig().dialMode).toBe("bun");
+  });
+
+  test("an unrecognised dial mode falls back to auto rather than dialling nothing", () => {
+    process.env.COLLIE_HERDR_DIAL = "carrier-pigeon";
+    expect(loadConfig().dialMode).toBe("auto");
+  });
+});
+
+// Pure — both platform branches are testable from any host (expectations use join() so the
+// host's separator never leaks into the assertion).
+describe("defaultSocketPath", () => {
+  test("unix default lives under ~/.config/herdr", () => {
+    expect(defaultSocketPath("linux", {}, "/home/u")).toBe(join("/home/u", ".config", "herdr", "herdr.sock"));
+    expect(defaultSocketPath("darwin", {}, "/Users/u")).toBe(join("/Users/u", ".config", "herdr", "herdr.sock"));
+  });
+
+  test("win32 default honours APPDATA", () => {
+    expect(defaultSocketPath("win32", { APPDATA: "C:\\Users\\u\\AppData\\Roaming" }, "C:\\Users\\u")).toBe(
+      join("C:\\Users\\u\\AppData\\Roaming", "herdr", "herdr.sock"),
+    );
+  });
+
+  test("win32 falls back to <home>/AppData/Roaming when APPDATA is unset", () => {
+    expect(defaultSocketPath("win32", {}, "C:\\Users\\u")).toBe(
+      join("C:\\Users\\u", "AppData", "Roaming", "herdr", "herdr.sock"),
+    );
   });
 });

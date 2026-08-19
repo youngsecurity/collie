@@ -8,9 +8,12 @@ import {
   createTab,
   fetchPane,
   fetchSnapshot,
+  sendKeys,
   sendReply,
   uploadImage,
   withTimeout,
+  XHR_HEADER,
+  XHR_HEADER_VALUE,
 } from "./api";
 
 // The default happy-path handlers live in test/handlers.ts; here we focus on the write paths and the
@@ -31,6 +34,62 @@ describe("api client", () => {
     );
     await expect(sendReply("w1:p1", "hi")).rejects.toThrow(/502/);
     await expect(sendReply("w1:p1", "hi")).rejects.toThrow(/herdr down/);
+  });
+
+  it("adds expected_prompt to reply and keys bodies only when supplied", async () => {
+    const bodies: unknown[] = [];
+    server.use(
+      http.post(/\/api\/pane\/[^/]+\/(reply|keys)$/, async ({ request }) => {
+        bodies.push(await request.json());
+        return HttpResponse.json({ ok: true });
+      }),
+    );
+
+    await sendReply("w1:p1", "hi", true, undefined, "Approve?\n1. Yes");
+    await sendKeys("w1:p1", ["1"], undefined, "Approve?\n1. Yes");
+    await sendKeys("w1:p1", ["Left"]);
+
+    expect(bodies).toEqual([
+      { text: "hi", submit: true, expected_prompt: "Approve?\n1. Yes" },
+      { keys: ["1"], expected_prompt: "Approve?\n1. Yes" },
+      { keys: ["Left"] },
+    ]);
+  });
+
+  it("returns the structured prompt_changed result instead of throwing on 409", async () => {
+    server.use(
+      http.post(/\/api\/pane\/[^/]+\/keys$/, () =>
+        HttpResponse.json(
+          { ok: false, error: "prompt changed", code: "prompt_changed" },
+          { status: 409 },
+        ),
+      ),
+    );
+    await expect(sendKeys("w1:p1", ["1"], undefined, "Approve?")).resolves.toEqual({
+      ok: false,
+      error: "prompt changed",
+      code: "prompt_changed",
+    });
+  });
+
+  // The bridge runs the binding check on BOTH endpoints that accept `expected_prompt`, so reply
+  // must recover a 409 exactly like keys. They are easy to let drift apart: the recovery used to be
+  // blanket handling inside the transport, and moving it to the call sites is precisely the moment
+  // one of them gets forgotten and starts throwing where the other returns a value.
+  it("returns the structured prompt_changed result instead of throwing on 409 for reply too", async () => {
+    server.use(
+      http.post(/\/api\/pane\/[^/]+\/reply$/, () =>
+        HttpResponse.json(
+          { ok: false, error: "prompt changed", code: "prompt_changed" },
+          { status: 409 },
+        ),
+      ),
+    );
+    await expect(sendReply("w1:p1", "hi", true, undefined, "Approve?")).resolves.toEqual({
+      ok: false,
+      error: "prompt changed",
+      code: "prompt_changed",
+    });
   });
 
   it("uploadImage posts multipart and returns the saved path", async () => {
@@ -210,5 +269,41 @@ describe("api client — connection-health stamping", () => {
     __resetConnectionHealth(1);
     await expect(fetchSnapshot()).rejects.toThrow(/502/);
     expect(lastHealthyAt()).toBe(1);
+  });
+});
+
+// A proxy that REDIRECTS an unauthenticated request instead of refusing it strips Collie of the only
+// signal `isAuthError` (lib/loaders.ts) can act on: `fetch` follows the cross-origin 302, the call
+// rejects as a TypeError with no status, and the refusal banner — with the Sign-in link that would
+// restore the session — never renders. Marking requests as XHR is what makes such a proxy answer 401
+// instead. Every path that talks to the bridge must carry it, including the two that bypass `req`:
+// fetchPane builds its own header bag, and uploadImage sets none at all so the browser keeps
+// ownership of the multipart boundary.
+describe("api client — XHR marker for identity proxies", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  function captureHeaders() {
+    const seen: Headers[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      seen.push(new Headers(init?.headers));
+      return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+    });
+    return seen;
+  }
+
+  it("marks reads, mutations, pane polls and uploads alike", async () => {
+    const seen = captureHeaders();
+    await fetchSnapshot();
+    await sendReply("w1:p1", "hi");
+    await fetchPane("w1:p1");
+    await uploadImage("w1:p1", new File(["x"], "x.png", { type: "image/png" }));
+    expect(seen).toHaveLength(4);
+    for (const headers of seen) expect(headers.get(XHR_HEADER)).toBe(XHR_HEADER_VALUE);
+  });
+
+  it("leaves the multipart upload without a content-type so the boundary survives", async () => {
+    const seen = captureHeaders();
+    await uploadImage("w1:p1", new File(["x"], "x.png", { type: "image/png" }));
+    expect(seen[0].get("content-type")).toBeNull();
   });
 });

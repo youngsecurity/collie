@@ -1,21 +1,33 @@
 import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { extname, join, normalize, sep } from "node:path";
+import type { ActivityLedger } from "./activity.ts";
 import type { AuditLog } from "./audit.ts";
 import type { Config } from "./config.ts";
 import type { HerdrClient, PaneRead } from "./herdr-client.ts";
 import { computeEtag, gzipJsonResponse, notModified } from "./http-cache.ts";
 import type { NotifyPrefs, NotifyPrefsStore } from "./notify-prefs.ts";
+import {
+  DEFAULT_PROMPT_TAIL_LINES,
+  verifyExpectedPrompt,
+  type PromptBindingResult,
+} from "./prompt-binding.ts";
 import type { Push, PushSubscription } from "./push.ts";
 import { herdTagFor, type SessionRegistry } from "./sessions.ts";
 import type { Snooze } from "./snooze.ts";
 import type { UpdateMonitor } from "./update.ts";
 import type { StateEngine } from "./state-engine.ts";
+import { adapterFor, buildJournalRegistry } from "./journal/registry.ts";
+import { TranscriptStore } from "./journal/store.ts";
+import type { JournalAdapter } from "./journal/types.ts";
+import { toPaneWire } from "./types.ts";
 import type {
   ActionResponse,
+  AgentView,
   BridgeConfig,
   CreateResponse,
   DeviceAuth,
+  PaneHistoryResponse,
   PaneReadResponse,
   SnapshotResponse,
   UploadResponse,
@@ -34,6 +46,8 @@ const MAX_UPLOAD_OVERHEAD = 64 * 1024; // 64 KB
 const MAX_REQUEST_BODY_BYTES = 12 * 1024 * 1024; // 12 MB
 // Upper bound on the pane-read `lines` param — don't trust the client (or Herdr) to cap it.
 const MAX_READ_LINES = 10_000;
+const MAX_EXPECTED_PROMPT_CHARS = 8192;
+const PROMPT_BINDING_BLANK_LINE_HEADROOM = 6;
 const IMAGE_EXT: Record<string, string> = {
   "image/png": "png",
   "image/jpeg": "jpg",
@@ -122,10 +136,47 @@ export function hasForwardingHeaders(req: Request): boolean {
   return forwarded;
 }
 
-const PANE_ROUTE = /^\/api\/pane\/([^/]+)(?:\/(reply|keys|upload|close|rename))?$/;
+const PANE_ROUTE = /^\/api\/pane\/([^/]+)(?:\/(reply|keys|upload|close|rename|history))?$/;
+// Turns per history page. "Show entire history" means the WHOLE conversation, so the client asks for
+// everything and this ceiling is a safety net against a pathological log, not the normal path — a
+// 1400-turn session is ~1.4 MB raw / ~400 KB gzipped, which a tailnet link serves fine. The default
+// only applies when a caller omits `limit` entirely.
+const DEFAULT_HISTORY_LIMIT = 200;
+const MAX_HISTORY_LIMIT = 5000;
 // A tab supports rename + close — an action group like the pane route. The `/api/tab` POST above
 // (create) is an exact match on `/api/tab`, so it never collides with this `/api/tab/<id>/<action>`.
 const TAB_ACTION_ROUTE = /^\/api\/tab\/([^/]+)\/(rename|close)$/;
+
+/**
+ * Header the web app sets on its own pane reads, and the ONLY thing that lets a read mark a pane
+ * seen. See {@link marksPaneSeen} for why a header, of all things, is the check.
+ */
+export const SEEN_HEADER = "x-collie-seen";
+
+/**
+ * Whether this request proves it came from Collie's own page, and may therefore stamp the pane as
+ * seen (bridge/activity.ts).
+ *
+ * This exists because marking-seen made a **read-level GET mutate server state**, which it never did
+ * before. `checkAccess` deliberately does not demand an `Origin` on reads — browsers omit it on
+ * same-origin GETs, so demanding one would reject the real client — and that exemption was safe only
+ * while reads had no side effects. Without this check, a page the operator visits while on the
+ * tailnet could fire `<img src="https://collie…/api/pane/w1:p1">` at guessable pane ids and silently
+ * clear the "Ready · unseen" section: the response is opaque to the attacker, but the write lands,
+ * and the operator simply stops being told their agents finished.
+ *
+ * A custom request header is the check because a no-cors cross-site request **cannot set one** —
+ * doing so promotes it to a preflighted CORS request, and the bridge answers no preflight. Our own
+ * same-origin `fetch` sets it freely.
+ *
+ * Write actions (reply/keys/upload/close/rename) need no header: they already cleared
+ * `guard(…, "write")`, which requires an `Origin`. `history` is a read despite being an action
+ * segment, so it needs the header like any other read.
+ */
+export function marksPaneSeen(req: Request, action: string | undefined): boolean {
+  if (req.headers.get(SEEN_HEADER) !== null) return true;
+  return action !== undefined && action !== "history";
+}
 
 export function startServer(opts: {
   cfg: Config;
@@ -135,8 +186,17 @@ export function startServer(opts: {
   notifyPrefs: NotifyPrefsStore;
   updateMonitor: UpdateMonitor;
   audit: AuditLog;
+  activity: ActivityLedger;
 }) {
-  const { cfg, registry, push, snooze, notifyPrefs, updateMonitor, audit } = opts;
+  const { cfg, registry, push, snooze, notifyPrefs, updateMonitor, audit, activity } = opts;
+  // One journal registry + store for the process. The store's cache is keyed by absolute path, so
+  // sharing it across herdr sessions AND across harnesses is correct — two sessions can front panes
+  // whose agents write into the same root. Which harnesses have journals at all is decided in
+  // journal/registry.ts, never here.
+  const journals = cfg.transcript ? buildJournalRegistry(cfg.journalRoots) : null;
+  const transcripts = cfg.transcript ? new TranscriptStore() : null;
+  /** Does this agent have a journal at all — the snapshot's History-affordance gate. */
+  const hasJournal = (agent: string) => adapterFor(journals ?? {}, agent) !== undefined;
   // Per-session background notifications live in each session's runtime (built by the factory in
   // index.ts, wired to its StateEngine transitions). The routes here only fan preference changes and
   // snooze-clears across every live session's coordinator.
@@ -176,6 +236,13 @@ export function startServer(opts: {
         if (!rt) return unknownSession();
         const { agents, shellPanes, workspaces, tabs, bridge } = rt.engine.current();
         const device = deviceAuth(req, cfg);
+        // Attach each pane's activity timestamps. Done here rather than in the state engine so the
+        // engine stays a pure Herdr-poller with no knowledge of the ledger — and so the two numbers
+        // are read at serialise time, i.e. as fresh as the request.
+        const withActivity = (p: AgentView): AgentView => {
+          const a = activity.get(rt.name, p.paneId);
+          return a ? { ...p, lastActiveAt: a.activeAt, lastSeenAt: a.seenAt } : p;
+        };
         // Tag every snapshot poll with the on-disk build id so an open client notices a live rebuild
         // between polls — the no-service-worker self-update path (web/src/lib/self-update.ts).
         return withBuildHeader(
@@ -183,8 +250,14 @@ export function startServer(opts: {
             bridge,
             // Only report device state when the feature is on, so an off deployment sends nothing new.
             ...(device.enforced ? { device } : {}),
-            agents,
-            shellPanes,
+            // The one place a pane leaves the bridge: the session ref is stripped to a presence flag
+            // here, so an agent-reported filesystem path never reaches a browser (see toPaneWire).
+            // The flag is computed against the registry, so a harness Herdr detects but Collie has no
+            // journal for doesn't advertise a History button that can only ever come back empty.
+            // withActivity runs FIRST: it returns an AgentView, which is what toPaneWire consumes,
+            // and the two timestamps then ride through its rest-spread onto the wire shape.
+            agents: agents.map((p) => toPaneWire(withActivity(p), hasJournal)),
+            shellPanes: shellPanes.map((p) => toPaneWire(withActivity(p), hasJournal)),
             workspaces,
             tabs,
             sessions: registry.list(),
@@ -233,17 +306,33 @@ export function startServer(opts: {
         const action = paneMatch[2];
         // Reading a pane is allowed for any access-gated client; every action (reply/keys/upload/
         // close) types into or restructures a terminal, so it additionally needs an authorised device.
-        const denied = guard(req, cfg, action ? "write" : "read", peerAddress);
+        // `history` is a READ despite being an action segment — it only ever reads a log off disk.
+        const isRead = !action || action === "history";
+        const denied = guard(req, cfg, isRead ? "read" : "write", peerAddress);
         if (denied) return denied;
         const rt = registry.get(sessionName);
         if (!rt) return unknownSession();
         const { herdr, name: session } = rt;
+        // You are in this pane: reading it, replying, sending keys, browsing its history. That is
+        // the whole definition of "seen" (.adr/0003), and this is the one place every such request
+        // passes through. It cannot false-positive from background polling — the dashboard loader
+        // only ever fetches /api/snapshot; paneLoader is the sole reader of pane text — nor from a
+        // cross-site request forged at a guessed pane id (see marksPaneSeen).
+        //
+        // Gated on the request actually being ROUTED below. PANE_ROUTE constrains `action` to the
+        // known set, so the only way to reach here unrouted is a method mismatch (a GET at /reply, a
+        // POST at /history) — which 405s. Without this a malformed request still marked the pane seen.
+        const routed = isRead ? req.method === "GET" : req.method === "POST";
+        if (routed && marksPaneSeen(req, action)) activity.noteSeen(session, paneId);
         // Every action is a write; attribute it to the authorised device for the audit trail.
-        const device = action ? deviceAuth(req, cfg).device : null;
+        // `history` is a read, so it gets no device attribution (nothing is written to attribute).
+        const device = isRead ? null : deviceAuth(req, cfg).device;
 
         if (!action && req.method === "GET") return readPane(herdr, cfg, paneId, url, req);
+        if (action === "history" && req.method === "GET")
+          return paneHistory(cfg, journals, transcripts, rt.engine, paneId, url, req);
         if (action === "reply" && req.method === "POST") return replyPane(herdr, cfg, paneId, req, audit, device, session);
-        if (action === "keys" && req.method === "POST") return keysPane(herdr, paneId, req, audit, device, session);
+        if (action === "keys" && req.method === "POST") return keysPane(herdr, cfg, paneId, req, audit, device, session);
         if (action === "upload" && req.method === "POST") return uploadPane(cfg, paneId, req, audit, device, session);
         if (action === "close" && req.method === "POST") return closePane(herdr, paneId, req, audit, device, session);
         if (action === "rename" && req.method === "POST") return renamePane(herdr, paneId, req, audit, device, session);
@@ -252,6 +341,14 @@ export function startServer(opts: {
 
       // ── Misc API ─────────────────────────────────────────────────────────
       if (pathname === "/api/config") {
+        // Read-level, like the other non-terminal endpoints. Nothing here is secret — the VAPID
+        // public key is handed to every browser by design — but this was the one route that skipped
+        // checkAccess entirely, so COLLIE_PUBLIC_HOSTS didn't cover it and a rebound DNS name could
+        // still read the build id. The client only ever calls this same-origin, and a refusal can't
+        // be mistaken for an outage: ConnectionBanner short-circuits to AuthErrorBanner before its
+        // red-state probe runs. Noted in #32.
+        const denied = guard(req, cfg, "read", peerAddress);
+        if (denied) return denied;
         return json({
           push: push.enabled,
           vapidPublicKey: push.publicKey,
@@ -332,6 +429,14 @@ export function startServer(opts: {
         return json(updateMonitor.status(), req.headers.get("accept-encoding"));
       }
 
+      // ── Reserved for a fronting proxy's sign-in page ─────────────────────
+      // `/auth/` is the one path the service worker always passes to the network (web/src/lib/
+      // sw-routes.ts), so it is the only address an installed PWA can reach when a proxy in front of
+      // the bridge refuses a stale session. Collie never routes it. If a request gets this far, no
+      // proxy claimed it — say so, instead of letting the SPA fallback answer with the app shell and
+      // leave the operator staring at the UI they were trying to escape.
+      if (isReservedAuthPath(pathname)) return reservedAuthPlaceholder();
+
       // ── Static PWA (with SPA fallback) ───────────────────────────────────
       return serveStatic(pathname);
     },
@@ -410,7 +515,11 @@ async function readPane(
       ? Math.min(linesParam, MAX_READ_LINES)
       : cfg.readLines;
   try {
-    // "ansi" so the client can render a faithful, colored terminal mirror.
+    // "ansi" so the client can render a faithful, colored terminal mirror. It is also, as far as we
+    // have probed, why this read leaves the operator's terminal alone: a `recent` read only harvests
+    // an alt-screen pane — scrolling it up and back — in `text` format. `lines` here is whatever the
+    // web app asked for (600 for the history view), well past any pane's height, so switching this
+    // to "text" would move someone's screen on every revalidate. See HERDR_API.md → `pane.read`.
     const read = await herdr.readPane(paneId, "recent", lines, "ansi");
     const data = paneReadResponse(paneId, read);
     // ETag is derived from the serialised body — if content hasn't changed the client gets a 304
@@ -448,6 +557,61 @@ async function readPane(
  */
 export function paneReadResponse(paneId: string, read: PaneRead): PaneReadResponse {
   return { paneId, text: read.text, truncated: read.truncated, revision: read.revision };
+}
+
+/**
+ * Parse the history page params. Pure + exported so the clamping is unit-tested without Bun.serve.
+ * `before` is an opaque cursor (a turn's uuid) that only ever reaches an in-memory `findIndex`, so it
+ * needs no validation beyond length — it never touches the filesystem.
+ */
+export function historyParams(url: URL): { limit: number; before?: string } {
+  const raw = Number.parseInt(url.searchParams.get("limit") ?? "", 10);
+  const limit =
+    Number.isFinite(raw) && raw > 0 ? Math.min(raw, MAX_HISTORY_LIMIT) : DEFAULT_HISTORY_LIMIT;
+  const before = url.searchParams.get("before");
+  return { limit, ...(before && before.length <= 100 ? { before } : {}) };
+}
+
+/**
+ * GET /api/pane/:id/history — the conversation history the pane's terminal cannot provide.
+ *
+ * The session ref is resolved HERE, from the live snapshot, keyed by pane id — the client never sends
+ * one. That is the whole safety story for a route that reads files: the only client-controlled inputs
+ * are a pane id (a Map lookup) and an opaque cursor (an array lookup). Which harness knows how to
+ * read the log is the registry's decision, so this route stays agent-agnostic.
+ */
+async function paneHistory(
+  cfg: Config,
+  journals: Record<string, JournalAdapter> | null,
+  transcripts: TranscriptStore | null,
+  engine: StateEngine,
+  paneId: string,
+  url: URL,
+  req: Request,
+): Promise<Response> {
+  const accept = req.headers.get("accept-encoding");
+  const unavailable = (reason: "disabled" | "no-session" | "no-log") =>
+    json({ paneId, available: false, reason } satisfies PaneHistoryResponse, accept);
+
+  if (!cfg.transcript || transcripts === null || journals === null) return unavailable("disabled");
+
+  const { agents, shellPanes } = engine.current();
+  const pane = [...agents, ...shellPanes].find((a) => a.paneId === paneId);
+  // No pane, or an agent that named no session (a shell, or a harness whose integration isn't
+  // installed): nothing to read, and that's an ordinary answer rather than an error.
+  if (!pane?.agentSession) return unavailable("no-session");
+  // An agent with no adapter has no journal. Same answer — the UI shouldn't distinguish "this
+  // harness isn't supported" from "this pane never started one"; both mean there's nothing to show.
+  const adapter = adapterFor(journals, pane.agent);
+  if (adapter === undefined) return unavailable("no-session");
+
+  try {
+    const page = await transcripts.page(adapter, pane.agentSession, historyParams(url));
+    if (page === null) return unavailable("no-log");
+    return json({ paneId, available: true, ...page } satisfies PaneHistoryResponse, accept);
+  } catch (err) {
+    return text(`transcript read failed: ${(err as Error).message}`, 502);
+  }
 }
 
 /** Just the two one-shot RPCs a reply needs — real HerdrClient in the bridge, fake in tests. */
@@ -506,7 +670,7 @@ export async function sendReplySteps(
   }
 }
 
-async function replyPane(
+export async function replyPane(
   herdr: HerdrClient,
   cfg: Config,
   paneId: string,
@@ -515,15 +679,36 @@ async function replyPane(
   device: string | null,
   session: string,
 ): Promise<Response> {
-  let body: { text?: string; submit?: boolean };
+  let body: { text?: string; submit?: boolean; expected_prompt?: unknown };
   try {
     body = (await req.json()) as typeof body;
   } catch {
     return text("bad body", 400);
   }
+  const expected = expectedPrompt(body);
+  if (!expected.ok) return text("bad expected_prompt", 400);
   const txt = body.text ?? "";
   const submit = body.submit ?? true;
   const ae = req.headers.get("accept-encoding");
+  const binding = expected.present
+    ? await checkPromptBinding(herdr, cfg, paneId, expected.value)
+    : null;
+  if (binding && !binding.ok) {
+    audit.record({
+      action: "reply",
+      paneId,
+      session,
+      device,
+      detail: {
+        text: txt,
+        submit,
+        submitted: false,
+        textDelivered: false,
+        promptBinding: binding.audit,
+      },
+    });
+    return promptBindingFailure(binding, ae);
+  }
   const outcome = await sendReplySteps(herdr, paneId, txt, submit, cfg.submitKeys);
   // Audit the attempt regardless of outcome — text may have landed even when the submit failed.
   audit.record({
@@ -531,7 +716,13 @@ async function replyPane(
     paneId,
     session,
     device,
-    detail: { text: txt, submit, submitted: outcome.ok, textDelivered: outcome.textDelivered },
+    detail: {
+      text: txt,
+      submit,
+      submitted: outcome.ok,
+      textDelivered: outcome.textDelivered,
+      ...(binding ? { promptBinding: binding.audit } : {}),
+    },
   });
   if (outcome.ok) return json({ ok: true } satisfies ActionResponse, ae);
   return json(
@@ -540,30 +731,164 @@ async function replyPane(
   );
 }
 
-async function keysPane(
+export async function keysPane(
   herdr: HerdrClient,
+  cfg: Config,
   paneId: string,
   req: Request,
   audit: AuditLog,
   device: string | null,
   session: string,
 ): Promise<Response> {
-  let body: { keys?: unknown };
+  let body: { keys?: unknown; expected_prompt?: unknown };
   try {
     body = (await req.json()) as typeof body;
   } catch {
     return text("bad body", 400);
   }
+  const expected = expectedPrompt(body);
+  if (!expected.ok) return text("bad expected_prompt", 400);
   const keys = Array.isArray(body.keys) ? body.keys.filter((k): k is string => typeof k === "string") : [];
   if (keys.length === 0) return text("no keys", 400);
   const ae = req.headers.get("accept-encoding");
+  const binding = expected.present
+    ? await checkPromptBinding(herdr, cfg, paneId, expected.value)
+    : null;
+  if (binding && !binding.ok) {
+    audit.record({
+      action: "keys",
+      paneId,
+      session,
+      device,
+      detail: { keys, promptBinding: binding.audit },
+    });
+    return promptBindingFailure(binding, ae);
+  }
   try {
     await herdr.sendPaneKeys(paneId, keys);
-    audit.record({ action: "keys", paneId, session, device, detail: { keys } });
+    audit.record({
+      action: "keys",
+      paneId,
+      session,
+      device,
+      detail: { keys, ...(binding ? { promptBinding: binding.audit } : {}) },
+    });
     return json({ ok: true } satisfies ActionResponse, ae);
   } catch (err) {
+    if (binding) {
+      audit.record({
+        action: "keys",
+        paneId,
+        session,
+        device,
+        detail: { keys, sent: false, promptBinding: binding.audit },
+      });
+    }
     return json({ ok: false, error: (err as Error).message } satisfies ActionResponse, ae);
   }
+}
+
+type ExpectedPrompt =
+  | { ok: true; present: false }
+  | { ok: true; present: true; value: string }
+  | { ok: false };
+
+function expectedPrompt(body: object): ExpectedPrompt {
+  if (!Object.prototype.hasOwnProperty.call(body, "expected_prompt")) {
+    return { ok: true, present: false };
+  }
+  const value = (body as { expected_prompt?: unknown }).expected_prompt;
+  if (typeof value !== "string" || value.length > MAX_EXPECTED_PROMPT_CHARS) {
+    return { ok: false };
+  }
+  return { ok: true, present: true, value };
+}
+
+type PromptBindingCheck =
+  | {
+      ok: true;
+      audit: { checked: true; passed: true; expected: string };
+    }
+  | {
+      ok: false;
+      error: string;
+      status: 409 | 502;
+      code?: "prompt_changed";
+      audit: {
+        checked: true;
+        passed: false;
+        expected: string;
+        reason: Extract<PromptBindingResult, { ok: false }>["reason"] | "read_failed";
+      };
+    };
+
+// There is deliberately no expected_blocked flag. agent_status is not carried by pane.read, only by
+// session.snapshot, so checking it would cost a second RPC before the write and widen the very
+// window this feature exists to shrink. The region check already subsumes it: if the exact prompt
+// text is still on screen, that prompt is still what the pane is showing.
+async function checkPromptBinding(
+  herdr: HerdrClient,
+  cfg: Config,
+  paneId: string,
+  expected: string,
+): Promise<PromptBindingCheck> {
+  let fresh: PaneRead;
+  try {
+    const expectedRawLines = expected.split(/\r\n?|\n/).length;
+    const bindingReadLines = Math.min(
+      MAX_READ_LINES,
+      Math.max(
+        cfg.readLines,
+        expectedRawLines + DEFAULT_PROMPT_TAIL_LINES + PROMPT_BINDING_BLANK_LINE_HEADROOM,
+      ),
+    );
+    // Keep this coupled to readPane(): use its recent source and ANSI format so the bridge verifies
+    // the same kind of pane data the GET handler serves. The line count deliberately does not follow
+    // cfg.readLines alone because a small legal setting may not contain the expected region; include
+    // room for the accepted tail and for blank separator lines that normalization drops.
+    fresh = await herdr.readPane(paneId, "recent", bindingReadLines, "ansi");
+  } catch (err) {
+    return {
+      ok: false,
+      error: `herdr read failed: ${(err as Error).message}`,
+      status: 502,
+      audit: { checked: true, passed: false, expected, reason: "read_failed" },
+    };
+  }
+
+  const result = verifyExpectedPrompt(fresh.text, expected);
+  if (!result.ok) {
+    return {
+      ok: false,
+      error: "prompt changed",
+      status: 409,
+      code: "prompt_changed",
+      audit: { checked: true, passed: false, expected, reason: result.reason },
+    };
+  }
+
+  // This is a mitigation, not a guarantee. The re-read and the send_keys are two separate herdr
+  // RPCs, so a TOCTOU window remains by construction; it shrinks from seconds (poll interval + push
+  // latency + human reaction time) to the few milliseconds between two local RPCs. It removes the
+  // human-latency portion of the window, which is where essentially all of the real risk lives.
+  // Closing the window completely would need a conditional-input primitive in herdr (send_keys with
+  // a precondition rejected atomically server-side), which does not exist today.
+  return { ok: true, audit: { checked: true, passed: true, expected } };
+}
+
+function promptBindingFailure(
+  result: Extract<PromptBindingCheck, { ok: false }>,
+  acceptEncoding: string | null,
+): Response {
+  return json(
+    {
+      ok: false,
+      error: result.error,
+      ...(result.code ? { code: result.code } : {}),
+    } satisfies ActionResponse,
+    acceptEncoding,
+    result.status,
+  );
 }
 
 // Close a pane ("kill the agent"). Structural op — strictly less powerful than the text/keys
@@ -931,8 +1256,11 @@ export function isHostAllowed(
  * (same-origin / CSRF + optional Tailscale identity). A `"write"` request — one that types into a
  * terminal or creates panes — must additionally come from an authorised device (see
  * {@link deviceAuth}). Returns a 403 Response to short-circuit on denial, or null to proceed.
+ *
+ * Exported for tests: {@link deviceAuth} being correct in isolation proves nothing if this wiring
+ * regresses, and the write/read asymmetry below is exactly what a device gate stands or falls on.
  */
-function guard(
+export function guard(
   req: Request,
   cfg: Config,
   level: "read" | "write",
@@ -953,19 +1281,31 @@ function guard(
  * so a direct client can't forge it (the same trust basis as the Tailscale identity header). Matrix:
  *
  *   - feature off (no header configured) → not enforced, fully authorised (today's behaviour).
- *   - header absent                      → authorised, unchanged. The proxy injects the header for
- *                                          real device traffic; an absent header is the on-host
- *                                          loopback operator (same tolerance as a missing identity).
+ *   - header absent                      → read-only, same as an unlisted device. Configuring the
+ *                                          header is the operator asserting that the proxy sets it
+ *                                          on every request, so a request without one did not come
+ *                                          through that proxy and must not drive a terminal.
  *   - header present, value allowlisted  → authorised; the session is attributed to that device.
  *   - header present, value not listed   → read-only. The "unknown" sentinel is never authorised,
  *                                          and an empty allowlist makes every device read-only — a
  *                                          fail-closed default for a security toggle you turned on.
+ *
+ * "Read-only" is the whole scope of this gate, deliberately: {@link guard} consults it only for
+ * `"write"`, so a header-less caller still reads panes. That is the existing design (a read-only
+ * device is meant to watch), and this function does not change it. What changes is that a missing
+ * header no longer counts as the operator.
+ *
+ * The absent-header case deliberately has no loopback exemption. It looks like the natural place for
+ * one, but every supported front door is a proxy co-located with the bridge (tailscale serve and the
+ * documented reverse proxies all connect to 127.0.0.1), so a loopback peer says nothing about
+ * whether the caller is the operator on the host or a remote client whose proxy failed to inject the
+ * header. Driving a pane from the host is still one flag away: send an allowlisted id yourself.
  */
 export function deviceAuth(req: Request, cfg: Config): DeviceAuth {
   if (!cfg.deviceHeader) return { enforced: false, device: null, authorized: true };
   const raw = req.headers.get(cfg.deviceHeader);
   const device = raw?.trim() ? raw.trim() : null;
-  if (!device) return { enforced: true, device: null, authorized: true };
+  if (!device) return { enforced: true, device: null, authorized: false };
   const authorized = device !== "unknown" && cfg.deviceAllowlist.includes(device);
   return { enforced: true, device, authorized };
 }
@@ -978,8 +1318,10 @@ function secure(res: Response): Response {
   return res;
 }
 
-function json(data: unknown, acceptEncoding: string | null): Response {
-  return secure(gzipJsonResponse(data, acceptEncoding));
+function json(data: unknown, acceptEncoding: string | null, status = 200): Response {
+  const response = gzipJsonResponse(data, acceptEncoding);
+  if (status === 200) return secure(response);
+  return secure(new Response(response.body, { status, headers: response.headers }));
 }
 
 /**
@@ -1082,6 +1424,55 @@ export function resolveStaticPath(
   const full = normalize(join(webDir, rel));
   if (full !== webDir && !full.startsWith(webDir + sep)) return null;
   return { rel, full };
+}
+
+/**
+ * The namespace reserved for the operator's front door. Matches `/auth` with or without a trailing
+ * slash and anything beneath it — a proxy may serve one page or a whole flow. Kept in lockstep with
+ * the service worker's navigation denylist (`web/src/lib/sw-routes.ts`); if these two disagree, an
+ * installed PWA either can't reach the proxy or can't reach Collie. Pure + exported for tests.
+ */
+export function isReservedAuthPath(pathname: string): boolean {
+  return pathname === "/auth" || pathname.startsWith("/auth/");
+}
+
+/**
+ * What `/auth/` says when nothing is in front of the bridge. Deliberately a 404: the path is
+ * reserved, not implemented — Collie has no sign-in of its own and must not imply otherwise. Plain
+ * HTML with no inline style or script (the strict CSP forbids both) and a link home, because in an
+ * installed PWA this page may be the only thing on screen and there is no address bar to leave it.
+ * Unauthenticated by design: it sits outside every gate, since the reason to be here is that a gate
+ * refused you.
+ */
+function reservedAuthPlaceholder(): Response {
+  const body = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Nothing configured here — Collie</title>
+</head>
+<body>
+<h1>Nothing is configured at this address</h1>
+<p>Collie reserves <code>/auth/</code> for a reverse proxy sitting in front of it, so that an
+installed app has somewhere to reach a sign-in or device-enrolment page. Collie itself serves
+nothing here and has no sign-in of its own.</p>
+<p>If you are the operator: point this path at your proxy's sign-in flow. See <em>Serving Collie
+behind your own reverse proxy</em> in the README.</p>
+<p><a href="/">Back to Collie</a></p>
+</body>
+</html>
+`;
+  return secure(
+    new Response(body, {
+      status: 404,
+      headers: {
+        "content-type": "text/html; charset=utf-8",
+        "content-security-policy": CSP,
+        "cache-control": "no-store",
+      },
+    }),
+  );
 }
 
 async function serveStatic(pathname: string): Promise<Response> {

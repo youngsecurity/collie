@@ -95,11 +95,17 @@ describe("submitPromptOption — race guard + per-family keystroke recipe", () =
       paneId: "w1:p1",
       requestedLines: 600,
       detectedRevision: 7,
+      agent: "claude",
       prompt: model,
       option: model.options[0]!,
     });
     expect(res).toEqual({ status: "sent" });
-    expect(mockSendKeys).toHaveBeenCalledWith("w1:p1", ["1", "Enter"], undefined);
+    expect(mockSendKeys).toHaveBeenCalledWith(
+      "w1:p1",
+      ["1", "Enter"],
+      undefined,
+      model.signature,
+    );
   });
 
   it("permission family: sends the digit ALONE (a trailing Enter would leak)", async () => {
@@ -114,11 +120,12 @@ describe("submitPromptOption — race guard + per-family keystroke recipe", () =
       paneId: "w1:p1",
       requestedLines: 600,
       detectedRevision: 3,
+      agent: "claude",
       prompt: model,
       option: model.options[0]!,
     });
     expect(res).toEqual({ status: "sent" });
-    expect(mockSendKeys).toHaveBeenCalledWith("w1:p1", ["1"], undefined);
+    expect(mockSendKeys).toHaveBeenCalledWith("w1:p1", ["1"], undefined, model.signature);
   });
 
   it("rejects (no send) when the fresh revision differs", async () => {
@@ -133,6 +140,7 @@ describe("submitPromptOption — race guard + per-family keystroke recipe", () =
       paneId: "w1:p1",
       requestedLines: 600,
       detectedRevision: 7,
+      agent: "claude",
       prompt: model,
       option: model.options[0]!,
     });
@@ -152,6 +160,7 @@ describe("submitPromptOption — race guard + per-family keystroke recipe", () =
       paneId: "w1:p1",
       requestedLines: 600,
       detectedRevision: 7,
+      agent: "claude",
       prompt: model,
       option: model.options[0]!,
     });
@@ -174,11 +183,12 @@ describe("submitPromptOption — race guard + per-family keystroke recipe", () =
       paneId: "w1:p1",
       requestedLines: 600,
       detectedRevision: 42,
+      agent: "claude",
       prompt: model,
       option: model.options[1]!,
     });
     expect(res).toEqual({ status: "sent" });
-    expect(mockSendKeys).toHaveBeenCalledWith("w1:p1", ["2"], undefined);
+    expect(mockSendKeys).toHaveBeenCalledWith("w1:p1", ["2"], undefined, model.signature);
   });
 
   it("rejects a 304 with MATCHING (stub) revisions when the cached text no longer shows the menu", async () => {
@@ -197,6 +207,7 @@ describe("submitPromptOption — race guard + per-family keystroke recipe", () =
       paneId: "w1:p1",
       requestedLines: 600,
       detectedRevision: 0,
+      agent: "claude",
       prompt: model,
       option: model.options[1]!,
     });
@@ -219,6 +230,7 @@ describe("submitPromptOption — race guard + per-family keystroke recipe", () =
       paneId: "w1:p1",
       requestedLines: 600,
       detectedRevision: 42,
+      agent: "claude",
       prompt: model,
       option: model.options[1]!,
     });
@@ -239,10 +251,35 @@ describe("submitPromptOption — race guard + per-family keystroke recipe", () =
       paneId: "w1:p1",
       requestedLines: 600,
       detectedRevision: 5,
+      agent: "claude",
       prompt: model,
       option: model.options[0]!,
     });
     expect(res).toEqual({ status: "error", error: "agent busy" });
+  });
+
+  it("maps a bridge prompt_changed conflict to changed", async () => {
+    const model = fixtureModel("claude--select-menu.txt");
+    mockFetchPane.mockResolvedValue({
+      paneId: "w1:p1",
+      text: fixtureText("claude--select-menu.txt"),
+      truncated: false,
+      revision: 5,
+    });
+    mockSendKeys.mockResolvedValue({
+      ok: false,
+      error: "prompt changed",
+      code: "prompt_changed",
+    });
+    const res = await submitPromptOption({
+      paneId: "w1:p1",
+      requestedLines: 600,
+      detectedRevision: 5,
+      agent: "claude",
+      prompt: model,
+      option: model.options[0]!,
+    });
+    expect(res).toEqual({ status: "changed" });
   });
 });
 
@@ -259,6 +296,7 @@ function Harness({ prompt, detectedRevision }: { prompt: PromptModel; detectedRe
       paneId: "w1:p1",
       requestedLines: 600,
       detectedRevision,
+      agent: "claude",
       prompt,
       option,
     });
@@ -289,7 +327,12 @@ describe("PromptSelectBlock — wired tap (component → handler → api)", () =
     await user.click(screen.getByRole("button", { name: /Red/ }));
 
     await waitFor(() => expect(screen.getByTestId("status")).toHaveTextContent("Sent"));
-    expect(mockSendKeys).toHaveBeenCalledWith("w1:p1", ["1", "Enter"], undefined);
+    expect(mockSendKeys).toHaveBeenCalledWith(
+      "w1:p1",
+      ["1", "Enter"],
+      undefined,
+      model.signature,
+    );
   });
 
   it("a stale tap surfaces a 'menu changed' notice and sends nothing", async () => {
@@ -337,6 +380,7 @@ describe("submitPromptOption — same-shaped successor prompt (H1)", () => {
       paneId: "w1:p1",
       requestedLines: 600,
       detectedRevision: 0,
+      agent: "claude",
       prompt: promptA,
       option: promptA.options[0]!,
     });
@@ -352,10 +396,11 @@ describe("submitPromptOption — same-shaped successor prompt (H1)", () => {
       paneId: "w1:p1",
       requestedLines: 600,
       detectedRevision: 0,
+      agent: "claude",
       prompt: promptA,
       option: promptA.options[0]!,
     });
     expect(res).toEqual({ status: "sent" });
-    expect(mockSendKeys).toHaveBeenCalledWith("w1:p1", ["1"], undefined);
+    expect(mockSendKeys).toHaveBeenCalledWith("w1:p1", ["1"], undefined, promptA.signature);
   });
 });

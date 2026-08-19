@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import { useNavigate, useRevalidator } from "react-router";
-import { ArrowUpToLine, Loader2, TerminalSquare } from "lucide-react";
+import { ArrowUpToLine, Loader2, ScrollText, Search, TerminalSquare } from "lucide-react";
 import { useSwipeUp } from "@/hooks/use-swipe";
 import { useSpaceActions } from "@/hooks/use-spaces";
+import { useDashPrefs, openForCount } from "@/hooks/use-dash-prefs";
 import { useDisplayPrefs } from "@/hooks/use-display-prefs";
 import { useStableTerminalDraft } from "@/hooks/use-terminal-draft";
 import { isConnecting } from "@/lib/connection";
@@ -12,6 +13,8 @@ import { ChatMessageList, type ChatMessageListHandle } from "@/components/ui/cha
 import { BottomSheet } from "@/components/ui/sheet";
 import { AppHeader } from "@/components/app-header";
 import { AnsiOutput } from "@/components/ansi-output";
+import { MIRROR_SPACE, MIRROR_INVERT, styleFor } from "@/components/mirror-space";
+import { cn } from "@/lib/utils";
 import { parseAnsi } from "@/lib/ansi";
 import { splitLines } from "@/lib/blocks";
 import { adapterFor } from "@/lib/harness";
@@ -28,13 +31,16 @@ import { submitPromptOption } from "@/lib/prompt-action";
 import { submitWizardKeys } from "@/lib/wizard-action";
 import { submitPreviewKeys, submitPreviewNote, submitPreviewOption } from "@/lib/preview-action";
 import { submitMultiSelectIntent, type MultiSelectIntent } from "@/lib/multi-select-action";
+import { submitMenuKeys } from "@/lib/menu-action";
 import type { PreviewBlockAction } from "@/components/preview-select-block";
+import type { MenuBlockAction } from "@/components/menu-block";
 import { canGrowRequestedLines, growRequestedLines } from "@/lib/loaders";
 import { shortCwd } from "@/lib/format";
-import { spacePath } from "@/lib/nav";
+import { historyPath, spacePath } from "@/lib/nav";
 import { isReadOnly } from "@/lib/types";
 import type { AgentView, BridgeStatus, DeviceAuth, TabView } from "@/lib/types";
 import type {
+  MenuModel,
   MultiSelectModel,
   PreviewSelectModel,
   PromptModel,
@@ -54,8 +60,6 @@ interface AgentChatProps {
   tabLabel?: string;
   /** Pane output from the route loader (refreshed by polling/revalidation). */
   text: string;
-  /** True when the pane buffer was cut off at the requested line count — older scrollback exists. */
-  truncated?: boolean;
   /** The scrollback window `text` was fetched with — tells a grown fetch from a stale in-flight poll. */
   requestedLines?: number;
   /** The pane's `revision` for `text` — the race guard checks a tapped menu against this. */
@@ -94,7 +98,6 @@ export function AgentChat({
   tabs,
   tabLabel,
   text,
-  truncated,
   requestedLines = 0,
   revision = 0,
   device,
@@ -135,6 +138,9 @@ export function AgentChat({
   // threshold + a taller hit area (below) make the gesture easy to land with a thumb; tapping is the
   // reliable fallback. "Up" naturally reveals a bottom sheet without fighting the mirror's scroll.
   const swipe = useSwipeUp(() => setDrawer("switcher"), 24);
+  // Fold state for the "Switch pane" sheet's two long tails, shared with the dashboard so one
+  // "hide the long tail" preference means the same thing in both places.
+  const dash = useDashPrefs();
 
   // Mirror freeze: at the bottom we follow live output; the moment you scroll up to read backscroll
   // we hold the text steady (no reflow / no re-pin) until you jump back to latest — so a long
@@ -158,18 +164,18 @@ export function AgentChat({
   const display = shown.text;
   const hasNew = !following && display !== text;
 
-  // The agent's own statusline (model · ctx% · cwd · branch · tokens) is stripped off the mirror by
-  // stripChrome so it doesn't duplicate the composer — but it carries real context (the branch, most
-  // notably), so we re-surface that one line as app chrome just above the composer, where it sat in
-  // the TUI. Routed through the SAME adapter (adapterFor) whose buildBlocks strips the chrome, so the
-  // two can't drift; null when there's no adapter for the agent, a menu is up, or no box at the tail,
-  // in which case the strip is hidden. A second parse of `display`, but memoised on it, so it only
-  // recomputes when the buffer content changes — off the render hot path.
-  const statusLine = useMemo(
+  // The agent's own statusline (model · ctx% · cwd · branch · tokens · permission mode) is stripped
+  // off the mirror by stripChrome so it doesn't duplicate the composer — but it carries real context
+  // (the branch, most notably), so we re-surface it as app chrome just above the composer, where it
+  // sat in the TUI. ALL its rows: a configured statusline is routinely 2–3 rows tall, and we used to
+  // surface only the first, silently losing the rest. Routed through the SAME adapter (adapterFor)
+  // whose buildBlocks strips the chrome, so the two can't drift; empty when there's no adapter for
+  // the agent, a menu is up, or no box at the tail, in which case the strip is hidden. A second parse
+  // of `display`, but memoised on it, so it only recomputes when the buffer content changes — off the
+  // render hot path.
+  const statusLines = useMemo(
     () =>
-      grammarsOn
-        ? adapterFor(agent?.agent)?.extractStatusLine(splitLines(parseAnsi(display))) ?? null
-        : null,
+      grammarsOn ? adapterFor(agent?.agent)?.extractStatusLines(splitLines(parseAnsi(display))) ?? [] : [],
     [display, agent?.agent, grammarsOn],
   );
 
@@ -186,6 +192,22 @@ export function AgentChat({
         : null,
     [display, agent?.agent, grammarsOn],
   );
+  // Is a dialog (prompt/wizard/preview/multi-select) on screen right now? Any non-raw block means
+  // the TUI's keyboard belongs to it, so the composer must refuse a free-text send: the text would
+  // be swallowed and the submit key would answer the dialog (#34). Same parse source and adapter as
+  // the two probes above, so the three can't drift. This is the zero-latency fail-fast; the
+  // load-bearing protection is reply-action's verify-before-submit, which also covers a dialog that
+  // appears after this render.
+  const dialogPresent = useMemo(
+    () =>
+      grammarsOn
+        ? (adapterFor(agent?.agent)?.buildBlocks(splitLines(parseAnsi(display))) ?? []).some(
+            (b) => b.kind !== "raw",
+          )
+        : false,
+    [display, agent?.agent, grammarsOn],
+  );
+
   // Both are threaded to the composer: the RAW value (live) plus a stabilised one. extractInputDraft
   // is stateless, so it can't distinguish a stranded draft from the ~350ms flash where our OWN
   // just-sent reply sits on the "❯" line waiting for the bridge's pending Enter. The stabilised value
@@ -221,6 +243,17 @@ export function AgentChat({
     setFindOpen(false);
     setFindQuery("");
   }
+
+  // What the top of the buffer can offer — see the JSX for why these are mutually exclusive.
+  // `historyAvailable`: the pane reported an agent session, so a transcript exists to open.
+  // `moreScrollback`: Herdr says this pane can still yield lines beyond the window we've asked for,
+  // AND we're under the cap Herdr's own read clamp imposes. `readableLines` is undefined on an older
+  // bridge/Herdr; treat that as "no idea" and stay hidden rather than offer a tap that fetches nothing.
+  const historyAvailable = Boolean(agent?.hasSession);
+  const moreScrollback =
+    agent?.readableLines !== undefined &&
+    requestedLines < agent.readableLines &&
+    canGrowRequestedLines(paneId, session);
 
   // Load older scrollback: raise the per-pane requested line count and refetch. The enlarged buffer
   // prepends older lines at the top, so we adopt it into the frozen display and re-anchor the scroll
@@ -297,6 +330,7 @@ export function AgentChat({
         session,
         requestedLines,
         detectedRevision: shown.revision,
+        agent: agent?.agent,
         prompt,
         option,
       });
@@ -312,14 +346,15 @@ export function AgentChat({
         setStatus(result.error || "Send failed", "error");
       }
     },
-    [readOnly, paneId, session, requestedLines, shown.revision, revalidator],
+    [readOnly, paneId, session, requestedLines, shown.revision, agent?.agent, revalidator],
   );
 
   // Tap a wizard control (an option digit, step navigation, or the review step's submit/cancel).
   // Same shape as handlePromptAction — the guard re-derives the wizard from a FRESH read and only
   // a clean match sends the single keystroke (incremental round-trip; grammar/WIZARD_NOTES.md).
-  // gate: claude-only (see hasBlockGrammar) — wizard blocks only ever exist for a Claude pane
-  // (buildBlocks gates on ctx.agent), so this handler can't fire for other agents.
+  // gate: Claude's adapter is the only one that emits `wizard` (buildBlocks routes through the pane's
+  // adapter — see harness/registry.ts), so this handler cannot fire for any other agent. omp has an
+  // adapter now and still never lifts this kind; it is Tier 1 and emits raw only.
   const handleWizardAction = useCallback(
     async (keys: string[], wizard: WizardModel) => {
       if (readOnly) {
@@ -331,6 +366,7 @@ export function AgentChat({
         session,
         requestedLines,
         detectedRevision: shown.revision,
+        agent: agent?.agent,
         wizard,
         keys,
       });
@@ -346,14 +382,15 @@ export function AgentChat({
         setStatus(result.error || "Send failed", "error");
       }
     },
-    [readOnly, paneId, session, requestedLines, shown.revision, revalidator],
+    [readOnly, paneId, session, requestedLines, shown.revision, agent?.agent, revalidator],
   );
 
   // Tap a preview-dialog control (an option, the note add/edit/remove, or the wizard step nav).
   // Same guard-first shape as the two handlers above, but the choreography behind an intent is
   // MULTI-step (digit→verify→Enter; n→verify→type→Escape — see lib/preview-action.ts and
   // grammar/NOTES_NOTES.md), so the handler dispatches on the intent kind.
-  // gate: claude-only (see hasBlockGrammar) — preview blocks only ever exist for a Claude pane.
+  // gate: Claude's adapter is the only one that emits `preview-select` — no other registered adapter
+  // lifts this kind, so this handler cannot fire for another agent.
   const handlePreviewAction = useCallback(
     async (action: PreviewBlockAction, preview: PreviewSelectModel) => {
       if (readOnly) {
@@ -365,6 +402,7 @@ export function AgentChat({
         session,
         requestedLines,
         detectedRevision: shown.revision,
+        agent: agent?.agent,
         preview,
       };
       const result =
@@ -389,14 +427,14 @@ export function AgentChat({
         revalidator.revalidate();
       }
     },
-    [readOnly, paneId, session, requestedLines, shown.revision, revalidator],
+    [readOnly, paneId, session, requestedLines, shown.revision, agent?.agent, revalidator],
   );
 
   // Tap a multi-select control (toggle a checkbox, Submit, the "Chat about this" escape, or the
   // review screen's confirm/cancel). Same guard-first shape as the wizard handler — the guard
   // re-derives the dialog from a FRESH read; toggle sends one digit, Submit drives the closed-loop
-  // Down→Up→verify→Enter macro (see lib/multi-select-action.ts). gate: claude-only (multi-select
-  // blocks only ever exist for a Claude pane, buildBlocks gates on ctx.agent).
+  // Down→Up→verify→Enter macro (see lib/multi-select-action.ts). gate: Claude's adapter is the only
+  // one that emits `multi-select`, so this handler cannot fire for another agent.
   const handleMultiSelectAction = useCallback(
     async (action: MultiSelectIntent, multi: MultiSelectModel) => {
       if (readOnly) {
@@ -408,6 +446,7 @@ export function AgentChat({
         session,
         requestedLines,
         detectedRevision: shown.revision,
+        agent: agent?.agent,
         multi,
         intent: action,
       });
@@ -423,7 +462,43 @@ export function AgentChat({
         setStatus(result.error || "Send failed", "error");
       }
     },
-    [readOnly, paneId, session, requestedLines, shown.revision, revalidator],
+    [readOnly, paneId, session, requestedLines, shown.revision, agent?.agent, revalidator],
+  );
+
+  // Tap a generic-menu control (a footer-named key like Enter/s/Esc, or an arrow). Same guard-first
+  // shape as the handlers above; the arrow taps pass `nav`, which swaps the guard's signature check
+  // for an identity-only one (moving the highlight is the tap's own effect — see lib/menu-action.ts).
+  // gate: Claude's adapter is the only one that emits `menu` — omp's modals deliberately stay raw
+  // (harness/omp/index.ts), so this handler cannot fire for another agent.
+  const handleMenuAction = useCallback(
+    async (action: MenuBlockAction, menu: MenuModel) => {
+      if (readOnly) {
+        setStatus("Read-only — device not authorised", "error");
+        return;
+      }
+      const result = await submitMenuKeys({
+        paneId,
+        session,
+        requestedLines,
+        detectedRevision: shown.revision,
+        agent: agent?.agent,
+        menu,
+        keys: action.keys,
+        nav: action.nav,
+      });
+      if (result.status === "sent") {
+        setStatus("Sent", "success");
+        setFollowing(true);
+        revalidator.revalidate();
+        listRef.current?.scrollToBottom();
+      } else if (result.status === "changed") {
+        setStatus("The screen changed — refreshing", "warn");
+        revalidator.revalidate();
+      } else {
+        setStatus(result.error || "Send failed", "error");
+      }
+    },
+    [readOnly, paneId, session, requestedLines, shown.revision, agent?.agent, revalidator],
   );
 
   // NOTE: the composer is deliberately NOT auto-focused on open/switch — that would pop the Android
@@ -460,6 +535,8 @@ export function AgentChat({
   //    collapsing the selection and popping the keyboard.
   function focusFromMirror(e: ReactMouseEvent<HTMLDivElement>) {
     const target = e.target as Element | null;
+    // The `a` is what keeps a tap on an autolinked URL (components/ansi-output) from popping the
+    // keyboard on top of the page it just opened. Don't trim it out of this selector.
     if (target?.closest?.("button, a, input, textarea, select, [role='textbox']")) return;
     const sel = window.getSelection();
     if (sel && !sel.isCollapsed) return;
@@ -490,15 +567,52 @@ export function AgentChat({
             />
           ) : undefined
         }
-        // The agent status pill, dimmed while the connection isn't live so a frozen "working"/"idle"
+        // Right cluster, in reading order: Find, History, then the agent status pill. The pill is the
+        // rightmost item on every pane screen (it's the thing you glance at), so the buttons sit to
+        // its LEFT rather than trailing it. All ride in `rightLead` because AppHeader renders
+        // `rightLead` before `rightTrail` — the order here IS the on-screen order.
+        //
+        // Find lives HERE, not in the composer, because the find bar it opens takes over this very
+        // header row (see `override` above) — trigger and surface in the same place. It sat in the
+        // composer's old View row, which put the button at the bottom of the screen and its UI at the
+        // top. Offered only when there's buffered output to search; opening it freezes the tail.
+        //
+        // History opens the agent's own transcript, the only real conversation history a Claude pane
+        // has: its terminal runs on the alternate screen, so the mirror below can never show more
+        // than the visible viewport. Offered only when the pane reported an agent session id (i.e. a
+        // transcript can exist at all), so the button never leads to an empty screen.
+        //
+        // The status pill is dimmed while the connection isn't live, so a frozen "working"/"idle"
         // from the last snapshot doesn't masquerade as current. A bare shell shows a muted "shell" tag.
         rightLead={
           agent ? (
-            isShell ? (
-              <ShellBadge stale={connecting} />
-            ) : (
-              <StatusBadge status={agent.status} stale={connecting} />
-            )
+            <>
+              {display && (
+                <button
+                  type="button"
+                  onClick={openFind}
+                  aria-label="Find in output"
+                  className="-mr-1 flex size-8 items-center justify-center rounded-lg text-muted-foreground transition-colors active:bg-muted/60"
+                >
+                  <Search className="size-4" />
+                </button>
+              )}
+              {agent.hasSession && (
+                <button
+                  type="button"
+                  onClick={() => navigate(historyPath(paneId, session))}
+                  aria-label="Conversation history"
+                  className="-mr-1 flex size-8 items-center justify-center rounded-lg text-muted-foreground transition-colors active:bg-muted/60"
+                >
+                  <ScrollText className="size-4" />
+                </button>
+              )}
+              {isShell ? (
+                <ShellBadge stale={connecting} />
+              ) : (
+                <StatusBadge status={agent.status} stale={connecting} />
+              )}
+            </>
           ) : undefined
         }
       >
@@ -594,7 +708,12 @@ export function AgentChat({
             (unless you're selecting text to copy, which the tap must not collapse). */}
         {/* min-w-0 only — do NOT set overflow-x-hidden here: that forces overflow-y to `auto` (CSS
             quirk) and makes this wrapper a second vertical scroller competing with ChatMessageList. */}
-        <div className="min-h-0 min-w-0 flex-1" onClick={focusFromMirror}>
+        {/* border-t like the strips above it: every band in this stack draws its own TOP edge, so
+            whichever one ends up last still has a boundary under it. Without this the pane row ran
+            straight into terminal output — the chrome and the mirror read as one surface. Drawing it
+            here rather than as a border-b on PaneStrip covers the case where that strip is absent
+            (a tab holding a single pane), which is the common one. */}
+        <div className="min-h-0 min-w-0 flex-1 border-t border-border/40" onClick={focusFromMirror}>
           <ChatMessageList
             ref={listRef}
             dep={display}
@@ -605,9 +724,30 @@ export function AgentChat({
           >
             {display ? (
               <>
-                {/* Load older scrollback — sits at the top of the buffer, so it's reached by scrolling
-                    up. Shown while the buffer is still truncated (older lines exist) and below the cap. */}
-                {truncated && canGrowRequestedLines(paneId, session) && (
+                {/* Top-of-buffer affordance, reached by scrolling up. WHICH button appears is decided
+                    by what the pane can actually offer, because the two are never both possible:
+
+                      • an agent pane with a transcript → "Show entire history". Its terminal runs on
+                        the alternate screen, which keeps no scrollback ring, so the mirror can never
+                        show more than the viewport — the agent's own session log is the only history
+                        that exists (see bridge/transcript.ts).
+                      • a pane with real scrollback (a shell, on the primary screen) → "Load older",
+                        which grows the requested window.
+                      • neither → nothing.
+
+                    This used to be gated on `truncated`, which Herdr never sets true — so the button
+                    rendered on no pane at all. `readableLines` (scrollback depth + viewport) is the
+                    signal that actually works. */}
+                {historyAvailable ? (
+                  <button
+                    type="button"
+                    onClick={() => navigate(historyPath(paneId, session))}
+                    className="mb-2 flex w-full items-center justify-center gap-1.5 rounded-md py-2 text-xs font-medium text-muted-foreground transition-colors active:bg-muted/50"
+                  >
+                    <ScrollText className="size-3.5" />
+                    Show entire history
+                  </button>
+                ) : moreScrollback ? (
                   <button
                     type="button"
                     onClick={loadOlder}
@@ -621,7 +761,7 @@ export function AgentChat({
                     )}
                     {loadingOlder ? "Loading…" : "Load older"}
                   </button>
-                )}
+                ) : null}
                 <AnsiOutput
                   text={display}
                   wrap={prefs.wrap}
@@ -635,6 +775,7 @@ export function AgentChat({
                   onWizardAction={handleWizardAction}
                   onPreviewAction={handlePreviewAction}
                   onMultiSelectAction={handleMultiSelectAction}
+                  onMenuAction={handleMenuAction}
                   promptDisabled={readOnly || gone}
                 />
               </>
@@ -666,12 +807,44 @@ export function AgentChat({
             </button>
           )}
 
-          {/* The agent's statusline, re-surfaced as app chrome (its branch/model/ctx would otherwise
-              vanish with the stripped input box). Sits directly above the composer, as it did in the
-              TUI. Verbatim text — a React text node, so no XSS surface. */}
-          {statusLine && (
-            <div className="truncate border-t border-border/40 px-3 py-1 font-mono text-[11px] leading-tight text-muted-foreground/80">
-              {statusLine}
+          {/* The agent's statusline, re-surfaced as app chrome (its branch/model/ctx/permission mode
+              would otherwise vanish with the stripped input box). Sits directly above the composer,
+              as it did in the TUI. Verbatim text — React text nodes, so no XSS surface.
+
+              STACKED, one row per line, each truncated — deliberately, over the two alternatives:
+              joining the rows with a separator would put ~150 chars on a strip that fits ~55 at this
+              size on a phone, truncating away exactly the fields (branch, permission mode) this
+              exists to surface; wrapping makes the strip's height depend on the pane width and turns
+              a column-aligned statusline into ragged prose. Stacking also preserves the shape the
+              user themselves configured in the TUI, so it reads as the same thing they know.
+              Height is bounded upstream (MAX_STATUS_LINES caps the run stripChrome will claim), so
+              there is no second cap here; the mirror is a flex child that shrinks, never pushed off. */}
+          {statusLines.length > 0 && (
+            <div
+              className={cn(
+                "border-t border-border/40 px-3 py-1 font-mono text-[11px] leading-tight",
+                // The strip carries the agent's OWN terminal colour, so it renders in the mirror's
+                // dark space and inverts in light with it (ADR 0002) — a bright statusline colour is
+                // chosen against a near-black background and is illegible re-themed onto app chrome.
+                // It also makes the strip read as the bottom of the pane it was cut from, which is
+                // where the TUI drew it.
+                MIRROR_SPACE,
+                MIRROR_INVERT,
+              )}
+            >
+              {statusLines.map((row, i) => (
+                // Index key: these rows are a positional snapshot of the pane tail, re-derived on
+                // every poll — there is no identity to preserve across renders.
+                <div key={i} className="truncate">
+                  {row.segments.map((s, si) => (
+                    // Text nodes only — colour and weight come from the ANSI parse, never markup.
+                    // Same XSS boundary as the mirror.
+                    <span key={si} style={styleFor(s)}>
+                      {s.text}
+                    </span>
+                  ))}
+                </div>
+              ))}
             </div>
           )}
 
@@ -683,6 +856,7 @@ export function AgentChat({
             isShell={isShell}
             gone={gone}
             readOnly={readOnly}
+            dialogPresent={dialogPresent}
             text={text}
             terminalDraft={terminalDraft}
             rawTerminalDraft={rawTerminalDraft}
@@ -692,9 +866,6 @@ export function AgentChat({
             setRawTerminal={setRawTerminal}
             setTerminalAppearance={setTerminalAppearance}
             onSent={onSent}
-            // Find-in-output lives in the composer's View row now (the header was the wrong home for it).
-            // Enabled only when there's buffered output to search; opening it freezes the tail (openFind).
-            onOpenFind={display ? openFind : undefined}
           />
         </div>
       </div>
@@ -707,6 +878,12 @@ export function AgentChat({
           shellPanes={shellPanes}
           currentPaneId={paneId}
           onSelect={switchTo}
+          recentOpen={dash.prefs.recentOpen}
+          onRecentOpenChange={dash.setRecentOpen}
+          // Shells fold on the same count rule Spaces uses: on a herd with dozens of bare shells
+          // they'd otherwise bury the agents you opened this sheet to reach.
+          shellsOpen={openForCount(dash.prefs.shellsOpen, shellPanes.length)}
+          onShellsOpenChange={dash.setShellsOpen}
           className="px-0 py-1"
         />
       </BottomSheet>

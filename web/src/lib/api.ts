@@ -9,6 +9,7 @@ import type {
   BridgeConfig,
   CreateResponse,
   NotifyPrefs,
+  PaneHistoryResponse,
   PaneReadResponse,
   SnapshotResponse,
   UpdateInfo,
@@ -17,6 +18,30 @@ import type {
 
 export type { NotifyPrefs, UpdateInfo };
 
+/**
+ * Marks every API request as XHR so a fronting identity proxy answers it with a status we can read.
+ *
+ * The refusal banner (components/connection-banner.tsx) is reached only through `isAuthError`
+ * (lib/loaders.ts), which matches 401/403 on an {@link ApiError}. A proxy that answers an
+ * unauthenticated request with a REDIRECT never produces one: `fetch` follows the 302 to the
+ * identity provider's origin, that response carries no CORS headers, and the call rejects as a
+ * `TypeError` — a transport failure with no status. The user then gets the connection banner
+ * ("can't reach Collie") and, worse, loses the Sign-in link that would have fixed it, since a
+ * missing session is precisely the thing it recovers from.
+ *
+ * Measured against Cloudflare Access with no session: a plain request, `Accept: application/json`
+ * and `Sec-Fetch-Mode: cors` all still redirect; only this header flips the answer to a same-origin
+ * 401. `X-Requested-With: XMLHttpRequest` is the conventional "this is XHR, don't redirect me"
+ * signal rather than one vendor's feature — oauth2-proxy and Authelia read it too — so it stays a
+ * single unconditional header with no proxy-specific branching, in keeping with a bridge that gates
+ * on vendor-neutral headers and manages nobody else's front door (ADR 0001).
+ *
+ * Costs nothing against the bridge itself: it is same-origin by design, so no preflight in practice,
+ * and the bridge ignores headers it does not read.
+ */
+export const XHR_HEADER = "x-requested-with";
+export const XHR_HEADER_VALUE = "XMLHttpRequest";
+
 class ApiError extends Error {
   readonly status: number;
   constructor(message: string, status: number) {
@@ -24,6 +49,11 @@ class ApiError extends Error {
     this.name = "ApiError";
     this.status = status;
   }
+}
+
+/** True when an API request failed with the given HTTP status. */
+export function isApiErrorStatus(error: unknown, status: number): boolean {
+  return error instanceof ApiError && error.status === status;
 }
 
 // Every request gets a deadline so a black-holed connection (phone sleep/wake, a Tailscale route
@@ -79,6 +109,35 @@ async function errorDetail(res: Response): Promise<string> {
   }
 }
 
+/**
+ * The recover handler for the two endpoints that accept `expected_prompt`: reply and keys. A
+ * rejected binding is their normal answer, not a transport failure. The bridge refuses the write
+ * because the prompt moved, and the caller renders "the dialog changed". Both must share it, or one
+ * of them starts throwing where the other returns a value.
+ */
+const recoverPromptChanged = (status: number, detail: string): ActionResponse | null =>
+  status === 409 ? promptChangedResponse(detail) : null;
+
+function promptChangedResponse(detail: string): ActionResponse | null {
+  try {
+    const body = JSON.parse(detail) as {
+      ok?: unknown;
+      code?: unknown;
+      error?: unknown;
+    };
+    if (
+      body.ok === false &&
+      body.code === "prompt_changed" &&
+      typeof body.error === "string"
+    ) {
+      return { ok: false, error: body.error, code: "prompt_changed" };
+    }
+  } catch {
+    // A non-JSON error body follows the existing ApiError path below.
+  }
+  return null;
+}
+
 // Capture the bridge's build id off any response that carries it. Every poll (snapshot/pane) — and
 // config + mutations — funnels through the two fetch sites below, so the store stays current for
 // free, powering the no-service-worker self-updater (lib/self-update.ts). Absent header (older
@@ -87,18 +146,32 @@ function captureBuild(res: Response): void {
   observeServerBuild(res.headers.get(SERVER_BUILD_HEADER));
 }
 
-async function doReq<T>(path: string, init?: RequestInit): Promise<T> {
+/**
+ * Lets ONE caller claim a non-ok response instead of having it thrown. The transport stays generic:
+ * it knows a caller may recognise a refusal and turn it into a normal value, but nothing about which
+ * status or which body shape. Return null to fall through to the usual {@link ApiError}.
+ */
+type Recover<T> = (status: number, detail: string) => T | null;
+
+async function doReq<T>(path: string, init?: RequestInit, recover?: Recover<T>): Promise<T> {
   // GET reads get the short leash; anything mutating gets the longer mutation budget.
   const method = init?.method?.toUpperCase() ?? "GET";
   const timeoutMs = method === "GET" ? GET_TIMEOUT_MS : MUTATION_TIMEOUT_MS;
   const res = await fetch(path, {
     ...init,
     signal: withTimeout(init?.signal, timeoutMs),
-    headers: { "content-type": "application/json", ...init?.headers },
+    headers: {
+      "content-type": "application/json",
+      [XHR_HEADER]: XHR_HEADER_VALUE,
+      ...init?.headers,
+    },
   });
   captureBuild(res);
   if (!res.ok) {
-    throw new ApiError(`${path} → ${res.status} ${await errorDetail(res)}`, res.status);
+    const detail = await errorDetail(res);
+    const recovered = recover?.(res.status, detail);
+    if (recovered !== null && recovered !== undefined) return recovered;
+    throw new ApiError(`${path} → ${res.status} ${detail}`, res.status);
   }
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
@@ -107,8 +180,8 @@ async function doReq<T>(path: string, init?: RequestInit): Promise<T> {
 // Every mutating request (non-GET) feeds the app-wide busy signal so the top progress bar shows
 // while it's in flight; GET reads (snapshot/config polling) don't, or the bar would never rest.
 // trackBusy increments synchronously, so a caller sees `isBusy()` true the instant it fires.
-function req<T>(path: string, init?: RequestInit): Promise<T> {
-  const op = doReq<T>(path, init);
+function req<T>(path: string, init?: RequestInit, recover?: Recover<T>): Promise<T> {
+  const op = doReq<T>(path, init, recover);
   const method = init?.method?.toUpperCase() ?? "GET";
   return method === "GET" ? op : trackBusy(op);
 }
@@ -158,7 +231,13 @@ export async function fetchPane(
   const cacheKey = `${session ?? ""}\u0000${paneId}`;
 
   const cached = paneCache.get(cacheKey);
-  const headers: Record<string, string> = {};
+  // SEEN_HEADER is what tells the bridge this read came from our own page and may mark the pane
+  // seen. A cross-site no-cors GET can't set a custom header, so it can't clear your alerts by
+  // guessing pane ids (bridge/server.ts → marksPaneSeen).
+  const headers: Record<string, string> = {
+    "x-collie-seen": "1",
+    [XHR_HEADER]: XHR_HEADER_VALUE,
+  };
   if (cached) headers["if-none-match"] = cached.etag;
 
   const res = await fetch(url, { signal: withTimeout(signal, GET_TIMEOUT_MS), headers });
@@ -192,23 +271,71 @@ export async function fetchPane(
   return data;
 }
 
+/**
+ * Fetch a page of the pane's conversation history — the scrollback its terminal can't hold (a Claude
+ * pane runs on the alternate screen, which has no scrollback ring). Newest-anchored: no cursor gives
+ * the most recent turns; `before` walks backwards from a turn already on screen.
+ *
+ * Deliberately NOT ETag-cached like fetchPane: history is fetched on navigation and on an explicit
+ * "load older" tap, never on the poll loop, so there's no repeat-fetch to save.
+ */
+export function fetchHistory(
+  paneId: string,
+  opts: { limit?: number; before?: string } = {},
+  session?: string,
+  signal?: AbortSignal,
+): Promise<PaneHistoryResponse> {
+  const q = new URLSearchParams();
+  if (opts.limit) q.set("limit", String(opts.limit));
+  if (opts.before) q.set("before", opts.before);
+  const qs = q.toString();
+  const path = `/api/pane/${encodeURIComponent(paneId)}/history${qs ? `?${qs}` : ""}`;
+  // Reading the transcript is looking at the pane — and history is a READ, so like fetchPane it
+  // carries the header that lets the bridge count it (bridge/server.ts → marksPaneSeen).
+  return req<PaneHistoryResponse>(withSession(path, session), {
+    signal,
+    headers: { "x-collie-seen": "1" },
+  });
+}
+
 export function sendReply(
   paneId: string,
   text: string,
   submit = true,
   session?: string,
+  expectedPrompt?: string,
 ): Promise<ActionResponse> {
-  return req<ActionResponse>(withSession(`/api/pane/${encodeURIComponent(paneId)}/reply`, session), {
-    method: "POST",
-    body: JSON.stringify({ text, submit }),
-  });
+  return req<ActionResponse>(
+    withSession(`/api/pane/${encodeURIComponent(paneId)}/reply`, session),
+    {
+      method: "POST",
+      body: JSON.stringify({
+        text,
+        submit,
+        ...(expectedPrompt !== undefined ? { expected_prompt: expectedPrompt } : {}),
+      }),
+    },
+    recoverPromptChanged,
+  );
 }
 
-export function sendKeys(paneId: string, keys: string[], session?: string): Promise<ActionResponse> {
-  return req<ActionResponse>(withSession(`/api/pane/${encodeURIComponent(paneId)}/keys`, session), {
-    method: "POST",
-    body: JSON.stringify({ keys }),
-  });
+export function sendKeys(
+  paneId: string,
+  keys: string[],
+  session?: string,
+  expectedPrompt?: string,
+): Promise<ActionResponse> {
+  return req<ActionResponse>(
+    withSession(`/api/pane/${encodeURIComponent(paneId)}/keys`, session),
+    {
+      method: "POST",
+      body: JSON.stringify({
+        keys,
+        ...(expectedPrompt !== undefined ? { expected_prompt: expectedPrompt } : {}),
+      }),
+    },
+    recoverPromptChanged,
+  );
 }
 
 /** Close a pane ("kill the agent"). */
@@ -325,6 +452,9 @@ export function uploadImage(paneId: string, file: File, session?: string): Promi
       const res = await fetch(withSession(`/api/pane/${encodeURIComponent(paneId)}/upload`, session), {
         method: "POST",
         body: fd,
+        // No content-type: the browser sets the multipart boundary. The XHR marker still applies —
+        // an upload refused by a lapsed proxy session must surface as a status, not a redirect.
+        headers: { [XHR_HEADER]: XHR_HEADER_VALUE },
         signal: withTimeout(undefined, UPLOAD_TIMEOUT_MS),
       });
       if (!res.ok) {

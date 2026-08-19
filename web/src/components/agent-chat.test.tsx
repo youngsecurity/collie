@@ -164,7 +164,7 @@ describe("AgentChat — raw-terminal escape hatch", () => {
 
   it("shows the plain mirror (no buttons, menu as raw text) when raw terminal is on", () => {
     localStorage.setItem(
-      "collie:display-prefs:v3",
+      "collie:display-prefs:v4",
       JSON.stringify({ wrap: true, fontSize: 11, rawTerminal: true }),
     );
     renderChat({ text: MENU_TEXT });
@@ -184,7 +184,7 @@ describe("AgentChat — raw-terminal escape hatch", () => {
 
   it("raw terminal bypasses the wizard too — the dialog shows verbatim, keys-pad drivable", () => {
     localStorage.setItem(
-      "collie:display-prefs:v3",
+      "collie:display-prefs:v4",
       JSON.stringify({ wrap: true, fontSize: 11, rawTerminal: true }),
     );
     renderChat({ text: WIZARD_TEXT });
@@ -330,10 +330,11 @@ describe("AgentChat — prompt-select race guard wiring (frozen {text, revision}
   });
 });
 
-// The block grammars are provably scoped to Claude Code (spec T8): a non-Claude pane gets the plain
-// raw mirror — no prompt-select buttons, no chrome stripping, no re-surfaced status strip — because
-// running Claude-tuned matchers on an unverified TUI could mis-lift or mis-strip its output.
-describe("AgentChat — block-grammar scoping (Claude-only)", () => {
+// The block grammars are provably scoped to the pane's own adapter (spec T8): an agent with no
+// adapter gets the plain raw mirror — no prompt-select buttons, no chrome stripping, no re-surfaced
+// status strip — because running Claude-tuned matchers on an unverified TUI could mis-lift or
+// mis-strip its output. codex is such an agent; omp has an adapter but lifts no dialog kind at all.
+describe("AgentChat — block-grammar scoping (an agent with no adapter)", () => {
   // A codex agent sharing the Claude fixture's ids, so only the agent kind differs from the default.
   const codexAgent = { ...fixtureAgents[0]!, agent: "codex" };
 
@@ -345,10 +346,18 @@ describe("AgentChat — block-grammar scoping (Claude-only)", () => {
     expect(screen.getByText(/1\. Yes/)).toBeInTheDocument();
   });
 
-  it("re-surfaces the Claude input-box statusline as an app strip above the composer", () => {
+  it("re-surfaces EVERY row of the Claude input-box statusline as an app strip above the composer", () => {
     renderChat({ text: STATUS_TEXT }); // default claude agent
     const strip = screen.getByText("[Opus 4.8] ~/webapp · main");
     expect(strip.closest("pre")).toBeNull(); // the strip is app chrome, not <pre> mirror text
+    // Row 2 of the run: it used to be stripped off the mirror and rendered nowhere at all.
+    const second = screen.getByText("← for agents");
+    expect(second.closest("pre")).toBeNull();
+    // Stacked in the one strip. Compared at the ROW level: each row renders one <span> per ANSI
+    // segment (colour is carried through now), so the text node's own parent is a span, not the row.
+    const row = (el: HTMLElement) => el.closest("div.truncate");
+    expect(row(second)).not.toBe(row(strip));
+    expect(row(second)?.parentElement).toBe(row(strip)?.parentElement);
     expect(screen.queryByText(/❯/)).toBeNull(); // the input box was stripped off the mirror
   });
 
@@ -438,5 +447,87 @@ describe("AgentChat — shared header: stale-status dimming", () => {
     expect(badge).toHaveClass("opacity-40"); // not live → frozen status dimmed
     act(() => setError(false)); // snapshot recovers → live
     expect(badge).not.toHaveClass("opacity-40"); // undimmed instantly
+  });
+});
+
+// The History affordance opens the agent's own transcript — the only real scrollback a Claude pane
+// has, because its terminal runs on the alternate screen and Herdr retains nothing behind the
+// viewport. It's gated on the pane actually reporting an agent session, so the button can never
+// lead to an empty screen.
+describe("AgentChat — history affordance", () => {
+  it("is offered when the pane reports an agent session id", () => {
+    const agent = { ...fixtureAgents[0]!, hasSession: true };
+    renderChat({ agent, agents: [agent] });
+    expect(screen.getByRole("button", { name: /conversation history/i })).toBeInTheDocument();
+  });
+
+  it("is hidden when the pane has no agent session (a shell, or a harness without one)", () => {
+    renderChat(); // fixture agents carry no session
+    expect(screen.queryByRole("button", { name: /conversation history/i })).not.toBeInTheDocument();
+  });
+
+  // Deliberate placement, not an accident of slot order: the status pill stays the rightmost thing on
+  // the pane screen (it's what you glance at), so History sits to its LEFT.
+  //
+  // (The top-of-mirror affordance is covered separately below.)
+  it("sits to the LEFT of the status pill", () => {
+    const agent = { ...fixtureAgents[0]!, hasSession: true };
+    renderChat({ agent, agents: [agent] });
+    const history = screen.getByRole("button", { name: /conversation history/i });
+    const pill = screen.getByText("needs you"); // fixtureAgents[0] is blocked → "needs you"
+    // Node.compareDocumentPosition: FOLLOWING (4) means the pill comes after History in the DOM.
+    expect(history.compareDocumentPosition(pill) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+});
+
+// The top-of-mirror affordance. This block previously rendered on NO pane at all: it was gated on
+// `truncated`, which Herdr never sets true even when a read demonstrably cut scrollback off. The
+// working signal is `readableLines` (scrollback depth + viewport), and which button appears is
+// decided by what the pane can actually offer — the two are never simultaneously possible.
+describe("AgentChat — top-of-mirror history affordance", () => {
+  const showHistory = () => screen.queryByRole("button", { name: /show entire history/i });
+  const loadOlder = () => screen.queryByRole("button", { name: /load older/i });
+
+  it("an agent pane with a transcript offers the full history, not scrollback paging", () => {
+    // A Claude pane: alt-screen, so readableLines is just its viewport — there IS no scrollback.
+    const agent = { ...fixtureAgents[0]!, hasSession: true, readableLines: 51 };
+    renderChat({ agent, agents: [agent], requestedLines: 600 });
+    expect(showHistory()).toBeInTheDocument();
+    expect(loadOlder()).not.toBeInTheDocument();
+  });
+
+  it("a pane with real scrollback and no transcript offers Load older", () => {
+    // A shell on the primary screen: 6895 lines of ring + 51 viewport, and we've only asked for 600.
+    const agent = { ...fixtureAgents[0]!, kind: "shell" as const, readableLines: 6946 };
+    renderChat({ agent, agents: [agent], requestedLines: 600 });
+    expect(loadOlder()).toBeInTheDocument();
+    expect(showHistory()).not.toBeInTheDocument();
+  });
+
+  it("offers nothing when the pane has neither", () => {
+    const agent = { ...fixtureAgents[0]!, kind: "shell" as const, readableLines: 51 };
+    renderChat({ agent, agents: [agent], requestedLines: 600 });
+    expect(loadOlder()).not.toBeInTheDocument();
+    expect(showHistory()).not.toBeInTheDocument();
+  });
+
+  it("hides Load older once the window already covers everything Herdr can return", () => {
+    const agent = { ...fixtureAgents[0]!, kind: "shell" as const, readableLines: 700 };
+    renderChat({ agent, agents: [agent], requestedLines: 1000 }); // at the cap, past the content
+    expect(loadOlder()).not.toBeInTheDocument();
+  });
+
+  it("stays hidden when readableLines is unknown (older bridge) rather than offering a dud tap", () => {
+    const agent = { ...fixtureAgents[0]!, kind: "shell" as const }; // no readableLines
+    renderChat({ agent, agents: [agent], requestedLines: 600 });
+    expect(loadOlder()).not.toBeInTheDocument();
+    expect(showHistory()).not.toBeInTheDocument();
+  });
+
+  it("a transcript wins even when the pane also reports scrollback", () => {
+    const agent = { ...fixtureAgents[0]!, hasSession: true, readableLines: 6946 };
+    renderChat({ agent, agents: [agent], requestedLines: 600 });
+    expect(showHistory()).toBeInTheDocument();
+    expect(loadOlder()).not.toBeInTheDocument();
   });
 });

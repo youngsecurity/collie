@@ -3,7 +3,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, vi } from "vitest";
 import { cleanup } from "@testing-library/react";
 import { setupServer } from "msw/node";
 
-import { handlers } from "./handlers";
+import { handlers, resetTypedDraft } from "./handlers";
 import { __resetConnectionHealth } from "@/lib/connection-health";
 
 // One MSW server for all tests; tests add per-case overrides with `server.use(...)`.
@@ -15,9 +15,19 @@ beforeAll(() => server.listen({ onUnhandledRequest: "warn" }));
 // anchor as an escalated outage. Fake-timer escalation suites re-pin AFTER vi.useFakeTimers() so the
 // anchor equals the frozen clock exactly.
 beforeEach(() => __resetConnectionHealth());
+// Persisted state (composer drafts, prefs) must not leak between cases — a draft saved by one test
+// would be restored into the next test's freshly-mounted composer.
+beforeEach(() => {
+  try {
+    localStorage.clear();
+  } catch {
+    // ignore
+  }
+});
 afterEach(() => {
   cleanup();
   server.resetHandlers();
+  resetTypedDraft(); // the fake pane's input line, so a draft can't leak into the next test
 });
 afterAll(() => server.close());
 

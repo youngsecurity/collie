@@ -1,6 +1,12 @@
 // Domain model for the bridge. These are OUR types, decoupled from Herdr's wire shapes
 // (which live only in herdr-client.ts). The rest of the app talks in these terms.
 
+import type { AgentSessionRef, TranscriptEntry } from "./journal/types.ts";
+
+// Re-exported so the wire surface has ONE import site: a consumer of PaneHistoryResponse gets the
+// entry shape from here too, without reaching into an adapter module.
+export type { TranscriptEntry, TranscriptPart } from "./journal/types.ts";
+
 export type AgentStatus = "idle" | "working" | "blocked" | "done" | "unknown";
 
 /**
@@ -28,6 +34,72 @@ export interface AgentView {
    * absent for unnamed sessions and every non-claude pane. Display priority is `paneLabel` first.
    */
   sessionName?: string;
+  /**
+   * How the agent named its session (Herdr `agent_session`), when it named one at all.
+   *
+   * SERVER-SIDE ONLY — stripped before this pane goes on the wire (see {@link PaneWire}), because
+   * pi reports a kind-`path` ref whose value is an absolute filesystem path, and the client has no
+   * use for it: the history endpoint re-derives the ref from the pane id and never trusts a
+   * client-supplied one. What the client gets is the presence flag `hasSession`.
+   */
+  agentSession?: AgentSessionRef;
+  /**
+   * Upper bound on the lines a `recent` read of this pane can return — Herdr's scrollback depth plus
+   * the viewport. This is the ONLY reliable "is there more scrollback" signal: `PaneRead.truncated`
+   * is always false even when a read cut history off, which is why the mirror's "Load older" button
+   * never used to appear. A pane on the alternate screen (any Claude agent) reports just its viewport
+   * here, because the alt screen keeps no scrollback ring at all. Absent on older Herdr servers.
+   */
+  readableLines?: number;
+  /**
+   * The pane's tab label, denormalised from `tab.list` exactly as `workspaceLabel` already is — so
+   * every client surface (card, sidebar, palette, space view) gets it without joining `tabs[]`.
+   * Absent when the label carries no information: an unlabelled tab in a single-tab space is named
+   * positionally by Herdr ("1"), which would render as `project · 1`. See `meaningfulTabLabel`.
+   */
+  tabLabel?: string;
+  /**
+   * Epoch ms of this agent's last observed status transition (bridge/activity.ts). The only thing
+   * that can make a pane read as unseen. Absent until the ledger has an entry, and on the very
+   * first poll after a fresh install.
+   */
+  lastActiveAt?: number;
+  /**
+   * Epoch ms you last opened or drove this pane through Collie. `lastActiveAt > lastSeenAt` on a
+   * `done` agent IS the "finished while you weren't looking" state — there is no stored seen flag.
+   */
+  lastSeenAt?: number;
+}
+
+/**
+ * A pane as the BROWSER sees it: every {@link AgentView} field except the session ref, which is
+ * replaced by a presence flag.
+ *
+ * The two shapes differ on purpose. `agentSession.value` is either an opaque id (Claude, Codex) or an
+ * absolute path (pi) — the client needs neither, and shipping the path would hand out filesystem
+ * layout for nothing. All the UI ever asked of that field was "may this pane have history?", which is
+ * what `hasSession` answers, so the History affordance still shows without a speculative fetch.
+ *
+ * NOTE the `Omit` is opt-OUT: a future server-only field on AgentView goes on the wire unless it is
+ * added to the omit list here. If you add one, strip it here in the same change.
+ */
+export type PaneWire = Omit<AgentView, "agentSession"> & {
+  /** True when this pane's history is actually offerable: the agent named a session AND its harness
+   *  has a journal adapter. Says nothing about whether the log is readable — a named session whose
+   *  file is missing still answers `available:false` with reason `no-log`. */
+  hasSession?: boolean;
+};
+
+/**
+ * Strip a pane down to its wire shape. The one place the session ref leaves the bridge's hands.
+ *
+ * `hasJournal` is asked rather than assumed: a harness can name a session while having no adapter to
+ * read it (Herdr detects more agents than Collie has journals for). Keying the flag on the ref alone
+ * would advertise a History affordance that always comes back empty, so the registry gets a vote.
+ */
+export function toPaneWire(pane: AgentView, hasJournal: (agent: string) => boolean): PaneWire {
+  const { agentSession, ...rest } = pane;
+  return agentSession && hasJournal(pane.agent) ? { ...rest, hasSession: true } : rest;
 }
 
 /** A Herdr workspace ("space") — a project-scoped container of tabs. From `workspace.list`. */
@@ -94,9 +166,9 @@ export interface SnapshotResponse {
   /** Per-device authorisation for the requesting client; absent when the feature is off. */
   device?: DeviceAuth;
   /** Agent-bearing panes, triage-sorted (the home list). */
-  agents: AgentView[];
+  agents: PaneWire[];
   /** Bare shell panes (no agent) — surfaced so freshly-created tabs/spaces are reachable. */
-  shellPanes: AgentView[];
+  shellPanes: PaneWire[];
   /** All spaces (workspaces) and their tabs, for the space/tab navigator. */
   workspaces: WorkspaceView[];
   tabs: TabView[];
@@ -143,6 +215,27 @@ export interface PaneReadResponse {
 }
 
 /**
+ * GET /api/pane/:id/history — real conversation history for a pane, read from the agent's own
+ * session log. This is NOT terminal scrollback: a Claude pane runs on the alternate screen, so no
+ * scrollback exists to page (see transcript.ts). `available:false` is the normal answer for a pane
+ * with no agent session, a non-Claude agent, or a bridge with the feature switched off.
+ */
+export type PaneHistoryResponse =
+  | { paneId: string; available: false; reason: "disabled" | "no-session" | "no-log" }
+  | {
+      paneId: string;
+      available: true;
+      /** Oldest-first, ready to render top-down. */
+      entries: TranscriptEntry[];
+      /** Older turns exist before `entries[0]` — page with `?before=<its uuid>`. */
+      hasMore: boolean;
+      /** Turns available in the parsed window. */
+      total: number;
+      /** The log exceeded the read cap, so only its tail was parsed. */
+      fileTruncated: boolean;
+    };
+
+/**
  * POST /api/pane/:id/{reply,keys} — result of a send. Discriminated on `ok`: a failure always
  * carries the reason Herdr rejected it. `textDelivered` distinguishes the reply partial-failure case
  * (text was typed but the submit keypress failed) so the client knows NOT to resend — resending would
@@ -150,7 +243,12 @@ export interface PaneReadResponse {
  */
 export type ActionResponse =
   | { ok: true }
-  | { ok: false; error: string; textDelivered?: boolean };
+  | {
+      ok: false;
+      error: string;
+      textDelivered?: boolean;
+      code?: "prompt_changed";
+    };
 
 /** POST /api/pane/:id/upload — image saved to a host file; `path` is the absolute path to ref. */
 export type UploadResponse = { ok: true; path: string } | { ok: false; error: string };
