@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 
 import { ConnectionBanner, EXIT_MS, GREEN_MS } from "./connection-banner";
+import { clockTime } from "@/lib/format";
 
 // Drive the two shared-clock thresholds directly so the amber→red→green STATE MACHINE can be tested
 // without burning real seconds; the 4s/15s wall-clock lockstep itself is proven in
@@ -34,7 +35,12 @@ function setOnline(value: boolean) {
 let rerenderBanner: () => void = () => {};
 
 function renderBanner(
-  props: { bridge?: "connected" | "disconnected"; error?: boolean; authError?: boolean } = {},
+  props: {
+    bridge?: "connected" | "disconnected";
+    error?: boolean;
+    authError?: boolean;
+    lastSeenAt?: number;
+  } = {},
 ) {
   function Harness() {
     const [, setN] = useState(0);
@@ -44,6 +50,7 @@ function renderBanner(
         bridge={props.bridge ?? "disconnected"}
         error={props.error ?? false}
         authError={props.authError ?? false}
+        lastSeenAt={props.lastSeenAt}
       />
     );
   }
@@ -137,6 +144,28 @@ describe("ConnectionBanner — the single connection surface", () => {
     renderBanner();
     await act(async () => {});
     expect(screen.getByText("Can't reach Collie")).toBeInTheDocument();
+  });
+
+  // A cold boot with the tunnel down re-renders the whole herd from cache, which looks exactly like a
+  // live one. The red row is where that gets named.
+  it("dates the red row when the data on screen came from the cache", async () => {
+    h.lost = true;
+    cfg.reachable = false;
+    setOnline(true);
+    const at = new Date(2026, 0, 2, 14, 32).getTime();
+    renderBanner({ error: true, lastSeenAt: at });
+    await act(async () => {});
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      `Can't reach Collie — last seen ${clockTime(at)}`,
+    );
+  });
+
+  it("leaves the red row undated when nothing can date it", async () => {
+    h.lost = true;
+    cfg.reachable = false;
+    renderBanner({ error: true });
+    await act(async () => {});
+    expect(screen.getByRole("alert")).not.toHaveTextContent(/last seen/);
   });
 
   it("Retry re-probes the bridge", async () => {

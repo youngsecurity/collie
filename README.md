@@ -107,13 +107,14 @@ Narrow the blast radius with Tailscale ACLs and `COLLIE_TRUSTED_USER`. Provided 
 
 ## Requirements
 
-On the **host** (the tailnet node your agents run on). Need Herdr 0.7.0+ — check with
-`herdr --version`.
+On the **host** (the tailnet node your agents run on). Need Herdr 0.8.0+ — check with
+`herdr --version`. The 0.32 update gate requires 0.8 so managed installs discover its new
+`update-major` action.
 
 | Tool | Why |
 | --- | --- |
 | [**Bun**](https://bun.sh) | Runs the bridge and builds the web UI — the only hard dependency. |
-| [**Herdr**](https://herdr.dev) ≥ 0.7.0 | The herd Collie mirrors; its CLI registers the plugin. |
+| [**Herdr**](https://herdr.dev) ≥ 0.8.0 | The herd Collie mirrors; its CLI registers the plugin and refreshes newly added actions. |
 | [**Tailscale**](https://tailscale.com) | Front door for the default variant (`tailscale serve`); optional if you run [Variant C](./DEPLOYMENT.md#variant-c--reverse-proxy-as-the-only-front-door-no-tailscale) behind your own reverse proxy. Without any front door, the bridge is `127.0.0.1`-only. |
 | **git** | Clone, and the `update` command. |
 
@@ -315,6 +316,29 @@ A pane your rows match shows only your rows (narrowest row wins,
 two-tap confirm. No restart — edits are live. Verify: open a pane, tap **/**, your rows are on the
 first screen. Syntax error? `journalctl --user -u collie -n 20` names the line.
 
+### Your own key presets
+
+The Keys tray's **Presets** row is yours to replace, in `keys.toml` next to `commands.toml`:
+
+```bash
+cp keys.toml.example "$(herdr plugin config-dir herdr.collie)/keys.toml"
+```
+
+```toml
+[[keys]]
+scope = "claude"             # optional; omit for every pane
+label = "Yes"
+keys = ["Down", "Enter"]     # several chords go out as one batch
+```
+
+A pane your rows match shows only your presets in the Presets row, replacing its shipped Ctrl
+C/D/U/R/L/Z entries ([ADR 0018](./.adr/0018-operator-command-rows-replace-the-catalog.md)). Add
+`danger = true` for a two-tap confirm. The fixed keypad remains available — Esc, quick Ctrl C,
+arrows, Enter/Tab/Space, modifiers, digits, F1–F12 — and is not configurable. Chords are herdr's spelling: `ctrl+c` (never `C-c`), `shift+tab`,
+`ctrl+F7`; `PageUp`/`Home`/`End`/`Delete` are not accepted. No restart — edits are live. Verify:
+open a pane, tap **Keys → Presets**, your buttons are there. Rejected row?
+`journalctl --user -u collie -n 20` names it and why.
+
 ### Multi-session
 
 `COLLIE_MULTI_SESSION=on` (the default) discovers and serves every named Herdr session under your
@@ -398,8 +422,18 @@ scripts/collie-ctl.sh update    # or: herdr plugin action invoke update --plugin
 
 It advances the checkout, rebuilds the UI and restarts the bridge (re-execing itself, so it's safe
 even when the update rewrites the script). Confirm via the footer build stamp. Pinned to a version
-with `--ref`? Keep refreshing with `herdr plugin install --ref …` — `update` always goes to the
-latest.
+with `--ref`? Keep refreshing with `herdr plugin install --ref …`.
+
+**`update` goes to the newest release of the major you are on, and never crosses one.** A major
+means you have to change something, so it is never inherited from a routine update: the command says
+a new major is out and names the one that takes it —
+
+```bash
+herdr plugin action invoke update-major --plugin herdr.collie
+```
+
+The flag is the whole consent; there is no prompt, because a Herdr action has no terminal to answer
+one on. The reasoning is [ADR 0020](./.adr/0020-a-major-upgrade-is-consented-by-flag.md).
 
 Fails with *"You are not currently on a branch"*? That's a GitHub install made before 0.23.1, and
 [Troubleshooting](#troubleshooting) has the one-time repair.
@@ -426,6 +460,18 @@ One command handles both ([ADR 0006](./.adr/0006-update-advances-the-checkout-he
 By hand: frontend (`web/`) → `collie-ctl.sh build` (live, no restart — served from disk); backend
 (`bridge/`) → `systemctl --user restart collie`. Run `scripts/install-hooks.sh` once to enable the
 repo's pre-commit / pre-push checks.
+
+## When 1.0 arrives
+
+Collie 1.0.0 will be a MAJOR release: something about your setup will need your attention before
+you take it. This release is the gatekeeper that makes that safe:
+
+- A routine `update` now follows release tags **within major 0** — it will never carry you into
+  1.0 on its own. (Older versions update straight to whatever the default branch holds; on the
+  Young Security fork, staying below 0.32.0+ys.1 means staying unprotected.)
+- When 1.0.0 is published, the update banner announces it separately from routine updates. Read
+  its release notes first, then consent to the crossing with:
+  `herdr plugin action invoke update-major --plugin herdr.collie`
 
 ### Surviving reboots
 
@@ -533,11 +579,6 @@ Two behaviours worth knowing. It **refuses to replace keys that are already live
 notifications, and until it does it silently receives nothing. But passing a subject on an
 already-configured install is *not* that — it updates the contact address and leaves the keys alone,
 so fixing a typo never costs you your subscribers.
-
-> **On a Herdr install older than 0.8.0**, actions are the set cached when the plugin was installed
-> ([ADR 0006](./.adr/0006-update-advances-the-checkout-herdr-installed.md)), so `push-keys` and
-> `push-test` won't appear until the next `herdr plugin install`. Use
-> `bash scripts/collie-ctl.sh push-keys` until then — it does the identical thing.
 
 **Did it work?** Fire a notification at every subscribed device without waiting for an agent to
 block:

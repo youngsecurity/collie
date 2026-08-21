@@ -5,8 +5,13 @@ import { fixtureAgents, fixtureSnapshot, paneTextWithDraft } from "@/test/handle
 
 // loaders.ts keeps a module-level "last good" cache, so each test re-imports the module fresh
 // (via vi.resetModules) to start from an empty cache and stay independent of run order.
+//
+// The write-through cache (lib/last-seen.ts) outlives a module reset by design — it lives in
+// sessionStorage precisely so a discarded page can read it back. Clearing it here is what makes each
+// case a genuinely cold tab; the cases that WANT a warm one prime it themselves.
 beforeEach(() => {
   vi.resetModules();
+  sessionStorage.clear();
 });
 
 afterEach(() => {
@@ -119,6 +124,25 @@ describe("paneLoader", () => {
     expect(data.authError).toBe(false);
     expect(data.paneId).toBe("w1:p1");
     expect(data.text).toBe(paneTextWithDraft());
+  });
+
+  it("honors and caches an empty successful pane response", async () => {
+    const { paneLoader } = await import("./loaders");
+    await paneLoader({ params: { paneId: "w1:p1" } }); // prime non-empty stale text
+    server.use(
+      http.get(/\/api\/pane\/[^/]+$/, () =>
+        HttpResponse.json({ paneId: "w1:p1", text: "", truncated: false, revision: 2 }),
+      ),
+    );
+
+    const empty = await paneLoader({ params: { paneId: "w1:p1" } });
+    expect(empty.error).toBe(false);
+    expect(empty.text).toBe("");
+
+    failPane();
+    const stale = await paneLoader({ params: { paneId: "w1:p1" } });
+    expect(stale.error).toBe(true);
+    expect(stale.text).toBe("");
   });
 
   it.each([401, 403] as const)("marks a %i response as an auth error", async (status) => {
@@ -545,5 +569,184 @@ describe("historyLoader", () => {
         request: new Request("http://localhost/", { signal: controller.signal }),
       }),
     ).rejects.toThrow();
+  });
+});
+
+// ── Surviving a cold boot with no network (lib/last-seen.ts) ──────────────────
+//
+// The case: a phone leaves Collie for the Tailscale app, the browser DISCARDS the hidden page, and
+// the operator comes back before the tunnel is up. The module caches above are gone with the process,
+// so everything here re-imports the loaders (a fresh page) and asserts against what a fresh page can
+// still read: the write-through cache in sessionStorage.
+describe("cold boot with no network", () => {
+  const PANE_KEY = "collie:last-pane: w1:p1";
+  const SNAPSHOT_KEY = "collie:last-snapshot:";
+
+  it("writes the snapshot through on a successful fetch", async () => {
+    const { rootLoader } = await import("./loaders");
+    await rootLoader();
+    expect(sessionStorage.getItem(SNAPSHOT_KEY)).not.toBeNull();
+  });
+
+  it("writes the pane mirror through on a successful fetch", async () => {
+    const { paneLoader } = await import("./loaders");
+    await paneLoader({ params: { paneId: "w1:p1" } });
+    expect(sessionStorage.getItem(PANE_KEY)).toContain("hello from the pane");
+  });
+
+  it("renders the cached herd — dated — when a fresh page can't reach the bridge", async () => {
+    const warm = await import("./loaders");
+    await warm.rootLoader(); // the session before the page was discarded
+
+    // A brand-new page: module caches empty, first fetch fails.
+    vi.resetModules();
+    failSnapshot();
+    const { rootLoader } = await import("./loaders");
+    const data = await rootLoader();
+
+    expect(data.error).toBe(true);
+    expect(data.bridge).toBe("connected"); // from the restored snapshot
+    expect(data.agents).toHaveLength(2);
+    expect(data.lastSeenAt).toBeTypeOf("number");
+  });
+
+  it("renders the cached pane mirror — dated — on a fresh page", async () => {
+    const warm = await import("./loaders");
+    await warm.paneLoader({ params: { paneId: "w1:p1" } });
+
+    vi.resetModules();
+    failPane();
+    const { paneLoader } = await import("./loaders");
+    const data = await paneLoader({ params: { paneId: "w1:p1" } });
+
+    expect(data.error).toBe(true);
+    expect(data.text).toContain("hello from the pane");
+    expect(data.lastSeenAt).toBeTypeOf("number");
+  });
+
+  it("keeps a newer in-memory snapshot paired with its own time when storage writes fail", async () => {
+    const oldAt = 1_700_000_000_000;
+    const freshAt = 1_800_000_000_000;
+    sessionStorage.setItem(SNAPSHOT_KEY, JSON.stringify({ at: oldAt, value: fixtureSnapshot }));
+    const fresh = { ...fixtureSnapshot, agents: fixtureSnapshot.agents.slice(0, 1) };
+    server.use(http.get("/api/snapshot", () => HttpResponse.json(fresh)));
+    vi.spyOn(Date, "now").mockReturnValue(freshAt);
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("QuotaExceededError");
+    });
+
+    const { rootLoader } = await import("./loaders");
+    await rootLoader();
+    failSnapshot();
+    const stale = await rootLoader();
+    expect(stale.agents).toHaveLength(1);
+    expect(stale.lastSeenAt).toBe(freshAt);
+  });
+
+  it("keeps newer in-memory pane text paired with its own time when storage writes fail", async () => {
+    const oldAt = 1_700_000_000_000;
+    const freshAt = 1_800_000_000_000;
+    sessionStorage.setItem(PANE_KEY, `${oldAt}\nold pane text`);
+    vi.spyOn(Date, "now").mockReturnValue(freshAt);
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("QuotaExceededError");
+    });
+
+    const { paneLoader } = await import("./loaders");
+    await paneLoader({ params: { paneId: "w1:p1" } });
+    failPane();
+    const stale = await paneLoader({ params: { paneId: "w1:p1" } });
+    expect(stale.text).toContain("hello from the pane");
+    expect(stale.lastSeenAt).toBe(freshAt);
+  });
+
+  it("says disconnected, not empty, when a fresh page has nothing cached", async () => {
+    failSnapshot();
+    const { rootLoader } = await import("./loaders");
+    const data = await rootLoader();
+
+    // `error` is the flag the empty state keys off: an empty herd here means "we don't know", and
+    // components/agent-list.tsx must not read it as "nothing is running".
+    expect(data.error).toBe(true);
+    expect(data.agents).toEqual([]);
+    expect(data.lastSeenAt).toBeUndefined();
+  });
+
+  it("keeps the cache per session", async () => {
+    const warm = await import("./loaders");
+    await warm.rootLoader(); // primary only
+
+    vi.resetModules();
+    failSnapshot();
+    const { rootLoader } = await import("./loaders");
+    const data = await rootLoader({ request: new Request("http://localhost/?s=collie-demo") });
+    expect(data.agents).toEqual([]);
+    expect(data.lastSeenAt).toBeUndefined();
+  });
+
+  it("survives a store that refuses to answer", async () => {
+    const boom = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("storage disabled");
+    });
+    failSnapshot();
+    const { rootLoader } = await import("./loaders");
+    const data = await rootLoader();
+    expect(data.error).toBe(true);
+    expect(data.agents).toEqual([]);
+    boom.mockRestore();
+  });
+
+  // ADR 0017: recognising a password prompt changes what Collie says — and this, the one other thing
+  // it changes. The pane the operator is answering `sudo` in is not left in the browser's store.
+  describe("a pane at a password prompt (ADR 0017)", () => {
+    const sudoPane = () =>
+      server.use(
+        http.get(/\/api\/pane\/[^/]+$/, () =>
+          HttpResponse.json({
+            paneId: "w1:p1",
+            text: "$ sudo -v\n[sudo] password for altan:",
+            truncated: false,
+            revision: 2,
+          }),
+        ),
+      );
+
+    it("is never written to the cache", async () => {
+      sudoPane();
+      const { paneLoader } = await import("./loaders");
+      await paneLoader({ params: { paneId: "w1:p1" } });
+      expect(sessionStorage.getItem(PANE_KEY)).toBeNull();
+    });
+
+    it("drops what an earlier read had already cached", async () => {
+      const { paneLoader } = await import("./loaders");
+      await paneLoader({ params: { paneId: "w1:p1" } }); // ordinary screen, cached
+      expect(sessionStorage.getItem(PANE_KEY)).not.toBeNull();
+
+      sudoPane();
+      await paneLoader({ params: { paneId: "w1:p1" } });
+      expect(sessionStorage.getItem(PANE_KEY)).toBeNull();
+    });
+
+    it("is not restored from memory when the next pane fetch fails", async () => {
+      sudoPane();
+      const { paneLoader } = await import("./loaders");
+      const prompt = await paneLoader({ params: { paneId: "w1:p1" } });
+      expect(prompt.text).toContain("password for altan");
+
+      failPane();
+      const stale = await paneLoader({ params: { paneId: "w1:p1" } });
+      expect(stale.error).toBe(true);
+      expect(stale.text).toBe("");
+      expect(sessionStorage.getItem(PANE_KEY)).toBeNull();
+    });
+
+    it("still caches the snapshot — the exclusion is the pane's text, not the herd", async () => {
+      sudoPane();
+      const { paneLoader, rootLoader } = await import("./loaders");
+      await paneLoader({ params: { paneId: "w1:p1" } });
+      await rootLoader();
+      expect(sessionStorage.getItem(SNAPSHOT_KEY)).not.toBeNull();
+    });
   });
 });

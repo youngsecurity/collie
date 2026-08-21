@@ -161,6 +161,11 @@ export interface UpdateInfo {
   latestUrl: string | null;
   /** A newer release than `current` exists upstream — the update action will fetch it. */
   releaseAvailable: boolean;
+  /** Newest release of a HIGHER major than `current`, or null. A routine update never crosses it —
+   *  `update --major` is the consent (ADR 0020), so the banner names that command. */
+  majorAvailable: string | null;
+  /** GitHub release page for `majorAvailable`, or null when there is none. */
+  majorUrl: string | null;
   /** The running bridge PROCESS is behind the on-disk code — a `systemctl restart` picks it up. */
   bridgeStale: boolean;
   /** When the upstream check last ran (epoch ms), or null if it hasn't. */
@@ -282,6 +287,23 @@ export interface OperatorCommand {
   confirm?: boolean;
 }
 
+/**
+ * One operator-declared Keys-tray preset (a `[[keys]]` table in their `keys.toml`). Mirrors
+ * OperatorKeyRow in bridge/types.ts. Resolved against the shipped presets by `ctrlPresetsFor()`,
+ * which hands a pane these rows instead of the shipped ones when any of them address it. Only the
+ * tray's preset CATALOG is configurable — its keyboard is fixed.
+ */
+export interface OperatorKeyRow {
+  /** Herdr agent name this applies to, lowercased. Omitted = every agent. */
+  agent?: string;
+  /** The button's text, and its identity within one scope. */
+  label: string;
+  /** Chords in Herdr's `pane.send_keys` spelling; more than one is sent as ONE ordered batch. */
+  keys: string[];
+  /** The operator putting their own row behind the tray's two-tap confirm. */
+  danger?: boolean;
+}
+
 export interface BridgeConfig {
   push: boolean;
   vapidPublicKey: string;
@@ -289,6 +311,8 @@ export interface BridgeConfig {
   build?: string;
   /** The operator's own palette rows. Absent when there is no `commands.toml`. */
   operatorCommands?: OperatorCommand[];
+  /** The operator's own Keys-tray presets. Absent when there is no `keys.toml`. */
+  operatorKeys?: OperatorKeyRow[];
 }
 
 /**

@@ -13,9 +13,9 @@ import type { UpdateInfo } from "@/lib/types";
 export interface UpdateNotice {
   /** The human line, e.g. "Bridge restart needed" / "Collie 0.12.0 available". */
   line: string;
-  /** A copyable command that resolves it — a Herdr plugin action, so it runs from ANY directory
-   *  (Herdr resolves the plugin's checkout). Only the RESTART case carries one: it has no page to link
-   *  to. The release case sends you to `href` instead, where the release notes carry the commands. */
+  /** A copyable Herdr plugin action that runs from any directory. Restart notices carry it without
+   *  a link; major-release notices carry both the consent command and release-notes `href`. Routine
+   *  same-major releases link to their notes, where the update command is documented. */
   command?: string;
   /** GitHub release page for the available version — the line links to it. Absent for the restart case. */
   href?: string;
@@ -40,6 +40,16 @@ export function updateNotice(update: UpdateInfo | undefined): UpdateNotice | nul
   // page (linked) carries the update commands, so the footer just links there.
   if (update.releaseAvailable && update.latest) {
     return { line: `Collie ${update.latest} available`, href: update.latestUrl ?? undefined };
+  }
+  // A MAJOR is out. It ranks below a routine release because it is the one thing the plain update
+  // action will NOT take (ADR 0020) — so this line names the consent command instead of leaving the
+  // operator to tap update, see it succeed, and still see a banner.
+  if (update.majorAvailable) {
+    return {
+      line: `Collie ${update.majorAvailable} — a new major`,
+      href: update.majorUrl ?? undefined,
+      command: "herdr plugin action invoke update-major --plugin herdr.collie",
+    };
   }
   return null;
 }

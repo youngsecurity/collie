@@ -36,10 +36,16 @@ jobs:
             fi
             echo "## Update"
             echo
-            echo "Update the plugin — advances the checkout, rebuilds, restarts (runs from any directory):"
+            echo "For a release within your installed major, update the plugin — advances the checkout, rebuilds, and restarts:"
             echo
             echo '```'
             echo "herdr plugin action invoke update --plugin herdr.collie"
+            echo '```'
+            echo
+            echo "If this release starts a newer major, read its migration notes and explicitly consent to the crossing:"
+            echo
+            echo '```'
+            echo "herdr plugin action invoke update-major --plugin herdr.collie"
             echo '```'
             echo
             echo "Or just restart the bridge to pick up an already-built change:"
