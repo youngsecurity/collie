@@ -24,6 +24,12 @@ export default defineConfig({
   },
   test: {
     environment: "jsdom",
+    // Node ≥25 ships its own Web Storage globals (nodejs/node#57666), which shadow jsdom's
+    // localStorage in the test workers — every `localStorage.clear()` then explodes on a
+    // broken global (vitest-dev/vitest#8757). Hand the flag to the workers so jsdom's
+    // implementation is the only one in the room. Node <25 has no such global and rejects
+    // the flag outright ("bad option"), so it is gated on the running major.
+    execArgv: Number(process.versions.node.split(".")[0]) >= 25 ? ["--no-webstorage"] : [],
     globals: true,
     css: false,
     setupFiles: ["./src/test/setup.ts"],
