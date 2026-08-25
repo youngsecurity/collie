@@ -1,0 +1,100 @@
+name: Upstream check
+
+on:
+  schedule:
+    # Daily at 06:17 UTC. Offset from the top of the hour because GitHub
+    # delays/drops jobs scheduled at popular times like "0 * * * *".
+    - cron: "17 6 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  UPSTREAM_REPO: AltanS/collie
+  UPSTREAM_BRANCH: main
+  LOCAL_BRANCH: main
+  ISSUE_LABEL: upstream-sync
+
+jobs:
+  check-upstream:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.LOCAL_BRANCH }}
+          fetch-depth: 0
+
+      - name: Fetch upstream and compare
+        id: compare
+        run: |
+          git remote add upstream "https://github.com/${UPSTREAM_REPO}.git"
+          git fetch --quiet upstream "${UPSTREAM_BRANCH}"
+
+          BEHIND=$(git rev-list --count "${LOCAL_BRANCH}..upstream/${UPSTREAM_BRANCH}")
+          echo "behind=${BEHIND}" >> "$GITHUB_OUTPUT"
+
+          if [ "$BEHIND" -gt 0 ]; then
+            {
+              echo "commits<<EOF"
+              git log --oneline --no-decorate "${LOCAL_BRANCH}..upstream/${UPSTREAM_BRANCH}" | head -50
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "Fork is ${BEHIND} commit(s) behind ${UPSTREAM_REPO}:${UPSTREAM_BRANCH}"
+
+      - name: Open issue if behind (skip if one is already open)
+        if: steps.compare.outputs.behind > 0
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BEHIND: ${{ steps.compare.outputs.behind }}
+          COMMITS: ${{ steps.compare.outputs.commits }}
+        run: |
+          EXISTING=$(gh issue list \
+            --repo "${GITHUB_REPOSITORY}" \
+            --label "${ISSUE_LABEL}" \
+            --state open \
+            --json number \
+            --jq 'length')
+
+          if [ "$EXISTING" -gt 0 ]; then
+            echo "An open ${ISSUE_LABEL} issue already exists; not creating a duplicate."
+            exit 0
+          fi
+
+          gh label create "${ISSUE_LABEL}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --description "Upstream has commits not in this fork" \
+            --color FBCA04 || true
+
+          BODY_FILE=$(mktemp)
+          cat > "$BODY_FILE" <<EOF
+          Upstream [\`${UPSTREAM_REPO}\`](https://github.com/${UPSTREAM_REPO}) \`${UPSTREAM_BRANCH}\` has **${BEHIND}** commit(s) not in this fork's \`${LOCAL_BRANCH}\`.
+
+          ## New upstream commits (newest first, max 50)
+
+          \`\`\`
+          ${COMMITS}
+          \`\`\`
+
+          ## To sync
+
+          \`\`\`sh
+          git fetch upstream
+          git merge upstream/${UPSTREAM_BRANCH}   # or: git rebase upstream/${UPSTREAM_BRANCH}
+          git push origin ${LOCAL_BRANCH}
+          \`\`\`
+
+          Or use the **Sync fork** button on the repo page.
+
+          _Opened automatically by the \`upstream-check\` workflow._
+          EOF
+
+          gh issue create \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "Upstream ${UPSTREAM_REPO}:${UPSTREAM_BRANCH} is ${BEHIND} commit(s) ahead" \
+            --label "${ISSUE_LABEL}" \
+            --body-file "$BODY_FILE"
