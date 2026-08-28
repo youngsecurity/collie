@@ -481,7 +481,7 @@ WorkingDirectory=${PLUGIN_ROOT}
 # bridge, exactly as the launchd agent and the unsupervised tier do. Handing systemd the raw .env
 # would apply its different grammar (an export-prefixed key is dropped, an unquoted trailing
 # " # comment" stays in the value), so one file could mean two configs.
-ExecStart=/bin/bash ${PLUGIN_ROOT}/scripts/collie-ctl.sh _exec-bridge
+ExecStart=/bin/bash "${PLUGIN_ROOT}/scripts/collie-ctl.sh" _exec-bridge
 Restart=on-failure
 RestartSec=5
 # Hardening: the bridge is remote shell access, so deny privilege escalation and give it a private

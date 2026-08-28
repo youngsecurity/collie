@@ -1593,7 +1593,10 @@ EOF
 
   [ -f "$unit" ] || fail "write_unit did not write the unit"
   local body; body="$(cat "$unit")"
-  assert_contains "$body" 'collie-ctl.sh _exec-bridge'
+  # The script path is double-quoted so a whitespace-containing install root stays one systemd
+  # argument (systemd strips full-item quotes; a bare ${PLUGIN_ROOT} would split).
+  assert_contains "$body" 'ExecStart=/bin/bash "'
+  assert_contains "$body" 'collie-ctl.sh" _exec-bridge'
   assert_contains "$body" 'Environment=COLLIE_TAILSCALE_HOSTS=host.example,100.64.0.1'
   case "$body" in
     *EnvironmentFile*) fail "the unit re-grew EnvironmentFile= — systemd's .env grammar differs from load_env()'s" ;;
