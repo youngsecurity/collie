@@ -3,12 +3,13 @@ import { homedir } from "node:os";
 import { extname, join, normalize, sep } from "node:path";
 import type { ActivityLedger } from "./activity.ts";
 import type { AuditLog } from "./audit.ts";
-import type { Config } from "./config.ts";
+import { isLoopbackBindHost, type Config } from "./config.ts";
 import type { HerdrClient, PaneRead } from "./herdr-client.ts";
 import { computeEtag, gzipJsonResponse, notModified } from "./http-cache.ts";
 import type { NotifyPrefs, NotifyPrefsStore } from "./notify-prefs.ts";
 import { createOperatorCommands } from "./operator-commands.ts";
 import { createOperatorKeys } from "./operator-keys.ts";
+import { createOperatorQuickReplies } from "./operator-quick-replies.ts";
 import {
   DEFAULT_PROMPT_TAIL_LINES,
   verifyExpectedPrompt,
@@ -17,6 +18,7 @@ import {
 import type { Push, PushSubscription } from "./push.ts";
 import { herdTagFor, type SessionRegistry } from "./sessions.ts";
 import type { Snooze } from "./snooze.ts";
+import { imageExtFromBytes, SNIFF_BYTES } from "./uploads.ts";
 import type { UpdateMonitor } from "./update.ts";
 import type { StateEngine } from "./state-engine.ts";
 import { adapterFor, buildJournalRegistry } from "./journal/registry.ts";
@@ -50,12 +52,7 @@ const MAX_REQUEST_BODY_BYTES = 12 * 1024 * 1024; // 12 MB
 const MAX_READ_LINES = 10_000;
 const MAX_EXPECTED_PROMPT_CHARS = 8192;
 const PROMPT_BINDING_BLANK_LINE_HEADROOM = 6;
-const IMAGE_EXT: Record<string, string> = {
-  "image/png": "png",
-  "image/jpeg": "jpg",
-  "image/webp": "webp",
-  "image/gif": "gif",
-};
+// Image type is sniffed from magic bytes in uploadPane — never from the client-supplied MIME.
 
 // The built PWA lives in web/dist (Vite output). If it's missing, the bridge still runs the API
 // — only the static UI 503s with a hint to build.
@@ -138,6 +135,22 @@ export function hasForwardingHeaders(req: Request): boolean {
   return forwarded;
 }
 
+/**
+ * Whether a TCP peer address is loopback. Unlike the `Host` header — which the client writes —
+ * this comes from the kernel and cannot be forged.
+ *
+ * Bun gives IPv4 peers as `127.0.0.1` and IPv6 peers as `::1`; a dual-stack listener can also report
+ * an IPv4 peer in v4-mapped form (`::ffff:127.0.0.1`). A null/absent address is treated as loopback
+ * (the bind gate in config.ts is the primary control).
+ */
+export function isLoopbackPeer(address: string | null | undefined): boolean {
+  if (!address) return true;
+  const a = address.trim().toLowerCase();
+  if (a === "::1" || a === "0:0:0:0:0:0:0:1") return true;
+  const v4 = a.startsWith("::ffff:") ? a.slice(7) : a;
+  return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(v4);
+}
+
 const PANE_ROUTE = /^\/api\/pane\/([^/]+)(?:\/(reply|keys|upload|close|rename|history))?$/;
 // Turns per history page. "Show entire history" means the WHOLE conversation, so the client asks for
 // everything and this ceiling is a safety net against a pathological log, not the normal path — a
@@ -199,6 +212,8 @@ export function startServer(opts: {
   const operatorCommands = createOperatorCommands(cfg.commandsFile);
   // Its sibling, on the same contract: one reader, one mtime cache, keys.toml off the hot path.
   const operatorKeys = createOperatorKeys(cfg.keysFile);
+  // The third on that contract: the Quick dock's groups, quick-replies.toml off the hot path.
+  const operatorQuickReplies = createOperatorQuickReplies(cfg.quickRepliesFile);
   const journals = cfg.transcript ? buildJournalRegistry(cfg.journalRoots) : null;
   const transcripts = cfg.transcript ? new TranscriptStore() : null;
   /** Does this agent have a journal at all — the snapshot's History-affordance gate. */
@@ -216,6 +231,11 @@ export function startServer(opts: {
 
     async fetch(req, bunServer) {
       const peerAddress = bunServer.requestIP(req)?.address ?? null;
+      // Kernel-reported peer address first: on the default loopback bind a non-loopback peer is
+      // impossible, so seeing one means the operator bound wide without the explicit escape hatch.
+      if (!cfg.allowNonLoopbackBind && !isLoopbackPeer(peerAddress)) {
+        return text("non-loopback peer rejected", 403);
+      }
       const hostGate = checkHostAccess(
         req.headers.get("host") ?? "",
         cfg,
@@ -361,6 +381,7 @@ export function startServer(opts: {
         // with no restart. The path is cfg's, never the request's.
         const mine = await operatorCommands();
         const myKeys = await operatorKeys();
+        const myReplies = await operatorQuickReplies();
         return json({
           push: push.enabled,
           vapidPublicKey: push.publicKey,
@@ -370,6 +391,8 @@ export function startServer(opts: {
           ...(mine.length > 0 ? { operatorCommands: mine } : {}),
           // Same omit-when-empty rule: an operator with no keys.toml ships the payload they had.
           ...(myKeys.length > 0 ? { operatorKeys: myKeys } : {}),
+          // And once more for quick-replies.toml.
+          ...(myReplies.length > 0 ? { operatorQuickReplies: myReplies } : {}),
         } satisfies BridgeConfig, req.headers.get("accept-encoding"));
       }
       if (pathname === "/api/subscribe" && req.method === "POST") {
@@ -484,9 +507,9 @@ export function startServer(opts: {
  */
 export function startupWarnings(cfg: Config): string[] {
   const warnings: string[] = [];
-  if (cfg.host !== "127.0.0.1" && cfg.host !== "localhost") {
+  if (!isLoopbackBindHost(cfg.host)) {
     warnings.push(
-      `[bridge] WARNING: bound to ${cfg.host}, not loopback — identity checks may be bypassable`,
+      `[bridge] WARNING: bound to ${cfg.host} via COLLIE_ALLOW_NON_LOOPBACK_BIND — the identity, device and same-origin gates are all client-settable on a wide bind, and the peer-address check is off. Whatever fronts this port is now the only control.`,
     );
   }
   if (cfg.deviceHeader && cfg.deviceAllowlist.length === 0) {
@@ -506,15 +529,28 @@ export function startupWarnings(cfg: Config): string[] {
     warnings.push(
       `[bridge] WARNING: COLLIE_TRUSTED_USER is empty — any tailnet device/user that reaches the bridge gets full write access. Set it to your tailnet login (see README → Variant A).`,
     );
-  }
-  if (cfg.publicHosts.length === 0) {
+  } else if (cfg.trustedUserOptional) {
     warnings.push(
-      `[bridge] WARNING: COLLIE_PUBLIC_HOSTS is empty — remote requests will be denied. Set it to each externally reachable host or host:port value.`,
+      `[bridge] WARNING: COLLIE_TRUSTED_USER_OPTIONAL=1 — a request with no Tailscale-User-Login is accepted, so any TAGGED tailnet node (which serve injects no identity for) gets full write access. Unset it outside host-local development.`,
+    );
+  }
+  if (cfg.allowAnyHost) {
+    warnings.push(
+      `[bridge] WARNING: COLLIE_ALLOW_ANY_HOST=1 — Host-header validation is OFF, so a DNS-rebound page can reach this bridge as if it were same-origin. Unset it and set COLLIE_PUBLIC_HOSTS to the host(s) you serve on.`,
+    );
+  } else if (cfg.publicHosts.length === 0 && cfg.tailscaleHosts.length === 0) {
+    warnings.push(
+      `[bridge] WARNING: no non-loopback Host is allowed — every remote request will be rejected with "host allowlist required". Set COLLIE_PUBLIC_HOSTS to the exact host(s) you serve on (required behind your own reverse proxy and under COLLIE_SKIP_SERVE=1).`,
     );
   } else {
     for (const host of cfg.publicHosts) {
       if (!canonicalizeHost(host)) {
         warnings.push(`[bridge] WARNING: invalid COLLIE_PUBLIC_HOSTS entry: ${host}`);
+      }
+    }
+    for (const host of cfg.tailscaleHosts) {
+      if (!canonicalizeHost(host)) {
+        warnings.push(`[bridge] WARNING: invalid COLLIE_TAILSCALE_HOSTS entry: ${host}`);
       }
     }
   }
@@ -1149,9 +1185,10 @@ async function uploadPane(
   if (!(file instanceof File)) {
     return json({ ok: false, error: "no file" } satisfies UploadResponse, ae);
   }
-  const ext = IMAGE_EXT[file.type];
+  const head = new Uint8Array(await file.slice(0, SNIFF_BYTES).arrayBuffer());
+  const ext = imageExtFromBytes(head);
   if (!ext) {
-    return json({ ok: false, error: `unsupported type: ${file.type || "unknown"}` } satisfies UploadResponse, ae);
+    return json({ ok: false, error: "unsupported type" } satisfies UploadResponse, ae);
   }
   if (file.size > MAX_UPLOAD_BYTES) {
     return json({ ok: false, error: "image too large (max 10 MB)" } satisfies UploadResponse, ae);
@@ -1180,18 +1217,22 @@ async function uploadPane(
 
 /**
  * Access gate for the API:
- *  - Host allowlist: a remote peer's canonical Host must appear explicitly in COLLIE_PUBLIC_HOSTS.
- *    Loopback Host forms are accepted only from a direct request whose actual socket peer is
- *    loopback. Forwarding headers disable that local-only exception. This check runs BEFORE Origin
- *    logic (fail-closed) to defeat DNS rebinding.
+ *  - Host allowlist (fail-closed): a remote peer's canonical Host must appear explicitly in
+ *    COLLIE_PUBLIC_HOSTS or the ctl-discovered COLLIE_TAILSCALE_HOSTS. Loopback Host forms are
+ *    accepted only from a direct request whose actual socket peer is loopback; forwarding headers
+ *    disable that local-only exception. Allowed origins deliberately do NOT grant Host access
+ *    (stricter than upstream). This check runs BEFORE Origin logic to defeat DNS rebinding
+ *    (Host==Origin==evil.example). COLLIE_ALLOW_ANY_HOST=1 is the explicit opt-out.
  *  - Same-origin only (Origin host must equal Host) — defeats cross-site requests/CSRF. Browsers
  *    omit Origin on same-origin GETs (so the snapshot poll passes); they send it on POSTs.
  *    localhost and explicitly-configured origins are also allowed.
  *  - Origin required for writes: a state-changing (`level === "write"`) request with no Origin is
  *    trusted only from loopback (curl on the host). Browsers always send Origin on fetch/SW POSTs,
  *    so a missing Origin on a remote write is a non-browser or Origin-stripped request — reject it.
- *  - Optional Tailscale identity: if a trusted user is configured and `tailscale serve` injects a
- *    `Tailscale-User-Login`, it must match.
+ *  - Tailscale identity: when a trusted user is configured under `tailscale serve`, the request
+ *    must carry a matching `Tailscale-User-Login`. A missing header is rejected too — serve injects
+ *    none for tagged nodes. Under COLLIE_SKIP_SERVE=1 or COLLIE_TRUSTED_USER_OPTIONAL=1, only a
+ *    mismatch is rejected.
  */
 export function checkAccess(
   req: Request,
@@ -1202,7 +1243,9 @@ export function checkAccess(
   const host = req.headers.get("host") ?? "";
   const hostGate = checkHostAccess(host, cfg, peerAddress, hasForwardingHeaders(req));
   if (!hostGate.ok) return hostGate;
-  const canonicalRequestHost = canonicalizeHost(host)!;
+  // Non-null whenever the gate actually validated the header; null is only reachable under the
+  // COLLIE_ALLOW_ANY_HOST=1 opt-out, where an unparseable Host simply never matches below.
+  const canonicalRequestHost = canonicalizeHost(host);
 
   const origin = req.headers.get("origin");
   if (origin) {
@@ -1220,7 +1263,11 @@ export function checkAccess(
     if (!allowed) return { ok: false, reason: "cross-origin rejected" };
   } else if (
     level === "write" &&
-    !(LOOPBACK_HOST.test(canonicalRequestHost) && isLoopbackAddress(peerAddress))
+    !(
+      canonicalRequestHost !== null &&
+      LOOPBACK_HOST.test(canonicalRequestHost) &&
+      isLoopbackAddress(peerAddress)
+    )
   ) {
     // A write with no Origin header from a non-loopback Host isn't a real browser request — refuse.
     return { ok: false, reason: "origin required" };
@@ -1228,8 +1275,12 @@ export function checkAccess(
 
   if (cfg.trustedUser) {
     const login = req.headers.get("tailscale-user-login");
-    if (login && login !== cfg.trustedUser) {
-      return { ok: false, reason: "identity not trusted" };
+    if (login) {
+      if (login !== cfg.trustedUser) return { ok: false, reason: "identity not trusted" };
+    } else if (!cfg.skipServe && !cfg.trustedUserOptional) {
+      // Fail closed: `tailscale serve` injects no Tailscale-User-* for TAGGED nodes, so an absent
+      // header is not "a loopback caller" — it is any tagged node on the tailnet.
+      return { ok: false, reason: "identity required" };
     }
   }
   return { ok: true };
@@ -1241,9 +1292,11 @@ export function checkHostAccess(
   peerAddress: string | null,
   forwarded: boolean = false,
 ): { ok: true } | { ok: false; reason: string } {
+  // The operator's explicit opt-out: Host validation entirely off (warned about at startup).
+  if (cfg.allowAnyHost) return { ok: true };
   // Loopback-only deployments keep working without configuration, but an empty allowlist never
   // opens a remotely reachable bridge.
-  if (cfg.publicHosts.length === 0 && !isLoopbackAddress(peerAddress)) {
+  if (cfg.publicHosts.length === 0 && cfg.tailscaleHosts.length === 0 && !isLoopbackAddress(peerAddress)) {
     return { ok: false, reason: "host allowlist required" };
   }
   if (!isHostAllowed(host, cfg, peerAddress, forwarded)) {
@@ -1253,9 +1306,10 @@ export function checkHostAccess(
 }
 
 /**
- * Whether a Host header is one the bridge will answer to: an explicit COLLIE_PUBLIC_HOSTS entry, or
- * a loopback form from an actual loopback socket peer on a direct, non-forwarded request. Origin
- * configuration is deliberately separate. Pure + exported for tests.
+ * Whether a Host header is one the bridge will answer to: an explicit COLLIE_PUBLIC_HOSTS entry, a
+ * discovered Tailscale host (COLLIE_TAILSCALE_HOSTS, bare or with a port), or a loopback form from
+ * an actual loopback socket peer on a direct, non-forwarded request. Origin configuration is
+ * deliberately separate and never grants Host access. Pure + exported for tests.
  */
 export function isHostAllowed(
   host: string,
@@ -1268,7 +1322,17 @@ export function isHostAllowed(
   if (LOOPBACK_HOST.test(canonicalHost)) {
     return isLoopbackAddress(peerAddress) && !forwarded;
   }
-  return cfg.publicHosts.some((candidate) => canonicalizeHost(candidate) === canonicalHost);
+  if (cfg.publicHosts.some((candidate) => canonicalizeHost(candidate) === canonicalHost)) {
+    return true;
+  }
+  // collie-ctl.sh discovers these as bare hosts (MagicDNS name + tailnet IPs); the bridge may be
+  // served on any port, so an entry matches the request Host with or without its port.
+  const bareHost = canonicalHost.replace(/:\d+$/, "");
+  return cfg.tailscaleHosts.some((candidate) => {
+    const canonicalCandidate = canonicalizeHost(candidate);
+    return canonicalCandidate !== null &&
+      (canonicalCandidate === canonicalHost || canonicalCandidate === bareHost);
+  });
 }
 
 /**
