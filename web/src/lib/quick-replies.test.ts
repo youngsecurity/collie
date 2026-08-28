@@ -42,3 +42,60 @@ describe("quickRepliesFor", () => {
     }
   });
 });
+
+// The operator's own groups (their `quick-replies.toml`, ADR 0018): on a pane their rows address,
+// those rows ARE the dock.
+describe("quickRepliesFor with operator rows", () => {
+  const german = [{ title: "bestätigen", items: ["ja", "nein"] }];
+
+  it("replaces the shipped groups on a pane the rows address", () => {
+    expect(quickRepliesFor("claude", false, german)).toEqual(german);
+  });
+
+  it("leaves a pane untouched when no row addresses it", () => {
+    const scoped = [{ agent: "codex", title: "bestätigen", items: ["ja"] }];
+    expect(quickRepliesFor("claude", false, scoped)).toEqual(quickRepliesFor("claude", false));
+    expect(quickRepliesFor("codex", false, scoped)).toEqual([
+      { title: "bestätigen", items: ["ja"] },
+    ]);
+  });
+
+  it("reaches a shell too — an operator's language is not an agent-only choice", () => {
+    expect(quickRepliesFor("shell", true, german)).toEqual(german);
+    const shellOnly = [{ agent: "shell", title: "confirm", items: ["j", "n"] }];
+    expect(quickRepliesFor("shell", true, shellOnly)).toEqual([
+      { title: "confirm", items: ["j", "n"] },
+    ]);
+    // ...and a shell-scoped row must not leak onto an agent pane.
+    expect(quickRepliesFor("claude", false, shellOnly)).toEqual(quickRepliesFor("claude", false));
+  });
+
+  // Regression pin (PR #6 review): no harness is named "shell" today, but if herdr ever reported
+  // one, the bridge classifies it as an AGENT pane carrying agent "shell" (pinned in
+  // bridge/state-engine.test.ts) — and shell-scoped operator rows then reach its dock, because
+  // rowsFor matches the string. That bleed is the accepted tradeoff; this test makes any change of
+  // heart a deliberate edit rather than an accident.
+  it("a shell-scoped row reaches a hypothetical AGENT literally named 'shell' (accepted bleed)", () => {
+    const shellOnly = [{ agent: "shell", title: "confirm", items: ["j", "n"] }];
+    expect(quickRepliesFor("shell", false, shellOnly)).toEqual([
+      { title: "confirm", items: ["j", "n"] },
+    ]);
+    // With no operator rows it falls back to the AGENT catalog — never the shell y/n pair.
+    expect(quickRepliesFor("shell", false)).toEqual(quickRepliesFor("claude", false));
+  });
+
+  it("an empty list is exactly the shipped behaviour", () => {
+    expect(quickRepliesFor("claude", false, [])).toEqual(quickRepliesFor("claude", false));
+    expect(quickRepliesFor("shell", true, [])).toEqual(quickRepliesFor("shell", true));
+  });
+
+  it("a narrower row wins over an unscoped one, as everywhere else", () => {
+    const mixed = [
+      { title: "confirm", items: ["global"] },
+      { agent: "claude", title: "confirm", items: ["scoped"] },
+    ];
+    expect(quickRepliesFor("claude", false, mixed)).toEqual([
+      { title: "confirm", items: ["scoped"] },
+    ]);
+  });
+});

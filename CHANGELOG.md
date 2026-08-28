@@ -6,6 +6,52 @@ All notable changes to Collie are recorded here. The format follows
 `version` in `herdr-plugin.toml`, `package.json`, and `web/package.json` (enforced by
 `scripts/check-version.sh`). See [`CLAUDE.md`](./CLAUDE.md) → *Versioning* for the bump policy.
 
+## [0.35.0+ys.2] - 2026-08-28
+
+### Fixed
+
+- **The systemd unit supervises `_exec-bridge`** (quoted script path) instead of handing systemd the raw `.env` — `load_env()`'s grammar is now the only `.env` grammar on every launch path (systemd's own parsing drops an `export`-prefixed key and keeps an unquoted trailing `# comment` in the value), and a whitespace-containing install root cannot split `ExecStart` (PR #6 review, eb7f248, ed855ef)
+- **`self_hosts()` uses the resolved `$BUN`** — Tailscale host discovery can no longer silently bake an empty fail-closed allowlist when Bun is resolvable but off `PATH` (eb7f248)
+- **GIF uploads require the complete `GIF87a`/`GIF89a` signature** — a `GIF8` near-miss no longer types as `.gif` (eb7f248)
+
+### Changed
+
+- `ARCHITECTURE.md` states the fork's actual Host gate: allowed origins never expand the Host allowlist, and a loopback Host needs a loopback socket peer (eb7f248)
+- Regression tests pin that a herdr agent literally named `"shell"` stays an agent pane, and that shell-scoped operator rows reaching it is the accepted tradeoff (eb7f248)
+
+## [0.35.0+ys.1] - 2026-08-28
+
+### Changed
+
+- Adopted upstream Collie 0.35.0 while retaining Young Security terminal appearance, Host hardening, and fork release handling (10ad046)
+- The fork's canonicalized, peer-aware Host gate now also accepts ctl-discovered `COLLIE_TAILSCALE_HOSTS` entries and honours the `COLLIE_ALLOW_ANY_HOST=1` opt-out; allowed origins still never expand the Host allowlist
+
+## [0.35.0] - 2026-08-26
+
+**BREAKING — read before updating.**
+
+- `COLLIE_PUBLIC_HOSTS` is now **required** on every reverse-proxy or tunnel install (Variant C/E) — Host validation fails closed.
+- With `COLLIE_TRUSTED_USER` set, a request carrying no `Tailscale-User-Login` is now rejected; tagged nodes used to pass.
+- A non-loopback `COLLIE_HOST` refuses to start.
+- Opt-outs, one per gate: `COLLIE_ALLOW_ANY_HOST=1`, `COLLIE_TRUSTED_USER_OPTIONAL=1`, `COLLIE_ALLOW_NON_LOOPBACK_BIND=1`.
+
+### Added
+
+- **`quick-replies.toml`: your own Quick-dock groups** (title + items + optional `scope`), live-reloaded, replacing the shipped phrases on the panes they address per ADR 0018, shell panes reachable via `scope = "shell"` (eb1e92f) — thanks @fucx (#131)
+
+### Changed
+
+- Host-header validation is on by default and fails closed; `collie-ctl.sh` injects the tailnet name and IPs, `COLLIE_ALLOW_ANY_HOST=1` opts out (5f01bf7) — thanks @bartholomewtj (#129)
+- `COLLIE_TRUSTED_USER` rejects a missing `Tailscale-User-Login` as well as a mismatch; `COLLIE_TRUSTED_USER_OPTIONAL=1` restores the old pass (5f01bf7)
+- A non-loopback `COLLIE_HOST` refuses to start unless `COLLIE_ALLOW_NON_LOOPBACK_BIND=1`; non-loopback TCP peers are rejected (5f01bf7)
+
+### Fixed
+
+- Uploads are typed by magic bytes, not the client-supplied Content-Type — `__proto__` and `constructor` used to pass the MIME lookup (5f01bf7)
+- `collie-ctl.sh` parses `.env` as key=value instead of sourcing it — a `.env` with `$(…)` or backticks ran as the operator on every verb; an unquoted trailing `# comment` is now stripped (5f01bf7, 9195e00)
+- An unversioned managed checkout pins `update` to the newest release tag, never origin HEAD (5f01bf7, 4440c05)
+- A failed `tailscale status` no longer writes an empty host allowlist into the unit — the unit keeps the hosts it had, and says so (9195e00)
+
 ## [0.34.0+ys.1] - 2026-08-24
 
 ### Changed

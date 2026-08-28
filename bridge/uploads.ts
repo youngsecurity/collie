@@ -11,6 +11,66 @@ export const UPLOAD_TTL_MS = 48 * 60 * 60 * 1000; // 48 h
 /** How often the runner re-sweeps after the startup pass. */
 export const SWEEP_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 h
 
+/**
+ * How many leading bytes {@link imageExtFromBytes} needs. The longest signature we check is WebP's,
+ * which is "RIFF" at 0 plus "WEBP" at 8 — twelve bytes.
+ */
+export const SNIFF_BYTES = 12;
+
+/**
+ * The upload allow-list, keyed by what the file IS rather than by what the client SAID it is.
+ *
+ * This used to be a lookup on the multipart part's Content-Type, which the client writes.
+ * `IMAGE_EXT["__proto__"]` is Object.prototype and `IMAGE_EXT["constructor"]` is Object; both are
+ * truthy, so both passed the check. Sniffing removes the lookup entirely.
+ *
+ * SVG is absent on purpose and must stay absent — it is script-bearing markup, not a raster image.
+ */
+// Each ext lists ALTERNATIVE signatures; one alternative is a set of byte runs that must ALL match
+// (WebP is "RIFF" at 0 AND "WEBP" at 8; GIF is the complete GIF87a OR GIF89a six-byte signature —
+// a bare "GIF8" prefix is a near-miss, not a GIF).
+type SignaturePart = { at: number; bytes: number[] };
+const SIGNATURES: { ext: string; variants: SignaturePart[][] }[] = [
+  { ext: "png", variants: [[{ at: 0, bytes: [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a] }]] },
+  { ext: "jpg", variants: [[{ at: 0, bytes: [0xff, 0xd8, 0xff] }]] },
+  {
+    ext: "gif",
+    variants: [
+      [{ at: 0, bytes: [0x47, 0x49, 0x46, 0x38, 0x37, 0x61] }], // GIF87a
+      [{ at: 0, bytes: [0x47, 0x49, 0x46, 0x38, 0x39, 0x61] }], // GIF89a
+    ],
+  },
+  {
+    ext: "webp",
+    variants: [
+      [
+        { at: 0, bytes: [0x52, 0x49, 0x46, 0x46] },
+        { at: 8, bytes: [0x57, 0x45, 0x42, 0x50] },
+      ],
+    ],
+  },
+];
+
+function matchesAt(head: Uint8Array, at: number, bytes: number[]): boolean {
+  if (head.length < at + bytes.length) return false;
+  return bytes.every((b, i) => head[at + i] === b);
+}
+
+/**
+ * The file extension implied by a file's leading bytes, or null if they are not one of the four
+ * image formats Collie accepts. Pure — the whole decision, unit-tested.
+ */
+export function imageExtFromBytes(head: Uint8Array): string | null {
+  for (const { ext, variants } of SIGNATURES) {
+    // `every` on an empty list is true, which would type EVERY file as the first ext whose parts
+    // someone deleted. No signature parts, no match.
+    if (variants.some((parts) => parts.length > 0 && parts.every((p) => matchesAt(head, p.at, p.bytes)))) {
+      return ext;
+    }
+  }
+  return null;
+}
+
 /** Names whose mtime is older than `ttlMs` before `now`. Pure — the whole decision, unit-tested. */
 export function filesToPrune(
   entries: { name: string; mtimeMs: number }[],

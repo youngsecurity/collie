@@ -38,8 +38,90 @@ if [ "$CONFIG_DIR" != "${HOME}/.config/collie" ] && [ -f "${HOME}/.config/collie
   echo "note: ignoring legacy ${HOME}/.config/collie/.env — config now lives in ${CONFIG_DIR}/.env (move it there)." >&2
 fi
 
-# Source the plugin .env so both this script and the systemd unit share one config source.
-if [ -f "${CONFIG_DIR}/.env" ]; then set -a; . "${CONFIG_DIR}/.env"; set +a; fi
+# Parse the plugin .env as key=value config (no shell execution / eval). Sourcing .env allowed
+# arbitrary code execution as the operator on every command and at login. systemd EnvironmentFile=
+# already parses; this matches that for bash.
+COLLIE_ENV_KEYS=""
+
+load_env() {
+  local env_file="${CONFIG_DIR}/.env"
+  [ -f "$env_file" ] || return 0
+  local line_no=0 raw_line line key val mode
+  mode="$(stat -c '%a' "$env_file" 2>/dev/null || stat -f '%Lp' "$env_file" 2>/dev/null || true)"
+  if [ -n "$mode" ]; then
+    case "$mode" in
+      600|400|0600|0400) ;;
+      *)
+        if chmod 600 "$env_file" 2>/dev/null; then
+          echo "warn: ${env_file} was mode ${mode} (expected 600); tightened it to 600." >&2
+        else
+          echo "warn: ${env_file} is mode ${mode} (expected 600) and could not be tightened; it may be readable by other users." >&2
+        fi
+        ;;
+    esac
+  fi
+  while IFS= read -r raw_line || [ -n "$raw_line" ]; do
+    line_no=$((line_no + 1))
+    line="${raw_line%$'\r'}"
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    [ -z "$line" ] && continue
+    case "$line" in
+      '#'*) continue ;;
+      export[[:space:]]*)
+        line="${line#export}"
+        line="${line#"${line%%[![:space:]]*}"}"
+        ;;
+    esac
+    case "$line" in
+      *'='*)
+        key="${line%%=*}"
+        val="${line#*=}"
+        ;;
+      *)
+        echo "warn: ${env_file}:${line_no}: malformed line; skipping" >&2
+        continue
+        ;;
+    esac
+    key="${key#"${key%%[![:space:]]*}"}"
+    key="${key%"${key##*[![:space:]]}"}"
+    case "$key" in
+      ''|[0-9]*|*[!A-Za-z0-9_]*)
+        echo "warn: ${env_file}:${line_no}: invalid variable name; skipping" >&2
+        continue
+        ;;
+    esac
+    val="${val#"${val%%[![:space:]]*}"}"
+    val="${val%"${val##*[![:space:]]}"}"
+    # `KEY=value # note` is `value`. Only with the space: a `#` glued to the value is a literal one
+    # (a colour, a URL fragment), and a fully-quoted value keeps every character it quotes.
+    case "$val" in
+      '"'*'"' | "'"*"'") ;;
+      *' #'*)
+        val="${val%%' #'*}"
+        val="${val%"${val##*[![:space:]]}"}"
+        ;;
+    esac
+    case "$val" in
+      '"'*'"' | "'"*"'")
+        if [ ${#val} -ge 2 ]; then
+          val="${val#?}"
+          val="${val%?}"
+        fi
+        ;;
+    esac
+    printf -v "$key" '%s' "$val"
+    case " $COLLIE_ENV_KEYS " in
+      *" $key "*) ;;
+      *) COLLIE_ENV_KEYS="${COLLIE_ENV_KEYS}${COLLIE_ENV_KEYS:+ }${key}" ;;
+    esac
+  done < "$env_file"
+}
+load_env
+
+# The bridge needs the whole config (COLLIE_VAPID_PRIVATE included); git/tailscale/herdr do not.
+# Export at the launch site, not at load.
+export_bridge_env() { local k; for k in $COLLIE_ENV_KEYS; do export "$k"; done; }
 
 PORT="${COLLIE_PORT:-8787}"
 HOST="${COLLIE_HOST:-127.0.0.1}"
@@ -91,9 +173,9 @@ BUN="$(resolve_bun)"
 # Put it on PATH too, not just in $BUN: this script shells out to a bare `bun` (the Tailscale
 # ownership probe), and `bun run build` spawns children that expect to find it themselves.
 #
-# ABSOLUTE paths only. `command -v` reports a shell function or alias as a bare word, and the plugin
-# .env is sourced above us — so a `bun()` defined there would resolve to `bun`, whose dirname is `.`,
-# and we'd prepend the CWD to the PATH used for every later `git` / `systemctl` / `tailscale`.
+# ABSOLUTE paths only. `command -v` reports a shell function or alias as a bare word. A `bun()`
+# defined in a sourced .env used to resolve to `bun`, whose dirname is `.`. Parsing .env (not
+# sourcing it) closes that; keep the absolute-path guard anyway.
 case "$BUN" in
   /*)
     BUN_DIR="$(dirname "$BUN")"
@@ -184,6 +266,46 @@ ensure_build() {
 self_dnsname() {
   tailscale status --json 2>/dev/null | bun -e \
     "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{process.stdout.write(JSON.parse(d).Self.DNSName.replace(/\.\$/,''))}catch{}})"
+}
+
+# MagicDNS name plus Self TailscaleIPs, comma-joined for COLLIE_TAILSCALE_HOSTS so the bridge's
+# fail-closed Host allowlist can answer on the tailnet without every operator setting
+# COLLIE_PUBLIC_HOSTS by hand. Prints nothing if tailscale is absent or not up. Always exits 0:
+# this script runs under `set -o pipefail`, and `tailscale status` fails on CI and logged-out hosts.
+self_hosts() {
+  # The RESOLVED Bun, not `command -v bun`: resolve_bun() may have found Bun off PATH, and a bridge
+  # that can start must not silently discover an empty allowlist — the Host gate fails closed.
+  [ -n "$BUN" ] || return 0
+  tailscale status --json 2>/dev/null | "$BUN" -e \
+    "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{const s=JSON.parse(d).Self;const o=[];if(s.DNSName)o.push(s.DNSName.replace(/\.\$/,''));for(const ip of s.TailscaleIPs||[])o.push(ip.includes(':')?'['+ip+']':ip);process.stdout.write(o.join(','))}catch{}})" || true
+}
+
+# The allowlist a previous write_unit() baked in — so a failed discovery can keep what already
+# worked instead of overwriting it with silence.
+unit_tailscale_hosts() {
+  [ -f "$UNIT_FILE" ] || return 0
+  sed -n 's/^Environment=COLLIE_TAILSCALE_HOSTS=//p' "$UNIT_FILE" | tail -1
+}
+
+# The Host gate fails closed, so an EMPTY allowlist is a lockout, not a default. `tailscale status`
+# can fail for reasons that have nothing to do with this install (daemon down, node logged out), and
+# that must not cost the operator their front door: say so loudly, keep whatever the unit already
+# carries, and write no line at all when there is nothing to keep.
+discover_tailscale_hosts() {
+  if [ "${COLLIE_SKIP_SERVE:-}" != "1" ] && [ -z "${COLLIE_TAILSCALE_HOSTS:-}" ]; then
+    COLLIE_TAILSCALE_HOSTS="$(self_hosts || true)"
+    if [ -z "$COLLIE_TAILSCALE_HOSTS" ]; then
+      COLLIE_TAILSCALE_HOSTS="$(unit_tailscale_hosts || true)"
+      echo "error: 'tailscale status' named no host for this node — the allowlist was not discovered." >&2
+      if [ -n "$COLLIE_TAILSCALE_HOSTS" ]; then
+        echo "       keeping the one already in the unit: ${COLLIE_TAILSCALE_HOSTS}" >&2
+      else
+        echo "       no allowlist is set, so the Host gate will refuse every request. Set" >&2
+        echo "       COLLIE_TAILSCALE_HOSTS (or COLLIE_PUBLIC_HOSTS) in .env, or fix Tailscale and retry." >&2
+      fi
+    fi
+  fi
+  export COLLIE_TAILSCALE_HOSTS="${COLLIE_TAILSCALE_HOSTS:-}"
 }
 
 bridge_url() {
@@ -355,7 +477,11 @@ StartLimitIntervalSec=0
 [Service]
 Type=simple
 WorkingDirectory=${PLUGIN_ROOT}
-ExecStart=${BUN} run ${PLUGIN_ROOT}/bridge/index.ts
+# One .env grammar for every launch path: _exec-bridge parses .env via load_env() and execs the
+# bridge, exactly as the launchd agent and the unsupervised tier do. Handing systemd the raw .env
+# would apply its different grammar (an export-prefixed key is dropped, an unquoted trailing
+# " # comment" stays in the value), so one file could mean two configs.
+ExecStart=/bin/bash "${PLUGIN_ROOT}/scripts/collie-ctl.sh" _exec-bridge
 Restart=on-failure
 RestartSec=5
 # Hardening: the bridge is remote shell access, so deny privilege escalation and give it a private
@@ -366,7 +492,13 @@ PrivateTmp=yes
 Environment=HERDR_SOCKET_PATH=${SOCKET}
 Environment=COLLIE_PORT=${PORT}
 Environment=HERDR_PLUGIN_CONFIG_DIR=${CONFIG_DIR}
-EnvironmentFile=-${CONFIG_DIR}/.env
+EOF
+  # Written only when discovery produced one: baking an empty value here would REPLACE a working
+  # allowlist with a lockout on the next restart.
+  if [ -n "${COLLIE_TAILSCALE_HOSTS:-}" ]; then
+    echo "Environment=COLLIE_TAILSCALE_HOSTS=${COLLIE_TAILSCALE_HOSTS}" >> "$UNIT_FILE"
+  fi
+  cat >> "$UNIT_FILE" <<EOF
 
 [Install]
 WantedBy=default.target
@@ -435,9 +567,11 @@ EOF
 
 # The process launchd supervises. `exec` is load-bearing: launchd watches the pid it spawned, so the
 # bridge must replace this shell — otherwise KeepAlive guards a wrapper and a crashed bridge looks
-# alive. .env is already sourced above; these exports mirror the unit's Environment= lines.
+# alive. Export parsed .env keys here so VAPID and gates reach the process without a `source`.
 cmd_exec_bridge() {
   [ -n "$BUN" ] || { echo "error: bun not found on PATH" >&2; exit 1; }
+  export_bridge_env
+  discover_tailscale_hosts
   export COLLIE_PORT="$PORT"
   export HERDR_SOCKET_PATH="$SOCKET"
   export HERDR_PLUGIN_CONFIG_DIR="$CONFIG_DIR"
@@ -451,6 +585,8 @@ cmd_exec_bridge() {
 start_unsupervised() {
   mkdir -p "$CONFIG_DIR"
   [ -n "$BUN" ] || { echo "error: bun not found" >&2; exit 1; }
+  export_bridge_env
+  discover_tailscale_hosts
   HERDR_SOCKET_PATH="$SOCKET" COLLIE_PORT="$PORT" HERDR_PLUGIN_CONFIG_DIR="$CONFIG_DIR" \
     nohup "$BUN" run "${PLUGIN_ROOT}/bridge/index.ts" >>"${CONFIG_DIR}/collie.log" 2>&1 &
   echo $! > "${CONFIG_DIR}/collie.pid"
@@ -459,6 +595,7 @@ start_unsupervised() {
 
 cmd_start() {
   ensure_build || true
+  discover_tailscale_hosts
   if have_systemd; then
     write_unit
     systemctl --user enable --now "$UNIT"
@@ -743,10 +880,18 @@ update_managed() {
   fi
   major="$(major_of "$installed")"
   if [ -z "$major" ]; then
-    # No readable version on disk: fall back to the pre-gate behaviour rather than refuse to update
-    # at all — loudly, so the fallback is never a silent no-op.
-    echo "updating Collie (Herdr-managed checkout: no readable version — following origin HEAD)…"
-    detach_onto HEAD
+    # No readable version on disk: pin to the newest release tag, never origin HEAD (a moved default
+    # branch is not a release). Loudly, so the fallback is never a silent no-op.
+    tags="$(printf '%s\n' "$ls" | release_tags)"
+    # -k4,4n: the fork counter breaks the tie between an upstream base and its +ys.N rebuilds, so
+    # the pin is deterministic and an unversioned checkout on this origin lands on the fork build.
+    best="$(printf '%s\n' "$tags" | sort -k1,1n -k2,2n -k3,3n -k4,4n | tail -1)"
+    if [ -z "$best" ]; then
+      echo "error: no release tags on origin — cannot pin an unversioned checkout" >&2
+      return 1
+    fi
+    echo "updating Collie (Herdr-managed checkout: no readable version — pinning to newest release tag $(tag_name "$best"))…"
+    detach_onto "refs/tags/$(tag_name "$best")"
     return
   fi
   tags="$(printf '%s\n' "$ls" | release_tags | release_family "$installed")"
@@ -1274,6 +1419,7 @@ cmd_version() { collie_version; }
 # the plugin .env sourced at the top of this script gives it the VAPID keys. Args: [title] [body] [paneId].
 cmd_push_test() {
   [ -n "$BUN" ] || { echo "error: bun not found on PATH" >&2; exit 1; }
+  export_bridge_env
   "$BUN" run "${PLUGIN_ROOT}/scripts/push-test.ts" "$@"
 }
 

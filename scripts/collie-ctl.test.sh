@@ -1041,6 +1041,7 @@ stage_managed_at() {
 test_update_advances_a_herdr_managed_checkout() {
   setup_case update-managed
   stage_origin
+  origin_release 0.29.0
   local root="${CASE_DIR}/managed"
   mkdir -p "$root"
   # Verbatim what herdr's plugin_install does (src/cli/plugin.rs, git_checkout).
@@ -1048,13 +1049,13 @@ test_update_advances_a_herdr_managed_checkout() {
   git_q -C "$root" remote add origin "$ORIGIN_DIR"
   git_q -C "$root" fetch -q --depth 1 origin HEAD
   git_q -C "$root" checkout -q --detach FETCH_HEAD
-  advance_origin
+  origin_release 0.30.0
   echo "rewritten-by-bun-install" > "${root}/bun.lock"
 
   local out; out="$(run_update_checkout "$root")" || fail "update_checkout failed: $out"
   assert_contains "$out" "Herdr-managed checkout"
   assert_eq "$(git -C "$root" rev-parse HEAD)" "$(git -C "$ORIGIN_DIR" rev-parse HEAD)"
-  assert_eq "$(cat "${root}/VERSION")" "v2"
+  assert_eq "$(cat "${root}/VERSION")" "0.30.0"
   assert_eq "$(cat "${root}/bun.lock")" "lock-v1"   # --force discarded the build's rewrite
   assert_eq "$(git -C "$root" rev-parse --is-shallow-repository)" "true"
   git -C "$root" symbolic-ref -q HEAD >/dev/null 2>&1 &&
@@ -1251,17 +1252,22 @@ test_update_major_crosses_exactly_one_major() {
   assert_contains "$out" "crossing to Collie 11.0.0"
 }
 
-# A manifest we cannot read a major out of must never strand the install: fall back to the pre-gate
-# behaviour (origin HEAD), and SAY that is what happened.
+# A manifest we cannot read a major out of must never strand the install: pin to the newest
+# release tag (never origin HEAD — a moved default branch is not a release), and SAY that.
 test_update_falls_back_loudly_without_a_readable_version() {
   setup_case update-unknown-version
   stage_tagged_origin
+  echo "untagged" > "${ORIGIN_DIR}/UNRELEASED"
+  git_q -C "$ORIGIN_DIR" add -A
+  git_q -C "$ORIGIN_DIR" commit -q -m "untagged tip"
   local root; root="$(stage_managed_at refs/tags/v9.9.9)"
   rm -f "${root}/herdr-plugin.toml"
 
   local out; out="$(run_update_checkout "$root")" || fail "update_checkout failed: $out"
-  assert_contains "$out" "no readable version — following origin HEAD"
-  assert_eq "$(git -C "$root" rev-parse HEAD)" "$(git -C "$ORIGIN_DIR" rev-parse HEAD)"
+  assert_contains "$out" "no readable version — pinning to newest release tag v9.10.0"
+  assert_eq "$(git -C "$root" rev-parse HEAD)" "$(git -C "$ORIGIN_DIR" rev-parse 'v9.10.0^{commit}')"
+  [ "$(git -C "$root" rev-parse HEAD)" != "$(git -C "$ORIGIN_DIR" rev-parse HEAD)" ] ||
+    fail "fallback followed origin HEAD instead of the newest release tag"
 }
 
 # A linked clone refuses an unconsented major, then a consented crossing advances its branch to
@@ -1462,6 +1468,149 @@ test_push_keys_refuses_a_symlinked_env() {
   assert_eq "$(cat "$real")" "COLLIE_PORT=8787"
 }
 
+# Sourcing .env used to run $(…) and backticks as the operator on every verb. Parsing must keep
+# the values as text and never create the files those substitutions would have written.
+test_env_is_parsed_not_executed() {
+  setup_case env-no-eval
+  cat > "${CONFIG_DIR}/.env" <<EOF
+COLLIE_PORT=9999
+PWNED=\$(touch "$CASE_DIR/pwned")
+ALSO_PWNED=\`touch "$CASE_DIR/pwned2"\`
+EOF
+  local harness="${CASE_DIR}/harness.sh"
+  cat > "$harness" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+export HOME="$HOME_DIR"
+export HERDR_PLUGIN_CONFIG_DIR="$CONFIG_DIR"
+export PATH="$BIN_DIR:$BASE_PATH"
+source "$CTL"
+echo "PORT=\$PORT"
+echo "PWNED=\$PWNED"
+echo "ALSO_PWNED=\$ALSO_PWNED"
+EOF
+  bash "$harness" > "${CASE_DIR}/harness.out" 2>&1 ||
+    fail "parsing .env failed: $(cat "${CASE_DIR}/harness.out")"
+  [ ! -e "${CASE_DIR}/pwned" ] || fail "command substitution in .env was executed"
+  [ ! -e "${CASE_DIR}/pwned2" ] || fail "backticks in .env were executed"
+  assert_contains "$(cat "${CASE_DIR}/harness.out")" "PORT=9999"
+  assert_contains "$(cat "${CASE_DIR}/harness.out")" 'PWNED=$(touch'
+  assert_contains "$(cat "${CASE_DIR}/harness.out")" 'ALSO_PWNED=`touch'
+}
+
+# `KEY=value # note` is one value and one comment, not a value with a comment glued to it. A `#`
+# with no space before it stays literal — a colour or a URL fragment is not a comment.
+test_env_strips_an_unquoted_trailing_comment() {
+  setup_case env-comment
+  cat > "${CONFIG_DIR}/.env" <<'EOF'
+COLLIE_PUBLIC_URL=https://host.example # the front door
+COLLIE_DEVICE_HEADER=X-Tailnet-Device#1
+COLLIE_TRUSTED_USER="you@example.com" # quoted, then commented
+EOF
+  local harness="${CASE_DIR}/harness.sh"
+  cat > "$harness" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+export HOME="$HOME_DIR"
+export HERDR_PLUGIN_CONFIG_DIR="$CONFIG_DIR"
+export PATH="$BIN_DIR:$BASE_PATH"
+source "$CTL"
+echo "URL=\$COLLIE_PUBLIC_URL"
+echo "HEADER=\$COLLIE_DEVICE_HEADER"
+echo "USER=\$COLLIE_TRUSTED_USER"
+EOF
+  local out; out="$(bash "$harness" 2>&1)" || fail "parsing .env failed: $out"
+  assert_contains "$out" "URL=https://host.example"
+  case "$out" in *"URL=https://host.example "*|*"# the front door"*) fail "trailing comment reached the value" ;; esac
+  assert_contains "$out" "HEADER=X-Tailnet-Device#1"
+  assert_contains "$out" "USER=you@example.com"
+}
+
+# The Host gate fails closed, so a failed `tailscale status` must not narrow the allowlist to
+# nothing: the unit keeps the hosts it already had, and the operator is told out loud.
+test_failed_discovery_keeps_the_units_host_allowlist() {
+  setup_case ts-discovery-fails
+  cat > "${BIN_DIR}/tailscale" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+  chmod +x "${BIN_DIR}/tailscale"
+  local unit="${HOME_DIR}/.config/systemd/user/collie.service"
+  mkdir -p "$(dirname "$unit")"
+  printf '[Service]\nEnvironment=COLLIE_TAILSCALE_HOSTS=host.example,100.64.0.1\n' > "$unit"
+
+  local harness="${CASE_DIR}/harness.sh"
+  cat > "$harness" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+export HOME="$HOME_DIR"
+export HERDR_PLUGIN_CONFIG_DIR="$CONFIG_DIR"
+export PATH="$BIN_DIR:$BASE_PATH"
+source "$CTL"
+discover_tailscale_hosts
+echo "HOSTS=\$COLLIE_TAILSCALE_HOSTS"
+EOF
+  local out; out="$(bash "$harness" 2>&1)" || fail "discovery aborted: $out"
+  assert_contains "$out" "named no host for this node"
+  assert_contains "$out" "HOSTS=host.example,100.64.0.1"
+
+  # With nothing to keep, the unit gets no allowlist line at all — never an empty one.
+  rm -f "$unit"
+  out="$(bash "$harness" 2>&1)" || fail "discovery aborted: $out"
+  assert_contains "$out" "refuse every request"
+  assert_contains "$out" "HOSTS="
+  case "$out" in *"HOSTS=host"*) fail "a removed unit still supplied hosts" ;; esac
+}
+
+# The systemd unit and the launchd plist describe ONE service: both supervise `_exec-bridge`, so
+# load_env()'s grammar is the only .env grammar. A raw EnvironmentFile= would apply systemd's own
+# parsing (an export-prefixed key is dropped, an unquoted trailing " # comment" stays in the value)
+# and the same file could mean two configs. The negative assertions are the load-bearing ones.
+test_systemd_unit_supervises_exec_bridge() {
+  setup_case systemd-unit
+  cat > "${CONFIG_DIR}/.env" <<'EOF'
+COLLIE_PORT=8787
+COLLIE_VAPID_PRIVATE=super-secret-signing-key
+EOF
+  cat > "${BIN_DIR}/systemctl" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+  chmod +x "${BIN_DIR}/systemctl"
+  local unit="${HOME_DIR}/.config/systemd/user/collie.service"
+
+  local harness="${CASE_DIR}/harness.sh"
+  cat > "$harness" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+export HOME="$HOME_DIR"
+export HERDR_PLUGIN_CONFIG_DIR="$CONFIG_DIR"
+export PATH="$BIN_DIR:$BASE_PATH"
+source "$CTL"
+COLLIE_TAILSCALE_HOSTS=host.example,100.64.0.1 write_unit
+EOF
+  bash "$harness" > "${CASE_DIR}/unit.out" 2>&1 || fail "write_unit failed: $(cat "${CASE_DIR}/unit.out")"
+
+  [ -f "$unit" ] || fail "write_unit did not write the unit"
+  local body; body="$(cat "$unit")"
+  # The script path is double-quoted so a whitespace-containing install root stays one systemd
+  # argument (systemd strips full-item quotes; a bare ${PLUGIN_ROOT} would split).
+  assert_contains "$body" 'ExecStart=/bin/bash "'
+  assert_contains "$body" 'collie-ctl.sh" _exec-bridge'
+  assert_contains "$body" 'Environment=COLLIE_TAILSCALE_HOSTS=host.example,100.64.0.1'
+  case "$body" in
+    *EnvironmentFile*) fail "the unit re-grew EnvironmentFile= — systemd's .env grammar differs from load_env()'s" ;;
+  esac
+  case "$body" in
+    *super-secret-signing-key*)
+      fail "the unit leaked a .env value — secrets must stay in the mode-600 .env" ;;
+  esac
+}
+
+test_env_strips_an_unquoted_trailing_comment
+test_failed_discovery_keeps_the_units_host_allowlist
+test_systemd_unit_supervises_exec_bridge
+test_env_is_parsed_not_executed
 test_suite_ignores_an_inherited_git_dir
 test_push_keys_writes_the_resolved_env
 test_push_keys_refuses_a_symlinked_env

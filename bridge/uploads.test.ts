@@ -1,12 +1,45 @@
 import { describe, expect, test } from "bun:test";
 
-import { filesToPrune, sweepUploads, type UploadFs } from "./uploads.ts";
+import { filesToPrune, imageExtFromBytes, sweepUploads, type UploadFs } from "./uploads.ts";
 
 // filesToPrune is the pure decision; sweepUploads is exercised with a fake fs so the stat/unlink
 // orchestration (and its best-effort error handling) is covered without touching disk.
 
 const HOUR = 60 * 60 * 1000;
 const TTL = 48 * HOUR;
+
+describe("imageExtFromBytes", () => {
+  test("recognises PNG, JPEG, GIF, WebP by magic bytes", () => {
+    expect(imageExtFromBytes(Uint8Array.of(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a))).toBe(
+      "png",
+    );
+    expect(imageExtFromBytes(Uint8Array.of(0xff, 0xd8, 0xff, 0xe0))).toBe("jpg");
+    expect(imageExtFromBytes(Uint8Array.of(0x47, 0x49, 0x46, 0x38, 0x39, 0x61))).toBe("gif"); // GIF89a
+    expect(imageExtFromBytes(Uint8Array.of(0x47, 0x49, 0x46, 0x38, 0x37, 0x61))).toBe("gif"); // GIF87a
+    const webp = new Uint8Array(12);
+    webp.set([0x52, 0x49, 0x46, 0x46], 0);
+    webp.set([0x57, 0x45, 0x42, 0x50], 8);
+    expect(imageExtFromBytes(webp)).toBe("webp");
+  });
+
+  test("rejects SVG, HTML, empty, and a RIFF that is not WebP", () => {
+    expect(imageExtFromBytes(new TextEncoder().encode("<svg"))).toBeNull();
+    expect(imageExtFromBytes(new TextEncoder().encode("<!doctype html>"))).toBeNull();
+    expect(imageExtFromBytes(new Uint8Array())).toBeNull();
+    const riff = new Uint8Array(12);
+    riff.set([0x52, 0x49, 0x46, 0x46], 0);
+    riff.set([0x57, 0x41, 0x56, 0x45], 8);
+    expect(imageExtFromBytes(riff)).toBeNull();
+  });
+
+  test("a GIF8 near-miss is not a GIF — the full GIF87a/GIF89a signature is required", () => {
+    // "GIF8" + bytes that belong to neither GIF87a nor GIF89a.
+    expect(imageExtFromBytes(Uint8Array.of(0x47, 0x49, 0x46, 0x38, 0x00, 0x00))).toBeNull();
+    expect(imageExtFromBytes(new TextEncoder().encode("GIF8xa"))).toBeNull();
+    // The 4-byte prefix alone (truncated head) is not enough either.
+    expect(imageExtFromBytes(Uint8Array.of(0x47, 0x49, 0x46, 0x38))).toBeNull();
+  });
+});
 
 describe("filesToPrune", () => {
   const now = 1_000_000_000_000;

@@ -218,6 +218,20 @@ describe("StateEngine — snapshot shaping", () => {
     expect(snap.bridge).toBe("connected");
   });
 
+  // Regression pin (PR #6 review): "shell" is the string the BRIDGE synthesizes for a bare pane,
+  // but nothing reserves it — a harness herdr reported under that literal name would classify as an
+  // agent pane carrying agent "shell". The dock then shows it shell-scoped operator rows (see
+  // web/src/lib/quick-replies.test.ts). If a real harness ever ships under this name, this test is
+  // the deliberate decision point — do not "fix" it by hiding the pane.
+  test("a herdr pane whose agent is literally 'shell' stays an agent pane, not a shell", async () => {
+    const { herdr, engine, poll } = makeEngine();
+    herdr.panes = [pane("w1:p1", "w1", "idle", "shell"), pane("w1:p2", "w1", "unknown", null)];
+    await poll();
+    const snap = engine.current();
+    expect(snap.agents.map((a) => [a.paneId, a.agent, a.kind])).toEqual([["w1:p1", "shell", "agent"]]);
+    expect(snap.shellPanes.map((a) => [a.paneId, a.agent, a.kind])).toEqual([["w1:p2", "shell", "shell"]]);
+  });
+
   test("threads a pane label through to the view when set, on agents and shells alike", async () => {
     const { herdr, engine, poll } = makeEngine();
     herdr.panes = [
