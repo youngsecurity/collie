@@ -6,6 +6,19 @@ All notable changes to Collie are recorded here. The format follows
 `version` in `herdr-plugin.toml`, `package.json`, and `web/package.json` (enforced by
 `scripts/check-version.sh`). See [`CLAUDE.md`](./CLAUDE.md) → *Versioning* for the bump policy.
 
+## [0.35.0+ys.2] - 2026-08-28
+
+### Fixed
+
+- **The systemd unit supervises `_exec-bridge`** (quoted script path) instead of handing systemd the raw `.env` — `load_env()`'s grammar is now the only `.env` grammar on every launch path (systemd's own parsing drops an `export`-prefixed key and keeps an unquoted trailing `# comment` in the value), and a whitespace-containing install root cannot split `ExecStart` (PR #6 review, eb7f248, ed855ef)
+- **`self_hosts()` uses the resolved `$BUN`** — Tailscale host discovery can no longer silently bake an empty fail-closed allowlist when Bun is resolvable but off `PATH` (eb7f248)
+- **GIF uploads require the complete `GIF87a`/`GIF89a` signature** — a `GIF8` near-miss no longer types as `.gif` (eb7f248)
+
+### Changed
+
+- `ARCHITECTURE.md` states the fork's actual Host gate: allowed origins never expand the Host allowlist, and a loopback Host needs a loopback socket peer (eb7f248)
+- Regression tests pin that a herdr agent literally named `"shell"` stays an agent pane, and that shell-scoped operator rows reaching it is the accepted tradeoff (eb7f248)
+
 ## [0.35.0+ys.1] - 2026-08-28
 
 ### Changed
