@@ -70,6 +70,20 @@ describe("quickRepliesFor with operator rows", () => {
     expect(quickRepliesFor("claude", false, shellOnly)).toEqual(quickRepliesFor("claude", false));
   });
 
+  // Regression pin (PR #6 review): no harness is named "shell" today, but if herdr ever reported
+  // one, the bridge classifies it as an AGENT pane carrying agent "shell" (pinned in
+  // bridge/state-engine.test.ts) — and shell-scoped operator rows then reach its dock, because
+  // rowsFor matches the string. That bleed is the accepted tradeoff; this test makes any change of
+  // heart a deliberate edit rather than an accident.
+  it("a shell-scoped row reaches a hypothetical AGENT literally named 'shell' (accepted bleed)", () => {
+    const shellOnly = [{ agent: "shell", title: "confirm", items: ["j", "n"] }];
+    expect(quickRepliesFor("shell", false, shellOnly)).toEqual([
+      { title: "confirm", items: ["j", "n"] },
+    ]);
+    // With no operator rows it falls back to the AGENT catalog — never the shell y/n pair.
+    expect(quickRepliesFor("shell", false)).toEqual(quickRepliesFor("claude", false));
+  });
+
   it("an empty list is exactly the shipped behaviour", () => {
     expect(quickRepliesFor("claude", false, [])).toEqual(quickRepliesFor("claude", false));
     expect(quickRepliesFor("shell", true, [])).toEqual(quickRepliesFor("shell", true));

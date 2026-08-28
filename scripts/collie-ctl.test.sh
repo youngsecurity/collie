@@ -1562,8 +1562,51 @@ EOF
   case "$out" in *"HOSTS=host"*) fail "a removed unit still supplied hosts" ;; esac
 }
 
+# The systemd unit and the launchd plist describe ONE service: both supervise `_exec-bridge`, so
+# load_env()'s grammar is the only .env grammar. A raw EnvironmentFile= would apply systemd's own
+# parsing (an export-prefixed key is dropped, an unquoted trailing " # comment" stays in the value)
+# and the same file could mean two configs. The negative assertions are the load-bearing ones.
+test_systemd_unit_supervises_exec_bridge() {
+  setup_case systemd-unit
+  cat > "${CONFIG_DIR}/.env" <<'EOF'
+COLLIE_PORT=8787
+COLLIE_VAPID_PRIVATE=super-secret-signing-key
+EOF
+  cat > "${BIN_DIR}/systemctl" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+  chmod +x "${BIN_DIR}/systemctl"
+  local unit="${HOME_DIR}/.config/systemd/user/collie.service"
+
+  local harness="${CASE_DIR}/harness.sh"
+  cat > "$harness" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+export HOME="$HOME_DIR"
+export HERDR_PLUGIN_CONFIG_DIR="$CONFIG_DIR"
+export PATH="$BIN_DIR:$BASE_PATH"
+source "$CTL"
+COLLIE_TAILSCALE_HOSTS=host.example,100.64.0.1 write_unit
+EOF
+  bash "$harness" > "${CASE_DIR}/unit.out" 2>&1 || fail "write_unit failed: $(cat "${CASE_DIR}/unit.out")"
+
+  [ -f "$unit" ] || fail "write_unit did not write the unit"
+  local body; body="$(cat "$unit")"
+  assert_contains "$body" 'collie-ctl.sh _exec-bridge'
+  assert_contains "$body" 'Environment=COLLIE_TAILSCALE_HOSTS=host.example,100.64.0.1'
+  case "$body" in
+    *EnvironmentFile*) fail "the unit re-grew EnvironmentFile= — systemd's .env grammar differs from load_env()'s" ;;
+  esac
+  case "$body" in
+    *super-secret-signing-key*)
+      fail "the unit leaked a .env value — secrets must stay in the mode-600 .env" ;;
+  esac
+}
+
 test_env_strips_an_unquoted_trailing_comment
 test_failed_discovery_keeps_the_units_host_allowlist
+test_systemd_unit_supervises_exec_bridge
 test_env_is_parsed_not_executed
 test_suite_ignores_an_inherited_git_dir
 test_push_keys_writes_the_resolved_env

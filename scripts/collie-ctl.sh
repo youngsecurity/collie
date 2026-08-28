@@ -273,8 +273,10 @@ self_dnsname() {
 # COLLIE_PUBLIC_HOSTS by hand. Prints nothing if tailscale is absent or not up. Always exits 0:
 # this script runs under `set -o pipefail`, and `tailscale status` fails on CI and logged-out hosts.
 self_hosts() {
-  command -v bun >/dev/null || return 0
-  tailscale status --json 2>/dev/null | bun -e \
+  # The RESOLVED Bun, not `command -v bun`: resolve_bun() may have found Bun off PATH, and a bridge
+  # that can start must not silently discover an empty allowlist — the Host gate fails closed.
+  [ -n "$BUN" ] || return 0
+  tailscale status --json 2>/dev/null | "$BUN" -e \
     "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{const s=JSON.parse(d).Self;const o=[];if(s.DNSName)o.push(s.DNSName.replace(/\.\$/,''));for(const ip of s.TailscaleIPs||[])o.push(ip.includes(':')?'['+ip+']':ip);process.stdout.write(o.join(','))}catch{}})" || true
 }
 
@@ -475,7 +477,11 @@ StartLimitIntervalSec=0
 [Service]
 Type=simple
 WorkingDirectory=${PLUGIN_ROOT}
-ExecStart=${BUN} run ${PLUGIN_ROOT}/bridge/index.ts
+# One .env grammar for every launch path: _exec-bridge parses .env via load_env() and execs the
+# bridge, exactly as the launchd agent and the unsupervised tier do. Handing systemd the raw .env
+# would apply its different grammar (an export-prefixed key is dropped, an unquoted trailing
+# " # comment" stays in the value), so one file could mean two configs.
+ExecStart=/bin/bash ${PLUGIN_ROOT}/scripts/collie-ctl.sh _exec-bridge
 Restart=on-failure
 RestartSec=5
 # Hardening: the bridge is remote shell access, so deny privilege escalation and give it a private
@@ -493,7 +499,6 @@ EOF
     echo "Environment=COLLIE_TAILSCALE_HOSTS=${COLLIE_TAILSCALE_HOSTS}" >> "$UNIT_FILE"
   fi
   cat >> "$UNIT_FILE" <<EOF
-EnvironmentFile=-${CONFIG_DIR}/.env
 
 [Install]
 WantedBy=default.target

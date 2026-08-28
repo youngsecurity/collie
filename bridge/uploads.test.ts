@@ -14,7 +14,8 @@ describe("imageExtFromBytes", () => {
       "png",
     );
     expect(imageExtFromBytes(Uint8Array.of(0xff, 0xd8, 0xff, 0xe0))).toBe("jpg");
-    expect(imageExtFromBytes(Uint8Array.of(0x47, 0x49, 0x46, 0x38, 0x39, 0x61))).toBe("gif");
+    expect(imageExtFromBytes(Uint8Array.of(0x47, 0x49, 0x46, 0x38, 0x39, 0x61))).toBe("gif"); // GIF89a
+    expect(imageExtFromBytes(Uint8Array.of(0x47, 0x49, 0x46, 0x38, 0x37, 0x61))).toBe("gif"); // GIF87a
     const webp = new Uint8Array(12);
     webp.set([0x52, 0x49, 0x46, 0x46], 0);
     webp.set([0x57, 0x45, 0x42, 0x50], 8);
@@ -29,6 +30,14 @@ describe("imageExtFromBytes", () => {
     riff.set([0x52, 0x49, 0x46, 0x46], 0);
     riff.set([0x57, 0x41, 0x56, 0x45], 8);
     expect(imageExtFromBytes(riff)).toBeNull();
+  });
+
+  test("a GIF8 near-miss is not a GIF — the full GIF87a/GIF89a signature is required", () => {
+    // "GIF8" + bytes that belong to neither GIF87a nor GIF89a.
+    expect(imageExtFromBytes(Uint8Array.of(0x47, 0x49, 0x46, 0x38, 0x00, 0x00))).toBeNull();
+    expect(imageExtFromBytes(new TextEncoder().encode("GIF8xa"))).toBeNull();
+    // The 4-byte prefix alone (truncated head) is not enough either.
+    expect(imageExtFromBytes(Uint8Array.of(0x47, 0x49, 0x46, 0x38))).toBeNull();
   });
 });
 

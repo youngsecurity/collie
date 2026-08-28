@@ -224,8 +224,9 @@ default). These four are genuine RCE vectors and are **load-bearing — do not r
   asserts, not secrets — treat them as guessable and keep the front door and its ACL as the real
   containment.
 - **The `Host` header is validated, on by default, and fails closed.** A request whose `Host` is not
-  the tailnet name, a loopback name, `COLLIE_PUBLIC_HOSTS` or a configured origin is refused, so a
-  DNS-rebound `Host: evil.example` cannot reach the API. `collie-ctl.sh` discovers the node's MagicDNS
+  the tailnet name, a loopback name (accepted only from a direct loopback socket peer), or a
+  `COLLIE_PUBLIC_HOSTS` entry is refused, so a DNS-rebound `Host: evil.example` cannot reach the
+  API. `COLLIE_ALLOWED_ORIGINS` never expands the Host allowlist. `collie-ctl.sh` discovers the node's MagicDNS
   name and Tailscale IPs into `COLLIE_TAILSCALE_HOSTS`, so a normal tailnet install configures
   nothing; behind your own front door `COLLIE_PUBLIC_HOSTS` is **required**.
   `COLLIE_ALLOW_ANY_HOST=1` is the opt-out, and re-opens rebinding.

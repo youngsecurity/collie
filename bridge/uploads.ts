@@ -26,12 +26,29 @@ export const SNIFF_BYTES = 12;
  *
  * SVG is absent on purpose and must stay absent — it is script-bearing markup, not a raster image.
  */
-const SIGNATURES: { ext: string; bytes: number[]; at: number }[] = [
-  { ext: "png", at: 0, bytes: [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a] },
-  { ext: "jpg", at: 0, bytes: [0xff, 0xd8, 0xff] },
-  { ext: "gif", at: 0, bytes: [0x47, 0x49, 0x46, 0x38] },
-  { ext: "webp", at: 0, bytes: [0x52, 0x49, 0x46, 0x46] },
-  { ext: "webp", at: 8, bytes: [0x57, 0x45, 0x42, 0x50] },
+// Each ext lists ALTERNATIVE signatures; one alternative is a set of byte runs that must ALL match
+// (WebP is "RIFF" at 0 AND "WEBP" at 8; GIF is the complete GIF87a OR GIF89a six-byte signature —
+// a bare "GIF8" prefix is a near-miss, not a GIF).
+type SignaturePart = { at: number; bytes: number[] };
+const SIGNATURES: { ext: string; variants: SignaturePart[][] }[] = [
+  { ext: "png", variants: [[{ at: 0, bytes: [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a] }]] },
+  { ext: "jpg", variants: [[{ at: 0, bytes: [0xff, 0xd8, 0xff] }]] },
+  {
+    ext: "gif",
+    variants: [
+      [{ at: 0, bytes: [0x47, 0x49, 0x46, 0x38, 0x37, 0x61] }], // GIF87a
+      [{ at: 0, bytes: [0x47, 0x49, 0x46, 0x38, 0x39, 0x61] }], // GIF89a
+    ],
+  },
+  {
+    ext: "webp",
+    variants: [
+      [
+        { at: 0, bytes: [0x52, 0x49, 0x46, 0x46] },
+        { at: 8, bytes: [0x57, 0x45, 0x42, 0x50] },
+      ],
+    ],
+  },
 ];
 
 function matchesAt(head: Uint8Array, at: number, bytes: number[]): boolean {
@@ -44,11 +61,12 @@ function matchesAt(head: Uint8Array, at: number, bytes: number[]): boolean {
  * image formats Collie accepts. Pure — the whole decision, unit-tested.
  */
 export function imageExtFromBytes(head: Uint8Array): string | null {
-  for (const ext of ["png", "jpg", "gif", "webp"]) {
-    const rows = SIGNATURES.filter((s) => s.ext === ext);
-    // `every` on an empty list is true, which would type EVERY file as the first ext whose rows
-    // someone deleted. No signature, no match.
-    if (rows.length > 0 && rows.every((r) => matchesAt(head, r.at, r.bytes))) return ext;
+  for (const { ext, variants } of SIGNATURES) {
+    // `every` on an empty list is true, which would type EVERY file as the first ext whose parts
+    // someone deleted. No signature parts, no match.
+    if (variants.some((parts) => parts.length > 0 && parts.every((p) => matchesAt(head, p.at, p.bytes)))) {
+      return ext;
+    }
   }
   return null;
 }
