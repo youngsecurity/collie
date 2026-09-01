@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { parseAnsi } from "../../ansi";
 import { splitLines } from "../../blocks";
 import { agyAdapter, antigravityAdapter } from "./index";
+import { isAlienBuffer } from "./markers";
 import { detectPromptSelect } from "./prompt-select";
 import { describeAdapterConformance } from "../conformance";
 
@@ -65,6 +66,32 @@ describe("agyAdapter unit & footer safety", () => {
 
     const blocks = agyAdapter.buildBlocks(lines);
     expect(blocks.some((b) => b.kind === "prompt-select")).toBe(true);
+  });
+
+  // Fork regression (PR #9 review): bare product names are content, not chrome. An AGY question
+  // that merely MENTIONS another harness must keep its interactive buttons — the stand-down is for
+  // buffers that ARE another harness's UI, mirroring the Claude branch's existing guard.
+  it("keeps an AGY dialog interactive when its content merely mentions another harness", () => {
+    const raw = [
+      "Antigravity CLI",
+      "Should I update the codex adapter or the grok adapter first?",
+      "❯ 1. codex first",
+      "  2. grok first",
+      "Enter to select · ↑/↓ to navigate",
+    ].join("\n");
+    const lines = splitLines(parseAnsi(raw));
+
+    expect(isAlienBuffer(raw.split("\n"))).toBe(false);
+    const model = detectPromptSelect(lines);
+    expect(model).not.toBeNull();
+    expect(model!.options).toHaveLength(2);
+  });
+
+  it("still stands down on a buffer that IS another harness (no Antigravity marker anywhere)", () => {
+    expect(isAlienBuffer(["codex is thinking", "› a draft"])).toBe(true);
+    expect(isAlienBuffer(["grok build session"])).toBe(true);
+    expect(isAlienBuffer(["oh-my-pi ready"])).toBe(true);
+    expect(isAlienBuffer(["╭─ Ask ─╮"])).toBe(true);
   });
 
   it("declines a numbered list without a dialog footer (ADR 0009 safety)", () => {

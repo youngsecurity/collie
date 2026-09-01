@@ -51,7 +51,14 @@ export function isAlienBuffer(texts: string[]): boolean {
       const full = texts.join(" ");
       if (!/Antigravity CLI|\.antigravity|agy/i.test(full)) return true;
     }
-    if (/╭─ Ask ─╮|oh-my-pi|codex|grok/i.test(text)) return true;
+    if (/╭─ Ask ─╮/.test(text)) return true;
+    // Bare product names are CONTENT, not chrome — an AGY question that merely mentions another
+    // harness ("update the codex adapter?") must keep its buttons. Same guard as the Claude branch
+    // above: stand down only when nothing else in the buffer says this is actually Antigravity.
+    if (/\b(?:oh-my-pi|codex|grok)\b/i.test(text)) {
+      const full = texts.join(" ");
+      if (!/Antigravity CLI|\.antigravity|agy/i.test(full)) return true;
+    }
   }
   return false;
 }

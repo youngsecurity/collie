@@ -12,6 +12,10 @@ All notable changes to Collie are recorded here. The format follows
 
 - Adopted upstream Collie 0.36.1 (and 0.36.0 transitively) while retaining Young Security terminal appearance, Host hardening, and fork release handling (96c3bc3)
 
+### Fixed
+
+- **An AGY dialog that merely mentions another harness keeps its buttons** — `isAlienBuffer` treated the bare words `codex`/`grok`/`oh-my-pi` anywhere in the text as foreign chrome and rendered the dialog raw; content now stands down only when nothing in the buffer says it is actually Antigravity, mirroring the existing Claude guard (PR #9 review)
+
 ## [0.36.1] - 2026-08-30
 
 ### Fixed
