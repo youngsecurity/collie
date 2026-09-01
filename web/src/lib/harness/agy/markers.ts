@@ -55,6 +55,14 @@ export function isAlienBuffer(texts: string[]): boolean {
     // Bare product names are CONTENT, not chrome — an AGY question that merely mentions another
     // harness ("update the codex adapter?") must keep its buttons. Same guard as the Claude branch
     // above: stand down only when nothing else in the buffer says this is actually Antigravity.
+    //
+    // A footer-keyed (classifyFooter) exemption was tried and DISPROVEN by the conformance corpus:
+    // codex--approval-exec.txt paints "Press enter to confirm", which is AGY's own trust-footer
+    // grammar — dialog footers are shared TUI vocabulary, not unique chrome, and keying on them
+    // un-fails-closed a real foreign capture. Until upstream gives AGY unique chrome, the marker
+    // text is the best available evidence; a foreign buffer that also name-drops Antigravity slips
+    // this net and is caught by harness attribution (herdr's agent name picks the adapter) and by
+    // the foreign footer failing AGY's dialog grammar downstream.
     if (/\b(?:oh-my-pi|codex|grok)\b/i.test(text)) {
       const full = texts.join(" ");
       if (!/Antigravity CLI|\.antigravity|agy/i.test(full)) return true;

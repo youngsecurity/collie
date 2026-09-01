@@ -87,11 +87,21 @@ describe("agyAdapter unit & footer safety", () => {
     expect(model!.options).toHaveLength(2);
   });
 
-  it("still stands down on a buffer that IS another harness (no Antigravity marker anywhere)", () => {
+  it("still stands down on a buffer that IS another harness (no AGY dialog chrome)", () => {
     expect(isAlienBuffer(["codex is thinking", "› a draft"])).toBe(true);
     expect(isAlienBuffer(["grok build session"])).toBe(true);
     expect(isAlienBuffer(["oh-my-pi ready"])).toBe(true);
     expect(isAlienBuffer(["╭─ Ask ─╮"])).toBe(true);
+  });
+
+  // ACCEPTED TRADEOFF (PR #9 follow-up): a foreign buffer that also name-drops Antigravity buys
+  // the exemption — same exposure as the Claude branch's guard. A footer-keyed structural
+  // exemption was tried and disproven: codex--approval-exec.txt shares AGY's "enter to confirm"
+  // grammar (see the conformance suite, which caught it). Real containment is harness attribution
+  // plus AGY's dialog grammar; unique-chrome detection is an upstream redesign. This pin makes any
+  // change of heart a deliberate edit.
+  it("a foreign buffer that name-drops Antigravity slips the alien net (accepted, pinned)", () => {
+    expect(isAlienBuffer(["codex is editing markers.ts", "mentions Antigravity CLI"])).toBe(false);
   });
 
   it("declines a numbered list without a dialog footer (ADR 0009 safety)", () => {
