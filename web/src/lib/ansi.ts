@@ -38,11 +38,13 @@ function ansiVar(n: number): string {
   return `var(--ansi-${n})`;
 }
 
-/** The mirror's own ground for inverse video that names no colours of its own. An AnsiOutput may
- *  override these variables with its device-local terminal appearance; every other surface keeps
- *  the dark-space fallbacks that match MIRROR_SPACE. */
-const MIRROR_BG = "var(--terminal-background, #0a0a0a)";
-const MIRROR_FG = "var(--terminal-foreground, #fafafa)";
+/** The mirror's own ground, for inverse video that names no colours of its own. Byte-exact matches
+ *  for --background / --foreground's dark halves, and for MIRROR_SPACE in components/ansi-output. */
+const MIRROR_BG = "#0a0a0a";
+const MIRROR_FG = "#fafafa";
+
+// One axis of xterm's 6x6x6 colour cube: level 0 is black, the rest start at 55 and step by 40.
+const cubeLevel = (x: number): number => (x === 0 ? 0 : 55 + x * 40);
 
 function color256(n: number): string {
   if (n < 16) return ansiVar(n);
@@ -54,8 +56,7 @@ function color256(n: number): string {
   const r = Math.floor(i / 36);
   const g = Math.floor((i % 36) / 6);
   const b = i % 6;
-  const c = (x: number) => (x === 0 ? 0 : 55 + x * 40);
-  return `rgb(${c(r)},${c(g)},${c(b)})`;
+  return `rgb(${cubeLevel(r)},${cubeLevel(g)},${cubeLevel(b)})`;
 }
 
 interface State {
@@ -157,9 +158,10 @@ export function parseAnsi(input: string): AnsiSegment[] {
 
   const flush = () => {
     if (!buf) return;
-    // Inverse video with no explicit colours swaps the mirror's own dark-space ground. The custom
-    // properties let AnsiOutput supply an explicit terminal appearance; their fallbacks remain the
-    // literal MIRROR_SPACE colors on every other surface.
+    // Inverse video with no explicit colours swaps the mirror's own ground. Literals, not
+    // var(--background)/var(--foreground): everything inside the <pre> uses one spelling
+    // (.adr/0002, rule 2), and these ARE those tokens' dark halves — the values are identical,
+    // only the spelling is now consistent with the muted glyphs and MIRROR_SPACE.
     const fg = state.inverse ? (state.bg ?? MIRROR_BG) : state.fg;
     const bg = state.inverse ? (state.fg ?? MIRROR_FG) : state.bg;
     segs.push({

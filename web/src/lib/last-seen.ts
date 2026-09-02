@@ -25,6 +25,7 @@
 // Every entry carries the wall-clock of the fetch that produced it, because a stale render must be
 // able to say WHEN — "Disconnected — last seen 14:32" is honest, an undated old screen is not.
 
+import { paneScopeKey, type Scope, snapshotKey as snapshotCacheKey } from "@/lib/scope";
 import type { SnapshotResponse } from "@/lib/types";
 
 const SNAPSHOT_PREFIX = "collie:last-snapshot:";
@@ -54,15 +55,18 @@ function storage(): Storage | null {
   }
 }
 
-function snapshotKey(session: string | undefined): string {
-  return `${SNAPSHOT_PREFIX}${session ?? ""}`;
+// A snapshot's storage key is its scope AND its breadth — the widened view is a different body for
+// the same address, so it gets its own entry (lib/scope.ts states why they may not share one). The
+// narrow key is byte-identical to what shipped, so entries already in storage keep resolving.
+function snapshotKey(scope: Scope | undefined, all: boolean): string {
+  return `${SNAPSHOT_PREFIX}${snapshotCacheKey(scope, all)}`;
 }
 
-// A space, not NUL: the same (session, paneId) pairing the loaders key their module caches with,
-// spelled for a store whose keys are visible in devtools. Session names can't contain a space
-// (lib/session.ts normalises them), so the pair stays unambiguous.
-function paneKey(session: string | undefined, paneId: string): string {
-  return `${PANE_PREFIX}${session ?? ""} ${paneId}`;
+// The same (host, session, paneId) triple the loaders key their module caches with, built by the one
+// helper that owns that spelling (lib/scope.ts) — so this store and the module cache can never
+// disagree about which pane on which machine an entry belongs to.
+function paneKey(scope: Scope | undefined, paneId: string): string {
+  return `${PANE_PREFIX}${paneScopeKey(scope, paneId)}`;
 }
 
 // Writes are best-effort. Storage can be full (quota), disabled, or in private-mode weirdness — none
@@ -125,31 +129,22 @@ function decodePane(raw: string | null): Cached<string> | null {
   return { at, value: raw.slice(cut + 1) };
 }
 
-// A snapshot entry is JSON, because it is a whole response body. Validate the required top-level
-// contract at this persistence boundary: an incompatible cached value must be a miss, never a cold-
-// boot crash. Nested values still follow the same trusted bridge-response contract as the live path.
-function isSnapshotResponse(value: unknown): value is SnapshotResponse {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-  const snapshot = value as Record<string, unknown>;
-  return (
-    (snapshot.bridge === "connected" || snapshot.bridge === "disconnected") &&
-    Array.isArray(snapshot.agents) &&
-    Array.isArray(snapshot.shellPanes) &&
-    Array.isArray(snapshot.workspaces) &&
-    Array.isArray(snapshot.tabs) &&
-    typeof snapshot.ts === "number" &&
-    Number.isFinite(snapshot.ts)
-  );
-}
+// A snapshot entry is JSON, because it is a whole response body. It gets the structural checks a
+// parse boundary owes — parsed at all, an object, carrying a numeric stamp — and no more; see the
+// SAFETY note at the assertion for why a field-by-field schema would buy nothing here.
 
 function decodeSnapshot(raw: string | null): Cached<SnapshotResponse> | null {
   if (raw === null) return null;
   try {
     const parsed: unknown = JSON.parse(raw);
     if (!(parsed instanceof Object)) return null;
-    const entry = parsed as Partial<Cached<unknown>>;
+    // SAFETY: the only writer of this key is saveLastSnapshot below, in this tab, with the body a
+    // successful `/api/snapshot` returned — the same unvalidated shape lib/api.ts hands the loaders
+    // live. The assertion therefore claims no more than the live path already does, and `at` is
+    // re-checked below rather than assumed, so a hand-edited or format-drifted entry reads as a miss.
+    const entry = parsed as Partial<Cached<SnapshotResponse>>;
     const at = entry.at;
-    if (at === undefined || !Number.isFinite(at) || !isSnapshotResponse(entry.value)) return null;
+    if (at === undefined || !Number.isFinite(at) || entry.value === undefined) return null;
     return { at, value: entry.value };
   } catch {
     return null;
@@ -184,8 +179,7 @@ function prunePanes(): void {
   try {
     const keys = paneKeys(store);
     if (keys.length <= PANE_MAX) return;
-    keys.sort((a, b) => b.at - a.at);
-    for (const { key } of keys.slice(PANE_MAX)) store.removeItem(key);
+    for (const { key } of keys.toSorted((a, b) => b.at - a.at).slice(PANE_MAX)) store.removeItem(key);
   } catch {
     // As above — a store we can't enumerate simply doesn't get pruned.
   }
@@ -193,40 +187,44 @@ function prunePanes(): void {
 
 /** Write through the snapshot a successful `/api/snapshot` just returned. */
 export function saveLastSnapshot(
-  session: string | undefined,
+  scope: Scope | undefined,
   snap: SnapshotResponse,
   at: number = Date.now(),
+  all = false,
 ): void {
-  write(snapshotKey(session), JSON.stringify({ at, value: snap }));
+  write(snapshotKey(scope, all), JSON.stringify({ at, value: snap }));
 }
 
-/** The last snapshot this tab saw for a session, with the time it was fetched. */
-export function loadLastSnapshot(session: string | undefined): Cached<SnapshotResponse> | null {
-  return decodeSnapshot(readRaw(snapshotKey(session)));
+/** The last snapshot this tab saw for a scope at this breadth, with the time it was fetched. */
+export function loadLastSnapshot(
+  scope: Scope | undefined,
+  all = false,
+): Cached<SnapshotResponse> | null {
+  return decodeSnapshot(readRaw(snapshotKey(scope, all)));
 }
 
 /** Write through the mirror a successful `/api/pane/:id` just returned. */
 export function saveLastPaneText(
-  session: string | undefined,
+  scope: Scope | undefined,
   paneId: string,
   text: string,
   at: number = Date.now(),
 ): void {
-  write(paneKey(session, paneId), encodePane(at, text));
+  write(paneKey(scope, paneId), encodePane(at, text));
   prunePanes();
 }
 
 /** The last mirror this tab saw for a pane, with the time it was fetched. */
 export function loadLastPaneText(
-  session: string | undefined,
+  scope: Scope | undefined,
   paneId: string,
 ): Cached<string> | null {
-  return decodePane(readRaw(paneKey(session, paneId)));
+  return decodePane(readRaw(paneKey(scope, paneId)));
 }
 
 /** Forget a pane's mirror — the ADR 0017 path, and the only reason to delete a single entry. */
-export function dropLastPaneText(session: string | undefined, paneId: string): void {
-  remove(paneKey(session, paneId));
+export function dropLastPaneText(scope: Scope | undefined, paneId: string): void {
+  remove(paneKey(scope, paneId));
 }
 
 /** Test helper — empty the whole cache between cases. */

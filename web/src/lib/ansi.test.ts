@@ -106,10 +106,12 @@ describe("parseAnsi — SGR colour & weight", () => {
     expect(parseAnsi(`${ESC}[38;2;10;20;30mx`)[0]!.fg).toBe("rgb(10,20,30)");
   });
 
-  it("swaps fg/bg for inverse video (7m), with terminal appearance fallbacks", () => {
+  it("swaps fg/bg for inverse video (7m), with sensible fallbacks", () => {
     const segs = parseAnsi(`${ESC}[7mx`);
-    expect(segs[0]!.fg).toBe("var(--terminal-background, #0a0a0a)");
-    expect(segs[0]!.bg).toBe("var(--terminal-foreground, #fafafa)");
+    // Literal dark-space values, not tokens — one spelling throughout the mirror (.adr/0002 rule 2).
+    // Same pixels either way; these are --background/--foreground's dark halves.
+    expect(segs[0]!.fg).toBe("#0a0a0a");
+    expect(segs[0]!.bg).toBe("#fafafa");
   });
 
   it("skips OSC sequences (window title) without leaking them into the text", () => {
@@ -263,7 +265,7 @@ describe("parseAnsi — segment shape carries pre-computed style and muted flag"
   it("every segment has a style object and a muted boolean", () => {
     const segs = parseAnsi("hello");
     expect(segs[0]!.style).toBeDefined();
-    expect(typeof segs[0]!.muted).toBe("boolean");
+    expect([true, false]).toContain(segs[0]!.muted); // a real boolean, never undefined
   });
 
   it("plain text segment is not muted and has an empty style", () => {

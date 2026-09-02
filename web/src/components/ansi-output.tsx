@@ -1,9 +1,8 @@
 import { Fragment, memo, useEffect, useMemo, useRef } from "react";
-import type { CSSProperties, ReactNode } from "react";
+import type { ReactNode } from "react";
 
 import { cn } from "@/lib/utils";
-import type { TerminalAppearance } from "@/hooks/use-display-prefs";
-import { parseAnsi, type AnsiSegment } from "@/lib/ansi";
+import { parseAnsi } from "@/lib/ansi";
 import { buildBlocks } from "@/lib/harness";
 import {
   lineText,
@@ -15,7 +14,7 @@ import {
   type PromptModel,
   type WizardModel,
 } from "@/lib/blocks";
-import { MIRROR_SPACE, MIRROR_INVERT } from "@/components/mirror-space";
+import { MIRROR_SPACE, MIRROR_INVERT, styleFor } from "@/components/mirror-space";
 import { findMatches, splitSegment, type FindMatch } from "@/lib/find";
 import { findLinks } from "@/lib/links";
 import { PromptSelectBlock, type PromptBlockAction } from "@/components/prompt-select-block";
@@ -23,6 +22,7 @@ import { WizardBlock } from "@/components/wizard-block";
 import { PreviewSelectBlock, type PreviewBlockAction } from "@/components/preview-select-block";
 import { MultiSelectBlock } from "@/components/multi-select-block";
 import { MenuBlock, type MenuBlockAction } from "@/components/menu-block";
+import { AutocompleteBlock } from "@/components/autocomplete-block";
 import type { MultiSelectIntent } from "@/lib/multi-select-action";
 
 /** A raw block, narrowed off the Block union (the highlight/offset paths only touch these). */
@@ -37,6 +37,9 @@ type PrevBlock = Extract<Block, { kind: "preview-select" }>;
 type MultiBlock = Extract<Block, { kind: "multi-select" }>;
 /** The (at most one) generic-menu block — tail, and only ever lifted when all four above declined. */
 type GenericMenuBlock = Extract<Block, { kind: "menu" }>;
+/** The (at most one) completion-popup block — tail, and the only non-raw kind that is NOT a modal:
+ *  the agent's input box is live under it, so it renders with no controls and locks nothing. */
+type AutoBlock = Extract<Block, { kind: "autocomplete" }>;
 
 export interface AnsiOutputProps {
   text: string;
@@ -48,8 +51,6 @@ export interface AnsiOutputProps {
   wrap?: boolean;
   /** Monospace font size in px. Default 11. */
   fontSize?: number;
-  /** Device-local terminal font and default colors. Explicit ANSI segment colors still win. */
-  appearance?: TerminalAppearance;
   /** Active find query. Empty (the default) = not searching: the fast, allocation-free render path. */
   query?: string;
   /** Index of the focused match — highlighted stronger and scrolled into view. -1 = none. */
@@ -109,11 +110,11 @@ const NO_MATCHES: FindMatch[] = [];
 const LINK_CLASS =
   "underline decoration-1 underline-offset-2 break-all cursor-pointer py-[0.35em]";
 
-function preClass(wrap: boolean, customColors: boolean, className?: string): string {
+function preClass(wrap: boolean, className?: string): string {
   return cn(
     "m-0 font-mono leading-[1.25] tracking-normal text-foreground [font-variant-ligatures:none]",
     MIRROR_SPACE,
-    !customColors && MIRROR_INVERT,
+    MIRROR_INVERT,
     wrap
       ? "whitespace-pre-wrap break-words"
       : // Horizontal pan for wide TUI tables. `overflow-x-auto` forces `overflow-y` to compute to
@@ -152,9 +153,8 @@ function preClass(wrap: boolean, customColors: boolean, className?: string): str
 export const AnsiOutput = memo(function AnsiOutput({
   text,
   className,
-  wrap = false,
+  wrap = true,
   fontSize = 11,
-  appearance,
   query = "",
   currentMatch = -1,
   onMatchCount,
@@ -193,6 +193,10 @@ export const AnsiOutput = memo(function AnsiOutput({
     () => blocks.find((b): b is GenericMenuBlock => b.kind === "menu") ?? null,
     [blocks],
   );
+  const autoBlock = useMemo(
+    () => blocks.find((b): b is AutoBlock => b.kind === "autocomplete") ?? null,
+    [blocks],
+  );
 
   // Find offsets live over the *raw* mirror text (raw blocks joined by "\n", lines joined by "\n").
   // The join only runs while actually searching, so the idle polling path pays nothing.
@@ -219,32 +223,8 @@ export const AnsiOutput = memo(function AnsiOutput({
     currentRef.current?.scrollIntoView({ block: "center", behavior: "auto" });
   }, [currentMatch, matches]);
 
-  // Muted = box-drawing / rule glyphs. Keep explicit ANSI colors authoritative; otherwise use the
-  // configured terminal foreground or the dark mirror's muted fallback.
-  const segmentStyle = (segment: AnsiSegment): CSSProperties =>
-    segment.muted
-      ? {
-          ...segment.style,
-          color: (segment.style.color ?? appearance?.foreground) || "#a1a1a1",
-          fontWeight: 400,
-          opacity: 1,
-        }
-      : segment.style;
-
-  const customColors = Boolean(appearance?.foreground || appearance?.background);
-  const preStyle: CSSProperties & {
-    "--terminal-foreground"?: string;
-    "--terminal-background"?: string;
-  } = {
-    fontSize: `${fontSize}px`,
-    fontFamily: appearance?.fontFamily
-      ? `${appearance.fontFamily}, var(--font-mono)`
-      : undefined,
-    color: appearance?.foreground || undefined,
-    backgroundColor: appearance?.background || undefined,
-    "--terminal-foreground": appearance?.foreground || undefined,
-    "--terminal-background": appearance?.background || undefined,
-  };
+  // Muted = box-drawing / rule glyphs. Drop ANSI dim opacity so table borders stay visible —
+  // var(--border) + dim made them nearly invisible on mobile. See styleFor in mirror-space.ts.
 
   const prompt = promptBlock ? (
     <PromptSelectBlock
@@ -277,6 +257,12 @@ export const AnsiOutput = memo(function AnsiOutput({
       disabled={promptDisabled || !onMenuAction}
       onAction={(action) => onMenuAction?.(action, menuBlock.menu)}
     />
+  ) : autoBlock ? (
+    // No handler and no `disabled`: the completion popup emits no keystroke, so there is nothing for
+    // a read-only device to be refused. It is last in the chain only because it is the least
+    // specific tail shape; the grammars above are mutually exclusive with it anyway (a popup means an
+    // input box, and every dialog above means there isn't one).
+    <AutocompleteBlock autocomplete={autoBlock.autocomplete} />
   ) : null;
 
   // Thread a running global offset through raw blocks → lines → segments (advancing by 1 for each
@@ -289,9 +275,9 @@ export const AnsiOutput = memo(function AnsiOutput({
   // A run of plain text at global offset `start` → nodes, with find matches split out and
   // highlighted. `currentAssigned` refs only the first slice of the focused match (a match can span
   // segments on a colour change) so scrollIntoView targets one stable node.
-  const renderFind = (text: string, start: number): ReactNode => {
-    if (matches.length === 0) return text;
-    return splitSegment(text, start, matches).map((p, j) => {
+  const renderFind = (run: string, start: number): ReactNode => {
+    if (matches.length === 0) return run;
+    return splitSegment(run, start, matches).map((p, j) => {
       if (p.matchIndex === null) return p.text;
       const isCurrent = p.matchIndex === currentMatch;
       const attach = isCurrent && !currentAssigned;
@@ -302,7 +288,7 @@ export const AnsiOutput = memo(function AnsiOutput({
           ref={attach ? currentRef : undefined}
           data-find-match={isCurrent ? "current" : "other"}
           className={cn(
-            "rounded-[2px]",
+            "rounded-md",
             // Asymmetric on purpose, and the asymmetry is the whole subtlety.
             //
             // The CURRENT match re-applies the mirror's filter to cancel it, because otherwise
@@ -328,10 +314,10 @@ export const AnsiOutput = memo(function AnsiOutput({
   // A segment's text → nodes: autolinked URLs as anchors, wrapping find-highlighted runs. Two
   // splits over one coordinate space, links outermost, so a find hit *inside* a URL still lights up.
   // A URL that straddles a colour change yields one <a> per segment slice, each with the same href.
-  const renderSegment = (text: string, start: number): ReactNode => {
-    if (links.length === 0) return renderFind(text, start);
+  const renderSegment = (run: string, start: number): ReactNode => {
+    if (links.length === 0) return renderFind(run, start);
     let at = start;
-    return splitSegment(text, start, links).map((p, i) => {
+    return splitSegment(run, start, links).map((p, i) => {
       const pieceStart = at;
       at += p.text.length;
       if (p.matchIndex === null) return <Fragment key={i}>{renderFind(p.text, pieceStart)}</Fragment>;
@@ -354,7 +340,7 @@ export const AnsiOutput = memo(function AnsiOutput({
             const segStart = offset;
             offset += s.text.length;
             return (
-              <span key={si} style={segmentStyle(s)}>
+              <span key={si} style={styleFor(s)}>
                 {renderSegment(s.text, segStart)}
               </span>
             );
@@ -378,7 +364,7 @@ export const AnsiOutput = memo(function AnsiOutput({
   return (
     <>
       {rawBlocks.length > 0 && (
-        <pre className={preClass(wrap, customColors, className)} style={preStyle}>
+        <pre className={preClass(wrap, className)} style={{ fontSize: `${fontSize}px` }}>
           {rawBlocks.map(renderBlock)}
         </pre>
       )}
