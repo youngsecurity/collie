@@ -12,6 +12,7 @@ import {
   deviceAuth,
   guard,
   historyParams,
+  hasForwardingHeaders,
   isHostAllowed,
   isLoopbackAddress,
   isLoopbackPeer,
@@ -348,6 +349,51 @@ describe("checkAccess — Origin required for writes", () => {
     });
   });
 
+  test("a loopback proxy peer cannot grant a forwarded request the loopback exception", () => {
+    for (const forwardingHeader of [
+      "forwarded",
+      "via",
+      "x-forwarded-for",
+      "x-forwarded-port",
+      "x-forwarded-server",
+    ]) {
+      expect(
+        checkAccess(
+          req({ host: "localhost:8787", [forwardingHeader]: "proxy-marker" }),
+          cfg(),
+          "write",
+          "127.0.0.1",
+        ),
+      ).toEqual({ ok: false, reason: "host not allowed" });
+      // Host validation off: the marker still withholds the no-Origin write exemption.
+      expect(
+        checkAccess(
+          req({ host: "localhost:8787", [forwardingHeader]: "proxy-marker" }),
+          cfg({ allowAnyHost: true }),
+          "write",
+          "127.0.0.1",
+        ),
+      ).toEqual({ ok: false, reason: "origin required" });
+    }
+    // Headers only ever deny: a marker on an allowlisted Host changes nothing, and a marker on a
+    // loopback READ from a loopback peer is refused by the Host gate just like the write.
+    expect(
+      checkAccess(
+        req({
+          host: "collie.example.ts.net",
+          origin: "https://collie.example.ts.net",
+          "x-forwarded-for": "100.64.0.2",
+        }),
+        cfg(),
+        "write",
+        "127.0.0.1",
+      ),
+    ).toEqual({ ok: true });
+    expect(
+      isHostAllowed("127.0.0.1:8787", cfg(), "127.0.0.1", true),
+    ).toBe(false);
+  });
+
   test("write with no Origin and a loopback Host is refused without a loopback peer", () => {
     // The Host gate refuses first: a loopback Host from a non-loopback socket is not a loopback
     // caller, and the no-Origin exemption never gets a look.
@@ -393,6 +439,18 @@ describe("isHostAllowed", () => {
     expect(isHostAllowed("b.example.com", c, "10.0.0.50")).toBe(true);
     expect(isHostAllowed("evil.com", c, "10.0.0.50")).toBe(false);
     expect(isHostAllowed("", c, "10.0.0.50")).toBe(false);
+  });
+});
+
+describe("hasForwardingHeaders", () => {
+  test("Forwarded, Via and every X-Forwarded-* name count, whatever their value", () => {
+    for (const name of ["Forwarded", "via", "X-Forwarded-For", "x-forwarded-proto", "X-Forwarded-Anything"]) {
+      expect(hasForwardingHeaders(req({ host: "h", [name]: "" }))).toBe(true);
+    }
+  });
+
+  test("a request no proxy touched has none", () => {
+    expect(hasForwardingHeaders(req({ host: "h", origin: "https://h", "x-device-id": "phone" }))).toBe(false);
   });
 });
 

@@ -118,6 +118,26 @@ const SECURITY_HEADERS = {
 // socket peer is also loopback: Host is client-written and cannot establish where a client sits.
 const LOOPBACK_HOST = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/;
 
+// Headers a proxy stamps on a request it relays. Besides these two, every `X-Forwarded-*` name
+// counts (see hasForwardingHeaders).
+const FORWARDING_HEADERS = new Set(["forwarded", "via"]);
+
+/**
+ * Whether the request carries a proxy's forwarding marker (`Forwarded`, `Via`, or any
+ * `X-Forwarded-*`). Header values are never read and never GRANT anything: their presence only
+ * proves that a loopback socket peer may be a local reverse proxy rather than the original client,
+ * so the loopback-Host exception must not apply. A client that omits them gains nothing it did not
+ * already have; a client that adds them can only refuse itself.
+ */
+export function hasForwardingHeaders(req: Request): boolean {
+  let forwarded = false;
+  req.headers.forEach((_value, name) => {
+    const lower = name.toLowerCase();
+    if (FORWARDING_HEADERS.has(lower) || lower.startsWith("x-forwarded-")) forwarded = true;
+  });
+  return forwarded;
+}
+
 /**
  * Whether a kernel-reported peer address is loopback, for the HOST gate. This is the fail-closed
  * sibling of {@link isLoopbackPeer}: an absent address is `false` here, because this answer GRANTS
@@ -2458,8 +2478,8 @@ async function uploadPane(
  * Access gate for the API:
  *  - Host allowlist (fail-closed): the request's Host header must be an explicit COLLIE_PUBLIC_HOSTS
  *    entry, a ctl-discovered Tailscale host (COLLIE_TAILSCALE_HOSTS), the host of an allowed origin,
- *    or a loopback form presented by an actual loopback socket peer — otherwise rejected, BEFORE any
- *    Origin logic. A remote peer is refused outright while both host lists are empty: an unconfigured
+ *    or a loopback form presented by an actual loopback socket peer on a request no proxy relayed
+ *    (a forwarding header turns that exception off) — otherwise rejected, BEFORE any Origin logic. A remote peer is refused outright while both host lists are empty: an unconfigured
  *    bridge answers its own host and nobody else. This defeats DNS rebinding
  *    (Host==Origin==evil.example) and a forged `Host: localhost` from a non-loopback socket.
  *    COLLIE_ALLOW_ANY_HOST=1 is the explicit opt-out.
@@ -2468,7 +2488,7 @@ async function uploadPane(
  *    localhost and explicitly-configured origins are also allowed.
  *  - Origin required for writes: a state-changing (`level === "write"`) request with no Origin is
  *    trusted only from loopback (curl on the host), meaning a loopback Host AND a loopback socket
- *    peer — the Host alone is the client's claim. Browsers always send Origin on fetch/SW POSTs, so a
+ *    peer AND no forwarding header — the Host alone is the client's claim. Browsers always send Origin on fetch/SW POSTs, so a
  *    missing Origin on a remote write is a non-browser or Origin-stripped request — reject it.
  *  - Tailscale identity: when a trusted user is configured under `tailscale serve`, the request
  *    must carry a matching `Tailscale-User-Login`. A missing header is rejected too — serve injects
@@ -2482,6 +2502,10 @@ export function checkAccess(
   peerAddress: string | null = null,
 ): { ok: true } | { ok: false; reason: string } {
   const host = req.headers.get("host") ?? "";
+  // A relayed request's loopback socket peer is the proxy, not the client, so neither loopback
+  // exception below may fire for it. Read once; only ever consulted to deny.
+  const forwarded = hasForwardingHeaders(req);
+  const loopbackCaller = LOOPBACK_HOST.test(host) && isLoopbackAddress(peerAddress) && !forwarded;
 
   // Host-header allowlist — ALWAYS ON, before the Origin logic, so a rebinding request
   // (Host==Origin==evil) never reaches it. COLLIE_ALLOW_ANY_HOST=1 is the operator's explicit opt-out.
@@ -2495,7 +2519,7 @@ export function checkAccess(
     ) {
       return { ok: false, reason: "host allowlist required" };
     }
-    if (!isHostAllowed(host, cfg, peerAddress)) {
+    if (!isHostAllowed(host, cfg, peerAddress, forwarded)) {
       return { ok: false, reason: "host not allowed" };
     }
   }
@@ -2513,9 +2537,10 @@ export function checkAccess(
       LOOPBACK_HOST.test(originHost) ||
       cfg.allowedOrigins.includes(origin);
     if (!allowed) return { ok: false, reason: "cross-origin rejected" };
-  } else if (level === "write" && !(LOOPBACK_HOST.test(host) && isLoopbackAddress(peerAddress))) {
+  } else if (level === "write" && !loopbackCaller) {
     // A write with no Origin header that is not a loopback caller (loopback Host from a loopback
-    // socket peer) isn't a real browser request — refuse. The Host alone proves nothing.
+    // socket peer, no proxy in between) isn't a real browser request — refuse. The Host alone
+    // proves nothing.
     return { ok: false, reason: "origin required" };
   }
 
