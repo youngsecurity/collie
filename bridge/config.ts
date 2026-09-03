@@ -250,7 +250,8 @@ export interface Config {
    * Explicit Host-header allowlist (`host` or `host:port` values) beyond loopback and the
    * discovered {@link tailscaleHosts}. Host validation is fail-closed: a remote peer is denied when
    * both this list and {@link tailscaleHosts} are empty, and every remote request's Host must match
-   * one of those entries. Loopback Host forms are accepted only when the actual socket peer is
+   * one of those entries after canonicalization (an entry that is not a bare `host[:port]` is
+   * reported at startup and never matches). Loopback Host forms are accepted only when the actual socket peer is
    * loopback and the request was not forwarded by a local proxy. This list is deliberately
    * independent of {@link allowedOrigins} and closes the DNS-rebinding hole where Host and Origin
    * are both attacker-controlled. Required under `COLLIE_SKIP_SERVE=1` (where Collie discovers no

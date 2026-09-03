@@ -118,6 +118,35 @@ const SECURITY_HEADERS = {
 // socket peer is also loopback: Host is client-written and cannot establish where a client sits.
 const LOOPBACK_HOST = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/;
 
+/**
+ * One spelling for a Host, or null when the value is not a bare `host[:port]` authority. Both sides
+ * of every Host comparison (a configured entry, the request's header, the Origin's host) go through
+ * this, so `CARL.EXAMPLE.NET.:8787` and `carl.example.net:8787` are the same host and neither side
+ * can be spelled past the other.
+ *
+ * Strict on purpose. Surrounding whitespace is refused rather than trimmed, and so is anything with
+ * a `/`, `\`, `@`, `?`, `#`, `%` or `,`: HTTP Host is an authority, and the WHATWG parser used for
+ * the canonical form happily accepts authority prefixes, backslashes and userinfo that a Host must
+ * not carry. Refusing them up front leaves no parser differential to exploit. What survives is
+ * lowercased, loses a trailing dot, and keeps an explicit non-default port.
+ */
+export function canonicalizeHost(host: string): string | null {
+  if (!host || host !== host.trim()) return null;
+  if (host.includes("/") || /[\\\s@?#%,]/.test(host)) return null;
+  try {
+    const parsed = new URL(`http://${host}`);
+    if (parsed.username || parsed.password || parsed.pathname !== "/" || parsed.search || parsed.hash) {
+      return null;
+    }
+    let hostname = parsed.hostname.toLowerCase();
+    if (hostname.endsWith(".")) hostname = hostname.slice(0, -1);
+    if (!hostname) return null;
+    return parsed.port ? `${hostname}:${parsed.port}` : hostname;
+  } catch {
+    return null;
+  }
+}
+
 // Headers a proxy stamps on a request it relays. Besides these two, every `X-Forwarded-*` name
 // counts (see hasForwardingHeaders).
 const FORWARDING_HEADERS = new Set(["forwarded", "via"]);
@@ -1411,6 +1440,19 @@ export function startupWarnings(cfg: Config): string[] {
     warnings.push(
       `[bridge] WARNING: no non-loopback Host is allowed — every remote request will be rejected with "host allowlist required", and only a loopback caller can reach this bridge by a loopback name. Set COLLIE_PUBLIC_HOSTS to the exact host(s) you serve on (required behind your own reverse proxy and under COLLIE_SKIP_SERVE=1); COLLIE_ALLOWED_ORIGINS does not count.`,
     );
+  } else {
+    // An entry with no canonical spelling can never match a request (isHostAllowed), so it is a
+    // silent hole in the allowlist the operator believes they configured. Say so, once, at boot.
+    for (const entry of cfg.publicHosts) {
+      if (canonicalizeHost(entry) === null) {
+        warnings.push(`[bridge] WARNING: invalid COLLIE_PUBLIC_HOSTS entry: ${entry}`);
+      }
+    }
+    for (const entry of cfg.tailscaleHosts) {
+      if (canonicalizeHost(entry) === null) {
+        warnings.push(`[bridge] WARNING: invalid COLLIE_TAILSCALE_HOSTS entry: ${entry}`);
+      }
+    }
   }
   return warnings;
 }
@@ -2482,9 +2524,10 @@ async function uploadPane(
  *    are empty: an unconfigured bridge answers its own host and nobody else. This defeats DNS
  *    rebinding (Host==Origin==evil.example) and a forged `Host: localhost` from a non-loopback
  *    socket. COLLIE_ALLOW_ANY_HOST=1 is the explicit opt-out.
- *  - Same-origin only (Origin host must equal Host) — defeats cross-site requests/CSRF. Browsers
- *    omit Origin on same-origin GETs (so the snapshot poll passes); they send it on POSTs.
- *    localhost and explicitly-configured origins are also allowed.
+ *  - Same-origin only (Origin host must equal Host, both in canonical spelling) — defeats
+ *    cross-site requests/CSRF. Browsers omit Origin on same-origin GETs (so the snapshot poll
+ *    passes); they send it on POSTs. localhost and explicitly-configured origins are also allowed.
+ *    An Origin whose host has no canonical spelling is refused as "bad origin".
  *  - Origin required for writes: a state-changing (`level === "write"`) request with no Origin is
  *    trusted only from loopback (curl on the host), meaning a loopback Host AND a loopback socket
  *    peer AND no forwarding header — the Host alone is the client's claim. Browsers always send Origin on fetch/SW POSTs, so a
@@ -2501,10 +2544,17 @@ export function checkAccess(
   peerAddress: string | null = null,
 ): { ok: true } | { ok: false; reason: string } {
   const host = req.headers.get("host") ?? "";
+  // Null only for a Host that is not an authority at all. With validation on, isHostAllowed()
+  // refuses that below; under the COLLIE_ALLOW_ANY_HOST=1 opt-out it simply never matches anything.
+  const canonicalHost = canonicalizeHost(host);
   // A relayed request's loopback socket peer is the proxy, not the client, so neither loopback
   // exception below may fire for it. Read once; only ever consulted to deny.
   const forwarded = hasForwardingHeaders(req);
-  const loopbackCaller = LOOPBACK_HOST.test(host) && isLoopbackAddress(peerAddress) && !forwarded;
+  const loopbackCaller =
+    canonicalHost !== null &&
+    LOOPBACK_HOST.test(canonicalHost) &&
+    isLoopbackAddress(peerAddress) &&
+    !forwarded;
 
   // Host-header allowlist — ALWAYS ON, before the Origin logic, so a rebinding request
   // (Host==Origin==evil) never reaches it. COLLIE_ALLOW_ANY_HOST=1 is the operator's explicit opt-out.
@@ -2525,14 +2575,15 @@ export function checkAccess(
 
   const origin = req.headers.get("origin");
   if (origin) {
-    let originHost = "";
+    let originHost: string | null = null;
     try {
-      originHost = new URL(origin).host;
+      originHost = canonicalizeHost(new URL(origin).host);
     } catch {
       return { ok: false, reason: "bad origin" };
     }
+    if (originHost === null) return { ok: false, reason: "bad origin" };
     const allowed =
-      originHost === host ||
+      originHost === canonicalHost ||
       LOOPBACK_HOST.test(originHost) ||
       cfg.allowedOrigins.includes(origin);
     if (!allowed) return { ok: false, reason: "cross-origin rejected" };
@@ -2561,8 +2612,9 @@ export function checkAccess(
  * explicit COLLIE_PUBLIC_HOSTS entry, a discovered Tailscale host (bare or with port), or a loopback
  * form. The loopback form is accepted only when the kernel-reported socket peer is loopback too and
  * the request was not forwarded (a forwarded request's peer is a local proxy, not the client, so its
- * loopback socket attests nothing). COLLIE_ALLOWED_ORIGINS is deliberately NOT consulted: it widens the same-origin
- * check, never this one. An origin is a browser's claim about the page that sent the request and a
+ * loopback socket attests nothing). Every name is compared in its canonical spelling
+ * (canonicalizeHost), and a Host that has none is refused. COLLIE_ALLOWED_ORIGINS is deliberately
+ * NOT consulted: it widens the same-origin check, never this one. An origin is a browser's claim about the page that sent the request and a
  * Host is the name the request arrived on; letting one admit the other reopens the rebinding hole
  * (Host==Origin==attacker's name) this gate exists to close. Pure + exported for tests.
  */
@@ -2572,11 +2624,17 @@ export function isHostAllowed(
   peerAddress: string | null = null,
   forwarded: boolean = false,
 ): boolean {
-  if (!host) return false;
-  if (LOOPBACK_HOST.test(host)) return isLoopbackAddress(peerAddress) && !forwarded;
-  if (cfg.publicHosts.includes(host)) return true;
-  const bare = host.replace(/:\d+$/, "");
-  return cfg.tailscaleHosts.some((h) => h === host || h === bare);
+  const canonicalHost = canonicalizeHost(host);
+  if (canonicalHost === null) return false;
+  if (LOOPBACK_HOST.test(canonicalHost)) return isLoopbackAddress(peerAddress) && !forwarded;
+  if (cfg.publicHosts.some((entry) => canonicalizeHost(entry) === canonicalHost)) return true;
+  // `collie start` discovers these as bare hosts (MagicDNS name + tailnet IPs); the bridge may be
+  // served on any port, so an entry matches the request Host with or without its port.
+  const bare = canonicalHost.replace(/:\d+$/, "");
+  return cfg.tailscaleHosts.some((entry) => {
+    const canonicalEntry = canonicalizeHost(entry);
+    return canonicalEntry !== null && (canonicalEntry === canonicalHost || canonicalEntry === bare);
+  });
 }
 
 /**

@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import {
   bridgeConfigBody,
+  canonicalizeHost,
   muxConfigBody,
   muxLogoResponse,
   BUILD_HEADER,
@@ -152,6 +153,16 @@ describe("checkAccess — same-origin / CSRF gate", () => {
       ok: false,
       reason: "bad origin",
     });
+  });
+
+  test("an Origin whose host has no canonical spelling is a bad origin, not a same-origin match", () => {
+    // `new URL("http://a.ts.net%2c").host` parses; canonicalizeHost refuses the `%`. Even if the
+    // Host were spelled identically it must not compare equal, so the refusal is the safe answer.
+    for (const host of ["h", "a.ts.net%2c"]) {
+      expect(
+        checkAccess(req({ origin: "http://a.ts.net%2c", host }), cfg({ allowAnyHost: true })),
+      ).toEqual({ ok: false, reason: "bad origin" });
+    }
   });
 });
 
@@ -466,13 +477,81 @@ describe("isHostAllowed", () => {
     expect(isHostAllowed("localhost:8787", c)).toBe(false);
   });
 
-  test("configured public host passes; an allowed-origin host and anything else fail", () => {
+  test("configured public host passes; anything else or malformed fails", () => {
     const c = cfg({ publicHosts: ["a.ts.net"], allowedOrigins: ["https://b.example.com"] });
     expect(isHostAllowed("a.ts.net", c, "10.0.0.50")).toBe(true);
     expect(isHostAllowed("b.example.com", c, "10.0.0.50")).toBe(false);
     expect(isHostAllowed("b.example.com", c, "127.0.0.1")).toBe(false);
     expect(isHostAllowed("evil.com", c, "10.0.0.50")).toBe(false);
     expect(isHostAllowed("", c, "10.0.0.50")).toBe(false);
+    expect(isHostAllowed("//a.ts.net", c, "10.0.0.50")).toBe(false);
+    expect(isHostAllowed("\\\\a.ts.net", c, "10.0.0.50")).toBe(false);
+    expect(isHostAllowed("a.ts.net/path", c, "10.0.0.50")).toBe(false);
+    expect(isHostAllowed("a.ts.net\t", c, "10.0.0.50")).toBe(false);
+    expect(isHostAllowed(" a.ts.net", c, "10.0.0.50")).toBe(false);
+    expect(isHostAllowed("user@a.ts.net", c, "10.0.0.50")).toBe(false);
+    expect(isHostAllowed("a.ts.net?x", c, "10.0.0.50")).toBe(false);
+    // A malformed loopback spelling is not a loopback Host either, whoever the peer is.
+    expect(isHostAllowed("localhost/", c, "127.0.0.1")).toBe(false);
+  });
+
+  test("canonicalizes configured, incoming, and same-origin hostnames", () => {
+    const c = cfg({ publicHosts: ["CARL.HOME.YOUNGSECURITY.NET:8787"] });
+    expect(isHostAllowed("carl.home.youngsecurity.net:8787", c, "10.0.0.50")).toBe(true);
+    expect(isHostAllowed("carl.home.youngsecurity.net.:8787", c, "10.0.0.50")).toBe(true);
+    // The port is part of the name: a different one is a different host.
+    expect(isHostAllowed("carl.home.youngsecurity.net:8788", c, "10.0.0.50")).toBe(false);
+    expect(
+      checkAccess(
+        req({
+          origin: "http://carl.home.youngsecurity.net.:8787",
+          host: "CARL.HOME.YOUNGSECURITY.NET:8787",
+        }),
+        c,
+        "read",
+        "10.0.0.50",
+      ),
+    ).toEqual({ ok: true });
+    // A discovered tailnet entry canonicalizes too, and still matches with or without a port.
+    const ts = cfg({ publicHosts: [], tailscaleHosts: ["Collie.Example.TS.NET."] });
+    expect(isHostAllowed("collie.example.ts.net", ts, "10.0.0.50")).toBe(true);
+    expect(isHostAllowed("collie.example.ts.net:8787", ts, "10.0.0.50")).toBe(true);
+    // Loopback spellings canonicalize before the loopback test, so case cannot dodge the peer rule.
+    expect(isHostAllowed("LOCALHOST:8787", c, "10.0.0.50")).toBe(false);
+    expect(isHostAllowed("LOCALHOST:8787", c, "127.0.0.1")).toBe(true);
+  });
+});
+
+describe("canonicalizeHost", () => {
+  test("lowercases, drops a trailing dot, keeps an explicit port", () => {
+    expect(canonicalizeHost("Collie.Example.TS.NET.")).toBe("collie.example.ts.net");
+    expect(canonicalizeHost("collie.example.ts.net:8787")).toBe("collie.example.ts.net:8787");
+    expect(canonicalizeHost("[::1]:8787")).toBe("[::1]:8787");
+    expect(canonicalizeHost("127.0.0.1")).toBe("127.0.0.1");
+    // The scheme's default port is no port at all, on both sides of a comparison.
+    expect(canonicalizeHost("collie.example.ts.net:80")).toBe("collie.example.ts.net");
+  });
+
+  test("refuses anything that is not a bare authority", () => {
+    for (const bad of [
+      "",
+      " a.ts.net",
+      "a.ts.net ",
+      "a.ts.net\t",
+      "a.ts.net/",
+      "//a.ts.net",
+      "\\\\a.ts.net",
+      "user@a.ts.net",
+      "user:pw@a.ts.net",
+      "a.ts.net?x=1",
+      "a.ts.net#frag",
+      "a%2ets.net",
+      "a.ts.net,b.ts.net",
+      ".",
+      "a.ts.net:notaport",
+    ]) {
+      expect(canonicalizeHost(bad)).toBeNull();
+    }
   });
 });
 
@@ -1364,6 +1443,26 @@ describe("startupWarnings — security-posture nags", () => {
   test("wide bind via the escape hatch: warns the gates are client-settable", () => {
     const ws = startupWarnings(cfg({ host: "0.0.0.0", allowNonLoopbackBind: true }));
     expect(has(ws, "COLLIE_ALLOW_NON_LOOPBACK_BIND")).toBe(true);
+  });
+
+  test("invalid publicHosts entries are reported", () => {
+    const ws = startupWarnings(cfg({ publicHosts: ["collie.example.ts.net", "bad.example/path"] }));
+    expect(has(ws, "invalid COLLIE_PUBLIC_HOSTS entry: bad.example/path")).toBe(true);
+    expect(has(ws, "invalid COLLIE_PUBLIC_HOSTS entry: collie.example.ts.net")).toBe(false);
+    expect(has(ws, "no non-loopback Host is allowed")).toBe(false);
+  });
+
+  test("invalid tailscaleHosts entries are reported, and valid ones are not", () => {
+    const ws = startupWarnings(
+      cfg({ publicHosts: [], tailscaleHosts: ["collie.example.ts.net", "[fd7a::1]", "100.64.0.1", "a b"] }),
+    );
+    expect(has(ws, "invalid COLLIE_TAILSCALE_HOSTS entry: a b")).toBe(true);
+    expect(ws.filter((w) => w.includes("invalid COLLIE_TAILSCALE_HOSTS")).length).toBe(1);
+  });
+
+  test("under allowAnyHost the entry check does not run (validation is off, nothing to mis-match)", () => {
+    const ws = startupWarnings(cfg({ allowAnyHost: true, publicHosts: ["bad.example/path"] }));
+    expect(has(ws, "invalid COLLIE_PUBLIC_HOSTS")).toBe(false);
   });
 });
 
