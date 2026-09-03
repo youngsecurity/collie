@@ -133,6 +133,27 @@ describe("paneLoader", () => {
     expect(data.text).toBe(paneTextWithDraft());
   });
 
+  it("honors and caches an empty successful pane response", async () => {
+    const { paneLoader } = await import("./loaders");
+    await paneLoader({ params: { paneId: "w1:p1" } }); // prime non-empty stale text
+    // The operator ran `clear`: an empty screen is a real read, not a missing one.
+    server.use(
+      http.get(/\/api\/pane\/[^/]+$/, () =>
+        HttpResponse.json({ paneId: "w1:p1", text: "", truncated: false, revision: 2 }),
+      ),
+    );
+
+    const empty = await paneLoader({ params: { paneId: "w1:p1" } });
+    expect(empty.error).toBe(false);
+    expect(empty.text).toBe("");
+
+    // And it is what the stale path hands back afterwards, not the screen before it.
+    failPane();
+    const stale = await paneLoader({ params: { paneId: "w1:p1" } });
+    expect(stale.error).toBe(true);
+    expect(stale.text).toBe("");
+  });
+
   it.each([401, 403] as const)("marks a %i response as an auth error", async (status) => {
     rejectPane(status);
     const { paneLoader } = await import("./loaders");
@@ -773,6 +794,45 @@ describe("cold boot with no network", () => {
     expect(data.error).toBe(true);
     expect(data.text).toContain("hello from the pane");
     expect(data.lastSeenAt).toBeTypeOf("number");
+  });
+
+  // The two tiers can disagree when the store refuses a write: it then holds an OLDER body than the
+  // module cache. A stale render must date the body it shows by that body's own fetch, never by
+  // whatever the other tier last managed to keep.
+  it("keeps a newer in-memory snapshot paired with its own time when storage writes fail", async () => {
+    const oldAt = 1_700_000_000_000;
+    const freshAt = 1_800_000_000_000;
+    sessionStorage.setItem(SNAPSHOT_KEY, JSON.stringify({ at: oldAt, value: fixtureSnapshot }));
+    const fresh = { ...fixtureSnapshot, agents: fixtureSnapshot.agents.slice(0, 1) };
+    server.use(http.get("/api/snapshot", () => HttpResponse.json(fresh)));
+    vi.spyOn(Date, "now").mockReturnValue(freshAt);
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("QuotaExceededError");
+    });
+
+    const { rootLoader } = await import("./loaders");
+    await rootLoader();
+    failSnapshot();
+    const stale = await rootLoader();
+    expect(stale.agents).toHaveLength(1);
+    expect(stale.lastSeenAt).toBe(freshAt);
+  });
+
+  it("keeps newer in-memory pane text paired with its own time when storage writes fail", async () => {
+    const oldAt = 1_700_000_000_000;
+    const freshAt = 1_800_000_000_000;
+    sessionStorage.setItem(PANE_KEY, `${oldAt}\nold pane text`);
+    vi.spyOn(Date, "now").mockReturnValue(freshAt);
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("QuotaExceededError");
+    });
+
+    const { paneLoader } = await import("./loaders");
+    await paneLoader({ params: { paneId: "w1:p1" } });
+    failPane();
+    const stale = await paneLoader({ params: { paneId: "w1:p1" } });
+    expect(stale.text).toContain("hello from the pane");
+    expect(stale.lastSeenAt).toBe(freshAt);
   });
 
   it("says disconnected, not empty, when a fresh page has nothing cached", async () => {

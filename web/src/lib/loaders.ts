@@ -26,6 +26,7 @@ import { splitLines } from "@/lib/blocks";
 import { isLostLatched } from "@/lib/connection-health";
 import { ambientSpaces } from "@/lib/hosts";
 import {
+  type Cached,
   dropLastPaneText,
   loadLastPaneText,
   loadLastSnapshot,
@@ -169,7 +170,13 @@ export interface PaneData {
 
 // Keep-previous-data cache is PER-SCOPE: switching host or session must not show the other one's
 // herd flagged as stale. Keyed by the NUL-joined (host, session) pair via lib/scope.
-const lastSnapshot = new Map<string, SnapshotResponse>();
+//
+// Each entry carries the wall-clock of the fetch that produced it, the same `Cached<T>` shape the
+// write-through store uses. The two tiers can disagree: a full or disabled sessionStorage leaves the
+// store holding an OLDER body than this map, and a stale render dated off the store would then put
+// the older time under the newer screen. Keeping the stamp beside the body means whichever tier the
+// body came from, the time shown is that body's own.
+const lastSnapshot = new Map<string, Cached<SnapshotResponse>>();
 
 // A latched navigation skips the network, so retain whether the last real outcome for each scope was
 // an auth rejection. Store only rejected scopes; every other real outcome removes the marker.
@@ -249,11 +256,11 @@ function toHomeData(
 // empty herd instead of the screen they left. A restored snapshot is promoted into the module cache so
 // the rest of this page session behaves exactly as if we had fetched it.
 function staleHome(scope: Scope, viewAll: boolean): HomeData {
-  const restored = loadLastSnapshot(scope, viewAll);
-  const cached = lastSnapshot.get(snapshotKey(scope, viewAll)) ?? restored?.value;
+  const key = snapshotKey(scope, viewAll);
+  const cached = lastSnapshot.get(key) ?? loadLastSnapshot(scope, viewAll);
   if (cached) {
-    lastSnapshot.set(snapshotKey(scope, viewAll), cached);
-    return toHomeData(cached, scope, viewAll, true, restored?.at);
+    lastSnapshot.set(key, cached);
+    return toHomeData(cached.value, scope, viewAll, true, cached.at);
   }
   // Nothing cached at all — an outage on a tab that never saw a good snapshot. `error: true` is what
   // keeps this apart from a genuinely empty herd downstream: the empty state is only allowed to say
@@ -300,9 +307,12 @@ export async function rootLoader({ request }: { request?: Request } = {}): Promi
 
   try {
     const snap = await fetchSnapshot(scope, request?.signal, viewAll);
-    lastSnapshot.set(snapshotKey(scope, viewAll), snap);
+    // One stamp for both tiers, so a stale render dates the body by the fetch that produced it
+    // whichever tier it is read back from.
+    const at = Date.now();
+    lastSnapshot.set(snapshotKey(scope, viewAll), { at, value: snap });
     // Write-through: the same body, dated, in a store that outlives this page (lib/last-seen.ts).
-    saveLastSnapshot(scope, snap, undefined, viewAll);
+    saveLastSnapshot(scope, snap, at, viewAll);
     rememberAuthError(scope, false);
     return toHomeData(snap, scope, viewAll, false);
   } catch (e) {
@@ -320,14 +330,15 @@ function paneKey(paneId: string, scope?: Scope): string {
   return paneScopeKey(scope, paneId);
 }
 
-const lastPaneText = new Map<string, string>();
+// Dated for the reason lastSnapshot is: the stamp travels with the text it dates.
+const lastPaneText = new Map<string, Cached<string>>();
 // Cap the per-pane stale-text cache so it can't grow without bound over a long session of opening
 // many panes. Evict the oldest (insertion-order) entry beyond the cap — dumb FIFO is plenty for a
 // phone that views one pane at a time.
 const PANE_TEXT_MAX = 20;
 
-function rememberPaneText(key: string, text: string): void {
-  lastPaneText.set(key, text);
+function rememberPaneText(key: string, text: string, at: number): void {
+  lastPaneText.set(key, { at, value: text });
   if (lastPaneText.size > PANE_TEXT_MAX) {
     const oldest = lastPaneText.keys().next().value;
     if (oldest !== undefined) lastPaneText.delete(oldest);
@@ -388,19 +399,19 @@ export function resetRequestedLines(paneId?: string, scope?: Scope): void {
 // survives the page being discarded. A restored mirror is promoted into the module cache.
 function stalePane(paneId: string, scope: Scope, lines: number): PaneData {
   const key = paneKey(paneId, scope);
-  const restored = loadLastPaneText(scope, paneId);
-  const text = lastPaneText.get(key) ?? restored?.value ?? "";
-  if (text) rememberPaneText(key, text);
+  const cached = lastPaneText.get(key) ?? loadLastPaneText(scope, paneId);
+  if (cached) rememberPaneText(key, cached.value, cached.at);
   return {
     paneId,
     scope,
-    text,
+    text: cached?.value ?? "",
     truncated: false,
     requestedLines: lines,
     revision: 0,
     error: true,
     authError: hasAuthError(scope),
-    lastSeenAt: text ? restored?.at : undefined,
+    // An empty cached screen is still a dated one: the operator's own `clear` is a real read.
+    lastSeenAt: cached?.at,
   };
 }
 
@@ -450,11 +461,13 @@ export async function paneLoader({
   if (isNavigation && isLostLatched()) return stalePane(paneId, scope, lines);
 
   try {
-    // On a 304 fetchPane returns the cached body, so `read.text` is populated either way; the
-    // `?? lastPaneText` is just belt-and-suspenders. Both paths are a success (not the error
-    // branch) so the connection bar doesn't flicker on an unchanged poll.
+    // On a 304 fetchPane returns the cached body (and throws when it has none to return), so
+    // `read.text` is the real screen on every success path, and both paths are a success (not the
+    // error branch) so the connection bar doesn't flicker on an unchanged poll. The text is taken
+    // AS IS: an empty string is a real screen too (the operator just ran `clear`), and it must
+    // replace the stale text rather than let the old screen win an `||`.
     const read: PaneReadResponse = await fetchPane(paneId, lines, scope, request?.signal);
-    const text = read.text || lastPaneText.get(key) || "";
+    const text = read.text;
     // Neither tier keeps a pane that is asking for a secret; see holdsNoEchoPrompt (ADR 0017). The
     // module map is purged as well as the store: dropping only sessionStorage would let the very
     // next failed poll hand the prompt straight back out of memory through stalePane.
@@ -462,8 +475,10 @@ export async function paneLoader({
       lastPaneText.delete(key);
       dropLastPaneText(scope, paneId);
     } else {
-      rememberPaneText(key, text);
-      saveLastPaneText(scope, paneId, text);
+      // One stamp for both tiers, as in rootLoader.
+      const at = Date.now();
+      rememberPaneText(key, text, at);
+      saveLastPaneText(scope, paneId, text, at);
     }
     rememberAuthError(scope, false);
     return {
