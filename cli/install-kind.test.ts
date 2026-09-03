@@ -144,10 +144,13 @@ describe("where updates come from", () => {
     expect(parseGithubRemote("")).toBeNull();
   });
 
-  test("COLLIE_UPDATE_REPO is the one override, and Collie's own repo is the default", () => {
-    expect(updateRepoOf({})).toBe("AltanS/collie");
+  test("COLLIE_UPDATE_REPO is the one override, and this fork's own repo is the default", () => {
+    expect(updateRepoOf({})).toBe("youngsecurity/collie");
     expect(updateRepoOf({ COLLIE_UPDATE_REPO: "  my/collie  " })).toBe("my/collie");
-    expect(updateRepoOf({ COLLIE_UPDATE_REPO: "" })).toBe("AltanS/collie");
+    expect(updateRepoOf({ COLLIE_UPDATE_REPO: "" })).toBe("youngsecurity/collie");
+    // Upstream's repo is one override away, never the default: a fork build that defaulted to
+    // upstream would fetch upstream's bare tags and force-checkout the fork's hardening away.
+    expect(updateRepoOf({ COLLIE_UPDATE_REPO: "AltanS/collie" })).toBe("AltanS/collie");
   });
 
   test("originMatches normalises both sides — and an unreadable origin never matches", () => {

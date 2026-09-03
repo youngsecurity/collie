@@ -179,7 +179,12 @@ export function detectInstall(deps: {
 // the SOURCE on a binary install (it selects the tags endpoint and every constructed download URL)
 // and an ASSERTION on the git paths (M14/01 §3.5, M14/02 amendment §1–2).
 
-export const DEFAULT_UPDATE_REPO = "AltanS/collie";
+// This is the Young Security fork: releases are tagged `vX.Y.Z+ys.N` on `youngsecurity/collie`,
+// and every constant, string and test that names the update source derives from here. The bridge
+// reads the same value through `updateRepoOf` (`bridge/index.ts`), so the banner and the updater
+// can never disagree about where a release comes from. Upstream's own repo is `AltanS/collie`; an
+// operator who wants upstream's releases on this code sets `COLLIE_UPDATE_REPO` to it.
+export const DEFAULT_UPDATE_REPO = "youngsecurity/collie";
 
 /** The `owner/repo` releases come from — `COLLIE_UPDATE_REPO`, or Collie's own repo. */
 export function updateRepoOf(env: { readonly COLLIE_UPDATE_REPO?: string | undefined }): string {

@@ -450,7 +450,8 @@ export interface UpdateStore {
 }
 
 export interface UpdateMonitorDeps {
-  /** The `owner/name` repo the release check + release links point at (default `AltanS/collie`). */
+  /** The `owner/name` repo the release check + release links point at (`cli/install-kind.ts`'s
+   *  `DEFAULT_UPDATE_REPO` unless `COLLIE_UPDATE_REPO` says otherwise). */
   repo: string;
   /** The running plugin version (captured at process start — never re-read from disk, or a post-pull
    *  package.json would mask the very update we're detecting). */

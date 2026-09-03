@@ -1215,14 +1215,15 @@ PLAIN="${U_DIR}/plain"
 mkdir -p "$PLAIN"
 printf 'id = "herdr.collie"\nversion = "9.9.9"\n' > "${PLAIN}/herdr-plugin.toml"
 if upd "$PLAIN" "$BIN" update; then fail "update on a non-git tree reported success"; fi
-assert_contains "$STDERR" "herdr plugin install AltanS/collie --yes"
+assert_contains "$STDERR" "herdr plugin install youngsecurity/collie --yes"
 case "$(cat "$U_CALLS")" in
   *_apply-update*) fail "a checkout that could not advance still tried to rebuild" ;;
 esac
 
 # The fork guard: `origin` must BE the configured update source, and the check runs before any fetch.
 # A mismatch names the fork docs and leaves the checkout exactly where it was — no fetch, no
-# force-checkout, which is the whole point (M14/02 amendment §1).
+# force-checkout, which is the whole point (M14/02 amendment §1). Upstream's own repo is the
+# mismatch here: this fork's default is `youngsecurity/collie`.
 MANAGED_BEFORE_FORK="$(git -C "$MANAGED" rev-parse HEAD)"
 if run_stripped HOME="${TMP_ROOT}/update-home" HERDR_PLUGIN_CONFIG_DIR="${TMP_ROOT}/update-config" \
   PATH="${U_BIN}:${BASE_PATH}" COLLIE_MUX=herdr COLLIE_PORT="$PORT" COLLIE_PLUGIN_ROOT="$MANAGED" \

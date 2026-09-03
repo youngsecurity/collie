@@ -3,7 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { homedir, hostname } from "node:os";
 import { join } from "node:path";
 
-import { classifyInstall, probeInstall } from "../cli/install-kind.ts";
+import { classifyInstall, probeInstall, updateRepoOf } from "../cli/install-kind.ts";
 import { realLinkFs } from "../cli/link.ts";
 import { realExec, realFiles } from "../cli/sys.ts";
 import { ActivityLedger } from "./activity.ts";
@@ -541,9 +541,10 @@ const packVersion = collieVersionBare(rootDir);
 const updateStore = new UpdateStateStore(cfg);
 await updateStore.load();
 
-// The repo the release check + release links point at. Defaults to Collie's own; overridable for a
-// fork (or a synthetic test target) via COLLIE_UPDATE_REPO.
-const updateRepo = process.env.COLLIE_UPDATE_REPO?.trim() || "AltanS/collie";
+// The repo the release check + release links point at: `COLLIE_UPDATE_REPO`, or this fork's own
+// (`DEFAULT_UPDATE_REPO` in `cli/install-kind.ts`). Read through the ONE resolver the updater uses,
+// so the banner can never announce a release from a repo `collie update` would refuse to fetch.
+const updateRepo = updateRepoOf({ COLLIE_UPDATE_REPO: process.env.COLLIE_UPDATE_REPO });
 // How this Collie is installed — the ONE shared classifier (`cli/install-kind.ts`), probed once at
 // startup because the answer cannot change under a running process (an update restarts the service).
 // The banner spells its commands from this: Herdr actions for a Herdr-managed checkout, the `collie`

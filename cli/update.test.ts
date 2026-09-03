@@ -85,11 +85,11 @@ const deadNet: Net = {
 
 /** `git symbolic-ref -q HEAD` answering non-zero is what "detached, i.e. Herdr-managed" means. */
 const MANAGED: Scripted["answers"] = [[`${GIT} symbolic-ref -q HEAD`, { code: 1 }]];
-/** What `git remote get-url origin` answers on a checkout of Collie itself. Every case needs one:
+/** What `git remote get-url origin` answers on a checkout of this fork itself. Every case needs one:
  *  `update` refuses to fetch a remote that is not the configured update source, so a fixture with no
  *  origin would be refused before it reached the strategy under test. */
 const ORIGIN: NonNullable<Scripted["answers"]> = [
-  [`${GIT} remote get-url origin`, { stdout: "https://github.com/AltanS/collie.git\n" }],
+  [`${GIT} remote get-url origin`, { stdout: "https://github.com/youngsecurity/collie.git\n" }],
 ];
 const LINKED: Scripted["answers"] = [[`${GIT} symbolic-ref -q HEAD`, { code: 0, stdout: "refs/heads/main\n" }]];
 const SHALLOW: Scripted["answers"] = [
@@ -597,7 +597,7 @@ describe("updateCheckout", () => {
   test("a non-git checkout names the reinstall command and fails", () => {
     const h = harness({ answers: [[`${GIT} rev-parse --git-dir`, { code: 128 }]] });
     expect(updateCheckout(h.deps).code).toBe(EXIT.FAIL);
-    expect(h.io.stderr.join("\n")).toContain("herdr plugin install AltanS/collie --yes");
+    expect(h.io.stderr.join("\n")).toContain("herdr plugin install youngsecurity/collie --yes");
     expect(gitRuns(h.exec)).toEqual([]);
   });
 
@@ -847,18 +847,20 @@ describe("update", () => {
 // remote's tags. On a fork that discards local work — measured on youngsecurity/collie at
 // 0.35.0+ys.2 — so the remote is asserted BEFORE anything is fetched.
 
+// On this fork the roles are reversed: `youngsecurity/collie` is the configured source, and a
+// checkout whose origin is upstream's `AltanS/collie` is the one that does not match.
 describe("the origin assertion", () => {
   const forked: Scripted["answers"] = [
-    [`${GIT} remote get-url origin`, { stdout: "git@github.com:youngsecurity/collie.git\n" }],
+    [`${GIT} remote get-url origin`, { stdout: "git@github.com:AltanS/collie.git\n" }],
   ];
 
-  test("a fork's origin is refused before any fetch, and the refusal names the fork docs", async () => {
+  test("a foreign origin is refused before any fetch, and the refusal names the fork docs", async () => {
     const h = harness({ answers: [...forked, ...MANAGED], installed: "1.0.0" });
     expect(await cmdUpdate(h.deps)).toBe(EXIT.FAIL);
     const said = h.io.stderr.join("\n");
-    expect(said).toContain("youngsecurity/collie");
     expect(said).toContain("AltanS/collie");
-    expect(said).toContain("COLLIE_UPDATE_REPO=youngsecurity/collie");
+    expect(said).toContain("youngsecurity/collie");
+    expect(said).toContain("COLLIE_UPDATE_REPO=AltanS/collie");
     expect(said).toContain("docs/upgrading.md");
     // Nothing was fetched and nothing was checked out — the whole point of asserting first.
     expect(gitRuns(h.exec).join("\n")).not.toContain("fetch");
@@ -879,9 +881,10 @@ describe("the origin assertion", () => {
     const h = harness({
       answers: [...forked, ...MANAGED, [`${GIT} ls-remote --tags origin`, { stdout: LS_REMOTE }]],
       installed: "1.0.0",
-      env: { COLLIE_UPDATE_REPO: "youngsecurity/collie" },
+      env: { COLLIE_UPDATE_REPO: "AltanS/collie" },
     });
-    // A self-consistent fork operator gets a working updater: already current, not a refusal.
+    // A self-consistent operator on another origin gets a working updater: already current, not a
+    // refusal.
     expect(await cmdUpdate(h.deps)).toBe(EXIT.OK);
     expect(h.io.stdout.join("\n")).toContain("already current");
   });

@@ -75,7 +75,7 @@ const HEALTHY_ANSWERS: Scripted["answers"] = [
   ["herdr --version", { stdout: "herdr 0.8.2\n" }],
   // A healthy checkout can say where it came from: `update` asserts `origin` against the configured
   // update source before it fetches, so an origin-less checkout is a real (reported) problem.
-  [`git -C ${ROOT} remote get-url origin`, { stdout: "https://github.com/AltanS/collie.git\n" }],
+  [`git -C ${ROOT} remote get-url origin`, { stdout: "https://github.com/youngsecurity/collie.git\n" }],
   [`git -C ${ROOT} symbolic-ref --short HEAD`, { stdout: "main\n" }],
   ["herdr integration status", { stdout: INTEGRATION_OK }],
   ["tailscale status --json", { stdout: JSON.stringify({ Self: { DNSName: "laptop.tail.ts.net." } }) }],
@@ -628,7 +628,7 @@ describe("collie doctor — the local checks", () => {
     expect(f?.status).toBe("ok");
     expect(f?.detail).toContain("linked clone");
     expect(f?.detail).toContain("branch main");
-    expect(f?.detail).toContain("AltanS/collie");
+    expect(f?.detail).toContain("youngsecurity/collie");
   });
 
   test("install: a Herdr-managed checkout is named as one", async () => {
@@ -650,27 +650,35 @@ describe("collie doctor — the local checks", () => {
     expect(code).toBe(EXIT.OK);
   });
 
+  // On this fork `youngsecurity/collie` IS the update source, so a checkout of upstream's
+  // `AltanS/collie` is the origin that does not match.
+  test("update-source: this fork's own origin reads ok with no override", async () => {
+    const f = (await findings(harness(null))).byCheck.get("update-source");
+    expect(f?.status).toBe("ok");
+    expect(f?.detail).toBe("github.com/youngsecurity/collie");
+  });
+
   test("update-source: an origin that is not the update source is an ERROR naming the fork docs", async () => {
     const h = harness(null, [], {
       answers: [
         ...HEALTHY_ANSWERS.filter(([prefix]) => !prefix.includes("remote get-url")),
-        [`git -C ${ROOT} remote get-url origin`, { stdout: "git@github.com:youngsecurity/collie.git\n" }],
+        [`git -C ${ROOT} remote get-url origin`, { stdout: "git@github.com:AltanS/collie.git\n" }],
       ],
     });
     const { byCheck, code } = await findings(h);
     const f = byCheck.get("update-source");
     expect(f?.status).toBe("error");
-    expect(f?.detail).toContain("youngsecurity/collie");
+    expect(f?.detail).toContain("AltanS/collie");
     expect(f?.remedy).toContain("docs/upgrading.md");
     expect(code).toBe(EXIT.FAIL);
   });
 
-  test("update-source: a fork the operator chose is a warning, not a failure", async () => {
+  test("update-source: another repo the operator chose is a warning, not a failure", async () => {
     const h = harness(null, [], {
-      env: { COLLIE_UPDATE_REPO: "youngsecurity/collie" },
+      env: { COLLIE_UPDATE_REPO: "AltanS/collie" },
       answers: [
         ...HEALTHY_ANSWERS.filter(([prefix]) => !prefix.includes("remote get-url")),
-        [`git -C ${ROOT} remote get-url origin`, { stdout: "git@github.com:youngsecurity/collie.git\n" }],
+        [`git -C ${ROOT} remote get-url origin`, { stdout: "git@github.com:AltanS/collie.git\n" }],
       ],
     });
     const { byCheck, code } = await findings(h);

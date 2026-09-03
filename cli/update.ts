@@ -36,7 +36,7 @@ import { collieBinary } from "./unit.ts";
 // Herdr plugin, so the checkout on disk IS the plugin, and it arrives in one of TWO shapes —
 //
 //   `git clone` + `herdr plugin link`   → a normal clone, ON A BRANCH, full history
-//   `herdr plugin install AltanS/collie` → `git init` + `fetch --depth 1` + `checkout --detach`,
+//   `herdr plugin install <owner>/collie` → `git init` + `fetch --depth 1` + `checkout --detach`,
 //                                          i.e. DETACHED and SHALLOW, no remote-tracking refs
 //
 // — and a bare `git pull --ff-only` has nothing to pull into in the second, which is why every
@@ -66,6 +66,10 @@ export { isManagedCheckout };
 
 /** The command that consents to a major crossing — printed wherever one is refused. */
 export const MAJOR_ACTION = "herdr plugin action invoke update-major --plugin herdr.collie";
+
+/** The reinstall a non-git checkout is pointed at. Spelled from the update source, so the fork's
+ *  identity lives in ONE constant (`DEFAULT_UPDATE_REPO`) and no message names another repo. */
+export const REINSTALL_COMMAND = `herdr plugin install ${DEFAULT_UPDATE_REPO} --yes`;
 
 // ── Target selection (pure — ADR 0020) ───────────────────────────────────────
 // A routine `update` no longer means "the tip of the default branch": it means "the newest RELEASE
@@ -360,7 +364,7 @@ export function updateCheckout(
 
   if (!isGitCheckout(deps.exec, root)) {
     deps.io.err(`error: ${root} is not a git checkout — refresh it with:`);
-    deps.io.err("       herdr plugin install AltanS/collie --yes");
+    deps.io.err(`       ${REINSTALL_COMMAND}`);
     return { code: EXIT.FAIL, moved: false, higher: null };
   }
 
@@ -693,7 +697,7 @@ export async function cmdUpdate(deps: UpdateDeps, args: readonly string[] = []):
   if (install.kind === "unknown") {
     deps.io.err(`error: cannot tell how this Collie was installed (${unknownEvidence(deps, install.why)}).`);
     deps.io.err("       `collie update` will not guess. A git checkout refreshes with:");
-    deps.io.err("       herdr plugin install AltanS/collie --yes");
+    deps.io.err(`       ${REINSTALL_COMMAND}`);
     deps.io.err("       A downloaded install lives under a `versions/` layout — see docs/install.md.");
     return EXIT.FAIL;
   }
