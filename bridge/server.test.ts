@@ -13,6 +13,7 @@ import {
   guard,
   historyParams,
   isHostAllowed,
+  isLoopbackAddress,
   isLoopbackPeer,
   isReservedAuthPath,
   keysPane,
@@ -90,11 +91,11 @@ function cfg(overrides: Partial<Config> = {}): Config {
     deviceHeader: "",
     deviceAllowlist: [],
     allowedOrigins: [],
-    publicHosts: [],
+    // Test default allowlists the hosts the CSRF/identity cases use, so those cases are not also
+    // host-rejected. The product default is an EMPTY allowlist (fail-closed) with allowAnyHost off.
+    publicHosts: ["collie.example.ts.net", "collie.ts.net", "h", "anything"],
     tailscaleHosts: [],
-    // Test default is permissive Host so CSRF/identity cases are not also host-rejected.
-    // Product default is allowAnyHost: false (fail-closed).
-    allowAnyHost: true,
+    allowAnyHost: false,
     allowNonLoopbackBind: false,
     vapidPublic: "",
     vapidPrivate: "",
@@ -216,9 +217,40 @@ describe("checkAccess — Host-header validation (COLLIE_PUBLIC_HOSTS)", () => {
     ).toEqual({ ok: true });
   });
 
-  test("loopback Host always passes even with publicHosts set (read and write)", () => {
-    expect(checkAccess(req({ host: "127.0.0.1:8787" }), c)).toEqual({ ok: true });
-    expect(checkAccess(req({ host: "localhost:8787" }), c, "write")).toEqual({ ok: true });
+  test("remote peers cannot bypass the allowlist with a loopback Host", () => {
+    expect(checkAccess(req({ host: "127.0.0.1:8787" }), c, "read", "10.0.0.50")).toEqual({
+      ok: false,
+      reason: "host not allowed",
+    });
+    expect(checkAccess(req({ host: "localhost:8787" }), c, "write", "10.0.0.50")).toEqual({
+      ok: false,
+      reason: "host not allowed",
+    });
+    // An unknown peer (no socket behind the request) is not loopback either: fail closed.
+    expect(checkAccess(req({ host: "127.0.0.1:8787" }), c, "read", null)).toEqual({
+      ok: false,
+      reason: "host not allowed",
+    });
+  });
+
+  test("a loopback Host from a loopback peer passes even with publicHosts set (read and write)", () => {
+    expect(checkAccess(req({ host: "127.0.0.1:8787" }), c, "read", "127.0.0.1")).toEqual({ ok: true });
+    expect(checkAccess(req({ host: "localhost:8787" }), c, "write", "::1")).toEqual({ ok: true });
+  });
+
+  test("remote peers require an explicit public Host allowlist", () => {
+    expect(
+      checkAccess(
+        req({ origin: "https://evil.example.com", host: "evil.example.com" }),
+        cfg({ publicHosts: [] }),
+        "read",
+        "10.0.0.50",
+      ),
+    ).toEqual({ ok: false, reason: "host allowlist required" });
+    // A loopback peer with nothing configured still reaches its own bridge by a loopback name.
+    expect(
+      checkAccess(req({ host: "127.0.0.1:8787" }), cfg({ publicHosts: [] }), "read", "127.0.0.1"),
+    ).toEqual({ ok: true });
   });
 
   test("a Host derived from an allowed origin passes", () => {
@@ -232,9 +264,17 @@ describe("checkAccess — Host-header validation (COLLIE_PUBLIC_HOSTS)", () => {
   });
 
   test("empty publicHosts is fail-closed: Host==Origin==evil is rejected", () => {
-    const defaultCfg = cfg({ allowAnyHost: false });
+    const defaultCfg = cfg({ publicHosts: [] });
     expect(
       checkAccess(req({ origin: "https://evil.example.com", host: "evil.example.com" }), defaultCfg),
+    ).toEqual({ ok: false, reason: "host allowlist required" });
+    expect(
+      checkAccess(
+        req({ origin: "https://evil.example.com", host: "evil.example.com" }),
+        defaultCfg,
+        "read",
+        "127.0.0.1",
+      ),
     ).toEqual({ ok: false, reason: "host not allowed" });
   });
 
@@ -251,11 +291,19 @@ describe("checkAccess — Host-header validation (COLLIE_PUBLIC_HOSTS)", () => {
   // write level — a Host check that passes checkAccess but is not wired into the write path would
   // pass every test above and still let a rebound name type into a terminal.
   test("the shipped fail-closed default rejects an unlisted Host and admits an allowed one", () => {
-    const shipped = cfg({ allowAnyHost: false, tailscaleHosts: ["collie.example.ts.net"] });
+    // What `collie start` produces: nothing in COLLIE_PUBLIC_HOSTS, the discovered tailnet name in
+    // COLLIE_TAILSCALE_HOSTS, and every request arriving from `tailscale serve` on loopback.
+    const shipped = cfg({
+      allowAnyHost: false,
+      publicHosts: [],
+      tailscaleHosts: ["collie.example.ts.net"],
+    });
     const denied = guard(
       req({ origin: "https://evil.example.com", host: "evil.example.com" }),
       shipped,
       "write",
+      undefined,
+      "127.0.0.1",
     );
     expect(denied?.status).toBe(403);
     expect(
@@ -263,6 +311,8 @@ describe("checkAccess — Host-header validation (COLLIE_PUBLIC_HOSTS)", () => {
         req({ origin: "https://collie.example.ts.net", host: "collie.example.ts.net" }),
         shipped,
         "write",
+        undefined,
+        "127.0.0.1",
       ),
     ).toBeNull();
   });
@@ -270,12 +320,15 @@ describe("checkAccess — Host-header validation (COLLIE_PUBLIC_HOSTS)", () => {
   test("a discovered Tailscale host is allowed without COLLIE_PUBLIC_HOSTS", () => {
     const c2 = cfg({
       allowAnyHost: false,
+      publicHosts: [],
       tailscaleHosts: ["collie.example.ts.net"],
     });
     expect(
       checkAccess(
         req({ origin: "https://collie.example.ts.net", host: "collie.example.ts.net" }),
         c2,
+        "read",
+        "10.0.0.50",
       ),
     ).toEqual({ ok: true });
   });
@@ -289,8 +342,23 @@ describe("checkAccess — Origin required for writes", () => {
     });
   });
 
-  test("write with no Origin from loopback is allowed (curl on the host)", () => {
-    expect(checkAccess(req({ host: "127.0.0.1:8787" }), cfg(), "write")).toEqual({ ok: true });
+  test("write with no Origin from loopback is allowed for a loopback peer", () => {
+    expect(checkAccess(req({ host: "127.0.0.1:8787" }), cfg(), "write", "127.0.0.1")).toEqual({
+      ok: true,
+    });
+  });
+
+  test("write with no Origin and a loopback Host is refused without a loopback peer", () => {
+    // The Host gate refuses first: a loopback Host from a non-loopback socket is not a loopback
+    // caller, and the no-Origin exemption never gets a look.
+    expect(checkAccess(req({ host: "127.0.0.1:8787" }), cfg(), "write", "10.0.0.50")).toEqual({
+      ok: false,
+      reason: "host not allowed",
+    });
+    // With Host validation off the exemption is the only thing standing, and it still wants the peer.
+    expect(
+      checkAccess(req({ host: "127.0.0.1:8787" }), cfg({ allowAnyHost: true }), "write", "10.0.0.50"),
+    ).toEqual({ ok: false, reason: "origin required" });
   });
 
   test("read with no Origin from a non-loopback Host still passes (the snapshot poll)", () => {
@@ -309,19 +377,38 @@ describe("checkAccess — Origin required for writes", () => {
 });
 
 describe("isHostAllowed", () => {
-  test("loopback forms are always allowed", () => {
+  test("loopback forms are allowed only for an actual loopback peer", () => {
     const c = cfg({ publicHosts: ["a.ts.net"] });
-    expect(isHostAllowed("127.0.0.1:8787", c)).toBe(true);
-    expect(isHostAllowed("localhost", c)).toBe(true);
-    expect(isHostAllowed("[::1]:8787", c)).toBe(true);
+    expect(isHostAllowed("127.0.0.1:8787", c, "127.0.0.1")).toBe(true);
+    expect(isHostAllowed("localhost", c, "::1")).toBe(true);
+    expect(isHostAllowed("[::1]:8787", c, "::ffff:127.0.0.1")).toBe(true);
+    expect(isHostAllowed("localhost:8787", c, "10.0.0.50")).toBe(false);
+    expect(isHostAllowed("localhost:8787", c, null)).toBe(false);
+    expect(isHostAllowed("localhost:8787", c)).toBe(false);
   });
 
   test("configured public host and allowed-origin host pass; anything else fails", () => {
     const c = cfg({ publicHosts: ["a.ts.net"], allowedOrigins: ["https://b.example.com"] });
-    expect(isHostAllowed("a.ts.net", c)).toBe(true);
-    expect(isHostAllowed("b.example.com", c)).toBe(true);
-    expect(isHostAllowed("evil.com", c)).toBe(false);
-    expect(isHostAllowed("", c)).toBe(false);
+    expect(isHostAllowed("a.ts.net", c, "10.0.0.50")).toBe(true);
+    expect(isHostAllowed("b.example.com", c, "10.0.0.50")).toBe(true);
+    expect(isHostAllowed("evil.com", c, "10.0.0.50")).toBe(false);
+    expect(isHostAllowed("", c, "10.0.0.50")).toBe(false);
+  });
+});
+
+describe("isLoopbackAddress", () => {
+  test("loopback peers in every form Bun reports", () => {
+    for (const a of ["127.0.0.1", "127.1.2.3", "::1", "0:0:0:0:0:0:0:1", "::ffff:127.0.0.1", " ::1 "]) {
+      expect(isLoopbackAddress(a)).toBe(true);
+    }
+  });
+
+  test("non-loopback peers, and an absent one, are NOT loopback (fail-closed, unlike isLoopbackPeer)", () => {
+    for (const a of ["10.0.0.50", "100.64.0.1", "::ffff:10.0.0.50", "128.0.0.1", ""]) {
+      expect(isLoopbackAddress(a)).toBe(false);
+    }
+    expect(isLoopbackAddress(null)).toBe(false);
+    expect(isLoopbackPeer(null)).toBe(true);
   });
 });
 
@@ -842,11 +929,21 @@ describe("deviceAuth — per-device authorisation", () => {
 // the only thing under test.
 describe("guard applies the device gate to writes only", () => {
   const HDR = "x-device-id";
-  const c = cfg({ deviceHeader: HDR, deviceAllowlist: ["phone"] });
+  const c = cfg({
+    deviceHeader: HDR,
+    deviceAllowlist: ["phone"],
+    publicHosts: ["collie.ts.net"],
+  });
   const write = (headers: Record<string, string>) =>
-    guard(req({ host: "collie.ts.net", origin: "https://collie.ts.net", ...headers }), c, "write");
+    guard(
+      req({ host: "collie.ts.net", origin: "https://collie.ts.net", ...headers }),
+      c,
+      "write",
+      undefined,
+      "10.0.0.50",
+    );
   const read = (headers: Record<string, string>) =>
-    guard(req({ host: "collie.ts.net", ...headers }), c, "read");
+    guard(req({ host: "collie.ts.net", ...headers }), c, "read", undefined, "10.0.0.50");
 
   test("write with no device header is refused with 403", () => {
     const denied = write({});
@@ -873,7 +970,7 @@ describe("guard applies the device gate to writes only", () => {
   });
 
   test("with the feature off, a write with no device header proceeds", () => {
-    expect(guard(req({ host: "127.0.0.1:8787" }), cfg(), "write")).toBeNull();
+    expect(guard(req({ host: "127.0.0.1:8787" }), cfg(), "write", undefined, "127.0.0.1")).toBeNull();
   });
 
   test("feature on, allowlisted device: authorised and attributed (header is trimmed)", () => {
@@ -1189,7 +1286,9 @@ describe("isLoopbackPeer", () => {
   test("the peer check runs AFTER the federated surface, so /pack/v1/* is never refused by it", () => {
     const src = readFileSync(join(import.meta.dir, "server.ts"), "utf8");
     const dispatch = src.indexOf("const packed = await packHandler(req, url);");
-    const peerCheck = src.indexOf("isLoopbackPeer(server.requestIP(req)?.address)");
+    // The address is READ once at the top of fetch (every gate shares it); what must sit after the
+    // dispatch is the refusal that consumes it.
+    const peerCheck = src.indexOf("!isLoopbackPeer(peerAddress)");
     expect(dispatch).toBeGreaterThan(-1);
     expect(peerCheck).toBeGreaterThan(-1);
     expect(peerCheck).toBeGreaterThan(dispatch);

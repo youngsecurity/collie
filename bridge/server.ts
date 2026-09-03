@@ -114,9 +114,24 @@ const SECURITY_HEADERS = {
   "referrer-policy": "no-referrer",
 } satisfies Record<string, string>;
 
-// Loopback Host/Origin forms (with an optional port). Loopback is always trusted — only tailscaled
-// (or a co-located proxy) can reach the bridge's port, so a loopback caller is the on-host operator.
+// Loopback Host/Origin forms (with an optional port). A loopback Host is trusted only when the
+// socket peer is also loopback: Host is client-written and cannot establish where a client sits.
 const LOOPBACK_HOST = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/;
+
+/**
+ * Whether a kernel-reported peer address is loopback, for the HOST gate. This is the fail-closed
+ * sibling of {@link isLoopbackPeer}: an absent address is `false` here, because this answer GRANTS
+ * something (the loopback-Host exception, the no-Origin write exemption) and an unknown peer must
+ * never buy a grant. `isLoopbackPeer` keeps its own `null → true` for its own caller, the bind-level
+ * refusal, where the primary control is the bind gate in config.ts and the answer only DENIES.
+ */
+export function isLoopbackAddress(peer: string | null): boolean {
+  if (!peer) return false;
+  const a = peer.trim().toLowerCase();
+  if (a === "::1" || a === "0:0:0:0:0:0:0:1") return true;
+  const v4 = a.startsWith("::ffff:") ? a.slice(7) : a;
+  return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(v4);
+}
 
 /**
  * Whether a TCP peer address is loopback. Unlike the `Host` header — which the client writes —
@@ -858,6 +873,11 @@ export function startServer(opts: {
     async fetch(req) {
       const url = new URL(req.url);
       const { pathname } = url;
+      // The kernel's word on who is calling, read once and handed to every gate below. Unlike the
+      // Host header a client writes, this cannot be forged; null (no TCP socket behind the request)
+      // is treated as "not loopback" by the Host gate and as loopback by the bind-level check, each
+      // in the direction that denies more (see isLoopbackAddress).
+      const peerAddress = server.requestIP(req)?.address ?? null;
 
       // The federated surface, before anything else. It answers only the prefix it owns and returns
       // null otherwise, so this is not a branch a browser request can take. Its admission is two
@@ -880,7 +900,7 @@ export function startServer(opts: {
       // ADR 0013). A pack path the handler DECLINED falls through to here and is refused like any
       // other remote caller. `COLLIE_ALLOW_NON_LOOPBACK_BIND=1` turns the check off wholesale, which
       // is what that flag has always meant.
-      if (!cfg.allowNonLoopbackBind && !isLoopbackPeer(server.requestIP(req)?.address)) {
+      if (!cfg.allowNonLoopbackBind && !isLoopbackPeer(peerAddress)) {
         return text("non-loopback peer rejected", 403);
       }
 
@@ -962,7 +982,7 @@ export function startServer(opts: {
 
       // ── Live state (polled by the client) ────────────────────────────────
       if (pathname === "/api/snapshot") {
-        const gate = checkAccess(req, cfg);
+        const gate = checkAccess(req, cfg, "read", peerAddress);
         if (!gate.ok) return text(gate.reason, 403);
         const device = whois(req);
         // A BROWSER poll is a phone looking; the lead's own sweep of a peer is not, which is why
@@ -996,7 +1016,7 @@ export function startServer(opts: {
       // gate — which is the one thing a pack caller never has, because a peer has no peers (§4).
       const sessionRouted = await serveSessionRoute(req, url, {
         resolve: target,
-        gate: (level) => guard(req, cfg, level, pairing),
+        gate: (level) => guard(req, cfg, level, pairing, peerAddress),
         device: () => whois(req).device,
         audit,
       });
@@ -1012,7 +1032,7 @@ export function startServer(opts: {
         // didn't cover it and a rebound DNS name could still read the build id. The client only ever
         // calls this same-origin, and a refusal can't be mistaken for an outage: ConnectionBanner
         // short-circuits to AuthErrorBanner before its red-state probe runs. Noted in #32.
-        const denied = guard(req, cfg, "read", pairing);
+        const denied = guard(req, cfg, "read", pairing, peerAddress);
         if (denied) return denied;
         // Re-read per request behind an mtime check, like buildId() — editing commands.toml is live,
         // with no restart. The path is cfg's, never the request's.
@@ -1052,7 +1072,7 @@ export function startServer(opts: {
         // header shows is part of the same answer, and gating it harder than the config that names
         // it would only ever produce a broken image beside a rendered name. Both device gates stay
         // where they are (writes), so a read-only device still sees the mark.
-        const denied = guard(req, cfg, "read", pairing);
+        const denied = guard(req, cfg, "read", pairing, peerAddress);
         if (denied) return denied;
         // The PRIMARY session's adapter, for the reason `/api/config` gives: one collie drives one
         // multiplexer, so which runtime answers is not a choice.
@@ -1069,7 +1089,7 @@ export function startServer(opts: {
         // this is a file THIS collie's operator declared, not a pane's, so there is nothing to
         // forward to a peer. Reads are ungated app-wide, so a read-only device still gets the face
         // it is set to — a picker whose choice cannot render is worse than no picker.
-        const denied = guard(req, cfg, "read", pairing);
+        const denied = guard(req, cfg, "read", pairing, peerAddress);
         if (denied) return denied;
         // `decodeURIComponent` is undone here and NOWHERE ELSE, because what comes back is only ever
         // used as a Map key. It is looked UP in the rows theme.toml declared; a name nobody declared
@@ -1092,7 +1112,7 @@ export function startServer(opts: {
       if (pathname === "/api/subscribe" && req.method === "POST") {
         // Read-level: registering for push isn't terminal-driving, so a read-only device may still
         // subscribe to notifications.
-        const denied = guard(req, cfg, "read", pairing);
+        const denied = guard(req, cfg, "read", pairing, peerAddress);
         if (denied) return denied;
         let body: JsonValue;
         try {
@@ -1111,7 +1131,7 @@ export function startServer(opts: {
       }
       if (pathname === "/api/notifications/snooze" && req.method === "POST") {
         // Managing your own notification quiet-hours isn't terminal-driving — read-level, like subscribe.
-        const denied = guard(req, cfg, "read", pairing);
+        const denied = guard(req, cfg, "read", pairing, peerAddress);
         if (denied) return denied;
         let body: JsonValue;
         try {
@@ -1142,12 +1162,12 @@ export function startServer(opts: {
         // Which agent statuses push (bridge-wide). Read-level like snooze — managing your own
         // notification preferences isn't terminal-driving.
         if (req.method === "GET") {
-          const denied = guard(req, cfg, "read", pairing);
+          const denied = guard(req, cfg, "read", pairing, peerAddress);
           if (denied) return denied;
           return json(notifyPrefs.current(), req.headers.get("accept-encoding"));
         }
         if (req.method === "POST") {
-          const denied = guard(req, cfg, "read", pairing);
+          const denied = guard(req, cfg, "read", pairing, peerAddress);
           if (denied) return denied;
           let body: JsonValue;
           try {
@@ -1173,7 +1193,7 @@ export function startServer(opts: {
         // Force an immediate upstream check (the "check for updates" button), instead of waiting for
         // the periodic timer. Read-level — checking a version isn't terminal-driving — and idempotent
         // (the monitor de-dupes concurrent checks). Returns the fresh status the client revalidates on.
-        const denied = guard(req, cfg, "read", pairing);
+        const denied = guard(req, cfg, "read", pairing, peerAddress);
         if (denied) return denied;
         await updateMonitor.checkRelease();
         return json(updateMonitor.status(), req.headers.get("accept-encoding"));
@@ -1184,7 +1204,7 @@ export function startServer(opts: {
         // WRITE-gated, exactly like typing into a pane — and for the same reason. This route's whole
         // purpose is to put words in the composer, and the audio leaves the host for an
         // operator-configured endpoint. A read-only device watches; it does not speak.
-        const denied = guard(req, cfg, "write", pairing);
+        const denied = guard(req, cfg, "write", pairing, peerAddress);
         if (denied) return denied;
         // Deliberately NOT session- or pane-scoped: the transcript is text handed back to the
         // phone, which then decides what to do with it. Nothing here touches a terminal, so there is
@@ -1207,7 +1227,7 @@ export function startServer(opts: {
         // five-attempt counter. The header device gate is skipped for the same reason and with the
         // same reasoning: it answers "is this device allowlisted", which is the question pairing
         // exists to stop asking.
-        const gate = checkAccess(req, cfg, "write");
+        const gate = checkAccess(req, cfg, "write", peerAddress);
         if (!gate.ok) return text(gate.reason, 403);
         let body: JsonValue;
         try {
@@ -1244,7 +1264,7 @@ export function startServer(opts: {
         // Read-level, exactly like `/api/devices` and `/api/config`: this is a report about machines
         // the operator already owns, and it drives nothing. Every field is a fact this process was
         // already holding — the route reads no disk, dials no member, and cannot start a call.
-        const denied = guard(req, cfg, "read", pairing);
+        const denied = guard(req, cfg, "read", pairing, peerAddress);
         if (denied) return denied;
         // 404 for a solo instance AND for a peer, from one closure. A peer is not a front door
         // (ADR 0013), and a solo instance has no pack to describe — the phone's move is the same in
@@ -1260,7 +1280,7 @@ export function startServer(opts: {
         // Read-level, so an unpaired device can still see whether pairing is on and which devices
         // hold credentials. Labels are the operator's own names for their own phones; the token
         // hashes never reach this shape (see toDeviceWire).
-        const denied = guard(req, cfg, "read", pairing);
+        const denied = guard(req, cfg, "read", pairing, peerAddress);
         if (denied) return denied;
         const current = pairing.resolve(bearerToken(req.headers))?.label ?? null;
         return json(
@@ -1274,7 +1294,7 @@ export function startServer(opts: {
         // paired device (and the header gate, if configured). Revoking YOURSELF is allowed — that is
         // how a device un-pairs — and it is the last device leaving that switches enforcement back
         // off, which is the only way this feature can't strand an operator.
-        const denied = guard(req, cfg, "write", pairing);
+        const denied = guard(req, cfg, "write", pairing, peerAddress);
         if (denied) return denied;
         let body: unknown;
         try {
@@ -2436,16 +2456,20 @@ async function uploadPane(
 
 /**
  * Access gate for the API:
- *  - Host allowlist (fail-closed): the request's Host header must be a loopback form, an explicit
- *    COLLIE_PUBLIC_HOSTS entry, a ctl-discovered Tailscale host (COLLIE_TAILSCALE_HOSTS), or the
- *    host of an allowed origin — otherwise rejected, BEFORE any Origin logic. This defeats DNS
- *    rebinding (Host==Origin==evil.example). COLLIE_ALLOW_ANY_HOST=1 is the explicit opt-out.
+ *  - Host allowlist (fail-closed): the request's Host header must be an explicit COLLIE_PUBLIC_HOSTS
+ *    entry, a ctl-discovered Tailscale host (COLLIE_TAILSCALE_HOSTS), the host of an allowed origin,
+ *    or a loopback form presented by an actual loopback socket peer — otherwise rejected, BEFORE any
+ *    Origin logic. A remote peer is refused outright while both host lists are empty: an unconfigured
+ *    bridge answers its own host and nobody else. This defeats DNS rebinding
+ *    (Host==Origin==evil.example) and a forged `Host: localhost` from a non-loopback socket.
+ *    COLLIE_ALLOW_ANY_HOST=1 is the explicit opt-out.
  *  - Same-origin only (Origin host must equal Host) — defeats cross-site requests/CSRF. Browsers
  *    omit Origin on same-origin GETs (so the snapshot poll passes); they send it on POSTs.
  *    localhost and explicitly-configured origins are also allowed.
  *  - Origin required for writes: a state-changing (`level === "write"`) request with no Origin is
- *    trusted only from loopback (curl on the host). Browsers always send Origin on fetch/SW POSTs,
- *    so a missing Origin on a remote write is a non-browser or Origin-stripped request — reject it.
+ *    trusted only from loopback (curl on the host), meaning a loopback Host AND a loopback socket
+ *    peer — the Host alone is the client's claim. Browsers always send Origin on fetch/SW POSTs, so a
+ *    missing Origin on a remote write is a non-browser or Origin-stripped request — reject it.
  *  - Tailscale identity: when a trusted user is configured under `tailscale serve`, the request
  *    must carry a matching `Tailscale-User-Login`. A missing header is rejected too — serve injects
  *    none for tagged nodes. Under COLLIE_SKIP_SERVE=1 or COLLIE_TRUSTED_USER_OPTIONAL=1, only a
@@ -2455,13 +2479,25 @@ export function checkAccess(
   req: Request,
   cfg: Config,
   level: "read" | "write" = "read",
+  peerAddress: string | null = null,
 ): { ok: true } | { ok: false; reason: string } {
   const host = req.headers.get("host") ?? "";
 
   // Host-header allowlist — ALWAYS ON, before the Origin logic, so a rebinding request
   // (Host==Origin==evil) never reaches it. COLLIE_ALLOW_ANY_HOST=1 is the operator's explicit opt-out.
-  if (!cfg.allowAnyHost && !isHostAllowed(host, cfg)) {
-    return { ok: false, reason: "host not allowed" };
+  if (!cfg.allowAnyHost) {
+    // A loopback-only deployment keeps working with nothing configured, but an empty allowlist never
+    // opens a remotely reachable bridge: the peer must be loopback before any Host is even read.
+    if (
+      cfg.publicHosts.length === 0 &&
+      cfg.tailscaleHosts.length === 0 &&
+      !isLoopbackAddress(peerAddress)
+    ) {
+      return { ok: false, reason: "host allowlist required" };
+    }
+    if (!isHostAllowed(host, cfg, peerAddress)) {
+      return { ok: false, reason: "host not allowed" };
+    }
   }
 
   const origin = req.headers.get("origin");
@@ -2477,8 +2513,9 @@ export function checkAccess(
       LOOPBACK_HOST.test(originHost) ||
       cfg.allowedOrigins.includes(origin);
     if (!allowed) return { ok: false, reason: "cross-origin rejected" };
-  } else if (level === "write" && !LOOPBACK_HOST.test(host)) {
-    // A write with no Origin header from a non-loopback Host isn't a real browser request — refuse.
+  } else if (level === "write" && !(LOOPBACK_HOST.test(host) && isLoopbackAddress(peerAddress))) {
+    // A write with no Origin header that is not a loopback caller (loopback Host from a loopback
+    // socket peer) isn't a real browser request — refuse. The Host alone proves nothing.
     return { ok: false, reason: "origin required" };
   }
 
@@ -2496,13 +2533,20 @@ export function checkAccess(
 }
 
 /**
- * Whether a Host header is one the bridge will answer to under the fail-closed host allowlist: a
- * loopback form, an explicit COLLIE_PUBLIC_HOSTS entry, a discovered Tailscale host (bare or with
- * port), or the host of a configured allowed origin. Pure + exported for tests.
+ * Whether a Host header is one the bridge will answer to under the fail-closed host allowlist: an
+ * explicit COLLIE_PUBLIC_HOSTS entry, a discovered Tailscale host (bare or with port), the host of a
+ * configured allowed origin, or a loopback form — accepted only when the kernel-reported socket peer
+ * is loopback too and the request was not forwarded (a forwarded request's peer is a local proxy,
+ * not the client, so its loopback socket attests nothing). Pure + exported for tests.
  */
-export function isHostAllowed(host: string, cfg: Config): boolean {
+export function isHostAllowed(
+  host: string,
+  cfg: Config,
+  peerAddress: string | null = null,
+  forwarded: boolean = false,
+): boolean {
   if (!host) return false;
-  if (LOOPBACK_HOST.test(host)) return true;
+  if (LOOPBACK_HOST.test(host)) return isLoopbackAddress(peerAddress) && !forwarded;
   if (cfg.publicHosts.includes(host)) return true;
   const bare = host.replace(/:\d+$/, "");
   if (cfg.tailscaleHosts.some((h) => h === host || h === bare)) return true;
@@ -2520,6 +2564,8 @@ export function isHostAllowed(host: string, cfg: Config): boolean {
  * (same-origin / CSRF + optional Tailscale identity). A `"write"` request — one that types into a
  * terminal or creates panes — must additionally come from an authorised device (see
  * {@link deviceAuth}). Returns a 403 Response to short-circuit on denial, or null to proceed.
+ * `peerAddress` is the kernel-reported socket peer the Host gate needs; a caller that has none
+ * passes null and thereby forfeits the loopback exception rather than gaining it.
  *
  * Exported for tests: {@link deviceAuth} being correct in isolation proves nothing if this wiring
  * regresses, and the write/read asymmetry below is exactly what a device gate stands or falls on.
@@ -2529,8 +2575,9 @@ export function guard(
   cfg: Config,
   level: "read" | "write",
   pairing?: PairingGate,
+  peerAddress: string | null = null,
 ): Response | null {
-  const gate = checkAccess(req, cfg, level);
+  const gate = checkAccess(req, cfg, level, peerAddress);
   if (!gate.ok) return text(gate.reason, 403);
   if (level !== "write") return null;
   if (!deviceAuth(req, cfg).authorized) return text("device not authorised", 403);
