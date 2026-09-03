@@ -45,9 +45,8 @@ export interface AnsiOutputProps {
   text: string;
   className?: string;
   /** true = wrap; the block breaks at the viewport width instead of scrolling horizontally. Default
-   *  true — the mirror is mostly agent prose, and a phone shows far fewer columns than the desktop
-   *  width panes are spawned at, so panning was the common case. Disable Wrap in View for
-   *  column-faithful TUI tables. */
+   *  false on this fork: the mirror pans, column-faithful, so TUI tables and box drawing keep their
+   *  grid (upstream defaults to true for prose). Enable Wrap lines in the Display sheet for prose. */
   wrap?: boolean;
   /** Monospace font size in px. Default 11. */
   fontSize?: number;
@@ -153,7 +152,7 @@ function preClass(wrap: boolean, className?: string): string {
 export const AnsiOutput = memo(function AnsiOutput({
   text,
   className,
-  wrap = true,
+  wrap = false,
   fontSize = 11,
   query = "",
   currentMatch = -1,

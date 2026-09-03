@@ -6,10 +6,11 @@ import { asJsonBoolean, asJsonNumber, asJsonString, parseJsonObject } from "@/li
 // Safe to call in SSR contexts (localStorage guarded throughout).
 
 export interface DisplayPrefs {
-  /** Whether the mirror wraps long lines (default: true). The mirror is mostly agent prose, and a
-   *  phone shows ~45-50 columns against panes herdr spawns at desktop width (190 in one reporter's
-   *  session), so panning was the common case, not the exception. Column-faithful no-wrap for TUI
-   *  tables stays one tap away in View. */
+  /** Whether the mirror wraps long lines (default: false on this fork). Upstream wraps by default
+   *  (issue #53: the mirror is mostly agent prose and a phone shows ~45-50 columns). The Young
+   *  Security fork keeps column-faithful output as the default and pans horizontally, because
+   *  TUI tables and box drawing are what its operators read most. Wrapping stays one tap away in
+   *  the Display sheet. */
   wrap: boolean;
   /** Font size in px for the mirror pre (default: 12, range: 9–16). */
   fontSize: number;
@@ -171,7 +172,7 @@ export const FONT_MAX = 16;
 export const DRAFT_FONT_MIN = 13;
 export const DRAFT_FONT_MAX = 16;
 const DEFAULTS: DisplayPrefs = {
-  wrap: true,
+  wrap: false,
   fontSize: 12,
   draftFontSize: 14,
   fontFamily: "system",

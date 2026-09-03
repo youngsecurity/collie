@@ -47,18 +47,25 @@ describe("terminal mirror colour space", () => {
   });
 });
 
-// Wrap defaults ON (#53): the mirror is mostly agent prose and a phone shows far fewer columns than
-// the desktop width panes are spawned at. The no-wrap branch is still the right rendering for TUI
-// tables and box drawing, but it is now reachable ONLY through the View toggle — so it is exactly
-// the kind of code a later refactor can drop without any test noticing.
+// Wrap defaults OFF on this fork (upstream flipped it on in #53 for prose). Column-faithful output
+// is the fork's default so TUI tables and box drawing keep their grid; wrapping is reachable through
+// the Display sheet's "Wrap lines" switch. Both branches are pinned so neither can be dropped by a
+// later refactor without a test noticing.
 describe("mirror line wrapping", () => {
   function preFor(props: Partial<ComponentProps<typeof AnsiOutput>>) {
     const { container } = render(<AnsiOutput text="a very long line" {...props} />);
     return container.querySelector("pre")!;
   }
 
-  it("wraps by default rather than making the block a horizontal panner", () => {
+  it("pans, column-faithful, by default", () => {
     const cls = preFor({}).className;
+    expect(cls).toContain("whitespace-pre");
+    expect(cls).toContain("overflow-x-auto");
+    expect(cls).not.toContain("whitespace-pre-wrap");
+  });
+
+  it("wraps rather than panning when wrap is turned on", () => {
+    const cls = preFor({ wrap: true }).className;
     expect(cls).toContain("whitespace-pre-wrap");
     expect(cls).not.toContain("overflow-x-auto");
   });
@@ -73,7 +80,7 @@ describe("mirror line wrapping", () => {
   it("keeps a marked ANSI border to one clipped row without changing its text, styles, links, or find offsets", () => {
     const border = `  ${"─".repeat(20)}  `;
     const text = `ordinary prose\n${ESC}[41m${border.slice(0, 12)}${ESC}[44m${border.slice(12)}${ESC}[0m\nsee https://herdr.dev/docs\n`;
-    const { container } = render(<AnsiOutput text={text} query="───" />);
+    const { container } = render(<AnsiOutput text={text} query="───" wrap />);
     const pre = container.querySelector("pre")!;
     const clipped = pre.querySelector("span.inline-block")!;
 
@@ -100,10 +107,10 @@ describe("mirror line wrapping", () => {
 
   it("clips a plain border only while wrapping, leaving ordinary output and wrap-off panning alone", () => {
     const border = `  ${"─".repeat(20)}  `;
-    const { container: plain } = render(<AnsiOutput text={`${border}\n`} />);
+    const { container: plain } = render(<AnsiOutput text={`${border}\n`} wrap />);
     expect(plain.querySelector("span.inline-block")?.textContent).toBe(border);
 
-    const { container: wrapped } = render(<AnsiOutput text={`unbroken-${"x".repeat(40)}\n`} />);
+    const { container: wrapped } = render(<AnsiOutput text={`unbroken-${"x".repeat(40)}\n`} wrap />);
     const wrappedPre = wrapped.querySelector("pre")!;
     expect(wrappedPre.className).toContain("break-words");
     expect(wrappedPre.querySelector("span.inline-block")).toBeNull();

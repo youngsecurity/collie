@@ -178,6 +178,13 @@ This implementation has two practical consequences:
 - **Diffs and highlighted rows render as dark blocks** in light mode. Contrast remains intact, but
   the visual weight is reversed.
 
+### Line wrapping (Young Security fork)
+
+On this fork the mirror does **not** wrap long lines by default. Output stays column-faithful and
+you pan horizontally, so TUI tables and box drawing keep their grid. Upstream Collie wraps by
+default. Toggle **Wrap lines** in the composer's Display sheet (the gear beside Keys) to wrap prose
+instead; the choice is stored per device in the browser.
+
 > **Installed on iOS?** In light mode, the status-bar text remains white and can blend into the
 > background. iOS does not allow web apps to update this value dynamically. Run Collie directly in
 > the browser instead of as an installed PWA to avoid this limitation.
