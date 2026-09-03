@@ -467,10 +467,11 @@ describe("updateCheckout", () => {
    * answered AT THE UPSTREAM REF, never at the remote's default tip — that distinction is the whole
    * point of the gate (see below).
    */
-  const linked = (branch: string, upstreamVersion: string, installed = "0.31.1") =>
+  const linked = (branch: string, upstreamVersion: string, installed = "0.31.1", extra: NonNullable<Scripted["answers"]> = []) =>
     harness({
       installed,
       answers: [
+        ...extra,
         ...LINKED,
         [`${GIT} rev-parse --abbrev-ref --symbolic-full-name @{u}`, { stdout: `origin/${branch}\n` }],
         [`${GIT} show origin/${branch}:herdr-plugin.toml`, { stdout: `version = "${upstreamVersion}"\n` }],
@@ -510,10 +511,49 @@ describe("updateCheckout", () => {
     expect(h.io.stdout.join("\n")).toContain("update-major --plugin herdr.collie");
   });
 
-  test("--major lets the same clone through, on its branch and with its ff-only pull", () => {
-    const h = linked("main", "1.0.0");
+  // Ported from the shell era's `test_update_gates_a_major_on_a_linked_clone`: a consented crossing
+  // advances the branch to exactly the NEXT major's release tag, even when the branch's upstream
+  // is already two majors ahead, and never by `git pull` to the tip.
+  test("--major fast-forwards the clone's branch to the NEXT major's tag, never to the branch tip", () => {
+    // origin/main carries 11.0.0 and the tag list carries 10.0.0 and 11.0.0: one consent, one major.
+    const ls = [
+      "a\trefs/tags/v9.10.0",
+      "b\trefs/tags/v10.0.0",
+      "bpeeled\trefs/tags/v10.0.0^{}",
+      "c\trefs/tags/v10.0.1",
+      "d\trefs/tags/v11.0.0",
+      "",
+    ].join("\n");
+    const h = linked("main", "11.0.0", "9.10.0", [
+      [`${GIT} ls-remote --tags origin`, { stdout: ls }],
+      [`${GIT} rev-parse HEAD`, { perCall: (n) => ({ stdout: n === 1 ? "aaaaaaa\n" : "c\n" }) }],
+    ]);
+    const out = updateCheckout(h.deps, { crossMajor: true });
+    expect(out.code).toBe(EXIT.OK);
+    expect(out.moved).toBe(true);
+    // The storing refspec for the next major's newest release, then a fast-forward MERGE of it:
+    // the branch stays a branch, and no `pull` ever runs under `--major`.
+    expect(gitRuns(h.exec)).toEqual([
+      `${GIT} fetch origin +refs/tags/v10.0.1:refs/tags/v10.0.1`,
+      `${GIT} merge --ff-only FETCH_HEAD`,
+    ]);
+    expect(h.io.stdout.join("\n")).toContain("crossing to Collie 10.0.1");
+    expect(h.io.stdout.join("\n")).not.toContain("11.0.0");
+  });
+
+  test("--major on a clone with no major above it says so and moves nothing", () => {
+    const h = linked("main", "1.0.0", "1.0.0", [[`${GIT} ls-remote --tags origin`, { stdout: LS_REMOTE }]]);
+    const out = updateCheckout(h.deps, { crossMajor: true });
+    expect(out).toEqual({ code: EXIT.OK, moved: false, higher: null });
+    expect(gitRuns(h.exec)).toEqual([]);
+    expect(h.io.stdout.join("\n")).toContain("no release above major 1 exists yet");
+  });
+
+  test("--major on a +ys clone crosses to the fork's next major, never upstream's", () => {
+    const ls = ["a\trefs/tags/v9.10.0+ys.2", "b\trefs/tags/v10.0.0", "c\trefs/tags/v10.0.0+ys.1", ""].join("\n");
+    const h = linked("main", "10.0.0", "9.10.0+ys.2", [[`${GIT} ls-remote --tags origin`, { stdout: ls }]]);
     expect(updateCheckout(h.deps, { crossMajor: true }).code).toBe(EXIT.OK);
-    expect(gitRuns(h.exec)).toEqual([`${GIT} fetch origin`, `${GIT} pull --ff-only`]);
+    expect(gitRuns(h.exec)[0]).toBe(`${GIT} fetch origin +refs/tags/v10.0.0+ys.1:refs/tags/v10.0.0+ys.1`);
   });
 
   test("a branch with no upstream is left to git: no gate, and the pull reports its own refusal", () => {

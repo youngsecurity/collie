@@ -1325,15 +1325,24 @@ assert_eq "$(cat "${MANAGED}/VERSION")" "v10"
 git -C "$MANAGED" symbolic-ref -q HEAD >/dev/null 2>&1 &&
   fail "crossing a major must leave the managed checkout detached"
 
-# Linked: the target is the branch tip, so the gate is a pre-flight read of the manifest at
-# FETCH_HEAD — and a refusal pulls NOTHING.
+# Linked: a ROUTINE update's target is the branch tip, so its gate is a pre-flight read of the
+# manifest at the branch's upstream, and a refusal pulls NOTHING. A consented `--major` then
+# fast-forwards the branch to the next major's RELEASE TAG, never to the tip: origin/main is moved
+# one untagged commit past v10.0.0 first, and the clone must stop at the tag.
 CLONE_AT="$(git -C "$CLONE" rev-parse HEAD)"
 upd "$CLONE" "$BIN" update || fail "a routine update refusing a major must still succeed: ${STDERR}"
 assert_contains "$STDOUT" "crosses a MAJOR version"
 assert_eq "$(git -C "$CLONE" rev-parse HEAD)" "$CLONE_AT"
+git_q -C "$ORIGIN" commit -q --allow-empty -m "past the major tag"
 upd "$CLONE" "$BIN" update --major || fail "\`collie update --major\` failed on a clone: ${STDERR}"
-assert_eq "$(git -C "$CLONE" rev-parse HEAD)" "$(git -C "$ORIGIN" rev-parse HEAD)"
+assert_contains "$STDOUT" "crossing to Collie 10.0.0"
+assert_eq "$(git -C "$CLONE" rev-parse HEAD)" "$(git -C "$ORIGIN" rev-parse 'v10.0.0^{commit}')"
+[ "$(git -C "$CLONE" rev-parse HEAD)" != "$(git -C "$ORIGIN" rev-parse main)" ] ||
+  fail "a consented crossing took the branch tip instead of the next major's release tag"
 assert_eq "$(git -C "$CLONE" symbolic-ref --short HEAD)" "main"   # still a branch, never detached
+assert_eq "$(git -C "$CLONE" tag --points-at HEAD)" "v10.0.0"       # the storing refspec, as on the managed path
+assert_eq "$(cat "${CLONE}/VERSION")" "v10"
+case "$STDOUT" in *"git pull"*) fail "a consented crossing ran git pull: ${STDOUT}" ;; esac
 
 # A clone kept on a NON-DEFAULT branch is judged by ITS OWN upstream, never by the remote's default
 # tip. `origin/main` is a major ahead here; `origin/maint` is not, and it is the only thing

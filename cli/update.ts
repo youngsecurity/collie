@@ -417,13 +417,19 @@ export function updateCheckout(
     : updateLinked(deps, git, installed, opts.crossMajor);
 }
 
-/** A linked clone keeps its branch and its `--ff-only` pull; the gate runs BEFORE the pull. */
+/**
+ * A linked clone keeps its branch and its `--ff-only` movement. A ROUTINE update inspects the
+ * branch's own upstream and refuses before pulling when that crosses a major; a consented crossing
+ * (`--major`) goes through {@link updateLinkedMajor} and advances the branch only to the next
+ * major's release tag, never to the branch tip.
+ */
 function updateLinked(
   deps: UpdateDeps,
   git: (args: readonly string[]) => number,
   installed: string | null,
   crossMajor: boolean,
 ): CheckoutOutcome {
+  if (crossMajor) return updateLinkedMajor(deps, git, installed);
   const root = deps.ctx.root;
   const headNow = (): string => deps.exec.capture("git", gitArgs(root, ["rev-parse", "HEAD"])).stdout.trim();
   const before = headNow();
@@ -447,7 +453,7 @@ function updateLinked(
     const fetched = manifestVersionFrom(
       deps.exec.capture("git", gitArgs(root, ["show", `${ref}:herdr-plugin.toml`])).stdout,
     );
-    if (!crossMajor && majorVerdict(installed, fetched) === "crosses") {
+    if (majorVerdict(installed, fetched) === "crosses") {
       deps.io.out(`refusing to update: ${installed} → ${fetched} (${ref}) crosses a MAJOR version.`);
       deps.io.out("A major means you have to change something — so it is never taken by a routine update.");
       deps.io.out(`Read its release notes, then consent to it with:  ${MAJOR_ACTION}`);
@@ -461,6 +467,60 @@ function updateLinked(
   // spelling of "already current". Compare HEAD across the pull rather than parsing git's wording:
   // "Already up to date." is a translated, version-dependent sentence, and the sha is neither.
   return { code, moved: code === EXIT.OK && headNow() !== before, higher: null };
+}
+
+/**
+ * Cross a linked clone by fast-forwarding its CURRENT BRANCH to the next major's release tag.
+ *
+ * It stays a linked branch (detaching it onto a tag would undo the shape it was installed in), but
+ * the target is a RELEASE, selected by the same `planUpdate` the managed path uses, and never the
+ * branch tip: a `git pull --ff-only` under `--major` would take whatever the upstream tip is, so one
+ * consent could jump two majors when the branch had already advanced that far, and would land on
+ * unreleased work between tags. `--major` consents to ONE crossing (ADR 0020), onto the release
+ * whose notes the operator was pointed at. The fetch is the same storing refspec `detachOnto` uses,
+ * so the tag exists locally afterwards and the build stamps a release rather than `-dev`.
+ */
+function updateLinkedMajor(
+  deps: UpdateDeps,
+  git: (args: readonly string[]) => number,
+  installed: string | null,
+): CheckoutOutcome {
+  const root = deps.ctx.root;
+  const ls = deps.exec.capture("git", gitArgs(root, ["ls-remote", "--tags", "origin"]));
+  if (!ls.found || ls.code !== 0) {
+    deps.io.err("error: could not list the upstream release tags — is the remote reachable?");
+    return { code: EXIT.FAIL, moved: false, higher: null };
+  }
+  const headNow = (): string => deps.exec.capture("git", gitArgs(root, ["rev-parse", "HEAD"])).stdout.trim();
+  const before = headNow();
+  const plan = planUpdate({ tags: parseRemoteTags(ls.stdout), installed, head: before, crossMajor: true });
+  if (plan.kind === "unknown-version") {
+    // The managed path pins an unversioned checkout to the newest release; a crossing cannot be
+    // selected from a version that names no major, and a branch is not re-pinned wholesale.
+    deps.io.err(`error: cannot select the next major from an unreadable installed version (${installed ?? "unknown"}).`);
+    return { code: EXIT.FAIL, moved: false, higher: null };
+  }
+  if (plan.kind !== "advance") {
+    // `crossMajor` yields `advance` or `no-higher-major`; the routine verdicts (`current`,
+    // `no-release`) never come out of a crossing, and either way nothing is taken.
+    if (plan.kind === "no-higher-major") printNoHigherMajor(deps, plan.major);
+    return { code: EXIT.OK, moved: false, higher: null };
+  }
+  deps.io.out(`crossing to Collie ${plan.target.version} (--major given: consented)…`);
+  const ref = `refs/tags/${plan.target.tag}`;
+  const spec = `+${ref}:${ref}`;
+  const fetch = isShallow(deps.exec, root)
+    ? ["fetch", "--depth", "1", "origin", spec]
+    : ["fetch", "origin", spec];
+  if (git(fetch) !== EXIT.OK) return { code: EXIT.FAIL, moved: false, higher: null };
+  // `merge --ff-only`, never `pull`: the branch advances to the tag's commit and stops there. A
+  // branch that has diverged from the tag fails here with git's own message, and nothing moved.
+  if (git(["merge", "--ff-only", "FETCH_HEAD"]) !== EXIT.OK) return { code: EXIT.FAIL, moved: false, higher: null };
+  const head = deps.exec.capture("git", gitArgs(root, ["log", "-1", "--format=%h %s"]));
+  deps.io.out(`→ now at ${head.stdout.trim()}`);
+  // A crossing just TOOK the next major; naming it again would advertise the release the operator
+  // is now standing on (the managed path says the same).
+  return { code: EXIT.OK, moved: headNow() !== before, higher: null };
 }
 
 /**
