@@ -2,6 +2,8 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { AgentList } from "./agent-list";
+import { clockTime } from "@/lib/format";
+import { t } from "@/lib/i18n";
 import type { AgentStatus, AgentView } from "@/lib/types";
 
 function agent(
@@ -130,7 +132,10 @@ describe("AgentList — sections", () => {
   it("dates the disconnected placeholder when the cache can date it", () => {
     const at = new Date(2026, 0, 2, 14, 32).getTime();
     render(<AgentList agents={[]} onOpen={vi.fn()} error lastSeenAt={at} />);
-    expect(screen.getByText(/last seen/i)).toHaveTextContent(/\d{1,2}[:.]\d{2}/);
+    // The exact stamp, not "some clock-shaped digits": a wrong or unformatted time must fail.
+    expect(screen.getByText(/last seen/i)).toHaveTextContent(
+      t("home.empty.disconnectedAt", { time: clockTime(at) }),
+    );
   });
 
   it("says only 'Disconnected' when it cannot date the data", () => {

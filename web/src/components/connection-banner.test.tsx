@@ -3,6 +3,8 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 
 import { ConnectionBanner, EXIT_MS, GREEN_MS } from "./connection-banner";
+import { clockTime } from "@/lib/format";
+import { t } from "@/lib/i18n";
 
 // Drive the two shared-clock thresholds directly so the amber→red→green STATE MACHINE can be tested
 // without burning real seconds; the 4s/15s wall-clock lockstep itself is proven in
@@ -151,9 +153,13 @@ describe("ConnectionBanner — the single connection surface", () => {
     h.lost = true;
     cfg.reachable = false;
     setOnline(true);
-    renderBanner({ error: true, lastSeenAt: new Date(2026, 0, 2, 14, 32).getTime() });
+    const at = new Date(2026, 0, 2, 14, 32).getTime();
+    renderBanner({ error: true, lastSeenAt: at });
     await act(async () => {});
-    expect(screen.getByRole("alert")).toHaveTextContent(/Can't reach Collie — last seen \d/);
+    // The exact stamp, not "some digit after last seen": a wrong or unformatted time must fail.
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      t("connection.withLastSeen", { cause: t("connection.cantReach"), time: clockTime(at) }),
+    );
   });
 
   it("leaves the red row undated when nothing can date it", async () => {
