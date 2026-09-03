@@ -1,6 +1,6 @@
 import { act, render, screen } from "@testing-library/react";
 
-import { BootSplash, shownLastSeenAt } from "./root";
+import { BootSplash, shownConnectionFlags, shownLastSeenAt } from "./root";
 import { CONNECTION_LOST_MS } from "@/hooks/use-connection-lost";
 import { __resetConnectionHealth } from "@/lib/connection-health";
 import { collieMark, markIsLive, markPaper } from "@/test/collie-mark";
@@ -89,6 +89,39 @@ function pane(overrides: Partial<PaneData>): PaneData {
     ...overrides,
   };
 }
+
+// Inside a pane two requests back what is on screen, and the bar describes both: a pane read that
+// fails while the snapshot still lands must not leave the bar silent over a degraded mirror.
+describe("which failures the connection bar shows", () => {
+  it("passes the root's flags through on the dashboard (no pane route active)", () => {
+    expect(shownConnectionFlags({ ...home(), error: false }, undefined)).toEqual({
+      error: false,
+      authError: false,
+    });
+    expect(shownConnectionFlags({ ...home(), authError: true }, undefined)).toEqual({
+      error: true,
+      authError: true,
+    });
+  });
+
+  it("includes a pane-only network failure", () => {
+    const flags = shownConnectionFlags({ ...home(), error: false }, pane({ error: true }));
+    expect(flags).toEqual({ error: true, authError: false });
+  });
+
+  it("includes a pane-only authentication failure", () => {
+    const flags = shownConnectionFlags(
+      { ...home(), error: false, authError: false },
+      pane({ error: true, authError: true }),
+    );
+    expect(flags).toEqual({ error: true, authError: true });
+  });
+
+  it("stays quiet when both requests landed", () => {
+    const flags = shownConnectionFlags({ ...home(), error: false }, pane({ error: false }));
+    expect(flags).toEqual({ error: false, authError: false });
+  });
+});
 
 describe("which 'last seen' the connection bar shows", () => {
   it("uses the snapshot's stamp on the dashboard (no pane route active)", () => {

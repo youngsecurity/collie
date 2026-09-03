@@ -45,6 +45,26 @@ export function shownLastSeenAt(home: HomeData, pane: PaneData | undefined): num
   return home.lastSeenAt;
 }
 
+/** The failure flags the ONE connection surface should show. */
+export interface ConnectionFlags {
+  error: boolean;
+  authError: boolean;
+}
+
+/**
+ * Inside a pane, two requests back what is on screen: the herd snapshot and the pane read. The
+ * connection surface describes both, so a pane-only failure (the pane read 500s or is refused while
+ * the snapshot still lands) joins the root loader's flags rather than leaving the bar silent over a
+ * mirror that is visibly degraded. On the dashboard there is no pane data and these are the root's
+ * flags unchanged.
+ */
+export function shownConnectionFlags(home: HomeData, pane: PaneData | undefined): ConnectionFlags {
+  return {
+    error: home.error || Boolean(pane?.error),
+    authError: home.authError || Boolean(pane?.authError),
+  };
+}
+
 // The data root: owns the snapshot loader, drives polling, and fans the herd out to the child
 // routes (home + pane detail) via the router's loader data. Mounted only while unlocked (the
 // idle-lock in App swaps the whole RouterProvider out), so polling pauses when the app is locked.
@@ -62,6 +82,7 @@ export function RootLayout() {
   // SAFETY: PANE_ROUTE_ID names the route whose `loader` is paneLoader (router.tsx pairs the two),
   // so the only value that can appear under that id is the PaneData that loader returned.
   const pane = useRouteLoaderData(PANE_ROUTE_ID) as PaneData | undefined;
+  const connection = shownConnectionFlags(data, pane);
 
   // The scope rides along so a "look now" on foreground lands on the machine and session the page is
   // actually showing — a refresh aimed at the lead would leave a peer's herd exactly as stale.
@@ -110,8 +131,8 @@ export function RootLayout() {
             same shared-clock signals as the header dog, so the two always agree. */}
         <ConnectionBanner
           bridge={data.bridge}
-          error={data.error}
-          authError={data.authError}
+          error={connection.error}
+          authError={connection.authError}
           lastSeenAt={shownLastSeenAt(data, pane)}
         />
         {/* THE ONE HEADER, and the third thing on this shelf. The two banners above it have always
@@ -127,8 +148,9 @@ export function RootLayout() {
             it, and `<RouteHeader/>` throws outside the host rather than quietly rendering nothing.
             `bridge` and `error` are read here, once, off the root snapshot every route was
             forwarding them from anyway — six copies of the same two fields was six chances to
-            disagree with the ConnectionBanner two lines up. */}
-        <AppHeaderHost bridge={data.bridge} error={data.error}>
+            disagree with the ConnectionBanner two lines up. `error` is the SAME combined flag the
+            bar reads, so a pane-only failure degrades the header dog and the bar together. */}
+        <AppHeaderHost bridge={data.bridge} error={connection.error}>
           <Outlet />
         </AppHeaderHost>
       </div>
