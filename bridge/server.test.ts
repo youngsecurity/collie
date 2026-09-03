@@ -254,13 +254,46 @@ describe("checkAccess — Host-header validation (COLLIE_PUBLIC_HOSTS)", () => {
     ).toEqual({ ok: true });
   });
 
-  test("a Host derived from an allowed origin passes", () => {
+  test("allowed origins do not implicitly expand the Host allowlist", () => {
     const c2 = cfg({
       publicHosts: ["collie.example.ts.net"],
       allowedOrigins: ["https://collie.example.com"],
     });
     expect(
-      checkAccess(req({ origin: "https://collie.example.com", host: "collie.example.com" }), c2),
+      checkAccess(
+        req({ origin: "https://collie.example.com", host: "collie.example.com" }),
+        c2,
+        "read",
+        "10.0.0.50",
+      ),
+    ).toEqual({ ok: false, reason: "host not allowed" });
+    // The same from a loopback peer (a co-located proxy) is refused too: the socket says nothing
+    // about a non-loopback Host.
+    expect(
+      checkAccess(
+        req({ origin: "https://collie.example.com", host: "collie.example.com" }),
+        c2,
+        "read",
+        "127.0.0.1",
+      ),
+    ).toEqual({ ok: false, reason: "host not allowed" });
+    // An origin-only configuration is an EMPTY Host allowlist, and refuses a remote peer as one.
+    expect(
+      checkAccess(
+        req({ origin: "https://collie.example.com", host: "collie.example.com" }),
+        cfg({ publicHosts: [], allowedOrigins: ["https://collie.example.com"] }),
+        "read",
+        "10.0.0.50",
+      ),
+    ).toEqual({ ok: false, reason: "host allowlist required" });
+    // What the origin DOES do: pass the Origin check once the Host is listed on its own.
+    expect(
+      checkAccess(
+        req({ origin: "https://collie.example.com", host: "collie.example.ts.net" }),
+        c2,
+        "write",
+        "10.0.0.50",
+      ),
     ).toEqual({ ok: true });
   });
 
@@ -433,10 +466,11 @@ describe("isHostAllowed", () => {
     expect(isHostAllowed("localhost:8787", c)).toBe(false);
   });
 
-  test("configured public host and allowed-origin host pass; anything else fails", () => {
+  test("configured public host passes; an allowed-origin host and anything else fail", () => {
     const c = cfg({ publicHosts: ["a.ts.net"], allowedOrigins: ["https://b.example.com"] });
     expect(isHostAllowed("a.ts.net", c, "10.0.0.50")).toBe(true);
-    expect(isHostAllowed("b.example.com", c, "10.0.0.50")).toBe(true);
+    expect(isHostAllowed("b.example.com", c, "10.0.0.50")).toBe(false);
+    expect(isHostAllowed("b.example.com", c, "127.0.0.1")).toBe(false);
     expect(isHostAllowed("evil.com", c, "10.0.0.50")).toBe(false);
     expect(isHostAllowed("", c, "10.0.0.50")).toBe(false);
   });
@@ -1298,6 +1332,18 @@ describe("startupWarnings — security-posture nags", () => {
     );
     expect(has(ws, "no non-loopback Host is allowed")).toBe(true);
     expect(has(ws, "COLLIE_SERVE_MODE")).toBe(false);
+  });
+
+  test("an origin-only configuration still gets the empty-allowlist warning (origins admit no Host)", () => {
+    const ws = startupWarnings(
+      cfg({
+        allowAnyHost: false,
+        publicHosts: [],
+        tailscaleHosts: [],
+        allowedOrigins: ["https://collie.example.com"],
+      }),
+    );
+    expect(has(ws, "no non-loopback Host is allowed")).toBe(true);
   });
 
   test("populated publicHosts: no empty-allowlist Host warning", () => {

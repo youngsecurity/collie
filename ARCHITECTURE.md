@@ -386,10 +386,14 @@ door (tailnet-only by default; one per **pack** — §2.1). These four are genui
   own. Where the header gate answers *is this device on the operator's list*, pairing answers *does
   this device hold a credential I issued*: a claim no proxy, DNS name or tailnet identity can forge.
 - **The `Host` header is validated, on by default, and fails closed.** A request whose `Host` is not
-  the tailnet name, a loopback name, `COLLIE_PUBLIC_HOSTS` or a configured origin is refused, so a
-  DNS-rebound `Host: evil.example` cannot reach the API. `collie start` discovers the node's MagicDNS
-  name and Tailscale IPs into `COLLIE_TAILSCALE_HOSTS` and bakes them into the service unit, so a normal tailnet install configures
-  nothing; behind your own front door `COLLIE_PUBLIC_HOSTS` is **required**.
+  the tailnet name or a `COLLIE_PUBLIC_HOSTS` entry is refused, so a DNS-rebound
+  `Host: evil.example` cannot reach the API. A loopback name is accepted only from a direct loopback
+  socket peer, never on the header alone, and a forwarding header (`Forwarded`, `Via`,
+  `X-Forwarded-*`) withdraws even that. `COLLIE_ALLOWED_ORIGINS` never expands the Host allowlist:
+  it widens the same-origin check only. A remote peer is refused outright while both host lists are
+  empty. `collie start` discovers the node's MagicDNS name and Tailscale IPs into
+  `COLLIE_TAILSCALE_HOSTS` and bakes them into the service unit, so a normal tailnet install
+  configures nothing; behind your own front door `COLLIE_PUBLIC_HOSTS` is **required**.
   `COLLIE_ALLOW_ANY_HOST=1` is the opt-out, and re-opens rebinding. `/pack/v1/*` is exempt: a lead
   addresses a peer by its own hostname, and that surface carries its own two factors (ADR 0013).
 - **The bridge refuses a non-loopback bind.** A `COLLIE_HOST` outside loopback does not start unless
@@ -402,8 +406,9 @@ door (tailnet-only by default; one per **pack** — §2.1). These four are genui
   (`default-src 'self'`), so an escaping miss can't run injected script that calls back into the
   socket.
 - **A same-origin gate on every API request** — accepted only when the browser's `Origin` host equals
-  the `Host` header the bridge receives (loopback always allowed), so a page on any other tailnet
-  device can't CSRF the bridge. With a plain `tailscale serve` on the MagicDNS name these match
+  the `Host` header the bridge receives (a loopback origin is always allowed; a missing `Origin` on a
+  write is forgiven only for a loopback Host from a loopback socket peer), so a page on any other
+  tailnet device can't CSRF the bridge. With a plain `tailscale serve` on the MagicDNS name these match
   automatically (no config). When Collie is fronted by a *different* public hostname or an extra
   reverse proxy / TLS terminator (custom domain, load balancer, Headscale + upstream TLS, or a
   reverse-proxy front door — [docs/deployment.md → Variant C](./docs/deployment.md#variant-c--reverse-proxy-as-the-only-front-door-no-tailscale)),

@@ -29,8 +29,11 @@ Collie configuration (`.env`):
 COLLIE_HOST=127.0.0.1                       # keep loopback (default)
 COLLIE_DEVICE_HEADER=X-Device-Id            # the header your proxy injects
 COLLIE_DEVICE_ALLOWLIST=my-phone,my-laptop  # ids allowed to drive agents; others → read-only
-# COLLIE_ALLOWED_ORIGINS=https://collie.example.com   # only if the proxy does NOT forward the public Host
-# COLLIE_PUBLIC_HOSTS=collie.example.com    # REQUIRED unless the proxy forwards a Host Collie already knows
+# COLLIE_ALLOWED_ORIGINS=https://collie.example.com   # only if the proxy does NOT forward the public Host;
+                                            # widens the Origin check only, never the Host allowlist
+# COLLIE_PUBLIC_HOSTS=collie.example.com    # REQUIRED unless the proxy forwards the tailnet Host that
+                                            # `collie start` discovered (COLLIE_TAILSCALE_HOSTS). A
+                                            # loopback or origin-derived Host does not count.
 # COLLIE_ALLOW_ANY_HOST=1                   # opt out of Host validation entirely (re-opens DNS rebinding)
 # COLLIE_TRUSTED_USER still composes on top if your ingress also injects Tailscale-User-Login
 # COLLIE_TRUSTED_USER_OPTIONAL=1            # accept a request carrying no Tailscale-User-Login at all
@@ -41,7 +44,8 @@ Proxy requirements:
 2. **Override the device header** on every upstream request to prevent client spoofing.
 3. **Proxy to loopback** (`127.0.0.1:$COLLIE_PORT`).
 4. **Forward the public `Host` unchanged**, or list the public origin in `COLLIE_ALLOWED_ORIGINS` to
-   pass the same-origin check.
+   pass the same-origin check. Either way the `Host` the proxy sends must be one Collie allows
+   (`COLLIE_TAILSCALE_HOSTS` or `COLLIE_PUBLIC_HOSTS`); `COLLIE_ALLOWED_ORIGINS` does not admit it.
 
 Example Nginx configuration:
 

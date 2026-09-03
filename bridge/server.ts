@@ -1405,13 +1405,11 @@ export function startupWarnings(cfg: Config): string[] {
     warnings.push(
       `[bridge] WARNING: COLLIE_ALLOW_ANY_HOST=1 — Host-header validation is OFF, so a DNS-rebound page can reach this bridge as if it were same-origin. Unset it and set COLLIE_PUBLIC_HOSTS to the host(s) you serve on.`,
     );
-  } else if (
-    cfg.publicHosts.length === 0 &&
-    cfg.tailscaleHosts.length === 0 &&
-    cfg.allowedOrigins.length === 0
-  ) {
+  } else if (cfg.publicHosts.length === 0 && cfg.tailscaleHosts.length === 0) {
+    // COLLIE_ALLOWED_ORIGINS is not part of this condition on purpose: an origin never admits a Host
+    // (isHostAllowed), so an origin-only configuration IS an empty Host allowlist.
     warnings.push(
-      `[bridge] WARNING: no non-loopback Host is allowed — every request except one addressed to localhost/127.0.0.1 will be rejected with "host not allowed". Set COLLIE_PUBLIC_HOSTS to the exact host(s) you serve on (required behind your own reverse proxy).`,
+      `[bridge] WARNING: no non-loopback Host is allowed — every remote request will be rejected with "host allowlist required", and only a loopback caller can reach this bridge by a loopback name. Set COLLIE_PUBLIC_HOSTS to the exact host(s) you serve on (required behind your own reverse proxy and under COLLIE_SKIP_SERVE=1); COLLIE_ALLOWED_ORIGINS does not count.`,
     );
   }
   return warnings;
@@ -2477,12 +2475,13 @@ async function uploadPane(
 /**
  * Access gate for the API:
  *  - Host allowlist (fail-closed): the request's Host header must be an explicit COLLIE_PUBLIC_HOSTS
- *    entry, a ctl-discovered Tailscale host (COLLIE_TAILSCALE_HOSTS), the host of an allowed origin,
- *    or a loopback form presented by an actual loopback socket peer on a request no proxy relayed
- *    (a forwarding header turns that exception off) — otherwise rejected, BEFORE any Origin logic. A remote peer is refused outright while both host lists are empty: an unconfigured
- *    bridge answers its own host and nobody else. This defeats DNS rebinding
- *    (Host==Origin==evil.example) and a forged `Host: localhost` from a non-loopback socket.
- *    COLLIE_ALLOW_ANY_HOST=1 is the explicit opt-out.
+ *    entry, a ctl-discovered Tailscale host (COLLIE_TAILSCALE_HOSTS), or a loopback form presented
+ *    by an actual loopback socket peer on a request no proxy relayed (a forwarding header turns that
+ *    exception off) — otherwise rejected, BEFORE any Origin logic. COLLIE_ALLOWED_ORIGINS never
+ *    expands this list (see isHostAllowed). A remote peer is refused outright while both host lists
+ *    are empty: an unconfigured bridge answers its own host and nobody else. This defeats DNS
+ *    rebinding (Host==Origin==evil.example) and a forged `Host: localhost` from a non-loopback
+ *    socket. COLLIE_ALLOW_ANY_HOST=1 is the explicit opt-out.
  *  - Same-origin only (Origin host must equal Host) — defeats cross-site requests/CSRF. Browsers
  *    omit Origin on same-origin GETs (so the snapshot poll passes); they send it on POSTs.
  *    localhost and explicitly-configured origins are also allowed.
@@ -2559,10 +2558,13 @@ export function checkAccess(
 
 /**
  * Whether a Host header is one the bridge will answer to under the fail-closed host allowlist: an
- * explicit COLLIE_PUBLIC_HOSTS entry, a discovered Tailscale host (bare or with port), the host of a
- * configured allowed origin, or a loopback form — accepted only when the kernel-reported socket peer
- * is loopback too and the request was not forwarded (a forwarded request's peer is a local proxy,
- * not the client, so its loopback socket attests nothing). Pure + exported for tests.
+ * explicit COLLIE_PUBLIC_HOSTS entry, a discovered Tailscale host (bare or with port), or a loopback
+ * form. The loopback form is accepted only when the kernel-reported socket peer is loopback too and
+ * the request was not forwarded (a forwarded request's peer is a local proxy, not the client, so its
+ * loopback socket attests nothing). COLLIE_ALLOWED_ORIGINS is deliberately NOT consulted: it widens the same-origin
+ * check, never this one. An origin is a browser's claim about the page that sent the request and a
+ * Host is the name the request arrived on; letting one admit the other reopens the rebinding hole
+ * (Host==Origin==attacker's name) this gate exists to close. Pure + exported for tests.
  */
 export function isHostAllowed(
   host: string,
@@ -2574,14 +2576,7 @@ export function isHostAllowed(
   if (LOOPBACK_HOST.test(host)) return isLoopbackAddress(peerAddress) && !forwarded;
   if (cfg.publicHosts.includes(host)) return true;
   const bare = host.replace(/:\d+$/, "");
-  if (cfg.tailscaleHosts.some((h) => h === host || h === bare)) return true;
-  return cfg.allowedOrigins.some((o) => {
-    try {
-      return new URL(o).host === host;
-    } catch {
-      return false;
-    }
-  });
+  return cfg.tailscaleHosts.some((h) => h === host || h === bare);
 }
 
 /**

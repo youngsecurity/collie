@@ -247,11 +247,14 @@ export interface Config {
   /** Extra allowed request origins beyond localhost (e.g. your MagicDNS https origin). */
   allowedOrigins: string[];
   /**
-   * Additional allowed Host headers (`host` or `host:port` values) beyond loopback and the
-   * discovered {@link tailscaleHosts}. Host validation is fail-closed by default: any request whose
-   * `Host` header isn't a loopback form, one of these, a discovered Tailscale host, or a host
-   * parsed from {@link allowedOrigins} is rejected before the Origin check. Required under
-   * `COLLIE_SKIP_SERVE=1` (where Collie discovers no Tailscale hosts) to name your public domain.
+   * Explicit Host-header allowlist (`host` or `host:port` values) beyond loopback and the
+   * discovered {@link tailscaleHosts}. Host validation is fail-closed: a remote peer is denied when
+   * both this list and {@link tailscaleHosts} are empty, and every remote request's Host must match
+   * one of those entries. Loopback Host forms are accepted only when the actual socket peer is
+   * loopback and the request was not forwarded by a local proxy. This list is deliberately
+   * independent of {@link allowedOrigins} and closes the DNS-rebinding hole where Host and Origin
+   * are both attacker-controlled. Required under `COLLIE_SKIP_SERVE=1` (where Collie discovers no
+   * Tailscale hosts) to name your public domain. {@link allowAnyHost} is the documented opt-out.
    */
   publicHosts: string[];
   /**

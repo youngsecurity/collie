@@ -34,7 +34,10 @@ Key security boundaries and risks:
   through `tailscale serve` or an equivalent reverse proxy; do not use `tailscale funnel` or expose
   raw ports. The web interface applies strict CSP rules, enforces same-origin checks, and renders
   pane outputs as React text nodes instead of `innerHTML`. Host-header validation is enabled by
-  default and fails closed; set `COLLIE_ALLOW_ANY_HOST=1` to disable it. Set `COLLIE_TRUSTED_USER`
+  default and fails closed: a remote request's `Host` must match the discovered tailnet name or a
+  `COLLIE_PUBLIC_HOSTS` entry, a loopback name is accepted only from a direct loopback socket peer,
+  and `COLLIE_ALLOWED_ORIGINS` never expands that allowlist. Set `COLLIE_ALLOW_ANY_HOST=1` to
+  disable it. Set `COLLIE_TRUSTED_USER`
   to reject requests where the `Tailscale-User-Login` header is missing or does not match (tagged
   nodes do not send this header; use `COLLIE_TRUSTED_USER_OPTIONAL=1` to permit missing headers). To
   authorize specific hardware, use [pairing](#pair-a-device--the-write-credential) directly, or
