@@ -25,6 +25,7 @@
 // Every entry carries the wall-clock of the fetch that produced it, because a stale render must be
 // able to say WHEN — "Disconnected — last seen 14:32" is honest, an undated old screen is not.
 
+import { asJsonNumber, asJsonObject, type JsonObject, parseJsonObject } from "@/lib/json";
 import { paneScopeKey, type Scope, snapshotKey as snapshotCacheKey } from "@/lib/scope";
 import type { SnapshotResponse } from "@/lib/types";
 
@@ -129,26 +130,36 @@ function decodePane(raw: string | null): Cached<string> | null {
   return { at, value: raw.slice(cut + 1) };
 }
 
-// A snapshot entry is JSON, because it is a whole response body. It gets the structural checks a
-// parse boundary owes — parsed at all, an object, carrying a numeric stamp — and no more; see the
-// SAFETY note at the assertion for why a field-by-field schema would buy nothing here.
+// A snapshot entry is JSON, because it is a whole response body. Unlike the live path, the body
+// read back here was not written by THIS build: sessionStorage survives an in-place update of the
+// web bundle, so the entry can be one an older Collie wrote under an older `SnapshotResponse`. The
+// loaders read its required fields without a guard (`snap.agents`, `snap.bridge`), and on a cold
+// boot with no network the restored body is the first thing rendered, so a drifted entry that got
+// through would be a crash on exactly the boot this cache exists to save. So the required top-level
+// contract is checked, and a body that fails it is a miss, which costs one undated stale render.
+// Nested rows stay on the same trusted-bridge-response footing as the live path.
+function isSnapshotResponse(value: JsonObject): value is JsonObject & SnapshotResponse {
+  const ts = asJsonNumber(value.ts);
+  return (
+    (value.bridge === "connected" || value.bridge === "disconnected") &&
+    Array.isArray(value.agents) &&
+    Array.isArray(value.shellPanes) &&
+    Array.isArray(value.workspaces) &&
+    Array.isArray(value.tabs) &&
+    ts !== undefined &&
+    Number.isFinite(ts)
+  );
+}
 
 function decodeSnapshot(raw: string | null): Cached<SnapshotResponse> | null {
   if (raw === null) return null;
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (!(parsed instanceof Object)) return null;
-    // SAFETY: the only writer of this key is saveLastSnapshot below, in this tab, with the body a
-    // successful `/api/snapshot` returned — the same unvalidated shape lib/api.ts hands the loaders
-    // live. The assertion therefore claims no more than the live path already does, and `at` is
-    // re-checked below rather than assumed, so a hand-edited or format-drifted entry reads as a miss.
-    const entry = parsed as Partial<Cached<SnapshotResponse>>;
-    const at = entry.at;
-    if (at === undefined || !Number.isFinite(at) || entry.value === undefined) return null;
-    return { at, value: entry.value };
-  } catch {
-    return null;
-  }
+  const entry = parseJsonObject(raw);
+  if (entry === undefined) return null;
+  const at = asJsonNumber(entry.at);
+  if (at === undefined) return null;
+  const value = asJsonObject(entry.value);
+  if (value === undefined || !isSnapshotResponse(value)) return null;
+  return { at, value };
 }
 
 /** Every pane key currently in the store, paired with its stamp (0 when unreadable). */

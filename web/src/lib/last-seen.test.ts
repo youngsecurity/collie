@@ -51,6 +51,12 @@ describe("the write-through last-seen cache", () => {
     ["not json at all", `collie:last-snapshot:${scopeKey()}`, "{{{"],
     ["a json array", `collie:last-snapshot:${scopeKey()}`, "[]"],
     ["an entry with no stamp", `collie:last-snapshot:${scopeKey()}`, JSON.stringify({ value: {} })],
+    // The body is checked against the required top-level contract: an entry an older build wrote
+    // under an older shape is a miss, never the crash the loaders would make of it on a cold boot.
+    ["a null snapshot", `collie:last-snapshot:${scopeKey()}`, JSON.stringify({ at: 1, value: null })],
+    ["an array snapshot", `collie:last-snapshot:${scopeKey()}`, JSON.stringify({ at: 1, value: [] })],
+    ["a primitive snapshot", `collie:last-snapshot:${scopeKey()}`, JSON.stringify({ at: 1, value: "bad" })],
+    ["an incomplete snapshot", `collie:last-snapshot:${scopeKey()}`, JSON.stringify({ at: 1, value: {} })],
     ["a pane with no stamp line", `collie:last-pane:${paneScopeKey(undefined, "w1:p1")}`, "just text"],
   ])("treats %s as a miss", (_name, key, raw) => {
     sessionStorage.setItem(key, raw);
