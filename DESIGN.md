@@ -405,6 +405,14 @@ fails loudly.
   [ADR 0002](./.adr/0002-invert-the-light-terminal-mirror.md). **Never put a `dark:` variant
   inside one** — it tracks the root theme, which is backwards in an element that is dark
   under every theme.
+  **Young Security fork:** the one thing that may change the mirror's ground is the operator's
+  own hand. Settings → Terminal font carries a per-device default foreground and background
+  (plus a Matrix preset), and a mirror painted that way is **absolute**: the same colours under
+  both themes, no `MIRROR_INVERT`, applied through `mirrorSurface()` on every mirror surface at
+  once, never on one of them. It is still not re-themeable: the agent's explicit colours win over
+  the configured foreground as they win over `#fafafa`, nothing maps a palette, and an untouched
+  install renders exactly as upstream does. The reasoning is the fork amendment at the foot of
+  ADR 0002; `ansi-output.test.tsx` and `agent-chat.test.tsx` pin both halves.
 - **Light `--background` is `oklch(0.97)` on purpose.** It rasterises to rgb(245,245,245),
   which is exactly the inverted mirror's background, so the mirror shows no seam against the
   page. It is not "off-white for taste"; moving it re-opens that seam.

@@ -145,7 +145,9 @@ Two behaviors to note: custom fonts lack metric-matched fallbacks, which causes 
 during initial load. Built-in fonts avoid this because their fallbacks are generated at build time.
 Cold loads fetch the file with a brief delay, though cached clients paint immediately. The selected
 font applies only to Collie's chrome; the terminal mirror, transcript, and rendered markdown retain
-their own typography. Changes do not require a restart, taking effect on the next page reload.
+their own typography (the mirror's own face and, on this fork, its colours are set under
+**Settings → Terminal font**; see [Terminal appearance](#terminal-appearance-young-security-fork)
+below). Changes do not require a restart, taking effect on the next page reload.
 Invalid configurations log errors visible via `journalctl --user -u collie -n 20`.
 
 ## Multi-session
@@ -177,6 +179,34 @@ This implementation has two practical consequences:
   illegible in Collie under both modes. This stems from the agent output rather than Collie itself.
 - **Diffs and highlighted rows render as dark blocks** in light mode. Contrast remains intact, but
   the visual weight is reversed.
+
+### Terminal appearance (Young Security fork)
+
+**Settings → Terminal font** also carries the mirror's **colours** on this fork: a default text
+colour and a background colour, two native pickers under the font family. They are stored **per
+device** in the browser beside the font, so a phone can run green on black while a laptop keeps the
+dark ground. **Matrix** is the one preset: it picks the MesloLGS NF family with green (`#00ff00`) on
+black (`#000000`) in one tap; **Reset** clears the colours and leaves the family alone.
+
+Three things to know:
+
+- **Chosen colours are absolute.** A mirror you coloured by hand renders in those colours under
+  both the light and the dark theme; the light-mode inversion described above is switched off for
+  it, because there is nothing to rescue in a ground you picked yourself. Leave both pickers alone
+  and the mirror behaves exactly as upstream: dark ground, inverted in light.
+- **The agent's own colours still win.** The pickers set a *default*, the colour text renders in
+  when the agent named none. Explicit ANSI, 256-colour and truecolor output (syntax highlighting,
+  Oh My Posh prompts, diff colours) takes precedence exactly as it does over the built-in
+  foreground.
+- **A font must be installed on the device running the browser.** The family list names faces the
+  browser looks up locally; Collie cannot load a font from the host machine or inherit a Windows
+  Terminal profile. An absent family falls through to the platform's monospace, and the bundled
+  Nerd Font symbols are used regardless.
+
+A device that used the fork's earlier "Terminal appearance" sheet keeps its choices: the old
+settings are read once on the first load after upgrading and carried into the new fields (a font
+named `MesloLGS NF` becomes the MesloLGS NF entry; a name the list does not offer falls back to
+System default).
 
 ### Line wrapping (Young Security fork)
 

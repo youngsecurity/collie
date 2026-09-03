@@ -1,4 +1,5 @@
 import { AArrowDown, AArrowUp, ChevronDown, Type } from "lucide-react";
+import type { ChangeEvent } from "react";
 
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -10,6 +11,7 @@ import {
   FONT_MAX,
   FONT_MIN,
   isFontFamily,
+  MATRIX_TERMINAL_COLORS,
   mirrorSurface,
   useDisplayPrefs,
   type FontFamily,
@@ -41,6 +43,18 @@ import { cn } from "@/lib/utils";
 //
 // The family names are PROPER NOUNS and are not translated; only "System default" is a phrase, and
 // only it has a message key. A font is named the same in every locale.
+//
+// THE COLOURS ROW IS THE YOUNG SECURITY FORK'S, and it is on this card and not in the composer's
+// Display sheet on purpose: it is a set-once, per-device choice about how the mirror reads, the same
+// kind of question as the family above it, and the Display sheet is for the toggles you flip while
+// reading a pane. Two native colour pickers (the platform's own, for the reason the family is a
+// native <select>), one preset and one reset. The pickers show the mirror's own dark-space values
+// while nothing is set, so opening one starts from what the pane actually renders, and the sample
+// below repaints live because it wears the same mirrorSurface() pair the pane does.
+
+/** What an unset side shows in its picker: the mirror's own value (MIRROR_SPACE's literals). */
+const MIRROR_DEFAULT_FOREGROUND = "#fafafa";
+const MIRROR_DEFAULT_BACKGROUND = "#0a0a0a";
 
 const FAMILY_LABELS = {
   jetbrains: "JetBrains Mono",
@@ -61,7 +75,21 @@ const SAMPLE = "~/collie  0O1lI │ ok";
 /** Settings card: the terminal mirror's font family and size. Device-local, like every display pref. */
 export function FontSettingsControl() {
   useLocale();
-  const { prefs, setFontFamily, stepFontSize, stepDraftFontSize } = useDisplayPrefs();
+  const { prefs, setFontFamily, setTerminalColors, stepFontSize, stepDraftFontSize } =
+    useDisplayPrefs();
+
+  const colorsSet = prefs.terminalForeground !== "" || prefs.terminalBackground !== "";
+  const onForeground = (event: ChangeEvent<HTMLInputElement>) =>
+    setTerminalColors({ foreground: event.target.value, background: prefs.terminalBackground });
+  const onBackground = (event: ChangeEvent<HTMLInputElement>) =>
+    setTerminalColors({ foreground: prefs.terminalForeground, background: event.target.value });
+  // The preset is the face AND the colours: green on black was tuned against Meslo, and a phone
+  // that asks for "Matrix" is asking for the whole look, not two thirds of it.
+  const applyMatrix = () => {
+    setFontFamily("meslo");
+    setTerminalColors(MATRIX_TERMINAL_COLORS);
+  };
+  const resetColors = () => setTerminalColors({ foreground: "", background: "" });
 
   // Font AND colours (fork): the sample is one line of the mirror, so it wears what the mirror wears.
   const sampleFace = mirrorSurface(prefs);
@@ -187,9 +215,69 @@ export function FontSettingsControl() {
           </div>
         </div>
 
+        {/* THE COLOURS ROW (fork). Two 44px swatches, each a native <input type="color"> inside a
+            bordered box the same size as the steppers' buttons, so the row reads as the same grammar
+            as the two above it. The swatch's value is what the pane renders right now: the chosen
+            colour, or the mirror's own dark-space value when nothing is chosen. */}
+        <div className="flex items-start justify-between gap-4 px-4 py-3">
+          <div className="min-w-0">
+            <div className="text-sm font-medium">{t("settings.fonts.colors")}</div>
+            <p className="mt-0.5 text-xs leading-snug text-muted-foreground">
+              {t("settings.fonts.colors.hint")}
+            </p>
+          </div>
+          <div className="flex shrink-0 items-center gap-1">
+            <label
+              className="flex size-11 cursor-pointer items-center justify-center rounded-md border border-border/60 bg-background"
+              title={t("settings.fonts.colors.foreground")}
+            >
+              <input
+                type="color"
+                aria-label={t("settings.fonts.colors.foreground")}
+                value={prefs.terminalForeground === "" ? MIRROR_DEFAULT_FOREGROUND : prefs.terminalForeground}
+                onChange={onForeground}
+                className="size-6 cursor-pointer rounded border-0 bg-transparent p-0"
+              />
+            </label>
+            <label
+              className="flex size-11 cursor-pointer items-center justify-center rounded-md border border-border/60 bg-background"
+              title={t("settings.fonts.colors.background")}
+            >
+              <input
+                type="color"
+                aria-label={t("settings.fonts.colors.background")}
+                value={prefs.terminalBackground === "" ? MIRROR_DEFAULT_BACKGROUND : prefs.terminalBackground}
+                onChange={onBackground}
+                className="size-6 cursor-pointer rounded border-0 bg-transparent p-0"
+              />
+            </label>
+          </div>
+        </div>
+
+        {/* Preset and reset, on their own row so the swatches above never have to shrink to make
+            room for two words on a narrow phone. Reset is disabled, not hidden, while there is
+            nothing to reset (§2: a row's controls do not come and go). */}
+        <div className="flex items-start justify-between gap-4 px-4 py-3">
+          <div className="min-w-0">
+            <div className="text-sm font-medium">{t("settings.fonts.colors.matrix")}</div>
+            <p className="mt-0.5 text-xs leading-snug text-muted-foreground">
+              {t("settings.fonts.colors.matrix.hint")}
+            </p>
+          </div>
+          <div className="flex shrink-0 items-center gap-1">
+            <Button variant="outline" className="min-h-11" onClick={applyMatrix}>
+              {t("settings.fonts.colors.matrix")}
+            </Button>
+            <Button variant="outline" className="min-h-11" disabled={!colorsSet} onClick={resetColors}>
+              {t("settings.fonts.colors.reset")}
+            </Button>
+          </div>
+        </div>
+
         {/* The proof. Settings does not show the mirror, so the card shows one line OF the mirror —
-            in the mirror's own dark space, inverted in light with it (ADR 0002), so what you read
-            here is what the pane will render.
+            in the mirror's own dark space, inverted in light with it (ADR 0002), or in the colours
+            chosen above, absolute in both themes (fork), so what you read here is what the pane
+            will render.
             NO LAYOUT SHIFT: the row's height is pinned by `leading-none` on a fixed 16px line box,
             not by the chosen face's own metrics, and the text is `whitespace-pre overflow-hidden`,
             so a wider face runs off the edge instead of wrapping the card taller. */}

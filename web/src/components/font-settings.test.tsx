@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { FontSettingsControl } from "./font-settings";
@@ -89,5 +89,65 @@ describe("FontSettingsControl — the draft-text size row", () => {
   it("pins the number's slot so stepping it cannot move the buttons", () => {
     render(<FontSettingsControl />);
     expect(slotIn("Draft text").className).toMatch(/(?:^|\s)w-8(?=\s|$)/);
+  });
+});
+
+// The colours row (Young Security fork): two native pickers, one preset, one reset, and the sample
+// line repainting live because it wears the same mirrorSurface() pair the pane does.
+describe("FontSettingsControl: the mirror's colours", () => {
+  const foreground = () => screen.getByLabelText("Text colour");
+  const background = () => screen.getByLabelText("Background colour");
+  const matrix = () => screen.getByRole("button", { name: "Matrix" });
+  const reset = () => screen.getByRole("button", { name: "Reset" });
+  /** The sample line's mirror surface: the element carrying MIRROR_SPACE's classes. */
+  const sample = () => document.querySelector<HTMLElement>(".\\[color-scheme\\:dark\\]")!;
+
+  it("starts from the mirror's own dark-space values, with nothing to reset", () => {
+    render(<FontSettingsControl />);
+    expect(foreground()).toHaveValue("#fafafa");
+    expect(background()).toHaveValue("#0a0a0a");
+    expect(reset()).toBeDisabled();
+    expect(sample().getAttribute("style")).toBeNull();
+    expect(sample().className).toContain("[filter:invert(1)_hue-rotate(180deg)]");
+  });
+
+  it("stores a picked colour and repaints the sample in it, uninverted", () => {
+    render(<FontSettingsControl />);
+    fireEvent.change(foreground(), { target: { value: "#00ff00" } });
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEY)!).terminalForeground).toBe("#00ff00");
+    expect(sample().style.color).toBe("rgb(0, 255, 0)");
+    expect(sample().className).not.toContain("[filter:invert(1)_hue-rotate(180deg)]");
+    expect(reset()).not.toBeDisabled();
+  });
+
+  it("Matrix sets the face AND the colours; Reset clears the colours and leaves the face", async () => {
+    const user = userEvent.setup();
+    render(<FontSettingsControl />);
+    await user.click(matrix());
+    const stored = JSON.parse(localStorage.getItem(STORAGE_KEY)!);
+    expect(stored).toMatchObject({
+      fontFamily: "meslo",
+      terminalForeground: "#00ff00",
+      terminalBackground: "#000000",
+    });
+    expect(screen.getByRole("combobox")).toHaveValue("meslo");
+    expect(sample().style.backgroundColor).toBe("rgb(0, 0, 0)");
+
+    await user.click(reset());
+    const after = JSON.parse(localStorage.getItem(STORAGE_KEY)!);
+    expect(after.terminalForeground).toBe("");
+    expect(after.terminalBackground).toBe("");
+    expect(after.fontFamily).toBe("meslo");
+    expect(reset()).toBeDisabled();
+    expect(sample().style.color).toBe("");
+  });
+
+  // DESIGN.md §6 again: the swatch boxes are tap targets and sit on the same 44px floor as the
+  // stepper buttons beside them.
+  it("keeps both swatches on the 44px tap floor", () => {
+    render(<FontSettingsControl />);
+    for (const input of [foreground(), background()]) {
+      expect(input.closest("label")!.className).toMatch(/(?:^|\s)size-11(?=\s|$)/);
+    }
   });
 });

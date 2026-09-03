@@ -161,6 +161,14 @@ export const ja: Dictionary = {
   "settings.fonts.draftSize.decrease": "入力欄の文字サイズを縮小",
   "settings.fonts.draftSize.increase": "入力欄の文字サイズを拡大",
   "settings.fonts.system": "システム標準",
+  "settings.fonts.colors": "配色",
+  "settings.fonts.colors.hint":
+    "この端末でのターミナル出力の既定の文字色と背景色です。エージェント自身が指定した色が優先され、色を設定した出力はライトテーマでも反転されません。",
+  "settings.fonts.colors.foreground": "文字色",
+  "settings.fonts.colors.background": "背景色",
+  "settings.fonts.colors.matrix": "Matrix",
+  "settings.fonts.colors.matrix.hint": "MesloLGS NF、黒地に緑。",
+  "settings.fonts.colors.reset": "リセット",
 
   // --- settings.display (mirror display prefs, behind the composer's ⚙ dock) ---
   "settings.display.wrap.label": "行の折り返し",

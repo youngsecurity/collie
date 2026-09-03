@@ -177,6 +177,16 @@ export const en = {
   "settings.fonts.draftSize.decrease": "Decrease draft text size",
   "settings.fonts.draftSize.increase": "Increase draft text size",
   "settings.fonts.system": "System default",
+  // Young Security fork: the mirror's colours, on the same card. "Matrix" and "Reset" are the two
+  // actions; the hint says the one thing a picker cannot: the agent's own colours still win.
+  "settings.fonts.colors": "Colours",
+  "settings.fonts.colors.hint":
+    "The mirror's default text and ground on this device. What the agent colours itself still wins, and a coloured mirror is not inverted in light.",
+  "settings.fonts.colors.foreground": "Text colour",
+  "settings.fonts.colors.background": "Background colour",
+  "settings.fonts.colors.matrix": "Matrix",
+  "settings.fonts.colors.matrix.hint": "MesloLGS NF, green on black.",
+  "settings.fonts.colors.reset": "Reset",
 
   // --- settings.display (mirror display prefs, behind the composer's ⚙ dock) ---
   "settings.display.wrap.label": "Wrap lines",

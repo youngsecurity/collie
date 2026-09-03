@@ -165,6 +165,14 @@ export const de: Dictionary = {
   "settings.fonts.draftSize.decrease": "Schriftgröße der Eingabe verringern",
   "settings.fonts.draftSize.increase": "Schriftgröße der Eingabe erhöhen",
   "settings.fonts.system": "Systemstandard",
+  "settings.fonts.colors": "Farben",
+  "settings.fonts.colors.hint":
+    "Standard-Text- und Hintergrundfarbe des Terminal-Spiegels auf diesem Gerät. Farben, die der Agent selbst setzt, haben Vorrang; ein eingefärbter Spiegel wird im hellen Design nicht invertiert.",
+  "settings.fonts.colors.foreground": "Textfarbe",
+  "settings.fonts.colors.background": "Hintergrundfarbe",
+  "settings.fonts.colors.matrix": "Matrix",
+  "settings.fonts.colors.matrix.hint": "MesloLGS NF, grün auf schwarz.",
+  "settings.fonts.colors.reset": "Zurücksetzen",
 
   // --- settings.display (mirror display prefs, behind the composer's ⚙ dock) ---
   "settings.display.wrap.label": "Zeilenumbruch",

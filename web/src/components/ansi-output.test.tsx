@@ -10,7 +10,7 @@ const ESC = "\x1b";
 // palette: the agent's explicit colours win over them exactly as they win over #fafafa, and a
 // painted mirror is absolute, so it drops the light-theme inversion instead of negating the
 // operator's own choice (mirror-space.ts header, ADR 0002 fork amendment).
-describe("AnsiOutput — terminal colours", () => {
+describe("AnsiOutput: terminal colours", () => {
   const MATRIX = { foreground: "#00ff00", background: "#000000" };
 
   it("paints the <pre> in the configured colours and exposes them to inverse video", () => {

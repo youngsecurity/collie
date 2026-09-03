@@ -551,7 +551,7 @@ const WIZARD_TEXT = [
 // The device's mirror colours (Young Security fork) must reach BOTH mirror surfaces, not only the
 // <pre>: the wrapper grounds the list around it and the statusline strip is the bottom of the same
 // pane. Either one left on the dark ground would show the seam the fork's <pre>-only version had.
-describe("AgentChat — the device's mirror colours reach both mirror surfaces", () => {
+describe("AgentChat: the device's mirror colours reach both mirror surfaces", () => {
   afterEach(() => localStorage.clear());
 
   it("paints the <pre>, its wrapper and the statusline strip, and inverts none of them", () => {

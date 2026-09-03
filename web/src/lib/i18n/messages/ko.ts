@@ -160,6 +160,14 @@ export const ko: Dictionary = {
   "settings.fonts.draftSize.decrease": "입력창 글자 크기 축소",
   "settings.fonts.draftSize.increase": "입력창 글자 크기 확대",
   "settings.fonts.system": "시스템 기본값",
+  "settings.fonts.colors": "색상",
+  "settings.fonts.colors.hint":
+    "현재 기기에서 터미널 미러의 기본 글자색과 배경색입니다. 에이전트가 직접 지정한 색이 우선하며, 색을 지정한 미러는 라이트 테마에서도 반전되지 않습니다.",
+  "settings.fonts.colors.foreground": "글자색",
+  "settings.fonts.colors.background": "배경색",
+  "settings.fonts.colors.matrix": "Matrix",
+  "settings.fonts.colors.matrix.hint": "MesloLGS NF, 검은 배경에 녹색.",
+  "settings.fonts.colors.reset": "초기화",
 
   // --- settings.display (mirror display prefs, behind the composer's ⚙ dock) ---
   "settings.display.wrap.label": "자동 줄바꿈",

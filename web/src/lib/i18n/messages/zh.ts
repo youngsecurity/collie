@@ -152,6 +152,14 @@ export const zh: Dictionary = {
   "settings.fonts.draftSize.decrease": "减小输入框字号",
   "settings.fonts.draftSize.increase": "增大输入框字号",
   "settings.fonts.system": "系统默认",
+  "settings.fonts.colors": "颜色",
+  "settings.fonts.colors.hint":
+    "当前设备上终端镜像的默认文字颜色和背景色。代理自身设置的颜色仍然优先；设置了颜色的镜像在浅色主题下不会反相。",
+  "settings.fonts.colors.foreground": "文字颜色",
+  "settings.fonts.colors.background": "背景颜色",
+  "settings.fonts.colors.matrix": "Matrix",
+  "settings.fonts.colors.matrix.hint": "MesloLGS NF，黑底绿字。",
+  "settings.fonts.colors.reset": "重置",
 
   // --- settings.display (mirror display prefs, behind the composer's ⚙ dock) ---
   "settings.display.wrap.label": "自动换行",

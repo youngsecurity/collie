@@ -164,6 +164,14 @@ export const es: Dictionary = {
   "settings.fonts.draftSize.decrease": "Reducir tamaño del texto de entrada",
   "settings.fonts.draftSize.increase": "Aumentar tamaño del texto de entrada",
   "settings.fonts.system": "Predeterminada del sistema",
+  "settings.fonts.colors": "Colores",
+  "settings.fonts.colors.hint":
+    "Color de texto y fondo predeterminados del espejo del terminal en este dispositivo. Los colores que el agente establece por sí mismo prevalecen, y un espejo coloreado no se invierte en el tema claro.",
+  "settings.fonts.colors.foreground": "Color del texto",
+  "settings.fonts.colors.background": "Color de fondo",
+  "settings.fonts.colors.matrix": "Matrix",
+  "settings.fonts.colors.matrix.hint": "MesloLGS NF, verde sobre negro.",
+  "settings.fonts.colors.reset": "Restablecer",
 
   // --- settings.display (mirror display prefs, behind the composer's ⚙ dock) ---
   "settings.display.wrap.label": "Ajuste de línea",
