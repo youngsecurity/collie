@@ -455,10 +455,16 @@ export async function paneLoader({
     // branch) so the connection bar doesn't flicker on an unchanged poll.
     const read: PaneReadResponse = await fetchPane(paneId, lines, scope, request?.signal);
     const text = read.text || lastPaneText.get(key) || "";
-    rememberPaneText(key, text);
-    // Write-through, EXCEPT while the pane is asking for a secret — see holdsNoEchoPrompt (ADR 0017).
-    if (holdsNoEchoPrompt(text)) dropLastPaneText(scope, paneId);
-    else saveLastPaneText(scope, paneId, text);
+    // Neither tier keeps a pane that is asking for a secret; see holdsNoEchoPrompt (ADR 0017). The
+    // module map is purged as well as the store: dropping only sessionStorage would let the very
+    // next failed poll hand the prompt straight back out of memory through stalePane.
+    if (holdsNoEchoPrompt(text)) {
+      lastPaneText.delete(key);
+      dropLastPaneText(scope, paneId);
+    } else {
+      rememberPaneText(key, text);
+      saveLastPaneText(scope, paneId, text);
+    }
     rememberAuthError(scope, false);
     return {
       paneId,

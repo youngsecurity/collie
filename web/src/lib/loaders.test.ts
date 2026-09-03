@@ -843,6 +843,20 @@ describe("cold boot with no network", () => {
       expect(sessionStorage.getItem(PANE_KEY)).toBeNull();
     });
 
+    it("is not restored from memory when the next pane fetch fails", async () => {
+      sudoPane();
+      const { paneLoader } = await import("./loaders");
+      const prompt = await paneLoader({ params: { paneId: "w1:p1" } });
+      expect(prompt.text).toContain("password for altan");
+
+      // The store was never written; the module cache must not be the tier that brings it back.
+      failPane();
+      const stale = await paneLoader({ params: { paneId: "w1:p1" } });
+      expect(stale.error).toBe(true);
+      expect(stale.text).toBe("");
+      expect(sessionStorage.getItem(PANE_KEY)).toBeNull();
+    });
+
     it("still caches the snapshot — the exclusion is the pane's text, not the herd", async () => {
       sudoPane();
       const { paneLoader, rootLoader } = await import("./loaders");
