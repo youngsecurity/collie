@@ -338,6 +338,10 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   }, [scope, scopeId, paneId]);
   const [sending, setSending] = useState(false);
   const [uploading, setUploading] = useState(false);
+  // The synchronous twin of `uploading`. State lands on the next render, so two pastes in the same
+  // tick (a double-fired paste event, a jittery long-press) both read `uploading === false` and both
+  // POST; the ref flips before the await and is what the entry points check.
+  const uploadInFlightRef = useRef(false);
   // Pending-send preview: set on a successful send, cleared when the mirror catches up (next text
   // update) or after a 6s safety timeout. Shows "You sent: …" so the user knows the message landed.
   const [lastSent, setLastSent] = useState<string | null>(null);
@@ -928,7 +932,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   // Upload an image; on success append its host path to the composer so the user can add context.
   // Shared by the file picker and clipboard paste.
   async function uploadImage(file: File) {
-    if (locked) return;
+    if (locked || uploadInFlightRef.current) return;
+    uploadInFlightRef.current = true;
     setUploading(true);
     try {
       const res = await api.uploadImage(paneId, file, scope);
@@ -944,6 +949,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     } catch (err) {
       setStatus(describeThrownError(err), "error");
     } finally {
+      uploadInFlightRef.current = false;
       setUploading(false);
     }
   }
@@ -959,7 +965,9 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   // Only intercepts when the clipboard actually carries an image file — a plain text paste (the
   // common case) falls through untouched.
   function onPasteImage(e: ClipboardEvent<HTMLTextAreaElement>) {
-    if (locked || direct.active) return;
+    // Checked here as well as in uploadImage so a second image paste during an upload is not
+    // intercepted at all: the event falls through untouched instead of being swallowed for nothing.
+    if (locked || direct.active || uploadInFlightRef.current) return;
     const items = e.clipboardData.items;
     for (let i = 0; i < items.length; i++) {
       const item = items[i];
