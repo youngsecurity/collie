@@ -3,7 +3,7 @@ import { basename, join } from "node:path";
 import type { JsonValue } from "../bridge/json.ts";
 import {
   type ApiTag,
-  compareSemver,
+  compareRelease,
   followsTrain,
   forkCounterOf,
   githubTagsUrl,
@@ -111,6 +111,18 @@ export interface ReleaseTag {
 const strictOnly = (tags: readonly ReleaseTag[]): ReleaseTag[] => tags.filter((t) => t.prerelease === null);
 
 /**
+ * Just the tags on the installed version's release FAMILY, the `ReleaseTag[]` spelling of
+ * `bridge/update.ts`'s `releaseFamily`, and the same rule: a `+ys.N` install sees the fork's `+ys`
+ * tags and nothing else, a bare install sees bare tags and nothing else. Applied BEFORE every
+ * selection below, routine and `--major` alike, so a fork install can never be handed a bare upstream
+ * tag that would discard the fork's hardening, and an upstream install never inherits a fork build.
+ */
+export function familyOnly(tags: readonly ReleaseTag[], installed: string): ReleaseTag[] {
+  const fork = forkCounterOf(installed) !== null;
+  return tags.filter((t) => (t.fork !== null) === fork);
+}
+
+/**
  * Release AND prerelease tags out of `git ls-remote --tags origin`. Every non-version ref is dropped
  * by the same anchor the banner uses (`bridge/update.ts`'s `PRERELEASE_SEMVER_TAG`), so the verb can
  * never land on something the banner would not have announced. Which of these tags an install may
@@ -154,11 +166,13 @@ function releaseTagOf(tag: string, parsed: PrereleaseTag, commit: string): Relea
   };
 }
 
-/** The highest tag among `tags` by full semver, or null when there is none. Filter FIRST — this does
- *  not know which of them the caller is allowed to take. */
+/** The highest tag among `tags` by full semver, the fork counter breaking a SemVer tie
+ *  (`compareRelease`, so `+ys.2` outranks `+ys.1` outranks the bare base and the answer never depends
+ *  on the remote's listing order), or null when there is none. Filter FIRST: this does not know
+ *  which of them the caller is allowed to take. */
 export function highestRelease(tags: readonly ReleaseTag[]): ReleaseTag | null {
   let best: ReleaseTag | null = null;
-  for (const t of tags) if (best === null || compareSemver(t.version, best.version) > 0) best = t;
+  for (const t of tags) if (best === null || compareRelease(t.version, best.version) > 0) best = t;
   return best;
 }
 
@@ -225,9 +239,14 @@ export function planUpdate(a: {
 }): UpdatePlan {
   const major = a.installed === null ? null : majorOf(a.installed);
   if (major === null || a.installed === null) {
+    // No installed version means no family either. `highestRelease`'s tie-break lands this on the
+    // fork's build of the newest base, which on this origin is the release an operator would expect.
     return { kind: "unknown-version", newest: highestRelease(strictOnly(a.tags)) };
   }
-  const higher = nextMajorRelease(a.tags, major);
+  // The family filter comes FIRST, ahead of both the routine and the `--major` selection: which
+  // train an install is on is read off its version, exactly as prerelease-following is.
+  const tags = familyOnly(a.tags, a.installed);
+  const higher = nextMajorRelease(tags, major);
   if (a.crossMajor) {
     return higher === null
       ? { kind: "no-higher-major", major }
@@ -237,12 +256,14 @@ export function planUpdate(a: {
   // lives in ONE place, `followsTrain`, which the banner reads too. A stable install is offered
   // strict releases only (unchanged, byte for byte). A prerelease install PREFERS strict releases as
   // well, and drops to its major's train only when no strict release there is newer than it.
-  const strict = releaseInMajor(a.tags, major);
-  const best = followsTrain(a.installed, strict?.version ?? null) ? trainInMajor(a.tags, major) : strict;
+  const strict = releaseInMajor(tags, major);
+  const best = followsTrain(a.installed, strict?.version ?? null) ? trainInMajor(tags, major) : strict;
   if (best === null) return { kind: "no-release", major, higher };
   // Already there — by commit (the usual case) or by version (a rebuilt tag, a rolled-forward
-  // manifest). Either answer means there is nothing in this major left to take.
-  if (best.commit === a.head || compareSemver(best.version, a.installed) <= 0) {
+  // manifest). Either answer means there is nothing in this major left to take. `compareRelease`,
+  // not `compareSemver`: inside the fork family `+ys.2` is newer than the `+ys.1` installed, and a
+  // pure SemVer compare would call the install current and the train would never advance.
+  if (best.commit === a.head || compareRelease(best.version, a.installed) <= 0) {
     return { kind: "current", at: best, higher };
   }
   return { kind: "advance", target: best, crossesMajor: false, higher };
@@ -862,7 +883,7 @@ function installedVersions(deps: UpdateDeps, layout: BinaryLayout): string[] {
     .list(layout.versionsDir)
     .filter((name) => parsePrereleaseTag(`v${name}`) !== null)
     .filter((name) => deps.files.exists(join(layout.versionsDir, name, "bin", "collie")))
-    .toSorted((a, b) => compareSemver(a, b));
+    .toSorted((a, b) => compareRelease(a, b));
 }
 
 /** The version `current` points at, or null when it points nowhere we laid down. */
@@ -1110,7 +1131,7 @@ function collectOldVersions(deps: UpdateDeps, layout: BinaryLayout, keepVersion:
 async function rollbackBinary(deps: UpdateDeps): Promise<number> {
   const layout = binaryLayout(deps.ctx.root);
   const at = currentVersion(deps, layout) ?? layout.version;
-  const older = installedVersions(deps, layout).filter((v) => compareSemver(v, at) < 0);
+  const older = installedVersions(deps, layout).filter((v) => compareRelease(v, at) < 0);
   const target = older[older.length - 1];
   if (target === undefined) {
     deps.io.err(`error: nothing to roll back to — ${at} is the only version installed.`);

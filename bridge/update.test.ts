@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 
 import {
   type ApiTag,
+  compareRelease,
   compareSemver,
   followsTrain,
   forkCounterOf,
@@ -16,6 +17,7 @@ import {
   parseReleaseManifest,
   parseSemverTag,
   parseTagsResponse,
+  releaseFamily,
   shouldNotify,
   stampOf,
   UpdateMonitor,
@@ -68,6 +70,55 @@ describe("compareSemver", () => {
     expect(compareSemver("1.0.0-beta", "1.0.0-beta.1")).toBe(-1);
     expect(compareSemver("1.0.0-beta.44", "1.0.0-beta.44")).toBe(0);
     expect(compareSemver("1.0.0-alpha.1", "1.0.0-beta.1")).toBe(-1);
+  });
+});
+
+describe("compareRelease / releaseFamily: the fork family (decision D3)", () => {
+  it("orders SemVer first, then the fork counter, a bare version counting as 0", () => {
+    expect(compareRelease("1.1.0+ys.1", "1.1.0+ys.2")).toBe(-1);
+    expect(compareRelease("1.1.0+ys.2", "1.1.0+ys.1")).toBe(1);
+    expect(compareRelease("1.1.0+ys.10", "1.1.0+ys.9")).toBe(1); // numeric, not lexical
+    expect(compareRelease("1.1.0+ys.2", "1.1.0+ys.2")).toBe(0);
+    // SemVer still comes first: a newer base beats any counter on an older one.
+    expect(compareRelease("1.1.1", "1.1.0+ys.9")).toBe(1);
+    expect(compareRelease("1.1.0+ys.9", "1.1.1+ys.1")).toBe(-1);
+    expect(compareRelease("1.1.0-beta.1+ys.2", "1.1.0+ys.1")).toBe(-1);
+    // Across families the fork's build of a base is the newer artefact (the unversioned pin).
+    expect(compareRelease("1.1.0+ys.1", "1.1.0")).toBe(1);
+    expect(compareRelease("1.1.0", "1.1.0+ys.1")).toBe(-1);
+    // …and on bare versions it IS compareSemver, byte for byte.
+    for (const [a, b] of [["1.0.0", "1.0.1"], ["1.0.0-beta.9", "1.0.0-beta.10"], ["2.0.0", "1.9.9"], ["1.0.0", "1.0.0"]]) {
+      expect(compareRelease(a!, b!)).toBe(compareSemver(a!, b!));
+    }
+  });
+
+  it("keeps an install on its own family, read off the installed version", () => {
+    const tags = ["v1.0.0", "v1.1.0", "v1.1.0+ys.1", "v1.1.0+ys.2", "v1.2.0-rc.1", "v1.2.0-rc.1+ys.1", "v2.0.0", "nightly"];
+    expect(releaseFamily(tags, "1.1.0+ys.1")).toEqual(["v1.1.0+ys.1", "v1.1.0+ys.2", "v1.2.0-rc.1+ys.1"]);
+    expect(releaseFamily(tags, "1.1.0")).toEqual(["v1.0.0", "v1.1.0", "v1.2.0-rc.1", "v2.0.0"]);
+    // A build stamp still names the family; an unreadable version is on the bare one.
+    expect(releaseFamily(tags, "1.1.0-dev+ys.1.ab12cd3")).toEqual(["v1.1.0+ys.1", "v1.1.0+ys.2", "v1.2.0-rc.1+ys.1"]);
+    expect(releaseFamily(tags, "1.1.0+ab12cd3")).toEqual(["v1.0.0", "v1.1.0", "v1.2.0-rc.1", "v2.0.0"]);
+  });
+
+  it("latestUpdateInMajor: a fork install advances along the counter and never onto a bare tag", () => {
+    const tags = ["v1.1.0", "v1.1.0+ys.1", "v1.1.0+ys.2", "v1.2.0", "v2.0.0", "v2.0.0+ys.1"];
+    // A +ys.1 install: the newer bare 1.2.0 is invisible, +ys.2 is the target.
+    expect(latestUpdateInMajor(tags, 1, "1.1.0+ys.1")).toBe("1.1.0+ys.2");
+    expect(latestUpdateInMajor(tags, 1, "1.1.0+ys.2")).toBe("1.1.0+ys.2");
+    expect(latestReleaseAboveMajor(releaseFamily(tags, "1.1.0+ys.2"), 1)).toBe("2.0.0+ys.1");
+    // A bare install: the fork's tags are invisible, 1.2.0 is the target.
+    expect(latestUpdateInMajor(tags, 1, "1.1.0")).toBe("1.2.0");
+    expect(latestReleaseAboveMajor(releaseFamily(tags, "1.1.0"), 1)).toBe("2.0.0");
+    // Fork prerelease train: the counter orders inside it too.
+    const train = ["v1.2.0-beta.1+ys.1", "v1.2.0-beta.1+ys.2", "v1.2.0-beta.2"];
+    expect(latestUpdateInMajor(train, 1, "1.2.0-beta.1+ys.1")).toBe("1.2.0-beta.1+ys.2");
+  });
+
+  it("shouldNotify reads the counter: +ys.2 is news to a +ys.1 install", () => {
+    expect(shouldNotify({ current: "1.1.0+ys.1", latest: "1.1.0+ys.2", lastNotified: null })).toBe(true);
+    expect(shouldNotify({ current: "1.1.0+ys.2", latest: "1.1.0+ys.2", lastNotified: null })).toBe(false);
+    expect(shouldNotify({ current: "1.1.0+ys.1", latest: "1.1.0+ys.2", lastNotified: "1.1.0+ys.2" })).toBe(false);
   });
 });
 
@@ -304,6 +355,32 @@ describe("UpdateMonitor", () => {
       releaseAvailable: true,
     });
     expect(monitor.status().checkedAt).not.toBeNull();
+  });
+
+  it("a +ys install is told about +ys releases from its repo, and never about a bare upstream tag", async () => {
+    const { monitor, notified } = makeMonitor({
+      repo: "youngsecurity/collie",
+      current: "1.1.0+ys.1",
+      fetchTags: async () => apiTags("v1.1.0", "v1.1.0+ys.1", "v1.1.0+ys.2", "v1.2.0", "v2.0.0", "v2.0.0+ys.1"),
+    });
+    await monitor.checkRelease();
+    expect(monitor.status()).toMatchObject({
+      latest: "1.1.0+ys.2",
+      latestUrl: "https://github.com/youngsecurity/collie/releases/tag/v1.1.0+ys.2",
+      releaseAvailable: true,
+      majorAvailable: "2.0.0+ys.1",
+      majorUrl: "https://github.com/youngsecurity/collie/releases/tag/v2.0.0+ys.1",
+    });
+    expect(notified).toEqual(["1.1.0+ys.2"]);
+  });
+
+  it("a bare install on the same tag list sees only the bare tags", async () => {
+    const { monitor } = makeMonitor({
+      current: "1.1.0",
+      fetchTags: async () => apiTags("v1.1.0", "v1.1.0+ys.1", "v1.1.0+ys.2", "v2.0.0+ys.1"),
+    });
+    await monitor.checkRelease();
+    expect(monitor.status()).toMatchObject({ latest: "1.1.0", releaseAvailable: false, majorAvailable: null });
   });
 
   it("reports the install kind it was constructed with — the banner spells its commands from it", () => {

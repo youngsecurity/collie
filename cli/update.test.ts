@@ -306,10 +306,21 @@ describe("planUpdate", () => {
       ["v0.32.0", "v1.0.0-beta.44", "v1.0.0-beta.45", "nightly"], // fallback: no strict 1.x
       ["v1.0.0-beta.45", "v1.0.0"], // supersede: beta.44 skips beta.45
       ["v0.32.0", "v1.0.0", "v1.1.0-rc.1"], // consent-ended: the rc is invisible
+      // The fork family: both sides filter to the installed version's family and order the counter.
+      ["v1.0.0", "v1.0.0+ys.1", "v1.0.0+ys.2", "v1.1.0", "v1.1.0-rc.1+ys.1"],
     ];
     for (const names of sets) {
       const tagList = parseRemoteTags(names.map((n, i) => `c${i}\trefs/tags/${n}`).join("\n"));
-      for (const installed of ["0.32.0", "1.0.0-beta.5", "1.0.0-beta.44", "1.0.0", "1.1.0-rc.1"]) {
+      for (const installed of [
+        "0.32.0",
+        "1.0.0-beta.5",
+        "1.0.0-beta.44",
+        "1.0.0",
+        "1.1.0-rc.1",
+        "1.0.0+ys.1",
+        "1.0.0+ys.2",
+        "1.0.0-beta.5+ys.1",
+      ]) {
         const major = Number(installed.split(".")[0]);
         const verb = planUpdate({ tags: tagList, installed, head: "nowhere", crossMajor: false });
         const banner = latestUpdateInMajor(names, major, installed);
@@ -318,6 +329,86 @@ describe("planUpdate", () => {
         expect(target).toBe(banner);
       }
     }
+  });
+
+  // ── The fork family (decision D3) ─────────────────────────────────────────────────────
+  // Ported from the shell era's `test_update_stays_on_young_security_releases`: a managed fork
+  // install advances along the `+ys.N` counter and never selects a bare upstream tag that would
+  // discard the fork's hardening; a bare install never inherits a fork build.
+
+  test("a +ys install advances along the counter, and a newer BARE tag stays invisible to it", () => {
+    const fork = parseRemoteTags(
+      ["1\trefs/tags/v9.10.0+ys.1", "2\trefs/tags/v9.10.0+ys.2", "3\trefs/tags/v9.11.0", "4\trefs/tags/v10.0.0"].join("\n"),
+    );
+    const out = planUpdate({ tags: fork, installed: "9.10.0+ys.1", head: "1", crossMajor: false });
+    expect(out).toEqual({
+      kind: "advance",
+      target: { tag: "v9.10.0+ys.2", version: "9.10.0+ys.2", major: 9, prerelease: null, fork: 2, commit: "2" },
+      crossesMajor: false,
+      higher: null, // v10.0.0 is a bare tag: not this install's major to be told about
+    });
+    // On +ys.2 it is current, and `--major` finds nothing: the bare 10.0.0 is not its to cross to.
+    expect(planUpdate({ tags: fork, installed: "9.10.0+ys.2", head: "2", crossMajor: false }).kind).toBe("current");
+    expect(planUpdate({ tags: fork, installed: "9.10.0+ys.2", head: "2", crossMajor: true })).toEqual({
+      kind: "no-higher-major",
+      major: 9,
+    });
+    // Once the fork cuts its own 10.0.0, `--major` crosses to exactly that.
+    const crossed = planUpdate({
+      tags: parseRemoteTags("5\trefs/tags/v10.0.0+ys.1\n").concat(fork),
+      installed: "9.10.0+ys.2",
+      head: "2",
+      crossMajor: true,
+    });
+    expect(crossed.kind === "advance" && crossed.target.tag).toBe("v10.0.0+ys.1");
+    expect(crossed.kind === "advance" && crossed.crossesMajor).toBe(true);
+  });
+
+  test("the counter is what makes the 'current' arm let a +ys.1 install move to +ys.2", () => {
+    // Same base, so `compareSemver` calls them equal; the verdict must still be `advance`.
+    const two = parseRemoteTags("1\trefs/tags/v9.10.0+ys.1\n2\trefs/tags/v9.10.0+ys.2\n");
+    const out = planUpdate({ tags: two, installed: "9.10.0+ys.1", head: "1", crossMajor: false });
+    expect(out.kind === "advance" && out.target.tag).toBe("v9.10.0+ys.2");
+    // Listing order never decides it: +ys.2 wins from either end of the list.
+    const flipped = parseRemoteTags("2\trefs/tags/v9.10.0+ys.2\n1\trefs/tags/v9.10.0+ys.1\n");
+    const same = planUpdate({ tags: flipped, installed: "9.10.0+ys.1", head: "1", crossMajor: false });
+    expect(same.kind === "advance" && same.target.tag).toBe("v9.10.0+ys.2");
+    // And a +ys.2 install is not told +ys.1 is anything.
+    expect(planUpdate({ tags: two, installed: "9.10.0+ys.2", head: "zzz", crossMajor: false }).kind).toBe("current");
+  });
+
+  test("a BARE install ignores the fork's tags entirely, in both directions", () => {
+    const mixed = parseRemoteTags(
+      ["1\trefs/tags/v9.10.0", "2\trefs/tags/v9.10.0+ys.1", "3\trefs/tags/v9.10.0+ys.2", "4\trefs/tags/v10.0.0+ys.1"].join("\n"),
+    );
+    const out = planUpdate({ tags: mixed, installed: "9.10.0", head: "1", crossMajor: false });
+    expect(out).toEqual({
+      kind: "current",
+      at: { tag: "v9.10.0", version: "9.10.0", major: 9, prerelease: null, fork: null, commit: "1" },
+      higher: null,
+    });
+    expect(planUpdate({ tags: mixed, installed: "9.10.0", head: "1", crossMajor: true })).toEqual({
+      kind: "no-higher-major",
+      major: 9,
+    });
+    // A bare 9.11.0 is still its to take, with the fork tags still invisible around it.
+    const bare = planUpdate({
+      tags: parseRemoteTags("5\trefs/tags/v9.11.0\n").concat(mixed),
+      installed: "9.10.0",
+      head: "1",
+      crossMajor: false,
+    });
+    expect(bare.kind === "advance" && bare.target.tag).toBe("v9.11.0");
+  });
+
+  test("an unversioned checkout pins to the fork's build of the newest base, deterministically", () => {
+    const a = parseRemoteTags("1\trefs/tags/v9.10.0\n2\trefs/tags/v9.10.0+ys.1\n");
+    const b = parseRemoteTags("2\trefs/tags/v9.10.0+ys.1\n1\trefs/tags/v9.10.0\n");
+    expect(planUpdate({ tags: a, installed: null, head: "zzz", crossMajor: false })).toEqual(
+      planUpdate({ tags: b, installed: null, head: "zzz", crossMajor: false }),
+    );
+    const pin = planUpdate({ tags: a, installed: null, head: "zzz", crossMajor: false });
+    expect(pin.kind === "unknown-version" && pin.newest?.tag).toBe("v9.10.0+ys.1");
   });
 
   test("--major targets the next major; without one, it says so and acts on nothing", () => {

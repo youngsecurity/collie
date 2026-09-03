@@ -191,6 +191,47 @@ export function compareSemver(a: string, b: string): number {
   return comparePrereleaseTails(pa.prerelease, pb.prerelease);
 }
 
+/**
+ * The SELECTION order among release candidates: {@link compareSemver}, then, on a SemVer tie, this
+ * fork's `+ys.N` counter, a bare version counting as 0. `1.1.0+ys.2` supersedes `1.1.0+ys.1`, which
+ * supersedes the bare `1.1.0` they were both built on. Returns -1 / 0 / 1.
+ *
+ * This is NOT SemVer precedence, and {@link compareSemver} keeps that job: build metadata orders
+ * nothing there, so a bare upstream `1.1.0` still reads as equal to the fork's `1.1.0+ys.1`
+ * (decision D3 in docs/adoption/v1.1.0-phase0-triage.md). This comparator exists for the places
+ * that PICK a release, where two tags on one base must resolve deterministically and where the fork's
+ * later build of a base is the newer artefact. Every caller filters to one family first
+ * ({@link releaseFamily}), so the cross-family tie-break only ever decides the pin of an unversioned
+ * checkout, which on this origin is the fork build. Inside the fork family the counter is the
+ * whole reason the train can advance: a `+ys.1` install told `+ys.2` is "current" would never move.
+ */
+export function compareRelease(a: string, b: string): number {
+  const bySemver = compareSemver(a, b);
+  if (bySemver !== 0) return bySemver;
+  const x = forkCounterOf(a) ?? 0;
+  const y = forkCounterOf(b) ?? 0;
+  return x === y ? 0 : x < y ? -1 : 1;
+}
+
+/**
+ * Just the tags on `installed`'s release FAMILY: the fork's `+ys.N` tags for an install whose
+ * version carries a counter, bare tags for one whose version does not. THE one rule for the fork
+ * family, shared by the banner ({@link UpdateMonitor}) and the `update` verb (`cli/update.ts`).
+ *
+ * A Young Security install must never select a bare upstream tag and thereby discard the fork's
+ * hardening; an upstream install likewise never inherits a fork build. Like prerelease-following,
+ * the family is a property of the INSTALLED version and never a flag: there is no switch to get
+ * wrong, and the way onto the other train is to install a release from it. Tags that parse as no
+ * release at all are dropped here too, which every caller was doing anyway.
+ */
+export function releaseFamily(tags: readonly string[], installed: string): string[] {
+  const fork = forkCounterOf(installed) !== null;
+  return tags.filter((t) => {
+    const parsed = parsePrereleaseTag(t);
+    return parsed !== null && (parsed.fork !== null) === fork;
+  });
+}
+
 /** The major of a dotted version (`1.0.0-beta.5` → 1), or null when it names none (`unknown`). */
 export function majorOf(version: string): number | null {
   const m = /^(\d+)\./.exec(version.trim());
@@ -236,17 +277,20 @@ export function followsTrain(installed: string, strictBest: string | null): bool
  *
  * A strict install sees strict releases only: byte-for-byte the old behaviour, and the regression to
  * guard hardest. A prerelease install sees strict releases first and its own major's train only as a
- * fallback — see {@link followsTrain} for the rule and why it is that way round.
+ * fallback (see {@link followsTrain} for the rule and why it is that way round). Both see only their
+ * own release FAMILY ({@link releaseFamily}): the fork's `+ys.N` tags for a fork install, bare tags
+ * for an upstream one.
  */
 export function latestUpdateInMajor(tags: string[], major: number, installed: string): string | null {
-  const strict = latestReleaseInMajor(tags, major);
+  const family = releaseFamily(tags, installed);
+  const strict = latestReleaseInMajor(family, major);
   if (!followsTrain(installed, strict)) return strict;
   let best: string | null = null;
-  for (const tag of tags) {
+  for (const tag of family) {
     const parsed = parsePrereleaseTag(tag);
     if (parsed === null || parsed.triple[0] !== major) continue;
     const v = versionOfTag(parsed);
-    if (best === null || compareSemver(v, best) > 0) best = v;
+    if (best === null || compareRelease(v, best) > 0) best = v;
   }
   return best;
 }
@@ -271,21 +315,22 @@ export function latestReleaseTag(tags: string[]): string | null {
     const parts = parseSemverTag(tag);
     if (!parts) continue;
     const v = versionOfTag(parts);
-    if (best === null || compareSemver(v, best) > 0) best = v;
+    if (best === null || compareRelease(v, best) > 0) best = v;
   }
   return best;
 }
 
 /** Whether a NEW-version push should fire: a strictly-newer release we haven't already notified for.
  *  Comparing against `current` (not the raw `latest`) means a restart after updating self-heals — the
- *  new `current` catches up and the condition falls false with no state reset. */
+ *  new `current` catches up and the condition falls false with no state reset. "Newer" is
+ *  {@link compareRelease}: on this fork `1.1.0+ys.2` is news to a `1.1.0+ys.1` install. */
 export function shouldNotify(a: {
   current: string;
   latest: string | null;
   lastNotified: string | null;
 }): boolean {
   if (!a.latest) return false;
-  if (compareSemver(a.latest, a.current) <= 0) return false;
+  if (compareRelease(a.latest, a.current) <= 0) return false;
   return a.latest !== a.lastNotified;
 }
 
@@ -566,10 +611,16 @@ export class UpdateMonitor {
     // verb share `latestUpdateInMajor`, so the verb can never land where the banner would not have
     // announced. A version we can't parse a major out of (`unknown`) falls back to the old "newest of
     // anything", because an install that can't name its major can't be gated on it either.
+    //
+    // Both answers come from the install's own release FAMILY (`releaseFamily`): a `+ys.N` install is
+    // told about the fork's `+ys` releases from COLLIE_UPDATE_REPO and never about a bare upstream
+    // tag, and a bare install never sees the fork's. `latestUpdateInMajor` applies the rule itself;
+    // the major question gets the same list so the two links can never name different families.
     const major = majorOf(this.deps.current);
+    const family = major === null ? tags : releaseFamily(tags, this.deps.current);
     this.latest =
-      major === null ? latestReleaseTag(tags) : latestUpdateInMajor(tags, major, this.deps.current);
-    this.majorAvailable = major === null ? null : latestReleaseAboveMajor(tags, major);
+      major === null ? latestReleaseTag(tags) : latestUpdateInMajor(family, major, this.deps.current);
+    this.majorAvailable = major === null ? null : latestReleaseAboveMajor(family, major);
     this.checkedAt = this.deps.now();
 
     const { current, store } = this.deps;
@@ -599,7 +650,7 @@ export class UpdateMonitor {
       current,
       latest: this.latest,
       latestUrl: this.latest ? githubReleaseUrl(this.deps.repo, this.latest) : null,
-      releaseAvailable: this.latest !== null && compareSemver(this.latest, current) > 0,
+      releaseAvailable: this.latest !== null && compareRelease(this.latest, current) > 0,
       majorAvailable: this.majorAvailable,
       majorUrl:
         this.majorAvailable === null

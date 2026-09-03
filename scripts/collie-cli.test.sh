@@ -1158,12 +1158,14 @@ chmod +x "${U_BIN}/herdr" "${U_BIN}/systemctl" "${U_BIN}/tailscale"
 # tags and `checkout --detach --force` onto them, discarding local work (M14/02 amendment). These
 # checkouts' origin is a throwaway path, so the override is what makes them self-consistent; the
 # refusal itself is pinned right below.
+# U_REPO names the origin a case's checkouts were cloned from; the fork-family case below stages a
+# second origin and points it there.
 upd() {
   local root="$1"; shift
   : > "$U_CALLS"
   run_stripped HOME="${TMP_ROOT}/update-home" HERDR_PLUGIN_CONFIG_DIR="${TMP_ROOT}/update-config" \
     PATH="${U_BIN}:${BASE_PATH}" COLLIE_MUX=herdr COLLIE_PORT="$PORT" COLLIE_PLUGIN_ROOT="$root" \
-    COLLIE_UPDATE_REPO="$ORIGIN" "$@"
+    COLLIE_UPDATE_REPO="${U_REPO:-$ORIGIN}" "$@"
 }
 
 # Shape 1 — the Herdr-managed checkout, created verbatim the way herdr's plugin_install does.
@@ -1232,6 +1234,73 @@ if run_stripped HOME="${TMP_ROOT}/update-home" HERDR_PLUGIN_CONFIG_DIR="${TMP_RO
 fi
 assert_contains "$STDERR" "docs/upgrading.md"
 assert_eq "$(git -C "$MANAGED" rev-parse HEAD)" "$MANAGED_BEFORE_FORK"
+
+# The fork family (decision D3, ported from the shell era's `test_update_stays_on_young_security_
+# releases`). This fork tags its releases `vX.Y.Z+ys.N`. A managed install on a `+ys` version
+# advances along the counter and never selects a bare upstream tag; a bare install never inherits a
+# fork build. Its own origin, so the main fixture's tag list stays what the cases above expect.
+# Every fork release is on the same base (9.9.9): `compareSemver` calls them all equal, so this is the
+# counter doing the work, against REAL tags with a real `+` in the ref name.
+F_ORIGIN="${U_DIR}/fork-origin"
+mkdir -p "$F_ORIGIN"
+git_q -C "$F_ORIGIN" init -q
+fork_release() {  # $1 = version, $2 = tag args (e.g. -a for annotated)
+  printf '%s\n' "$1" > "${F_ORIGIN}/VERSION"
+  printf 'id = "herdr.collie"\nversion = "%s"\n' "$1" > "${F_ORIGIN}/herdr-plugin.toml"
+  git_q -C "$F_ORIGIN" add -A
+  git_q -C "$F_ORIGIN" commit -q -m "release $1"
+  if [ "${2-}" = -a ]; then git_q -C "$F_ORIGIN" tag -a "v$1" -m "Collie $1"; else git_q -C "$F_ORIGIN" tag "v$1"; fi
+}
+fork_release 9.9.9
+fork_release 9.9.9+ys.1
+# Two managed checkouts off this origin, the way Herdr's plugin_install lays them down: one on the
+# bare 9.9.9, one on the fork's +ys.1.
+stage_fork_checkout() {  # $1 = dir, $2 = tag
+  mkdir -p "$1"
+  git_q -C "$1" init -q
+  git_q -C "$1" remote add origin "$F_ORIGIN"
+  git_q -C "$1" fetch -q --depth 1 origin "refs/tags/$2"
+  git_q -C "$1" checkout -q --detach FETCH_HEAD
+}
+F_BARE="${U_DIR}/fork-bare"
+F_YS="${U_DIR}/fork-ys"
+stage_fork_checkout "$F_BARE" v9.9.9
+stage_fork_checkout "$F_YS" v9.9.9+ys.1
+# Annotated on purpose: the remote lists it twice and the peeled line must win, `+` and all.
+fork_release 9.9.9+ys.2 -a
+
+U_REPO="$F_ORIGIN"
+upd "$F_YS" "$BIN" update || fail "\`collie update\` failed on a +ys.1 managed checkout: ${STDERR}"
+assert_contains "$STDOUT" "detach onto v9.9.9+ys.2"
+assert_eq "$(git -C "$F_YS" rev-parse HEAD)" "$(git -C "$F_ORIGIN" rev-parse 'v9.9.9+ys.2^{commit}')"
+assert_eq "$(cat "${F_YS}/VERSION")" "9.9.9+ys.2"
+assert_eq "$(git -C "$F_YS" tag --points-at HEAD)" "v9.9.9+ys.2"   # the storing refspec, with a +
+git -C "$F_YS" symbolic-ref -q HEAD >/dev/null 2>&1 &&
+  fail "the +ys managed checkout should still be detached"
+# At +ys.2 it is current; the counter has nothing above it.
+upd "$F_YS" "$BIN" update || fail "a second \`collie update\` failed on the +ys checkout: ${STDERR}"
+assert_contains "$STDOUT" "already current — v9.9.9+ys.2"
+# The bare install sees neither fork tag: it is current on 9.9.9 and moves nowhere.
+F_BARE_AT="$(git -C "$F_BARE" rev-parse HEAD)"
+upd "$F_BARE" "$BIN" update || fail "\`collie update\` failed on the bare managed checkout: ${STDERR}"
+assert_contains "$STDOUT" "already current — v9.9.9"
+case "$STDOUT" in *"+ys."*) fail "a bare install was told about a fork release: ${STDOUT}" ;; esac
+assert_eq "$(git -C "$F_BARE" rev-parse HEAD)" "$F_BARE_AT"
+# A bare 10.0.0 appears. The bare install is told; the +ys install is not, and `--major` finds it
+# nothing to cross to until the fork cuts its own.
+fork_release 10.0.0
+upd "$F_BARE" "$BIN" update || fail "update on the bare checkout failed with a major out: ${STDERR}"
+assert_contains "$STDOUT" "Collie 10.0.0 is out — a NEW MAJOR"
+upd "$F_YS" "$BIN" update || fail "update on the +ys checkout failed with a bare major out: ${STDERR}"
+case "$STDOUT" in *"NEW MAJOR"*) fail "a +ys install was told about a bare upstream major: ${STDOUT}" ;; esac
+upd "$F_YS" "$BIN" update --major || fail "\`update --major\` failed on the +ys checkout: ${STDERR}"
+assert_contains "$STDOUT" "no release above major 9 exists yet"
+assert_eq "$(cat "${F_YS}/VERSION")" "9.9.9+ys.2"
+fork_release 10.0.0+ys.1
+upd "$F_YS" "$BIN" update --major || fail "\`update --major\` failed onto the fork's 10.0.0: ${STDERR}"
+assert_contains "$STDOUT" "crossing to Collie 10.0.0+ys.1"
+assert_eq "$(git -C "$F_YS" rev-parse HEAD)" "$(git -C "$F_ORIGIN" rev-parse 'v10.0.0+ys.1^{commit}')"
+unset U_REPO
 
 # A MAJOR appears upstream (ADR 0020). A routine `update` must not take it — in EITHER shape — and
 # must name the action that does; `--major` is the whole consent, because a Herdr plugin action has
