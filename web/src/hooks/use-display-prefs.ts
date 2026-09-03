@@ -1,6 +1,12 @@
 import { useCallback, useState } from "react";
 import type { CSSProperties } from "react";
-import { asJsonBoolean, asJsonNumber, asJsonString, parseJsonObject } from "@/lib/json";
+import {
+  asJsonBoolean,
+  asJsonNumber,
+  asJsonObject,
+  asJsonString,
+  parseJsonObject,
+} from "@/lib/json";
 
 // Terminal mirror display preferences, persisted in localStorage.
 // Safe to call in SSR contexts (localStorage guarded throughout).
@@ -38,6 +44,20 @@ export interface DisplayPrefs {
    *  `--font-mono`, i.e. exactly what every install rendered before this setting existed). */
   fontFamily: FontFamily;
   /**
+   * The mirror's default foreground on this device, as a six-digit `#rrggbb`, or "" for the
+   * mirror's own dark-space `#fafafa` (default). Young Security fork.
+   *
+   * A DEFAULT, not a palette: it is what text renders in when the agent named no colour, so explicit
+   * ANSI and truecolor from the agent still win, exactly as they do against `#fafafa`. Set together
+   * with {@link terminalBackground} the pair is ABSOLUTE: the light theme does not invert a mirror
+   * the operator coloured by hand (ADR 0002, fork amendment). Stored per device, like every display
+   * pref, because a colour is a reading choice for one screen, not a property of the pane.
+   */
+  terminalForeground: string;
+  /** The mirror's ground on this device, `#rrggbb` or "" for its own `#0a0a0a`. See
+   *  {@link terminalForeground}; the two travel together. */
+  terminalBackground: string;
+  /**
    * Raw-terminal escape hatch (default: false). When on, the mirror renders the PLAIN terminal —
    * every Claude grammar (chrome stripping, native prompt-select buttons, the status strip) is
    * bypassed, so a misdetected/mis-rendered dialog can always be driven manually with the keys pad.
@@ -73,6 +93,35 @@ export const FONT_FAMILIES = [
 ] as const;
 
 export type FontFamily = (typeof FONT_FAMILIES)[number];
+
+/** The two colours the operator may paint the mirror in. "" on either side means the mirror's own
+ *  dark-space value for that side. */
+export interface TerminalColors {
+  foreground: string;
+  background: string;
+}
+
+/** The fork's one preset: phosphor green on black, tuned against the `meslo` face. */
+export const MATRIX_TERMINAL_COLORS: TerminalColors = { foreground: "#00ff00", background: "#000000" };
+
+const HEX_COLOR = /^#[0-9a-f]{6}$/i;
+
+/** Narrow a colour of unknown provenance (a stored pref, an `<input type="color">` value) to the
+ *  one form the mirror accepts: six-digit `#rrggbb`, lower-cased. Anything else, including a CSS
+ *  colour name or a `rgb()` function, reads as "" and the mirror keeps its own value. The shape is
+ *  the same one `<input type="color">` emits, so the picker never has to be normalised twice. */
+export function cleanColor(value: string | undefined): string {
+  return value !== undefined && HEX_COLOR.test(value) ? value.toLowerCase() : "";
+}
+
+/** The operator's colours, or undefined when both are at their default. The undefined branch is
+ *  the one every mirror surface must treat as "untouched": dark ground, inverted in light. */
+export function customTerminalColors(
+  prefs: Pick<DisplayPrefs, "terminalForeground" | "terminalBackground">,
+): TerminalColors | undefined {
+  if (prefs.terminalForeground === "" && prefs.terminalBackground === "") return undefined;
+  return { foreground: prefs.terminalForeground, background: prefs.terminalBackground };
+}
 
 /** Narrow a string of unknown provenance (a stored pref, a <select> value) to a FontFamily. */
 export function isFontFamily(value: string): value is FontFamily {
@@ -182,12 +231,47 @@ const DEFAULTS: DisplayPrefs = {
   fontSize: 12,
   draftFontSize: 14,
   fontFamily: "system",
+  terminalForeground: "",
+  terminalBackground: "",
   rawTerminal: false,
   tapToFocus: true,
 };
 
-function readFontFamily(value: string | undefined): FontFamily {
-  return value !== undefined && isFontFamily(value) ? value : DEFAULTS.fontFamily;
+function readFontFamily(value: string | undefined): FontFamily | undefined {
+  return value !== undefined && isFontFamily(value) ? value : undefined;
+}
+
+// YOUNG SECURITY FORK: the shape this key held before the 1.1.0 adoption.
+//
+// Between 0.31 and 0.36.1 the fork stored a `terminal` object under this SAME key, holding a
+// free-text font name and the two colours. Upstream 1.1.0 reads the key field by field and ignores
+// the object, so without this block a phone that was on MesloLGS NF in green-on-black would have
+// silently come up in the system face on the dark ground, and its next save would have dropped the
+// object for good. The key is deliberately not bumped: every other field is read exactly as before,
+// and a bump would have reset wrap, size and raw-terminal on every device to buy nothing.
+//
+// The font is the lossy half. The free-text field became a closed list, so the old name is matched
+// case-insensitively against the names the list's stacks actually contain (first family of a
+// comma-separated value, quotes stripped), and anything else reads as "system". The colours pass
+// through cleanColor unchanged. The 1.1.0 fields, when present, win over the object; the next save
+// writes the new shape and the object is gone.
+const LEGACY_FONT_NAMES: ReadonlyMap<string, FontFamily> = new Map([
+  ["meslolgs nf", "meslo"],
+  ["meslolgs nerd font", "meslo"],
+  ["jetbrains mono", "jetbrains"],
+  ["cascadia mono", "cascadia"],
+  ["cascadia code", "cascadia"],
+  ["roboto mono", "roboto"],
+  ["menlo", "menlo"],
+  ["sf mono", "menlo"],
+  ["dejavu sans mono", "dejavu"],
+  ["courier new", "courier"],
+]);
+
+function legacyFontFamily(name: string | undefined): FontFamily | undefined {
+  if (name === undefined) return undefined;
+  const first = name.split(",")[0] ?? "";
+  return LEGACY_FONT_NAMES.get(first.trim().replace(/^["']|["']$/g, "").trim().toLowerCase());
 }
 
 function clampFont(n: number): number {
@@ -260,6 +344,7 @@ function loadPrefs(): DisplayPrefs {
     if (!p) return DEFAULTS;
     const fontSize = asJsonNumber(p.fontSize);
     const draftFontSize = asJsonNumber(p.draftFontSize);
+    const legacyTerminal = asJsonObject(p.terminal);
     return {
       wrap: asJsonBoolean(p.wrap) ?? DEFAULTS.wrap,
       fontSize: fontSize === undefined ? DEFAULTS.fontSize : clampFont(fontSize),
@@ -268,8 +353,18 @@ function loadPrefs(): DisplayPrefs {
       draftFontSize:
         draftFontSize === undefined ? DEFAULTS.draftFontSize : clampDraftFont(draftFontSize),
       // Same independent-default rule as the fields above it, so a payload written before the
-      // family existed reads "system" — an existing install sees no change at all.
-      fontFamily: readFontFamily(asJsonString(p.fontFamily)),
+      // family existed reads "system" — an existing install sees no change at all. The fork's old
+      // `terminal` object is consulted only when the 1.1.0 field is absent (see LEGACY_FONT_NAMES).
+      fontFamily:
+        readFontFamily(asJsonString(p.fontFamily)) ??
+        legacyFontFamily(asJsonString(legacyTerminal?.fontFamily)) ??
+        DEFAULTS.fontFamily,
+      terminalForeground: cleanColor(
+        asJsonString(p.terminalForeground) ?? asJsonString(legacyTerminal?.foreground),
+      ),
+      terminalBackground: cleanColor(
+        asJsonString(p.terminalBackground) ?? asJsonString(legacyTerminal?.background),
+      ),
       rawTerminal: asJsonBoolean(p.rawTerminal) ?? DEFAULTS.rawTerminal,
       tapToFocus: asJsonBoolean(p.tapToFocus) ?? DEFAULTS.tapToFocus,
     };
@@ -296,6 +391,8 @@ export interface UseDisplayPrefsReturn {
   setFontSize: (size: number) => void;
   /** Set the mirror font family. */
   setFontFamily: (family: FontFamily) => void;
+  /** Set both mirror colours at once, each normalised by cleanColor; pass "" to restore a side. */
+  setTerminalColors: (colors: TerminalColors) => void;
   /** Step font size by delta (positive = larger), clamped to 9–16. */
   stepFontSize: (delta: number) => void;
   /** Step the draft field's size by delta (positive = larger), clamped to 13–16. */
@@ -328,6 +425,18 @@ export function useDisplayPrefs(): UseDisplayPrefsReturn {
   const setFontFamily = useCallback((fontFamily: FontFamily) => {
     setPrefs((p) => {
       const next: DisplayPrefs = { ...p, fontFamily };
+      savePrefs(next);
+      return next;
+    });
+  }, []);
+
+  const setTerminalColors = useCallback((colors: TerminalColors) => {
+    setPrefs((p) => {
+      const next: DisplayPrefs = {
+        ...p,
+        terminalForeground: cleanColor(colors.foreground),
+        terminalBackground: cleanColor(colors.background),
+      };
       savePrefs(next);
       return next;
     });
@@ -370,6 +479,7 @@ export function useDisplayPrefs(): UseDisplayPrefsReturn {
     setWrap,
     setFontSize,
     setFontFamily,
+    setTerminalColors,
     stepFontSize,
     stepDraftFontSize,
     setRawTerminal,

@@ -11,6 +11,7 @@ import { __resetHandsFree, setHandsFreeEnabled } from "@/lib/stt";
 import { __resetOperatorCommands } from "@/lib/operator-config";
 import { server } from "@/test/setup";
 import { recordReply } from "@/test/handlers";
+import { displayPrefs } from "@/test/display-prefs";
 import {
   FakeMediaRecorder,
   installFakeMediaRecorder,
@@ -86,7 +87,7 @@ function baseProps(
     text: "pane output",
     terminalDraft: null,
     rawTerminalDraft: null,
-    prefs: { wrap: true, fontSize: 11, draftFontSize: 14, fontFamily: "system", rawTerminal: false, tapToFocus: true },
+    prefs: displayPrefs(),
     setWrap: vi.fn(),
     stepFontSize: vi.fn(),
     setRawTerminal: vi.fn(),

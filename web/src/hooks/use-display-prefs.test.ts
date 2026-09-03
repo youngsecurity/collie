@@ -1,6 +1,8 @@
 import { renderHook, act } from "@testing-library/react";
 import {
   applyDraftFontSize,
+  cleanColor,
+  customTerminalColors,
   DRAFT_FONT_MAX,
   DRAFT_FONT_MIN,
   FONT_FAMILIES,
@@ -8,6 +10,7 @@ import {
   fontStack,
   inputFocusZoomsPage,
   IOS_NO_ZOOM_FONT_PX,
+  MATRIX_TERMINAL_COLORS,
   mirrorFont,
   useDisplayPrefs,
 } from "./use-display-prefs";
@@ -20,7 +23,7 @@ describe("useDisplayPrefs", () => {
 
   it("returns defaults when localStorage is empty", () => {
     const { result } = renderHook(() => useDisplayPrefs());
-    expect(result.current.prefs).toEqual({ wrap: false, fontSize: 12, draftFontSize: 14, fontFamily: "system", rawTerminal: false, tapToFocus: true });
+    expect(result.current.prefs).toEqual({ wrap: false, fontSize: 12, draftFontSize: 14, fontFamily: "system", terminalForeground: "", terminalBackground: "", rawTerminal: false, tapToFocus: true });
   });
 
   it("persists wrap=true and reloads it on mount", () => {
@@ -40,7 +43,7 @@ describe("useDisplayPrefs", () => {
   it("loads persisted prefs from localStorage on mount", () => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ wrap: false, fontSize: 14, rawTerminal: true, tapToFocus: false }));
     const { result } = renderHook(() => useDisplayPrefs());
-    expect(result.current.prefs).toEqual({ wrap: false, fontSize: 14, draftFontSize: 14, fontFamily: "system", rawTerminal: true, tapToFocus: false });
+    expect(result.current.prefs).toEqual({ wrap: false, fontSize: 14, draftFontSize: 14, fontFamily: "system", terminalForeground: "", terminalBackground: "", rawTerminal: true, tapToFocus: false });
   });
 
   it("persists rawTerminal and reloads it on mount (the escape hatch survives a reload)", () => {
@@ -67,7 +70,7 @@ describe("useDisplayPrefs", () => {
   it("reads a pre-tapToFocus payload without discarding the prefs it does have", () => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ wrap: false, fontSize: 15, rawTerminal: true }));
     const { result } = renderHook(() => useDisplayPrefs());
-    expect(result.current.prefs).toEqual({ wrap: false, fontSize: 15, draftFontSize: 14, fontFamily: "system", rawTerminal: true, tapToFocus: true });
+    expect(result.current.prefs).toEqual({ wrap: false, fontSize: 15, draftFontSize: 14, fontFamily: "system", terminalForeground: "", terminalBackground: "", rawTerminal: true, tapToFocus: true });
   });
 
   it("persists fontFamily and reloads it on mount", () => {
@@ -103,6 +106,121 @@ describe("useDisplayPrefs", () => {
       expect(stack!.startsWith('"Nerd Font Symbols", ')).toBe(true);
       expect(stack!.endsWith(", monospace")).toBe(true);
     }
+  });
+
+  // ── THE MIRROR'S COLOURS (Young Security fork) ────────────────────────────────────────────────
+
+  it("persists terminal font and colors and reloads them on mount", () => {
+    const { result } = renderHook(() => useDisplayPrefs());
+    act(() => result.current.setFontFamily("meslo"));
+    act(() => result.current.setTerminalColors(MATRIX_TERMINAL_COLORS));
+    expect(result.current.prefs).toMatchObject({
+      fontFamily: "meslo",
+      terminalForeground: "#00ff00",
+      terminalBackground: "#000000",
+    });
+    const stored = JSON.parse(localStorage.getItem(STORAGE_KEY)!);
+    expect(stored.terminalForeground).toBe("#00ff00");
+    expect(stored.terminalBackground).toBe("#000000");
+    const { result: reloaded } = renderHook(() => useDisplayPrefs());
+    expect(reloaded.current.prefs).toEqual(result.current.prefs);
+  });
+
+  // The value reaches an inline `style` on the mirror, so it is narrowed to the one shape the picker
+  // emits. Anything else, a CSS function included, reads as "" and the mirror keeps its own ground.
+  it("rejects invalid persisted colors", () => {
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        terminalForeground: "red; background:url(evil)",
+        terminalBackground: "#ABCDEF",
+      }),
+    );
+    const { result } = renderHook(() => useDisplayPrefs());
+    expect(result.current.prefs.terminalForeground).toBe("");
+    expect(result.current.prefs.terminalBackground).toBe("#abcdef");
+    expect(cleanColor("#fff")).toBe("");
+    expect(cleanColor("rgb(0,255,0)")).toBe("");
+    expect(cleanColor("#00FF00")).toBe("#00ff00");
+  });
+
+  it("setTerminalColors normalises through cleanColor and \"\" restores a side", () => {
+    const { result } = renderHook(() => useDisplayPrefs());
+    act(() => result.current.setTerminalColors({ foreground: "#ABCDEF", background: "not-a-colour" }));
+    expect(result.current.prefs.terminalForeground).toBe("#abcdef");
+    expect(result.current.prefs.terminalBackground).toBe("");
+    act(() => result.current.setTerminalColors({ foreground: "", background: "" }));
+    expect(customTerminalColors(result.current.prefs)).toBeUndefined();
+  });
+
+  // The fork stored `{ terminal: { fontFamily, foreground, background } }` under this same key
+  // before 1.1.0. The object is read once, into the 1.1.0 fields, and the next save drops it.
+  it("migrates a fork v4 terminal object into the 1.1.0 fields before the first save", () => {
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        wrap: false,
+        fontSize: 13,
+        rawTerminal: true,
+        terminal: { fontFamily: "MesloLGS NF", foreground: "#00FF00", background: "#000000" },
+      }),
+    );
+    const { result } = renderHook(() => useDisplayPrefs());
+    expect(result.current.prefs).toEqual({
+      wrap: false,
+      fontSize: 13,
+      draftFontSize: 14,
+      fontFamily: "meslo",
+      terminalForeground: "#00ff00",
+      terminalBackground: "#000000",
+      rawTerminal: true,
+      tapToFocus: true,
+    });
+    // The first save writes the 1.1.0 shape and the legacy object is gone.
+    act(() => result.current.setWrap(true));
+    const stored = JSON.parse(localStorage.getItem(STORAGE_KEY)!);
+    expect(stored.terminal).toBeUndefined();
+    expect(stored.fontFamily).toBe("meslo");
+    expect(stored.terminalForeground).toBe("#00ff00");
+  });
+
+  it("maps every fork font name the closed list can honour, case-insensitively, else system", () => {
+    const cases: Array<[string, string]> = [
+      ["meslolgs nerd font", "meslo"],
+      ['"MesloLGS NF", monospace', "meslo"],
+      ["JetBrains Mono", "jetbrains"],
+      ["Cascadia Code", "cascadia"],
+      ["cascadia mono", "cascadia"],
+      ["Roboto Mono", "roboto"],
+      ["SF Mono", "menlo"],
+      ["Menlo", "menlo"],
+      ["DejaVu Sans Mono", "dejavu"],
+      ["Courier New", "courier"],
+      ["Comic Sans MS", "system"],
+      ["", "system"],
+    ];
+    for (const [legacy, expected] of cases) {
+      localStorage.clear();
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ terminal: { fontFamily: legacy } }));
+      const { result } = renderHook(() => useDisplayPrefs());
+      expect(result.current.prefs.fontFamily, legacy).toBe(expected);
+    }
+  });
+
+  it("lets a 1.1.0 fontFamily and colour win over a leftover fork terminal object", () => {
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        fontFamily: "courier",
+        terminalForeground: "",
+        terminal: { fontFamily: "MesloLGS NF", foreground: "#00ff00", background: "#000000" },
+      }),
+    );
+    const { result } = renderHook(() => useDisplayPrefs());
+    expect(result.current.prefs.fontFamily).toBe("courier");
+    expect(result.current.prefs.terminalForeground).toBe("");
+    // The background had no 1.1.0 field yet, so the object still supplies it.
+    expect(result.current.prefs.terminalBackground).toBe("#000000");
   });
 
   // The fork's entry. Both names Meslo's patched releases have shipped under, so a phone that
@@ -239,12 +357,12 @@ describe("useDisplayPrefs — the rest", () => {
   it("falls back to defaults on malformed JSON", () => {
     localStorage.setItem(STORAGE_KEY, "not-json{{{");
     const { result } = renderHook(() => useDisplayPrefs());
-    expect(result.current.prefs).toEqual({ wrap: false, fontSize: 12, draftFontSize: 14, fontFamily: "system", rawTerminal: false, tapToFocus: true });
+    expect(result.current.prefs).toEqual({ wrap: false, fontSize: 12, draftFontSize: 14, fontFamily: "system", terminalForeground: "", terminalBackground: "", rawTerminal: false, tapToFocus: true });
   });
 
   it("falls back to defaults when stored value is not an object", () => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(42));
     const { result } = renderHook(() => useDisplayPrefs());
-    expect(result.current.prefs).toEqual({ wrap: false, fontSize: 12, draftFontSize: 14, fontFamily: "system", rawTerminal: false, tapToFocus: true });
+    expect(result.current.prefs).toEqual({ wrap: false, fontSize: 12, draftFontSize: 14, fontFamily: "system", terminalForeground: "", terminalBackground: "", rawTerminal: false, tapToFocus: true });
   });
 });
