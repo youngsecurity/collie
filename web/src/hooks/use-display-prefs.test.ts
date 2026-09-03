@@ -3,6 +3,7 @@ import {
   applyDraftFontSize,
   DRAFT_FONT_MAX,
   DRAFT_FONT_MIN,
+  FONT_FAMILIES,
   FONT_STACKS,
   fontStack,
   inputFocusZoomsPage,
@@ -102,6 +103,13 @@ describe("useDisplayPrefs", () => {
       expect(stack!.startsWith('"Nerd Font Symbols", ')).toBe(true);
       expect(stack!.endsWith(", monospace")).toBe(true);
     }
+  });
+
+  // The fork's entry. Both names Meslo's patched releases have shipped under, so a phone that
+  // installed either keeps its face, with Menlo (the unpatched parent) before the shared tail.
+  it("offers the fork's MesloLGS NF entry under both of its release names", () => {
+    expect(FONT_FAMILIES).toContain("meslo");
+    expect(FONT_STACKS.meslo).toContain('"MesloLGS NF", "MesloLGS Nerd Font", Menlo');
   });
 
   it("the default family writes no class and no style, so the stylesheet alone applies", () => {

@@ -69,6 +69,7 @@ export const FONT_FAMILIES = [
   "roboto",
   "dejavu",
   "courier",
+  "meslo",
 ] as const;
 
 export type FontFamily = (typeof FONT_FAMILIES)[number];
@@ -114,6 +115,11 @@ export const FONT_STACKS = {
   // The universal fallback face, and the only genuinely different silhouette on offer: thin,
   // wide-spaced, serifed. Present on Windows, macOS and iOS; Linux resolves it via fontconfig.
   courier: `${NERD}, "Courier New", Courier, ${TAIL}`,
+  // Young Security fork: the patched Meslo the Powerlevel10k / Oh My Posh guides install, under
+  // both names its releases have shipped. It is the face the fork's Matrix colour preset was tuned
+  // against, and the one the fork's phones were already on before the family list became closed.
+  // Menlo is its unpatched parent, so it is the nearest fallback before the shared tail.
+  meslo: `${NERD}, "MesloLGS NF", "MesloLGS Nerd Font", Menlo, ${TAIL}`,
 } satisfies Record<FontFamily, string | undefined>;
 
 /** A family's `font-family` value, or undefined for "system" — where the app default already
