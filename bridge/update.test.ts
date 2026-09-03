@@ -232,10 +232,15 @@ describe("majorOf / latestReleaseInMajor / latestReleaseAboveMajor", () => {
     expect(latestReleaseInMajor(tags, 3)).toBeNull();
   });
 
-  it("reports a higher major separately — announcing it is not taking it", () => {
-    expect(latestReleaseAboveMajor(tags, 0)).toBe("2.0.0");
+  it("reports the NEXT major separately: announcing it is not taking it, and it is one crossing", () => {
+    // The verb (`nextMajorRelease`) crosses one major per consent, so the banner links to that one:
+    // an 0.x install is told about 1.1.0, not 2.0.0, and its notes are the ones that apply.
+    expect(latestReleaseAboveMajor(tags, 0)).toBe("1.1.0");
     expect(latestReleaseAboveMajor(tags, 1)).toBe("2.0.0");
     expect(latestReleaseAboveMajor(tags, 2)).toBeNull();
+    // A major with only prereleases is skipped for the next one that has a release.
+    expect(latestReleaseAboveMajor(["v0.32.0", "v1.0.0-rc.1", "v2.0.0"], 0)).toBe("2.0.0");
+    expect(latestReleaseAboveMajor(["v0.32.0", "v1.0.0-rc.1"], 0)).toBeNull();
   });
 });
 

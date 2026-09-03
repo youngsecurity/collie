@@ -295,15 +295,22 @@ export function latestUpdateInMajor(tags: string[], major: number, installed: st
   return best;
 }
 
-/** The newest STRICT release of any major ABOVE `major`, dotted, or null. Crossing to it is consented to by
- *  `update --major`, never inherited — so it is reported separately from {@link latestReleaseInMajor}. */
+/** The newest STRICT release of the NEXT major above `major` that has one, dotted, or null. Crossing
+ *  to it is consented to by `update --major`, never inherited, so it is reported separately from
+ *  {@link latestReleaseInMajor}.
+ *
+ *  The NEXT major, not the highest: `update --major` crosses exactly one (`cli/update.ts`'s
+ *  `nextMajorRelease`), so an install two majors behind is walked across one at a time, and the
+ *  banner's link must point at the release notes for the crossing that command will actually take.
+ *  Linking the highest major while the verb took the next one sent the operator to the wrong notes. */
 export function latestReleaseAboveMajor(tags: string[], major: number): string | null {
-  return latestReleaseTag(
-    tags.filter((t) => {
-      const parts = parseSemverTag(t);
-      return parts !== null && parts.triple[0] > major;
-    }),
-  );
+  let next: number | null = null;
+  for (const tag of tags) {
+    const candidate = parseSemverTag(tag)?.triple[0];
+    if (candidate === undefined || candidate <= major) continue;
+    if (next === null || candidate < next) next = candidate;
+  }
+  return next === null ? null : latestReleaseInMajor(tags, next);
 }
 
 /** The newest release among `tags`, as the dotted version the tag names (`X.Y.Z`, or `X.Y.Z+ys.N` on
