@@ -14,7 +14,7 @@ Supported hosts: Linux and macOS. Windows is experimental; see
 | [Bun](https://bun.sh) | Source builds | Run the bridge and build the web UI. |
 | git | Source builds and Herdr routes | Clone and update the repository. |
 | Multiplexer: Herdr, [tmux](https://github.com/tmux/tmux), or [zellij](https://zellij.dev) | All installs | Mirrored backend set via `COLLIE_MUX`. tmux and zellij are experimental in 1.0; see [Using the app on tmux or zellij](multiplexers.md#using-the-app-on-tmux-or-zellij) and [`MUX_CONTRACT.md`](../MUX_CONTRACT.md). |
-| [Herdr](https://herdr.dev) ≥ 0.7.0 | Herdr backend only | Required when `COLLIE_MUX=herdr`. Check with `herdr --version`. |
+| [Herdr](https://herdr.dev) ≥ 0.8.0 | Herdr backend only | Required when `COLLIE_MUX=herdr`. Check with `herdr --version`. Upstream accepts 0.7.0; this fork sets `min_herdr_version = "0.8.0"` and `collie update` refuses below it. |
 | [Tailscale](https://tailscale.com) | Default access | `tailscale serve` proxies Collie to your tailnet. Optional if using [Variant C](deployment.md#variant-c--reverse-proxy-as-the-only-front-door-no-tailscale). |
 
 **No minimum tmux or zellij version is enforced.** The adapters were tested against tmux 3.4, tmux
@@ -25,6 +25,30 @@ below 3.7 crashes when creating a window, so Collie blocks the request and tells
 Soft dependencies: **Node.js** (formats MagicDNS names in logs), **systemd** / **launchd** (service
 supervision; falls back to `nohup`), and [`web-push`](https://www.npmjs.com/package/web-push)
 (optional, see [Web Push](voice-and-push.md#web-push-optional)).
+
+## This fork
+
+You are reading the **Young Security fork** (`youngsecurity/collie`). Three things differ from the
+upstream instructions that follow:
+
+- **No binary payloads.** Fork releases are tagged `vX.Y.Z+ys.N` and ship source-only, so the
+  `colliepwa.dev/install.sh` script and a binary `collie update` install or update **upstream**
+  Collie, not this fork. Use [the same result, from source](#the-same-result-from-source) or
+  [Through Herdr](#through-herdr), substituting `youngsecurity/collie` for `AltanS/collie`, and
+  pick the newest fork tag:
+
+  ```bash
+  git clone https://github.com/youngsecurity/collie.git ~/.local/share/collie
+  cd ~/.local/share/collie
+  git checkout --detach "$(git tag --list 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+\+ys\.[0-9]+$' | sort -V | tail -1)"
+  ```
+
+  or `herdr plugin install youngsecurity/collie`.
+- **Updates stay in the fork family.** `COLLIE_UPDATE_REPO` defaults to `youngsecurity/collie` and
+  a `+ys` install only ever selects `+ys` tags; the newest counter on the same base wins. The
+  Herdr actions (`update`, `update-major`) and `bin/collie update` work as documented in
+  [Upgrading](upgrading.md#you-run-a-fork).
+- **Herdr ≥ 0.8.0** is required (see the table above).
 
 ## Install
 

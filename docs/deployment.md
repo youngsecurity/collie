@@ -310,7 +310,7 @@ sets `COLLIE_PORT`, `COLLIE_INSTANCE`, `COLLIE_PLUGIN_ROOT`, `HERDR_PLUGIN_CONFI
 instances that share one binary can distinguish their bridges (`cli/unit.ts` `systemdUnit()`):
 
 ```ini
-ExecStart=<root>/bin/collie _exec-bridge --instance <name>
+ExecStart="<root>/bin/collie" "_exec-bridge" "--instance" "<name>"
 Environment=COLLIE_PORT=8788
 Environment=COLLIE_INSTANCE=<name>
 Environment=COLLIE_PLUGIN_ROOT=<root>

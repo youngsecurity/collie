@@ -115,6 +115,10 @@ herdr plugin action invoke restart --plugin herdr.collie
 
 ## Upgrading from 0.x to 1.0
 
+On this fork the crossing is `0.36.1+ys.1 → 1.1.0+ys.1` and the commands below take it as written:
+the fork's `update --major` selects the next major's newest `+ys` release. Herdr must be at least
+0.8.0 first (`herdr --version`); `update` refuses below that and says so.
+
 If `BUN_INSTALL` is defined only in `.env`, export it in your shell profile or service environment
 instead. Then run:
 
@@ -225,22 +229,36 @@ For checkouts or Herdr installs, run `git checkout <tag>` or
 
 ## You run a fork
 
-`collie update` checks `origin` against `COLLIE_UPDATE_REPO` (default `AltanS/collie`) and aborts if
-they differ. Set `COLLIE_UPDATE_REPO=you/collie` if your fork releases its own tags.
+This repository **is** a fork, the Young Security fork `youngsecurity/collie`, so this section
+describes how updates work here rather than how to fork Collie.
 
-To merge upstream updates into your fork manually:
+`collie update` checks `origin` against `COLLIE_UPDATE_REPO` and aborts if they differ. On this fork
+the default is `youngsecurity/collie`, so a checkout cloned from the fork updates without any
+setting, and `collie doctor`'s `update-source` check reads `ok`. Fork releases are tagged
+`vX.Y.Z+ys.N`: `X.Y.Z` is the upstream base and `N` the fork counter. The updater keeps a `+ys`
+install inside the `+ys` family and orders the counter, so `1.1.0+ys.2` is an update for
+`1.1.0+ys.1`; against upstream's bare tags a fork version compares as its base. A routine `update`
+stays inside the installed major and `update --major` (Herdr action `update-major`) crosses exactly
+one major to the next major's newest `+ys` release, as [ADR 0020](../.adr/0020-a-major-upgrade-is-consented-by-flag.md)
+describes, so both verbs are the fork's supported path. There are no binary payloads on the fork;
+`update` always advances the checkout and rebuilds from source.
+
+**Adopting a newer upstream release into the fork** is the maintainer's job, done by merging
+upstream's tag into the integration branch and cutting `X.Y.Z+ys.1` on top:
 
 ```bash
 git remote add upstream https://github.com/AltanS/collie.git
 git fetch upstream --tags
-git merge v1.0.0                                            # the tag you decided to take
-# resolve the conflicts, commit the merge, then rebuild and restart:
+git merge v1.1.0                                            # the tag you decided to take
+# resolve the conflicts, land the fork's ports as their own commits, cut chore(release): X.Y.Z+ys.1,
+# then rebuild and restart:
 sh scripts/collie-ctl.sh build
 bin/collie restart                                          # Herdr-managed: invoke the `restart` action
 ```
 
-Do not use `update --major` on a fork; merge the `v1.*` tag manually. Run `collie doctor` to check
-the active `COLLIE_UPDATE_REPO`.
+If you run your **own** fork of this fork, set `COLLIE_UPDATE_REPO=you/collie` and tag your releases
+so they parse (`vX.Y.Z`, or `vX.Y.Z+ys.N` if you keep the family); anything else is invisible to
+`update` and to the in-app banner.
 
 ## Surviving reboots
 

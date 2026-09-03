@@ -1,5 +1,10 @@
 # Collie
 
+> **Young Security fork** of [AltanS/collie](https://github.com/AltanS/collie). Releases are
+> `X.Y.Z+ys.N` (upstream base plus a fork counter), source-only and hand-cut; the fork keeps a
+> column-faithful (non-wrapping) mirror by default, per-device terminal colours, a peer-aware Host
+> gate, and requires Herdr ≥ 0.8.0. Fork-specific install notes: [`docs/install.md`](./docs/install.md#this-fork).
+
 <p align="center">
   <img src="assets/collie-hero.webp" alt="A collie herding a flock of sheep" width="640">
 </p>
@@ -96,6 +101,10 @@ device gating before running the service.
 > `serve` limits access to your private tailnet. Do not funnel Collie under any circumstances.
 
 ## Quickstart
+
+> On this fork there are no binary release payloads, so the install script below installs
+> **upstream** Collie, not the fork. Build from source instead: see
+> [`docs/install.md`](./docs/install.md#this-fork).
 
 Run this on the host, not your phone. It requires `curl`, `tar`, and a sha256 utility. It needs no
 compiler toolchain and does not ask for `sudo`:

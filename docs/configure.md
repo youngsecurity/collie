@@ -37,14 +37,16 @@ To read history from multiple agent home directories, provide a comma-separated 
 `COLLIE_TRANSCRIPT_ROOT`.
 
 [`docs/deployment.md`](deployment.md) covers custom domains and reverse proxies. Collie enforces a
-same-origin policy, so any custom hostname or external TLS terminator must be explicitly
-allowlisted:
+same-origin policy and a fail-closed Host allowlist, so any custom hostname or external TLS
+terminator must be explicitly allowlisted on both, since an allowed origin never expands the Host
+allowlist on this fork:
 
 ```bash
 COLLIE_ALLOWED_ORIGINS=https://collie.example.com
+COLLIE_PUBLIC_HOSTS=collie.example.com
 ```
 
-Without this setting, the UI will load as an empty page. See
+Without these settings, the UI will load as an empty page. See
 [Troubleshooting](troubleshooting.md#troubleshooting) for details.
 
 ## Your own slash commands

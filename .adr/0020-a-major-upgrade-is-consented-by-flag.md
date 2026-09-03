@@ -128,6 +128,35 @@ flagged act.**
 > migration section — and both of its mechanics (prerelease tags publish as GitHub prereleases; read
 > git tags, never `releases/latest`) are unaffected and still hold.
 
+> **Amended (Young Security fork, 2026-09-02, the `+ys` family is a property of the installed
+> version too).** This fork publishes `vX.Y.Z+ys.N` tags and never a bare release: `X.Y.Z` is the
+> upstream base the release was cut on, `N` the fork counter. The major-consent rule above is kept
+> unchanged; what the fork adds is one more rule about the INSTALLED version, in the same shape as
+> the 2026-08-30 amendment:
+>
+> - **A `+ys` install stays in the `+ys` family.** Banner and verb both select only `+ys` tags, so a
+>   fork build can never be advanced onto a bare upstream tag that would discard the fork's
+>   hardening. A bare install (upstream, or a fork checkout that was never released) sees only bare
+>   tags, byte for byte as before.
+> - **Inside the family the counter orders.** `1.1.0+ys.2` supersedes `1.1.0+ys.1`, which is how a
+>   fork rebuild on the same upstream base is reachable by a routine `update`. Against bare tags the
+>   SemVer rule holds: build metadata has the precedence of its base, so `1.1.0+ys.3` is neither
+>   ahead of nor behind `1.1.0`. Precedence lives in `bridge/update.ts` and is shared by the banner
+>   and the verb; the family filter is applied before `latestUpdateInMajor` and `--major`'s
+>   next-major selection, never inside `compareSemver`.
+> - **`--major` crosses exactly one major, to that major's newest `+ys` release, in both checkout
+>   shapes.** On a linked clone it fast-forwards the branch to that release tag, never to the branch
+>   tip, so one consent buys one crossing even when two majors are published.
+> - **The updater and the banner read `COLLIE_UPDATE_REPO`, which defaults to `youngsecurity/collie`
+>   on this fork.** Upstream's own copy of that default is what makes `collie update` refuse on a
+>   fork checkout; here the refusal fires only if `origin` points somewhere else.
+> - **Herdr 0.8.0 is the floor.** Managed installs below it hold the action set cached at install
+>   time (ADR 0006) and cannot discover `update-major`, which is the consent path this ADR requires;
+>   the manifest says `min_herdr_version = "0.8.0"` and `update` refuses below it.
+>
+> There is still no flag, channel or pin file. The installed version's build metadata is the
+> channel, exactly as its prerelease tail is for the amendment above.
+
 ## Consequences
 
 - **An install that never takes 0.32.0 is not protected.** It is still pointed at origin HEAD and

@@ -1,6 +1,6 @@
 # CLAUDE.md — working agreement for this repo
 
-**Collie** (repo `AltanS/collie`) — a phone web UI for the AI agents running in your terminal,
+**Collie** (Young Security fork `youngsecurity/collie`; upstream `AltanS/collie`) — a phone web UI for the AI agents running in your terminal,
 served over Tailscale. A mobile-first PWA (Vite + React + TS + Tailwind v4 + shadcn) plus a Bun/TS
 bridge that mirrors ONE multiplexer per install — Herdr, tmux or zellij — letting you monitor and
 reply to agents from a phone. Herdr is one adapter among the three, not the product: it is the
@@ -27,9 +27,18 @@ mark it superseded and write the next one.
 
 Collie is **SemVer**ed, and the version is **enforced**, so it never silently drifts.
 
+**This fork releases as `X.Y.Z+ys.N`.** `X.Y.Z` is the upstream base the release was cut on and `N`
+is the fork counter. SemVer build metadata has the same precedence as its base, so against
+upstream's bare tags a fork version compares as its base; inside the `+ys` family the counter
+orders (`1.1.0+ys.2` supersedes `1.1.0+ys.1`), which is how a fork rebuild on the same base is
+reachable by `collie update`. The updater and the in-app banner read `COLLIE_UPDATE_REPO`, which
+defaults to `youngsecurity/collie` here, and a `+ys` install only ever selects `+ys` tags
+([ADR 0020](./.adr/0020-a-major-upgrade-is-consented-by-flag.md), fork amendment). Never publish a
+bare `X.Y.Z` from this fork.
+
 **The version lives in three files that must always agree, plus a matching CHANGELOG entry:**
 `herdr-plugin.toml` (canonical — Herdr reads it) · `package.json` · `web/package.json` ·
-newest `## [x.y.z]` heading in `CHANGELOG.md`.
+newest `## [X.Y.Z+ys.N]` heading in `CHANGELOG.md`.
 
 **Before committing any functional change** (anything under `bridge/`, `web/src/`, `scripts/`, or the
 manifest) you MUST:
@@ -44,7 +53,10 @@ manifest) you MUST:
      surface, or action. Existing setups keep working untouched.
    - **MAJOR** (`0.2.0 → 1.0.0`): the operator must change something — a config key renamed or
      removed, a contract broken, a workflow that used to work and now doesn't.
-2. **Add a `CHANGELOG.md` entry** under a new `## [x.y.z] - YYYY-MM-DD` heading (Added / Changed /
+   - **On this fork the axis picks the base, and the counter does the rest.** Fork-only work keeps
+     the upstream base and increments `N` (`1.1.0+ys.1 → 1.1.0+ys.2`). Adopting a newer upstream
+     release takes its version and resets the counter (`1.1.0+ys.2 → 1.1.1+ys.1`).
+2. **Add a `CHANGELOG.md` entry** under a new `## [X.Y.Z+ys.N] - YYYY-MM-DD` heading (Added / Changed /
    Fixed). Use the real date. **Style: super crisp and short** — one line per change, no prose
    paragraphs, and cite the feature's short commit hash at the end of the line (`… (abc1234)`).
    Land features as their own commits first, then cut the release commit so the entry can cite them.
@@ -59,7 +71,9 @@ way — all four files simply keep the version they already agree on. The pre-co
 locally; `SKIP_VERSION_CHECK=1 git commit …` is the intended escape hatch here. If you'd like a
 CHANGELOG line in your words, put it in the PR description and it'll be used. (Maintainer side: when
 a fork PR does carry a release commit, cherry-pick the functional commits with `-x` and drop that one
-— authorship is preserved and `main` stays unreleased until you cut it.)
+— authorship is preserved and `main` stays unreleased until you cut it.) That paragraph is written
+from upstream's side. It applies to this fork when we send work to `AltanS/collie`: cut such PRs from
+a feature branch, never from `dev-joe`, which carries `chore(release): X.Y.Z+ys.N` commits.
 
 Doc-only changes (`*.md`) don't need a bump. This is enforced two ways, but **you are the first
 line — do it as part of the change, not after**:
@@ -77,8 +91,11 @@ never gets a tag is not a release at all: `.github/workflows/release.yml` trigge
 `push: tags: ["v*.*.*"]` and nothing else creates the GitHub Release the in-app update banner links
 to, so an untagged version exists only as a CHANGELOG heading and nobody can install it. So when
 that release lands and you push, **always push a matching annotated git tag with it** —
-`git tag -a vX.Y.Z -m "Collie X.Y.Z" && git push origin vX.Y.Z` (or `git push --follow-tags` so the
-tag ships *with* the release). One `v<x.y.z>` tag per shipped version on the remote.
+`git tag -a 'vX.Y.Z+ys.N' -m 'Collie X.Y.Z+ys.N' && git push origin 'vX.Y.Z+ys.N'` (or
+`git push --follow-tags` so the tag ships *with* the release). One `vX.Y.Z+ys.N` tag per shipped
+version on the remote. **GitHub Actions do not run in this org**, so `release.yml` is a record of
+the notes format and nothing more: the GitHub Release is created by hand from the CHANGELOG block
+(`gh release create 'vX.Y.Z+ys.N' --notes-file …`), and the update banner links to it.
 
 `scripts/check-tag.sh` checks this: with no arguments it asks whether the version the repo currently
 claims has a tag; given a rev-list selector it asks the same of every `chore(release):` commit the
@@ -94,8 +111,9 @@ exists to stop repeating. Their commits are superseded by the betas that followe
 today would claim a release nobody ever tested.
 
 **Update notice (user-facing).** The app's in-app update banner links to the newest release's GitHub
-page and shows the command to run. Pushing a `v*` tag auto-creates that GitHub Release (with the
-commands) via `.github/workflows/release.yml`. **On a Herdr-managed install, always express
+page and shows the command to run. On this fork that Release is cut by hand (see above); upstream's
+binary payload matrix is not adopted and the fork ships source-only, so `scripts/install.sh` and a
+binary `collie update` are not fork paths. **On a Herdr-managed install, always express
 user-facing update/restart instructions as Herdr plugin actions** — `herdr plugin action invoke
 update --plugin herdr.collie` (or `restart`) — never `bin/collie …` / `systemctl … collie`, which
 depend on the caller's cwd and the unit name; the Herdr action runs from anywhere. A **binary
@@ -110,7 +128,8 @@ kind must come from the install kind (`cli/install-kind.ts`), never assume one.
   none and `exec`s it — it implements nothing, and its path is frozen because Herdr <0.8.0 invokes
   the action set cached at install time
   ([ADR 0006](./.adr/0006-update-advances-the-checkout-herdr-installed.md)). Teach the binary; don't
-  add logic to the shim.
+  add logic to the shim. This fork requires **Herdr ≥ 0.8.0** (`min_herdr_version` in the manifest,
+  enforced by `collie update`), so the freeze is belt-and-braces here, not the load-bearing rule.
 - **`collie link` publishes `~/.local/bin/collie` as a SYMLINK to the checkout's binary** — never a
   copy, never a wrapper script, and never as a side effect of `build`/`update`
   ([ADR 0021](./.adr/0021-the-path-name-is-a-pointer-never-a-copy.md)). `unlink` removes that name

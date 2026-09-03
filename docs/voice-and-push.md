@@ -161,11 +161,11 @@ all current subscriptions, requiring every device to resubscribe before it can r
 again. Providing a subject argument on an existing configuration updates only the contact address
 and preserves the current keys.
 
-> **On Herdr versions before 0.8.0**, actions remain fixed to the set cached during initial plugin
-> installation ([ADR 0006](../.adr/0006-update-advances-the-checkout-herdr-installed.md)). The
-> `push-keys` and `push-test` actions will not appear until you run `herdr plugin install`. Run
-> `bash scripts/collie-ctl.sh push-keys` directly instead. The wrapper script passes the command
-> directly to the binary.
+> This fork requires Herdr ≥ 0.8.0, which re-reads the manifest on every invocation, so the
+> `push-keys` and `push-test` actions are always present. (Upstream still supports Herdr 0.7.0,
+> where actions stay fixed to the set cached at install time per
+> [ADR 0006](../.adr/0006-update-advances-the-checkout-herdr-installed.md) and
+> `bash scripts/collie-ctl.sh push-keys` is the workaround.)
 
 Test the delivery path across all subscribed devices:
 
