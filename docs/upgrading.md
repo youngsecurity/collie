@@ -186,9 +186,10 @@ is required.
 
 ### Verify it worked
 
-Check that `version` reports `1.0.0` or higher. An upgraded install pairs no devices automatically:
-run `pair` to issue a phone its write credential, and `devices revoke` if that phone is lost
-([Pair a device](security.md#pair-a-device--the-write-credential)).
+Check that `version` reports `1.0.0` or higher. An upgraded install pairs no devices automatically,
+and pairing is optional: reads and writes work as before until the first device is paired. When you
+want the write credential, run `pair` to issue a phone its token, and `devices revoke` if that phone
+is lost ([Pair a device](security.md#pair-a-device--the-write-credential)).
 
 ## Stop or uninstall
 
