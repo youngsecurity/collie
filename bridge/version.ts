@@ -46,6 +46,17 @@ export function manifestVersionFrom(manifest: string | null): string | null {
 }
 
 /**
+ * The `min_herdr_version = "…"` line of `herdr-plugin.toml`, or null when the manifest names no
+ * floor. Herdr enforces it on `herdr plugin install`; Collie's own self-update bypasses that
+ * installer, so `cli/update.ts` reads it here and enforces it too. The sibling of
+ * {@link manifestVersionFrom}, for the same reason: one parser of that file, never two.
+ */
+export function manifestMinHerdrFrom(manifest: string | null): string | null {
+  const v = manifest === null ? null : /^min_herdr_version[ \t]*=[ \t]*"([^"]*)"/m.exec(manifest)?.[1];
+  return v === undefined || v === "" ? null : v;
+}
+
+/**
  * What Collie is actually serving: the built bundle's stamp (`web/dist/build-info.json`, the same id
  * the PWA footer and `/api/config` report), else the manifest version tagged as unbuilt, else
  * `unknown`. Ported from `collie_version()` (the pre-shim `collie-ctl.sh`) output for output —

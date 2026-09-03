@@ -1,7 +1,10 @@
 id = "herdr.collie"
 name = "Collie"
 version = "1.1.0"
-min_herdr_version = "0.7.0"
+# This fork requires Herdr 0.8.0+ (decision D2 in docs/adoption/v1.1.0-phase0-triage.md). Herdr
+# enforces the floor on `herdr plugin install`; `collie update` and `_apply-update` enforce it too
+# (cli/update.ts `requireHerdrMinimum`), since self-update bypasses the installer.
+min_herdr_version = "0.8.0"
 description = "Mobile web UI to monitor and reply to your agent herd, served over Tailscale"
 platforms = ["linux", "macos"]
 
@@ -12,9 +15,8 @@ platforms = ["linux", "macos"]
 # implementation of every verb. Herdr injects HERDR_SOCKET_PATH / HERDR_PLUGIN_CONFIG_DIR into
 # these invocations and nothing else — no login shell — which the shim and the binary both expect.
 #
-# The command strings are FROZEN, byte for byte. On Herdr <0.8.0 a managed install invokes the
-# action set cached at install time, so `bash scripts/collie-ctl.sh <verb>` must keep resolving
-# there (ADR 0006) — and every README recipe spells the verbs that way too. Pointing an action
+# The command strings are FROZEN, byte for byte: `bash scripts/collie-ctl.sh <verb>` must keep
+# resolving (ADR 0006), and every README recipe spells the verbs that way too. Pointing an action
 # straight at bin/collie would break both for no gain: the shim already `exec`s it.
 
 # Build the web UI at install time. Herdr runs [[build]] steps ONLY on `herdr plugin install`
@@ -94,12 +96,8 @@ command = ["bash", "scripts/collie-ctl.sh", "version"]
 # a tool you had to know about, then hand-edit a .env in a directory you had to go looking for. Both
 # are actions now, because "which .env" is the part that actually goes wrong — `push-keys` writes to
 # the same config dir every other verb resolves, and `push-test` proves the result without waiting
-# for an agent to block. Restart between them; the keys are read at start.
-#
-# NOTE: on Herdr <0.8.0 a managed install invokes the action set cached at INSTALL time (ADR 0006),
-# so these two appear only after the next `herdr plugin install`. `bin/collie push-keys` /
-# `push-test` work immediately either way — the shim named here implements neither, it delegates
-# both to the binary like every other verb.
+# for an agent to block. Restart between them; the keys are read at start. The shim named here
+# implements neither, it delegates both to the binary like every other verb.
 [[actions]]
 id = "push-keys"
 title = "Generate push keys"

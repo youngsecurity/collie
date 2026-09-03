@@ -6,7 +6,7 @@ import { join } from "node:path";
 // The version resolver itself lives in `bridge/version.ts` (the bridge answers `hello` with it and
 // cannot import from `cli/`); `collieVersion*` are re-exported from here, so these cases exercise
 // one implementation either way.
-import { bareVersionFrom } from "../bridge/version.ts";
+import { bareVersionFrom, manifestMinHerdrFrom } from "../bridge/version.ts";
 import {
   collieVersion,
   collieVersionBare,
@@ -373,6 +373,14 @@ describe("version", () => {
 
   test("a stamp with no version at all falls through to the manifest", () => {
     expect(collieVersionFrom("{}", MANIFEST)).toBe("0.24.2 (manifest; web not built)");
+  });
+
+  test("the manifest's Herdr floor is read by the sibling parser, and only from its own line", () => {
+    expect(manifestMinHerdrFrom(`${MANIFEST}min_herdr_version = "0.8.0"\n`)).toBe("0.8.0");
+    expect(manifestMinHerdrFrom('min_herdr_version="0.7.0"\nversion = "1.0.0"\n')).toBe("0.7.0");
+    expect(manifestMinHerdrFrom(MANIFEST)).toBeNull(); // no floor named
+    expect(manifestMinHerdrFrom('min_herdr_version = ""\n')).toBeNull();
+    expect(manifestMinHerdrFrom(null)).toBeNull();
   });
 
   test("this fork's +ys.N version takes the sha as a further identifier, never a second +", () => {

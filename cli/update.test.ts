@@ -25,6 +25,7 @@ import {
   majorVerdict,
   nextMajorRelease,
   parseApiTags,
+  parseHerdrVersion,
   parseRemoteTags,
   planUpdate,
   platformId,
@@ -107,6 +108,8 @@ function harness(
       restart: number;
       /** The version in the checkout's `herdr-plugin.toml` — where the installed MAJOR is read from. */
       installed: string;
+      /** The manifest's `min_herdr_version`, when the case is about the Herdr floor. */
+      minHerdr: string;
     }
   > = {},
 ): Harness {
@@ -114,7 +117,8 @@ function harness(
   const exec = fakeExec({ ...over, answers: [...(over.answers ?? []), ...ORIGIN] });
   const seed: SeededFiles = { [`${DIST}/index.html`]: "OLD", [BINARY]: "OLD BINARY" };
   if (over.installed !== undefined) {
-    seed[`${ROOT}/herdr-plugin.toml`] = `id = "herdr.collie"\nversion = "${over.installed}"\n`;
+    const floor = over.minHerdr === undefined ? "" : `min_herdr_version = "${over.minHerdr}"\n`;
+    seed[`${ROOT}/herdr-plugin.toml`] = `id = "herdr.collie"\nversion = "${over.installed}"\n${floor}`;
   }
   const files = fakeFiles(seed);
   const link = fakeLinkFs();
@@ -795,6 +799,110 @@ describe("refreshRegistry", () => {
     const down = harness({ answers: [...LINKED, ["herdr plugin link", { code: 1 }]] });
     refreshRegistry(down.deps);
     expect(down.io.stdout.join("\n")).toContain(`run: herdr plugin link "${ROOT}"`);
+  });
+});
+
+// ── The Herdr floor (decision D2) ──────────────────────────────────────────────────────────
+// Ported from the shell era's `test_update_requires_the_manifest_herdr_version`: self-update
+// bypasses Herdr's installer, so the manifest's `min_herdr_version` is enforced here, on both halves.
+
+describe("the Herdr floor", () => {
+  const herdr = (version: string): NonNullable<Scripted["answers"]> => [["herdr --version", { stdout: `herdr ${version}\n` }]];
+
+  test("parseHerdrVersion reads the dotted version off `herdr --version`", () => {
+    expect(parseHerdrVersion("herdr 0.8.2\n")).toBe("0.8.2");
+    expect(parseHerdrVersion("herdr v0.8.2-rc.1 (abc)\n")).toBe("0.8.2-rc.1");
+    expect(parseHerdrVersion("")).toBeNull();
+    expect(parseHerdrVersion("herdr\n0.8.2")).toBeNull(); // the first line, not any line
+  });
+
+  test("a Herdr below the floor is refused before anything is fetched, naming the fix", async () => {
+    const h = harness({ installed: "1.0.0", minHerdr: "0.8.0", answers: [...herdr("0.7.9"), ...MANAGED] });
+    expect(await cmdUpdate(h.deps)).toBe(EXIT.FAIL);
+    const said = h.io.stderr.join("\n");
+    expect(said).toContain("requires Herdr 0.8.0+ (found 0.7.9)");
+    expect(said).toContain("herdr plugin action invoke update --plugin herdr.collie");
+    expect(gitRuns(h.exec)).toEqual([]);
+    expect(h.exec.calls.some((c) => c.includes("ls-remote"))).toBe(false);
+  });
+
+  test("the floor itself, and anything above it, passes", async () => {
+    for (const v of ["0.8.0", "0.8.2", "1.0.0"]) {
+      const h = harness({
+        installed: "1.0.0",
+        minHerdr: "0.8.0",
+        answers: [...herdr(v), ...MANAGED, [`${GIT} ls-remote --tags origin`, { stdout: LS_REMOTE }]],
+      });
+      expect(await cmdUpdate(h.deps)).toBe(EXIT.OK);
+      expect(h.io.stdout.join("\n")).toContain("already current");
+    }
+  });
+
+  test("an unreadable `herdr --version` is refused too: unknown is not above the floor", async () => {
+    const h = harness({ installed: "1.0.0", minHerdr: "0.8.0", answers: [["herdr --version", { code: 1 }], ...MANAGED] });
+    expect(await cmdUpdate(h.deps)).toBe(EXIT.FAIL);
+    expect(h.io.stderr.join("\n")).toContain("requires Herdr 0.8.0+ (found unknown)");
+  });
+
+  test("a manifest naming no floor asks nothing of Herdr", async () => {
+    const h = harness({ installed: "1.0.0", answers: [...herdr("0.1.0"), ...MANAGED, [`${GIT} ls-remote --tags origin`, { stdout: LS_REMOTE }]] });
+    expect(await cmdUpdate(h.deps)).toBe(EXIT.OK);
+    expect(h.exec.calls).not.toContain("herdr --version");
+  });
+
+  test("with Herdr chosen and its CLI missing, the update refuses and says so", async () => {
+    const h = harness({
+      installed: "1.0.0",
+      minHerdr: "0.8.0",
+      env: { COLLIE_MUX: "herdr" },
+      absent: ["herdr"],
+      answers: MANAGED,
+    });
+    expect(await cmdUpdate(h.deps)).toBe(EXIT.FAIL);
+    expect(h.io.stderr.join("\n")).toContain("the Herdr CLI is not on PATH");
+    expect(gitRuns(h.exec)).toEqual([]);
+  });
+
+  test("another multiplexer is not asked: no Herdr on PATH under tmux or zellij is fine", async () => {
+    for (const mux of ["tmux", "zellij"]) {
+      const h = harness({
+        installed: "1.0.0",
+        minHerdr: "0.8.0",
+        env: { COLLIE_MUX: mux },
+        absent: ["herdr"],
+        answers: [...MANAGED, [`${GIT} ls-remote --tags origin`, { stdout: LS_REMOTE }]],
+      });
+      expect(await cmdUpdate(h.deps)).toBe(EXIT.OK);
+      expect(h.exec.calls).not.toContain("herdr --version");
+    }
+    // …and an old Herdr that happens to be installed beside tmux binds nothing either.
+    const beside = harness({
+      installed: "1.0.0",
+      minHerdr: "0.8.0",
+      env: { COLLIE_MUX: "tmux" },
+      answers: [...herdr("0.7.0"), ...MANAGED, [`${GIT} ls-remote --tags origin`, { stdout: LS_REMOTE }]],
+    });
+    expect(await cmdUpdate(beside.deps)).toBe(EXIT.OK);
+  });
+
+  test("an install that never chose a multiplexer and has no herdr is not a Herdr install", async () => {
+    const h = harness({
+      installed: "1.0.0",
+      minHerdr: "0.8.0",
+      absent: ["herdr"],
+      answers: [...MANAGED, [`${GIT} ls-remote --tags origin`, { stdout: LS_REMOTE }]],
+    });
+    expect(await cmdUpdate(h.deps)).toBe(EXIT.OK);
+  });
+
+  test("_apply-update enforces the floor again: it is the NEW code's guard, run after the fetch", async () => {
+    const h = harness({ installed: "1.0.0", minHerdr: "0.8.0", answers: [...herdr("0.7.9"), ...LINKED] });
+    expect(await cmdApplyUpdate(h.deps)).toBe(EXIT.FAIL);
+    expect(h.io.stderr.join("\n")).toContain("requires Herdr 0.8.0+");
+    expect(h.exec.calls.some((c) => c.includes("check-version.sh"))).toBe(false);
+    expect(h.restarts).toBe(0);
+    const ok = harness({ installed: "1.0.0", minHerdr: "0.8.0", answers: [...herdr("0.8.0"), ...LINKED, ...SHALLOW] });
+    expect(await cmdApplyUpdate(ok.deps)).toBe(EXIT.OK);
   });
 });
 

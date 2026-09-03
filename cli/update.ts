@@ -4,6 +4,7 @@ import type { JsonValue } from "../bridge/json.ts";
 import {
   type ApiTag,
   compareRelease,
+  compareSemver,
   followsTrain,
   forkCounterOf,
   githubTagsUrl,
@@ -15,7 +16,8 @@ import {
   type PrereleaseTag,
   versionOfTag,
 } from "../bridge/update.ts";
-import { manifestVersionFrom, readBuildInfo } from "../bridge/version.ts";
+import { HERDR_MUX } from "../bridge/mux/herdr/adapter.ts";
+import { manifestMinHerdrFrom, manifestVersionFrom, readBuildInfo } from "../bridge/version.ts";
 import { type BuildDeps, cmdBuild } from "./build.ts";
 import {
   binaryLayout,
@@ -31,6 +33,7 @@ import {
 } from "./install-kind.ts";
 import { EXIT } from "./io.ts";
 import type { LinkWriter } from "./link.ts";
+import { explicitMux } from "./mux.ts";
 import type { Exec, Net, NetFailure } from "./sys.ts";
 import { collieBinary } from "./unit.ts";
 
@@ -328,6 +331,47 @@ function assertOrigin(deps: UpdateDeps): boolean {
 /** The version in the checkout's own `herdr-plugin.toml` — the installed major is read from here. */
 function installedVersion(deps: UpdateDeps): string | null {
   return manifestVersionFrom(deps.files.read(join(deps.ctx.root, "herdr-plugin.toml")));
+}
+
+/** The dotted version out of `herdr --version` (`herdr 0.8.2` → `0.8.2`), or null when the output
+ *  names none. The first version-shaped token on the first line, so a `v` prefix or a trailing
+ *  build tag does not turn a readable answer into "unknown". */
+export function parseHerdrVersion(stdout: string): string | null {
+  const first = stdout.split("\n")[0] ?? "";
+  return /v?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.+-]*)?)/.exec(first)?.[1] ?? null;
+}
+
+/**
+ * Enforce the manifest's `min_herdr_version` on self-update too. `herdr plugin install` checks it
+ * itself, but Collie's in-place updater bypasses the installer, so a checkout could otherwise advance
+ * onto code whose manifest names a floor the running Herdr is below and the operator would only
+ * find out when the next action failed. Calling this again from `_apply-update` is load-bearing: an
+ * older binary may already have fetched the new checkout before this guard existed, and the
+ * `_apply-update` that runs is the NEW code's.
+ *
+ * The floor is Herdr's, so it binds only an install Herdr drives: an explicit `COLLIE_MUX` naming
+ * another multiplexer has no Herdr to be below it and is not asked, and an install that never chose
+ * a multiplexer and has no `herdr` on PATH is not a Herdr install either. With Herdr chosen and its
+ * CLI missing, or answering a version below the floor, the update refuses before anything moves.
+ */
+export function requireHerdrMinimum(deps: UpdateDeps): boolean {
+  const minimum = manifestMinHerdrFrom(deps.files.read(join(deps.ctx.root, "herdr-plugin.toml")));
+  if (minimum === null) return true;
+  const mux = explicitMux(deps.ctx.env);
+  if (mux !== null && mux !== HERDR_MUX) return true;
+  if (deps.exec.which("herdr") === null) {
+    if (mux === null) return true;
+    deps.io.err(`error: Collie requires Herdr ${minimum}+; the Herdr CLI is not on PATH.`);
+    return false;
+  }
+  const asked = deps.exec.capture("herdr", ["--version"]);
+  const current = asked.found && asked.code === 0 ? parseHerdrVersion(asked.stdout) : null;
+  if (current === null || compareSemver(minimum, current) > 0) {
+    deps.io.err(`error: Collie requires Herdr ${minimum}+ (found ${current ?? "unknown"}).`);
+    deps.io.err("       Upgrade Herdr, then rerun: herdr plugin action invoke update --plugin herdr.collie");
+    return false;
+  }
+  return true;
 }
 
 // The sentences a "nothing to take" verdict prints. They live here, once, because BOTH update paths
@@ -755,6 +799,7 @@ function nudgeHooks(deps: UpdateDeps, binary: string): void {
  * re-links so Herdr learns any newly added actions.
  */
 export async function cmdApplyUpdate(deps: UpdateDeps): Promise<number> {
+  if (!requireHerdrMinimum(deps)) return EXIT.FAIL;
   const built = cmdBuild(deps);
   if (built !== EXIT.OK) {
     // The checkout has already advanced, so this is the skew shape ADR 0006 exists to prevent: new
@@ -800,6 +845,9 @@ export async function cmdUpdate(deps: UpdateDeps, args: readonly string[] = []):
     }
     return await rollbackBinary(deps);
   }
+  // Before any path fetches anything: a Herdr below the manifest's floor is refused up front, so the
+  // checkout never advances onto code its Herdr cannot run the actions of.
+  if (!requireHerdrMinimum(deps)) return EXIT.FAIL;
   if (install.kind === "binary") return await updateBinary(deps, args);
   if (install.kind === "unknown") {
     deps.io.err(`error: cannot tell how this Collie was installed (${unknownEvidence(deps, install.why)}).`);
