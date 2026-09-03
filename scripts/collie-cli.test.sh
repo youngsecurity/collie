@@ -337,7 +337,7 @@ assert_contains "$(cat "$L_CALLS")" "systemctl --user enable --now collie"
 [ -f "$UNIT_FILE" ] || fail "start wrote no unit"
 UNIT="$(cat "$UNIT_FILE")"
 # The unit runs the BINARY — this is what takes Bun out of the runtime dependency set.
-assert_contains "$UNIT" "ExecStart=${ROOT}/bin/collie _exec-bridge"
+assert_contains "$UNIT" "ExecStart=\"${ROOT}/bin/collie\" \"_exec-bridge\""
 assert_contains "$UNIT" "Environment=COLLIE_PLUGIN_ROOT=${ROOT}"
 assert_contains "$UNIT" "EnvironmentFile=-${L_CONFIG}/.env"
 assert_contains "$UNIT" "StartLimitIntervalSec=0"
@@ -841,12 +841,12 @@ case "$(cat "$L_CALLS")" in
 esac
 V1_UNIT="$(cat "$V1_UNIT_FILE")"
 # The argv marker is what the pidfile guard tells the two bridges apart by — they share a binary path.
-assert_contains "$V1_UNIT" "ExecStart=${ROOT}/bin/collie _exec-bridge --instance v1"
+assert_contains "$V1_UNIT" "ExecStart=\"${ROOT}/bin/collie\" \"_exec-bridge\" \"--instance\" \"v1\""
 assert_contains "$V1_UNIT" "Environment=COLLIE_INSTANCE=v1"
 assert_contains "$V1_UNIT" "Environment=COLLIE_PORT=${V1_PORT}"
 assert_contains "$V1_UNIT" "Description=Collie (instance v1)"
 # …and the stable unit is untouched by any of it.
-assert_contains "$(cat "$UNIT_FILE")" "ExecStart=${ROOT}/bin/collie _exec-bridge"
+assert_contains "$(cat "$UNIT_FILE")" "ExecStart=\"${ROOT}/bin/collie\" \"_exec-bridge\""
 case "$(cat "$UNIT_FILE")" in *--instance*) fail "the stable unit grew an instance marker" ;; esac
 
 # Each instance's status describes ITSELF: its own unit, its own port, and never the other's.

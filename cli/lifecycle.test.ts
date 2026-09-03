@@ -234,7 +234,7 @@ describe("start, on systemd", () => {
     const h = harness();
     expect(await cmdStart(h.deps)).toBe(EXIT.OK);
     const unit = h.files.read(`${HOME}/.config/systemd/user/collie.service`);
-    expect(unit).toContain(`ExecStart=${BINARY} _exec-bridge`);
+    expect(unit).toContain(`ExecStart="${BINARY}" "_exec-bridge"`);
     expect(h.exec.calls).toContain("systemctl --user daemon-reload");
     expect(h.exec.calls).toContain("systemctl --user enable --now collie");
     expect(h.io.stdout).toContain("bridge started (systemd --user: collie)");
@@ -727,7 +727,7 @@ describe("the COLLIE_INSTANCE knob", () => {
     const h = harness({ instance: "v1" });
     expect(writeUnit(h.deps)).toBe(true);
     const unit = h.files.read(`${HOME}/.config/systemd/user/collie-v1.service`)!;
-    expect(unit).toContain(`ExecStart=${BINARY} _exec-bridge --instance v1`);
+    expect(unit).toContain(`ExecStart="${BINARY}" "_exec-bridge" "--instance" "v1"`);
     expect(unit).toContain("Environment=COLLIE_INSTANCE=v1");
     expect(unit).toContain("Description=Collie (instance v1)");
   });

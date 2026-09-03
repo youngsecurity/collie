@@ -68,7 +68,7 @@ StartLimitIntervalSec=0
 [Service]
 Type=simple
 WorkingDirectory=/opt/collie
-ExecStart=/opt/collie/bin/collie _exec-bridge
+ExecStart="/opt/collie/bin/collie" "_exec-bridge"
 Restart=on-failure
 RestartSec=5
 # Hardening: the bridge is remote shell access, so deny privilege escalation and give it a private
@@ -103,6 +103,20 @@ WantedBy=default.target
   test("never puts Bun on the runtime path", () => {
     expect(unit).not.toMatch(/\bbun\b/i);
   });
+
+  test("quotes every ExecStart element, so a whitespace-containing root stays one argument", () => {
+    // Unquoted, systemd splits `ExecStart=` on whitespace and execs `/opt/my` (203/EXEC). Quoted,
+    // the path is one item; a `"` or `\` inside it is escaped the way systemd.service(5) reads it.
+    const spaced = systemdUnit({ ...SPEC, root: "/opt/my collie", binary: "/opt/my collie/bin/collie" });
+    expect(spaced).toContain('ExecStart="/opt/my collie/bin/collie" "_exec-bridge"\n');
+    const odd = systemdUnit({ ...SPEC, binary: '/opt/a"b\\c/collie' });
+    expect(odd).toContain('ExecStart="/opt/a\\"b\\\\c/collie" "_exec-bridge"\n');
+    // The instance marker is quoted the same way, and `WorkingDirectory=` is a single-value
+    // directive that needs no quoting.
+    expect(systemdUnit({ ...SPEC, instance: "v1", port: 8788, binary: "/opt/my collie/bin/collie" })).toContain(
+      'ExecStart="/opt/my collie/bin/collie" "_exec-bridge" "--instance" "v1"\n',
+    );
+  });
 });
 
 describe("systemd/collie.service, the hand-managed reference", () => {
@@ -116,7 +130,7 @@ describe("systemd/collie.service, the hand-managed reference", () => {
   });
 
   test("runs the binary, not an interpreter", () => {
-    expect(reference).toContain("ExecStart=@PLUGIN_ROOT@/bin/collie _exec-bridge");
+    expect(reference).toContain('ExecStart="@PLUGIN_ROOT@/bin/collie" "_exec-bridge"');
   });
 });
 
@@ -223,7 +237,7 @@ describe("a suffixed instance", () => {
     const changed = v1.filter((line) => !solo.includes(line)).filter((l) => l !== "");
     expect(changed).toEqual([
       "Description=Collie (instance v1)",
-      "ExecStart=/opt/collie/bin/collie _exec-bridge --instance v1",
+      'ExecStart="/opt/collie/bin/collie" "_exec-bridge" "--instance" "v1"',
       "Environment=COLLIE_PORT=8788",
       "Environment=COLLIE_INSTANCE=v1",
     ]);

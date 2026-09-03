@@ -143,6 +143,18 @@ export function bakedTailscaleHosts(text: string | null): string {
   return plist === null ? "" : plist[1]!.trim();
 }
 
+/**
+ * One `ExecStart=` item, double-quoted the way systemd.service(5) reads it: the whole element is one
+ * argument, and a `"` or `\` inside it is backslash-escaped. An unquoted `ExecStart=` splits on
+ * whitespace, so a checkout under a path with a space in it (`~/Application Support/…`, a mounted
+ * volume named with one) would have systemd exec the first word of the binary's path and fail with
+ * a `203/EXEC` that names a file which does not exist. Every element is quoted, not only the ones
+ * that need it today, so the shape is one rule rather than a per-element judgement.
+ */
+function quoteUnitArg(arg: string): string {
+  return `"${arg.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
 export function systemdUnit(spec: ServiceSpec): string {
   const env = bridgeEnvironment(spec);
   return `[Unit]
@@ -154,7 +166,7 @@ StartLimitIntervalSec=0
 [Service]
 Type=simple
 WorkingDirectory=${spec.root}
-ExecStart=${bridgeCommand(spec).join(" ")}
+ExecStart=${bridgeCommand(spec).map(quoteUnitArg).join(" ")}
 Restart=on-failure
 RestartSec=5
 # Hardening: the bridge is remote shell access, so deny privilege escalation and give it a private
