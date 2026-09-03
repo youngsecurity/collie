@@ -18,7 +18,52 @@ PATH. Details and rollback: [`docs/upgrading.md`](./docs/upgrading.md) → *Upgr
 **Already on any 1.x?** `collie update`, or
 `herdr plugin action invoke update --plugin herdr.collie`, is enough.
 
+**On the Young Security fork** the crossing is `0.36.1+ys.1 → 1.1.0+ys.1` with the same two
+commands; the install script installs upstream, not the fork, so do not use it here. Herdr must be
+at least 0.8.0 first. Fork releases are `X.Y.Z+ys.N` and a `+ys` install only ever updates to
+`+ys` tags. See [`docs/install.md`](./docs/install.md#this-fork).
+
 ## [Unreleased]
+
+## [1.1.0+ys.1] - 2026-09-03
+
+Adopts upstream Collie 1.1.0 (youngsecurity/collie#10). The fork's deltas are re-applied on top as
+their own commits; the triage that drove it is `docs/adoption/v1.1.0-phase0-triage.md`.
+
+### Added
+
+- **Per-device terminal colours**: Settings → Terminal font gains text and background pickers, a **Matrix** preset (MesloLGS NF, `#00ff00` on `#000000`) and Reset; colours are absolute, never inverted in light mode, and the agent's explicit ANSI still wins (2938854, 6c28e65, d44bb54)
+- **MesloLGS NF** in the terminal font picker (7a3d99f)
+- **`vX.Y.Z+ys.N` release tags are understood by the updater and the banner**: a `+ys` install stays in the `+ys` family, the counter orders inside it, bare installs never see fork tags (92296e1, 79bbcb9)
+- **`update --major` on a linked clone fast-forwards to the next major's release tag**, never to the branch tip (4b96d59)
+- **`collie update` enforces the manifest's Herdr floor (0.8.0)** and says so when the running Herdr is older (43a6e91)
+
+### Fixed
+
+- **A password prompt is purged from both pane cache tiers**, so a failed poll cannot restore it from memory (ADR 0017) (0f69704)
+- "Last seen" on a stale render is the time of the screen actually shown; an empty successful read replaces the stale mirror (e4bb393)
+- A cached snapshot from an older build that no longer matches the response shape is a cache miss, not a cold-boot crash (4094336)
+- The connection bar and header report a pane read that fails while the herd snapshot succeeds (0443e98)
+- A second image paste during an in-flight upload is ignored (d2bcd2c)
+- **A loopback `Host` is accepted only from a direct loopback socket peer**; a write without `Origin` is forgiven only there (26dbdce)
+- A request carrying `Forwarded`, `Via` or any `X-Forwarded-*` header never gets the loopback-Host exception (21084c2)
+- Host comparison is canonical (case, trailing dot, default port); malformed `COLLIE_PUBLIC_HOSTS` / `COLLIE_TAILSCALE_HOSTS` entries are reported at startup; an uncanonicalizable `Origin` is refused (d6407b0)
+- The update banner's major link names the NEXT major, the one `--major` actually takes (a88bade)
+- Every `ExecStart` element of the systemd unit is quoted, so a path with spaces cannot split it (0da3c3e)
+- GIF uploads require the complete `GIF87a`/`GIF89a` signature (b8bde73)
+- An AGY dialog that merely mentions another harness keeps its buttons (b8bde73)
+- `collie-cli.test.sh` and `check-tag.test.sh` isolate `tag.gpgSign`, so a global signing config no longer hangs them (b8bde73)
+
+### Changed
+
+- **The terminal mirror does not wrap by default**; it pans column-faithfully, and "Wrap lines" in the Display sheet turns wrapping on per device (e783ebf)
+- **`COLLIE_ALLOWED_ORIGINS` no longer admits that origin's Host**: a custom hostname or extra TLS terminator must also be in `COLLIE_PUBLIC_HOSTS`; a remote peer with both host lists empty is refused as `host allowlist required` (171e3aa)
+- `COLLIE_UPDATE_REPO` defaults to `youngsecurity/collie`; `collie doctor`'s `update-source` reads `ok` on a fork checkout (e44f3ac)
+- Build stamps read `1.1.0+ys.1.<sha>` and dev builds `1.1.0-dev+ys.1` (92296e1)
+- `min_herdr_version = "0.8.0"` in the manifest (43a6e91)
+- Devices that used the fork's earlier "Terminal appearance" sheet keep their font and colours on first load; the composer's Palette button is gone, the controls live in Settings (2938854)
+- Fork releases stay source-only and hand-cut; `upstream-check.yml` is dropped, `release.yml` kept as the notes format (b8bde73)
+- Docs describe the fork: `CLAUDE.md`, `docs/install.md` "This fork", `docs/upgrading.md` "You run a fork", ADR 0020 and ADR 0002 fork amendments (ee8c203)
 
 ## [1.1.0] - 2026-09-01
 
