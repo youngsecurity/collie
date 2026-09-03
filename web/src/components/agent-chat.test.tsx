@@ -548,6 +548,45 @@ const WIZARD_TEXT = [
   "Enter to select · Tab/Arrow keys to navigate · Esc to cancel",
 ].join("\n");
 
+// The device's mirror colours (Young Security fork) must reach BOTH mirror surfaces, not only the
+// <pre>: the wrapper grounds the list around it and the statusline strip is the bottom of the same
+// pane. Either one left on the dark ground would show the seam the fork's <pre>-only version had.
+describe("AgentChat — the device's mirror colours reach both mirror surfaces", () => {
+  afterEach(() => localStorage.clear());
+
+  it("paints the <pre>, its wrapper and the statusline strip, and inverts none of them", () => {
+    localStorage.setItem(
+      "collie:display-prefs:v4",
+      JSON.stringify({ terminalForeground: "#00ff00", terminalBackground: "#000000" }),
+    );
+    const { container } = renderChat({ text: STATUS_TEXT });
+
+    const pre = container.querySelector("pre")!;
+    expect(pre.style.color).toBe("rgb(0, 255, 0)");
+    expect(pre.style.backgroundColor).toBe("rgb(0, 0, 0)");
+    expect(pre.className).not.toContain("[filter:invert(1)_hue-rotate(180deg)]");
+
+    const wrapper = pre.closest<HTMLElement>("[role=presentation]")!;
+    expect(wrapper.style.backgroundColor).toBe("rgb(0, 0, 0)");
+    expect(wrapper.style.getPropertyValue("--terminal-foreground")).toBe("#00ff00");
+
+    // The strip is the element carrying the statusline text in MIRROR_SPACE classes.
+    const strip = screen.getByText(/\[Opus 4\.8\]/).closest<HTMLElement>(".\\[color-scheme\\:dark\\]")!;
+    expect(strip).not.toBe(pre);
+    expect(strip.style.color).toBe("rgb(0, 255, 0)");
+    expect(strip.className).not.toContain("[filter:invert(1)_hue-rotate(180deg)]");
+  });
+
+  it("leaves an untouched install exactly as it was: dark ground, inverted in light", () => {
+    const { container } = renderChat({ text: STATUS_TEXT });
+    const pre = container.querySelector("pre")!;
+    expect(pre.style.color).toBe("");
+    expect(pre.className).toContain("[filter:invert(1)_hue-rotate(180deg)]");
+    const wrapper = pre.closest<HTMLElement>("[role=presentation]")!;
+    expect(wrapper.getAttribute("style")).toBeNull();
+  });
+});
+
 describe("AgentChat — prompt-select race guard wiring (frozen {text, revision} pair)", () => {
   const mockSubmit = vi.mocked(submitPromptOption);
   beforeEach(() => {

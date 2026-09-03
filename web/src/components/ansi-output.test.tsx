@@ -1,10 +1,81 @@
 import { describe, expect, it } from "vitest";
-import { render } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import type { ComponentProps } from "react";
 
 import { AnsiOutput } from "./ansi-output";
 
 const ESC = "\x1b";
+
+// The device's own mirror colours (Young Security fork). A DEFAULT foreground and ground, not a
+// palette: the agent's explicit colours win over them exactly as they win over #fafafa, and a
+// painted mirror is absolute, so it drops the light-theme inversion instead of negating the
+// operator's own choice (mirror-space.ts header, ADR 0002 fork amendment).
+describe("AnsiOutput — terminal colours", () => {
+  const MATRIX = { foreground: "#00ff00", background: "#000000" };
+
+  it("paints the <pre> in the configured colours and exposes them to inverse video", () => {
+    const { container } = render(<AnsiOutput text="plain" colors={MATRIX} />);
+    const pre = container.querySelector("pre")!;
+    expect(pre).toHaveStyle({ color: "#00ff00", backgroundColor: "#000000" });
+    expect(pre.style.getPropertyValue("--terminal-foreground")).toBe("#00ff00");
+    expect(pre.style.getPropertyValue("--terminal-background")).toBe("#000000");
+    // Still one <pre> in dark-space classes underneath: the inline style outranks them.
+    expect(pre.className).toContain("bg-[#0a0a0a]");
+  });
+
+  it("does not invert a painted mirror in light: the colours are absolute", () => {
+    const { container } = render(<AnsiOutput text="plain" colors={MATRIX} />);
+    const pre = container.querySelector("pre")!;
+    expect(pre.className).not.toContain("[filter:invert(1)_hue-rotate(180deg)]");
+    expect(pre.className).not.toContain("dark:[filter:none]");
+  });
+
+  it("drops the current find match's inner inversion too, since there is no outer one to cancel", () => {
+    const { container } = render(
+      <AnsiOutput text="find me" query="me" currentMatch={0} colors={MATRIX} />,
+    );
+    const hit = container.querySelector("[data-find-match]")!;
+    expect(hit.className).toContain("bg-yellow-400");
+    expect(hit.className).not.toContain("[filter:invert(1)_hue-rotate(180deg)]");
+  });
+
+  it("keeps explicit ANSI truecolor authoritative over the configured default foreground", () => {
+    render(<AnsiOutput text={`plain ${ESC}[38;2;255;165;216mexplicit${ESC}[0m`} colors={MATRIX} />);
+    expect(screen.getByText("explicit")).toHaveStyle({ color: "rgb(255, 165, 216)" });
+  });
+
+  it("preserves explicit ANSI on muted rules and otherwise uses the configured foreground", () => {
+    render(<AnsiOutput text={`${ESC}[38;2;255;165;216m────${ESC}[0m\n────`} colors={MATRIX} />);
+    const rules = screen.getAllByText("────");
+    expect(rules[0]).toHaveStyle({ color: "rgb(255, 165, 216)" });
+    expect(rules[1]).toHaveStyle({ color: "#00ff00" });
+  });
+
+  it("inherits the mirror defaults when appearance values are empty", () => {
+    const { container } = render(
+      <AnsiOutput text="────" colors={{ foreground: "", background: "" }} />,
+    );
+    const pre = container.querySelector("pre")!;
+    expect(pre.style.color).toBe("");
+    expect(pre.style.backgroundColor).toBe("");
+    expect(pre.style.getPropertyValue("--terminal-foreground")).toBe("");
+    // Untouched means untouched: the inversion is back and rule glyphs are on the dark-space grey.
+    expect(pre.className).toContain("[filter:invert(1)_hue-rotate(180deg)]");
+    expect(screen.getByText("────").style.color).toBe("rgb(161, 161, 161)");
+  });
+
+  it("paints one side alone and leaves the other on the mirror's own value", () => {
+    const { container } = render(
+      <AnsiOutput text="plain" colors={{ foreground: "#00ff00", background: "" }} />,
+    );
+    const pre = container.querySelector("pre")!;
+    expect(pre.style.color).toBe("rgb(0, 255, 0)");
+    expect(pre.style.backgroundColor).toBe("");
+    expect(pre.style.getPropertyValue("--terminal-background")).toBe("");
+    // One painted side is enough to make the surface absolute.
+    expect(pre.className).not.toContain("[filter:invert(1)_hue-rotate(180deg)]");
+  });
+});
 
 // The mirror renders in DARK space under every theme, and the light theme inverts it wholesale
 // (.adr/0002). These guard the two ways that arrangement silently breaks.

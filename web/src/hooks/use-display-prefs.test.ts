@@ -12,8 +12,10 @@ import {
   IOS_NO_ZOOM_FONT_PX,
   MATRIX_TERMINAL_COLORS,
   mirrorFont,
+  mirrorSurface,
   useDisplayPrefs,
 } from "./use-display-prefs";
+import { displayPrefs } from "@/test/display-prefs";
 
 // Minimal localStorage stub — Vitest/jsdom includes a real one but this ensures it's clean per test.
 const STORAGE_KEY = "collie:display-prefs:v4";
@@ -142,6 +144,35 @@ describe("useDisplayPrefs", () => {
     expect(cleanColor("#fff")).toBe("");
     expect(cleanColor("rgb(0,255,0)")).toBe("");
     expect(cleanColor("#00FF00")).toBe("#00ff00");
+  });
+
+  // mirrorSurface is mirrorFont plus the colours, and the untouched case must be byte-identical to
+  // mirrorFont("system"): no class, no style, no colours, so a surface renders from the stylesheet.
+  it("mirrorSurface writes nothing for an untouched install", () => {
+    const surface = mirrorSurface(displayPrefs());
+    expect(surface).toEqual({ className: "", style: undefined, colors: undefined });
+  });
+
+  it("mirrorSurface carries the font, the colours and the custom properties on one element", () => {
+    const surface = mirrorSurface(
+      displayPrefs({ fontFamily: "meslo", terminalForeground: "#00ff00", terminalBackground: "#000000" }),
+    );
+    expect(surface.className).toContain("[&_.font-mono]:[font-family:inherit]");
+    expect(surface.style).toEqual({
+      fontFamily: FONT_STACKS.meslo,
+      color: "#00ff00",
+      backgroundColor: "#000000",
+      "--terminal-foreground": "#00ff00",
+      "--terminal-background": "#000000",
+    });
+    expect(surface.colors).toEqual({ foreground: "#00ff00", background: "#000000" });
+  });
+
+  it("mirrorSurface writes only the side that is set, and colours without a font set no class", () => {
+    const surface = mirrorSurface(displayPrefs({ terminalBackground: "#000000" }));
+    expect(surface.className).toBe("");
+    expect(surface.style).toEqual({ backgroundColor: "#000000", "--terminal-background": "#000000" });
+    expect(surface.colors).toEqual({ foreground: "", background: "#000000" });
   });
 
   it("setTerminalColors normalises through cleanColor and \"\" restores a side", () => {

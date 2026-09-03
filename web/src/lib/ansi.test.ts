@@ -106,12 +106,14 @@ describe("parseAnsi — SGR colour & weight", () => {
     expect(parseAnsi(`${ESC}[38;2;10;20;30mx`)[0]!.fg).toBe("rgb(10,20,30)");
   });
 
-  it("swaps fg/bg for inverse video (7m), with sensible fallbacks", () => {
+  it("swaps fg/bg for inverse video (7m), with terminal appearance fallbacks", () => {
     const segs = parseAnsi(`${ESC}[7mx`);
-    // Literal dark-space values, not tokens — one spelling throughout the mirror (.adr/0002 rule 2).
-    // Same pixels either way; these are --background/--foreground's dark halves.
-    expect(segs[0]!.fg).toBe("#0a0a0a");
-    expect(segs[0]!.bg).toBe("#fafafa");
+    // The fallbacks are literal dark-space values, not theme tokens (.adr/0002 rule 2): they are
+    // --background/--foreground's dark halves. The `--terminal-*` properties are set only on a
+    // mirror surface the operator coloured (Young Security fork), so every other surface still
+    // resolves to the literal.
+    expect(segs[0]!.fg).toBe("var(--terminal-background, #0a0a0a)");
+    expect(segs[0]!.bg).toBe("var(--terminal-foreground, #fafafa)");
   });
 
   it("skips OSC sequences (window title) without leaking them into the text", () => {

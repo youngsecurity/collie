@@ -10,7 +10,7 @@ import {
   FONT_MAX,
   FONT_MIN,
   isFontFamily,
-  mirrorFont,
+  mirrorSurface,
   useDisplayPrefs,
   type FontFamily,
 } from "@/hooks/use-display-prefs";
@@ -63,7 +63,8 @@ export function FontSettingsControl() {
   useLocale();
   const { prefs, setFontFamily, stepFontSize, stepDraftFontSize } = useDisplayPrefs();
 
-  const sampleFace = mirrorFont(prefs.fontFamily);
+  // Font AND colours (fork): the sample is one line of the mirror, so it wears what the mirror wears.
+  const sampleFace = mirrorSurface(prefs);
 
   return (
     <Card className="gap-0 py-0">
@@ -197,7 +198,7 @@ export function FontSettingsControl() {
           className={cn(
             "h-12 overflow-hidden px-4 py-4 leading-none",
             MIRROR_SPACE,
-            MIRROR_INVERT,
+            sampleFace.colors === undefined && MIRROR_INVERT,
             sampleFace.className,
           )}
           style={sampleFace.style}

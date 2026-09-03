@@ -14,7 +14,14 @@ import {
   type PromptModel,
   type WizardModel,
 } from "@/lib/blocks";
-import { MIRROR_SPACE, MIRROR_INVERT, styleFor } from "@/components/mirror-space";
+import {
+  MIRROR_SPACE,
+  MIRROR_INVERT,
+  mirrorColorStyle,
+  styleFor,
+  type MirrorColorStyle,
+} from "@/components/mirror-space";
+import type { TerminalColors } from "@/hooks/use-display-prefs";
 import { findMatches, splitSegment, type FindMatch } from "@/lib/find";
 import { findLinks } from "@/lib/links";
 import { PromptSelectBlock, type PromptBlockAction } from "@/components/prompt-select-block";
@@ -50,6 +57,11 @@ export interface AnsiOutputProps {
   wrap?: boolean;
   /** Monospace font size in px. Default 11. */
   fontSize?: number;
+  /** The device's own mirror colours (Young Security fork). Either side "" or the whole thing
+   *  undefined leaves that side on the mirror's dark-space value. When either is set the <pre> is
+   *  painted in them, inverse video swaps them, uncoloured rule glyphs take the foreground, and the
+   *  light theme does NOT invert: they are absolute. The agent's explicit colours still win. */
+  colors?: TerminalColors;
   /** Active find query. Empty (the default) = not searching: the fast, allocation-free render path. */
   query?: string;
   /** Index of the focused match — highlighted stronger and scrolled into view. -1 = none. */
@@ -109,11 +121,13 @@ const NO_MATCHES: FindMatch[] = [];
 const LINK_CLASS =
   "underline decoration-1 underline-offset-2 break-all cursor-pointer py-[0.35em]";
 
-function preClass(wrap: boolean, className?: string): string {
+function preClass(wrap: boolean, invert: boolean, className?: string): string {
   return cn(
     "m-0 font-mono leading-[1.25] tracking-normal text-foreground [font-variant-ligatures:none]",
     MIRROR_SPACE,
-    MIRROR_INVERT,
+    // Off only for a surface the operator coloured by hand: those colours are absolute, so the
+    // light theme leaves them alone (mirror-space.ts header, ADR 0002 fork amendment).
+    invert && MIRROR_INVERT,
     wrap
       ? "whitespace-pre-wrap break-words"
       : // Horizontal pan for wide TUI tables. `overflow-x-auto` forces `overflow-y` to compute to
@@ -154,6 +168,7 @@ export const AnsiOutput = memo(function AnsiOutput({
   className,
   wrap = false,
   fontSize = 11,
+  colors,
   query = "",
   currentMatch = -1,
   onMatchCount,
@@ -222,8 +237,18 @@ export const AnsiOutput = memo(function AnsiOutput({
     currentRef.current?.scrollIntoView({ block: "center", behavior: "auto" });
   }, [currentMatch, matches]);
 
+  // The operator's colours, normalised to "none" when both sides are "" so an untouched install
+  // renders byte for byte as before: same classes, same inversion, same #a1a1a1 rule glyphs.
+  const paint =
+    colors !== undefined && (colors.foreground !== "" || colors.background !== "")
+      ? colors
+      : undefined;
+  const invert = paint === undefined;
   // Muted = box-drawing / rule glyphs. Drop ANSI dim opacity so table borders stay visible —
   // var(--border) + dim made them nearly invisible on mobile. See styleFor in mirror-space.ts.
+  const mutedForeground = paint?.foreground ?? "";
+  const preStyle: MirrorColorStyle = paint === undefined ? {} : mirrorColorStyle(paint);
+  preStyle.fontSize = `${fontSize}px`;
 
   const prompt = promptBlock ? (
     <PromptSelectBlock
@@ -301,7 +326,10 @@ export const AnsiOutput = memo(function AnsiOutput({
             // single inversion, which renders them as a pale tan wash with the mapped text on top.
             // See .adr/0002 — "cancel the filter only on an element that fully specifies both its
             // foreground and its background".
-            isCurrent ? cn(MIRROR_INVERT, "bg-yellow-400 text-black") : "bg-yellow-400/30",
+            //
+            // On a surface the operator coloured there is no outer filter to cancel, so the current
+            // match takes no inner one either: plain yellow, black text, exactly what it says.
+            isCurrent ? cn(invert && MIRROR_INVERT, "bg-yellow-400 text-black") : "bg-yellow-400/30",
           )}
         >
           {p.text}
@@ -339,7 +367,7 @@ export const AnsiOutput = memo(function AnsiOutput({
             const segStart = offset;
             offset += s.text.length;
             return (
-              <span key={si} style={styleFor(s)}>
+              <span key={si} style={styleFor(s, mutedForeground)}>
                 {renderSegment(s.text, segStart)}
               </span>
             );
@@ -363,7 +391,7 @@ export const AnsiOutput = memo(function AnsiOutput({
   return (
     <>
       {rawBlocks.length > 0 && (
-        <pre className={preClass(wrap, className)} style={{ fontSize: `${fontSize}px` }}>
+        <pre className={preClass(wrap, invert, className)} style={preStyle}>
           {rawBlocks.map(renderBlock)}
         </pre>
       )}

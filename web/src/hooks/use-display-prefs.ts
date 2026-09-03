@@ -1,5 +1,6 @@
 import { useCallback, useState } from "react";
 import type { CSSProperties } from "react";
+import { mirrorColorStyle, type MirrorColorStyle } from "@/components/mirror-space";
 import {
   asJsonBoolean,
   asJsonNumber,
@@ -214,6 +215,37 @@ export function mirrorFont(family: FontFamily): MirrorFont {
   const stack = fontStack(family);
   if (stack === undefined) return MIRROR_FONT_NONE;
   return { className: MIRROR_FONT_CLASS, style: { fontFamily: stack } };
+}
+
+/** What a mirror surface needs to render as this device configured it: the font (as mirrorFont)
+ *  AND the colours (Young Security fork), in one class+style pair, plus the colours themselves for
+ *  the two decisions a surface has to make on its own. */
+export interface MirrorSurface {
+  /** Goes on the surface, alongside its existing classes. */
+  className: string;
+  /** Goes on the same element's `style`: the font stack, the colours, and the `--terminal-*`
+   *  custom properties inverse video reads. Undefined when nothing was configured. */
+  style: MirrorColorStyle | undefined;
+  /** The operator's colours, or undefined when the mirror keeps its dark ground. A surface that
+   *  has them MUST NOT carry MIRROR_INVERT (they are absolute, ADR 0002 fork amendment) and hands
+   *  `foreground` to styleFor so uncoloured rule glyphs follow it. */
+  colors: TerminalColors | undefined;
+}
+
+/** mirrorFont plus the colours. The untouched install yields exactly what mirrorFont("system")
+ *  does: an empty class, no style, no colours, so every surface renders from the stylesheet alone.
+ *  The colours ride on the same element as the font for the same reason the font is an inline
+ *  style: on the mirror wrapper they reach the dialog blocks and the ground around the <pre>, and
+ *  the custom properties are inherited by every segment beneath, so nothing has to be threaded. */
+export function mirrorSurface(
+  prefs: Pick<DisplayPrefs, "fontFamily" | "terminalForeground" | "terminalBackground">,
+): MirrorSurface {
+  const font = mirrorFont(prefs.fontFamily);
+  const colors = customTerminalColors(prefs);
+  if (colors === undefined) return { className: font.className, style: font.style, colors };
+  const style: MirrorColorStyle = mirrorColorStyle(colors);
+  if (font.style !== undefined) style.fontFamily = font.style.fontFamily;
+  return { className: font.className, style, colors };
 }
 
 // NOT bumped for `tapToFocus`: loadPrefs defaults each field independently, so a v4 payload written

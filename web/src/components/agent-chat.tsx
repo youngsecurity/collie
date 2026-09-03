@@ -14,7 +14,7 @@ import { useSwipeUp } from "@/hooks/use-swipe";
 import { useKeyboardOpen } from "@/hooks/use-keyboard";
 import { useSpaceActions } from "@/hooks/use-spaces";
 import { useDashPrefs, openForCount } from "@/hooks/use-dash-prefs";
-import { mirrorFont, useDisplayPrefs } from "@/hooks/use-display-prefs";
+import { mirrorSurface, useDisplayPrefs } from "@/hooks/use-display-prefs";
 import { useStableTerminalDraft } from "@/hooks/use-terminal-draft";
 import { useLocale } from "@/hooks/use-locale";
 import { isConnecting } from "@/lib/connection";
@@ -163,7 +163,13 @@ export function AgentChat({
   // the two mirror surfaces below and NOWHERE else — see mirrorFont() for how, and why it is not a
   // custom property. Scoped to terminal CONTENT on purpose: app chrome that happens to be monospace
   // (the pane index badge, the cwd line) keeps the app's own face. Same boundary MIRROR_SPACE draws.
-  const mirrorFace = mirrorFont(prefs.fontFamily);
+  // The device's mirror colours (Young Security fork) ride on the same pair: on the wrapper they
+  // ground the whole list, not just the <pre>, and the `--terminal-*` properties they set are
+  // inherited by every segment beneath, dialog blocks included. `colors` also goes to AnsiOutput,
+  // whose <pre> must paint itself over its own MIRROR_SPACE classes and drop the light inversion.
+  // Memoised on `prefs` because `colors` is a prop of a React.memo component polled every second:
+  // a fresh object per render would re-render the whole mirror on every poll once colours are set.
+  const mirrorFace = useMemo(() => mirrorSurface(prefs), [prefs]);
   // Raw-terminal escape hatch: when on, every Claude grammar is bypassed and the plain mirror shows,
   // so a mis-detected/mis-rendered dialog can always be driven by hand with the keys pad.
   const grammarsOn = !prefs.rawTerminal;
@@ -1518,6 +1524,7 @@ export function AgentChat({
                     text={display}
                     wrap={prefs.wrap}
                     fontSize={prefs.fontSize}
+                    colors={mirrorFace.colors}
                     query={findOpen ? findQuery : ""}
                     currentMatch={findOpen ? currentMatch : -1}
                     onMatchCount={findOpen ? handleMatchCount : undefined}
@@ -1607,9 +1614,10 @@ export function AgentChat({
                     // dark space and inverts in light with it (ADR 0002) — a bright statusline colour is
                     // chosen against a near-black background and is illegible re-themed onto app chrome.
                     // It also makes the strip read as the bottom of the pane it was cut from, which is
-                    // where the TUI drew it.
+                    // where the TUI drew it. Unless the operator coloured the mirror by hand: then
+                    // the strip wears those colours, absolute, and inverts in neither theme.
                     MIRROR_SPACE,
-                    MIRROR_INVERT,
+                    mirrorFace.colors === undefined && MIRROR_INVERT,
                     mirrorFace.className,
                   )}
                   style={mirrorFace.style}
@@ -1621,7 +1629,7 @@ export function AgentChat({
                       {row.segments.map((s, si) => (
                         // Text nodes only — colour and weight come from the ANSI parse, never markup.
                         // Same XSS boundary as the mirror.
-                        <span key={si} style={styleFor(s)}>
+                        <span key={si} style={styleFor(s, mirrorFace.colors?.foreground)}>
                           {s.text}
                         </span>
                       ))}
