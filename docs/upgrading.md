@@ -86,7 +86,7 @@ prereleases.
 ```bash
 # newest stable release
 git ls-remote --tags --refs https://github.com/AltanS/collie | \
-  sed 's#.*refs/tags/##' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1
+  sed 's#.*refs/tags/##' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+(\+ys\.[0-9]+)?$' | sort -V | tail -1
 ```
 
 ### Prereleases

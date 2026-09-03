@@ -29,6 +29,7 @@ import {
   planUpdate,
   platformId,
   refreshRegistry,
+  releaseCore,
   releaseInMajor,
   trainInMajor,
   updateCheckout,
@@ -160,12 +161,12 @@ describe("one predicate, both decisions", () => {
 describe("parseRemoteTags", () => {
   test("keeps releases AND prereleases, and prefers the peeled commit of an annotated tag", () => {
     expect(parseRemoteTags(LS_REMOTE)).toEqual([
-      { tag: "v0.31.1", version: "0.31.1", major: 0, prerelease: null, commit: "a1a1a1a1" },
+      { tag: "v0.31.1", version: "0.31.1", major: 0, prerelease: null, fork: null, commit: "a1a1a1a1" },
       // b2peeled, NOT b2b2b2b2: the peeled line is the one that names a commit.
-      { tag: "v0.32.0", version: "0.32.0", major: 0, prerelease: null, commit: "b2peeled" },
-      { tag: "v1.0.0", version: "1.0.0", major: 1, prerelease: null, commit: "cccccccc" },
+      { tag: "v0.32.0", version: "0.32.0", major: 0, prerelease: null, fork: null, commit: "b2peeled" },
+      { tag: "v1.0.0", version: "1.0.0", major: 1, prerelease: null, fork: null, commit: "cccccccc" },
       // Parsed and carried — WHO may take it is `planUpdate`'s question, not the parser's.
-      { tag: "v1.1.0-rc.1", version: "1.1.0-rc.1", major: 1, prerelease: "rc.1", commit: "dddddddd" },
+      { tag: "v1.1.0-rc.1", version: "1.1.0-rc.1", major: 1, prerelease: "rc.1", fork: null, commit: "dddddddd" },
     ]);
     // A non-version ref is invisible to the verb, exactly as it is to the banner.
     expect(parseRemoteTags("y\trefs/heads/main\n")).toEqual([]);
@@ -181,6 +182,26 @@ describe("parseRemoteTags", () => {
       "",
     ].join("\n");
     expect(parseRemoteTags(junk)).toEqual([]);
+  });
+
+  test("this fork's +ys.N tags are carried with their counter; other metadata is dropped", () => {
+    const fork = [
+      "a\trefs/tags/v1.1.0",
+      "b\trefs/tags/v1.1.0+ys.1",
+      "c\trefs/tags/v1.1.0+ys.2",
+      "cpeeled\trefs/tags/v1.1.0+ys.2^{}",
+      "d\trefs/tags/v1.2.0-rc.1+ys.1",
+      "e\trefs/tags/v1.1.0+other.1",
+      "",
+    ].join("\n");
+    expect(parseRemoteTags(fork)).toEqual([
+      { tag: "v1.1.0", version: "1.1.0", major: 1, prerelease: null, fork: null, commit: "a" },
+      // `version` is what the tag NAMES: reduced to `1.1.0` it would read as current against the
+      // bare upstream release, and its release link would point at a tag the fork never cut.
+      { tag: "v1.1.0+ys.1", version: "1.1.0+ys.1", major: 1, prerelease: null, fork: 1, commit: "b" },
+      { tag: "v1.1.0+ys.2", version: "1.1.0+ys.2", major: 1, prerelease: null, fork: 2, commit: "cpeeled" },
+      { tag: "v1.2.0-rc.1+ys.1", version: "1.2.0-rc.1+ys.1", major: 1, prerelease: "rc.1", fork: 1, commit: "d" },
+    ]);
   });
 });
 
@@ -220,9 +241,9 @@ describe("planUpdate", () => {
   test("a routine update takes the newest release of its own major and names the one above", () => {
     expect(plan("0.31.1", "a1a1a1a1")).toEqual({
       kind: "advance",
-      target: { tag: "v0.32.0", version: "0.32.0", major: 0, prerelease: null, commit: "b2peeled" },
+      target: { tag: "v0.32.0", version: "0.32.0", major: 0, prerelease: null, fork: null, commit: "b2peeled" },
       crossesMajor: false,
-      higher: { tag: "v1.0.0", version: "1.0.0", major: 1, prerelease: null, commit: "cccccccc" },
+      higher: { tag: "v1.0.0", version: "1.0.0", major: 1, prerelease: null, fork: null, commit: "cccccccc" },
     });
   });
 
@@ -307,7 +328,7 @@ describe("planUpdate", () => {
   });
 
   test("an unreadable version falls back to the newest RELEASE, never to origin HEAD", () => {
-    const newest = { tag: "v1.0.0", version: "1.0.0", major: 1, prerelease: null, commit: "cccccccc" };
+    const newest = { tag: "v1.0.0", version: "1.0.0", major: 1, prerelease: null, fork: null, commit: "cccccccc" };
     expect(plan(null, "zzz")).toEqual({ kind: "unknown-version", newest });
     expect(plan("unknown", "zzz")).toEqual({ kind: "unknown-version", newest });
   });
@@ -902,11 +923,35 @@ describe("parseApiTags", () => {
         { name: "v1.0.0-", sha: "junk" },
       ]),
     ).toEqual([
-      { tag: "v0.32.0", version: "0.32.0", major: 0, prerelease: null, commit: "b2peeled" },
-      { tag: "v1.0.0", version: "1.0.0", major: 1, prerelease: null, commit: "cccccccc" },
+      { tag: "v0.32.0", version: "0.32.0", major: 0, prerelease: null, fork: null, commit: "b2peeled" },
+      { tag: "v1.0.0", version: "1.0.0", major: 1, prerelease: null, fork: null, commit: "cccccccc" },
     ]);
     // The same anchor as the git path and the banner: a tag one would drop, all three drop.
     expect(parseApiTags([{ name: "release-v1.0.0", sha: "x" }])).toEqual([]);
+  });
+
+  test("reads this fork's +ys.N tags the way parseRemoteTags does", () => {
+    expect(
+      parseApiTags([
+        { name: "v1.1.0+ys.1", sha: "b" },
+        { name: "v1.1.0+other.1", sha: "e" },
+      ]),
+    ).toEqual([{ tag: "v1.1.0+ys.1", version: "1.1.0+ys.1", major: 1, prerelease: null, fork: 1, commit: "b" }]);
+  });
+});
+
+describe("releaseCore", () => {
+  test("strips the build sha and the -dev/-dirty marker, keeps prerelease and fork counter", () => {
+    expect(releaseCore("1.0.0-beta.46+ab12cd3")).toBe("1.0.0-beta.46");
+    expect(releaseCore("1.0.0-beta.46-dev")).toBe("1.0.0-beta.46");
+    expect(releaseCore("1.0.0-dev+ab12cd3")).toBe("1.0.0");
+    expect(releaseCore("1.0.0")).toBe("1.0.0");
+    // The fork counter is part of the version: a `+ys.1` bundle is not the `+ys.2` manifest.
+    expect(releaseCore("1.1.0+ys.1")).toBe("1.1.0+ys.1");
+    expect(releaseCore("1.1.0+ys.1.ab12cd3")).toBe("1.1.0+ys.1");
+    expect(releaseCore("1.1.0-dev+ys.1.ab12cd3-dirty")).toBe("1.1.0+ys.1");
+    expect(releaseCore("1.2.0-beta.1-dev+ys.2.ab12cd3")).toBe("1.2.0-beta.1+ys.2");
+    expect(releaseCore("1.1.0+ys.1.ab12cd3")).not.toBe(releaseCore("1.1.0+ys.2"));
   });
 });
 

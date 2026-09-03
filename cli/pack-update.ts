@@ -1,5 +1,6 @@
 import { DEFAULT_PORT } from "../bridge/config.ts";
 import type { OpsRecord } from "../bridge/pack/ops-store.ts";
+import { buildStamp } from "../bridge/version.ts";
 import type { TrustedMember, TrustStoreData } from "../bridge/pack/trust-store.ts";
 import { collieVersionBare } from "./context.ts";
 import { EXIT } from "./io.ts";
@@ -488,18 +489,20 @@ async function workOne(
 }
 
 // ── What "it came back running what we pushed" means ─────────────────────────
-// A built Collie reports `<semver>+<short sha>` (`bridge/version.ts`, from the build stamp) — so the
+// A built Collie reports `<semver>+<short sha>` (`bridge/version.ts`'s `buildStamp`), so the
 // version the MANIFEST carries is only half of the string a levelled member answers with. Comparing
 // against that half alone is what made the first field run warn `answers as 1.0.0-beta.4+fd1a9b3,
 // not 1.0.0-beta.4` about a member that was running exactly the commit this lead had just pushed,
-// directly under a ✓ that called the same string a success.
+// directly under a ✓ that called the same string a success. On this fork the manifest version
+// already carries metadata (`1.1.0+ys.1`) and the sha lands after a DOT (`1.1.0+ys.1.fd1a9b3`), so
+// both halves here are spelled through `buildStamp` rather than by a second `+`.
 
 /** The full string this lead expects back: the commit's version, stamped with the commit's own sha. */
 function expectedAnswer(deps: Wired, version: string, commit: string): string {
   // `--short` rather than a fixed slice: git's abbreviation length is what the build stamp records,
   // so this is the string this lead itself answers with once it has built the same commit.
   const short = gitOut(deps, ["rev-parse", "--short", commit]) || commit.slice(0, 7);
-  return `${version}+${short}`;
+  return buildStamp(version, short);
 }
 
 /**
@@ -510,12 +513,16 @@ function expectedAnswer(deps: Wired, version: string, commit: string): string {
  * than this one does — and it stays a mismatch the moment the digits disagree, or a `-dirty`/`-dev`
  * marker says the build is not that commit. A member with no build stamp at all can only report its
  * manifest version; that is the version it was given, and it is not evidence against the push.
+ *
+ * The sha is whatever follows the version plus ONE separator, and that separator is the one
+ * `buildStamp` would have used for this version, so `1.1.0+ys.1.fd1a9b3` answers for `1.1.0+ys.1`,
+ * and `1.1.0+ys.2.fd1a9b3` does not, because the counter is part of the version.
  */
 export function answersThisBuild(reported: string, version: string, commit: string): boolean {
-  const plus = reported.indexOf("+");
-  if (plus < 0) return reported === version;
-  if (reported.slice(0, plus) !== version) return false;
-  const build = reported.slice(plus + 1);
+  if (reported === version) return true;
+  const stamped = buildStamp(version, "");
+  if (!reported.startsWith(stamped)) return false;
+  const build = reported.slice(stamped.length);
   return build.length >= 4 && commit.toLowerCase().startsWith(build.toLowerCase());
 }
 

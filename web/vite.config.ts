@@ -117,12 +117,22 @@ const pkgVersion = (
 ).version;
 const buildSha = gitSha();
 const buildTime = new Date().toISOString();
-const stampedVersion = isReleaseBuild(pkgVersion) ? pkgVersion : `${pkgVersion}-dev`;
+// The `-dev` marker lands BEFORE any `+build` metadata the version already carries, so the result
+// stays one SemVer string. This fork versions itself `X.Y.Z+ys.N`; appended blindly the marker would
+// read `1.1.0+ys.1-dev`, which hides `-dev` inside the metadata where `src/lib/build.ts` cannot strip
+// it and `bridge/version.ts` cannot tell it from part of the counter. `1.1.0-dev+ys.1` keeps both
+// halves where their readers look for them. Same rule for the sha: `bridge/version.ts`'s `buildStamp`
+// appends it as a further dotted identifier when metadata is already present, never as a second `+`.
+const plusAt = pkgVersion.indexOf("+");
+const versionCore = plusAt < 0 ? pkgVersion : pkgVersion.slice(0, plusAt);
+const versionMeta = plusAt < 0 ? [] : [pkgVersion.slice(plusAt + 1)];
+const stampedCore = isReleaseBuild(pkgVersion) ? versionCore : `${versionCore}-dev`;
+const stampedVersion = [stampedCore, ...versionMeta].join("+");
 const BUILD_INFO = {
   version: stampedVersion,
   sha: buildSha,
   time: buildTime,
-  id: `${stampedVersion}+${buildSha}.${Math.floor(Date.parse(buildTime) / 1000)}`,
+  id: `${stampedCore}+${[...versionMeta, buildSha, Math.floor(Date.parse(buildTime) / 1000)].join(".")}`,
 };
 
 // Emit dist/build-info.json so the bridge can read the current build id. Kept out of the SW precache

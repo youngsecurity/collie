@@ -38,10 +38,12 @@ die() { echo "collie install: $1" >&2; exit 1; }
 # Checked here, before anything is fetched or touched, because a typo in a pinned tag would otherwise
 # only surface as a 404 three requests later. The shape is the one the tag list is filtered by, so a
 # prerelease pins fine and needs no --beta: naming it IS the opt-in.
+# This fork tags its releases `vX.Y.Z+ys.N` (upstream's base plus a fork counter); the optional
+# `+ys.N` group below is that, and nothing else may follow the core.
 PIN="${COLLIE_TAG:-}"
 if [ -n "$PIN" ]; then
-  printf '%s\n' "$PIN" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$' ||
-    die "COLLIE_TAG='$PIN' is not a release tag. It has to look like v1.0.0, or v1.0.0-beta.49 for a prerelease."
+  printf '%s\n' "$PIN" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?(\+ys\.[0-9]+)?$' ||
+    die "COLLIE_TAG='$PIN' is not a release tag. It has to look like v1.0.0 or v1.0.0+ys.1, or v1.0.0-beta.49 for a prerelease."
 fi
 
 # ── What has to be here already ──────────────────────────────────────────────
@@ -128,9 +130,9 @@ else
   # grep, not a JSON parser, and the install stays dependency-light (no jq).
   TAGS=$(tr ',{}' '\n\n\n' < "$TMP/tags.json" | grep -o '"name":[[:space:]]*"[^"]*"' | sed 's/.*"\([^"]*\)"$/\1/' || true)
   if [ "$BETA" -eq 1 ]; then
-    TAG=$(printf '%s\n' "$TAGS" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$' | sort -V | tail -1 || true)
+    TAG=$(printf '%s\n' "$TAGS" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?(\+ys\.[0-9]+)?$' | sort -V | tail -1 || true)
   else
-    TAG=$(printf '%s\n' "$TAGS" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)
+    TAG=$(printf '%s\n' "$TAGS" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+(\+ys\.[0-9]+)?$' | sort -V | tail -1 || true)
   fi
   [ -n "${TAG:-}" ] || die "no release tag found for ${REPO}. Pass --beta to include prereleases, or report this at https://github.com/${REPO}/issues."
 fi

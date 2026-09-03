@@ -5,12 +5,15 @@ import {
   type ApiTag,
   compareSemver,
   followsTrain,
+  forkCounterOf,
   githubTagsUrl,
   majorOf,
   MANIFEST_SCHEMA_VERSION,
   parsePrereleaseTag,
   parseReleaseManifest,
   parseTagsResponse,
+  type PrereleaseTag,
+  versionOfTag,
 } from "../bridge/update.ts";
 import { manifestVersionFrom, readBuildInfo } from "../bridge/version.ts";
 import { type BuildDeps, cmdBuild } from "./build.ts";
@@ -83,24 +86,28 @@ export const REINSTALL_COMMAND = `herdr plugin install ${DEFAULT_UPDATE_REPO} --
 // Everything that decides WHICH commit to land on is a pure function over the remote's tag list, so
 // `bun test` covers the whole decision without a git remote.
 
-/** One `vX.Y.Z` or `vX.Y.Z-<tail>` tag, as the remote reports it. */
+/** One `vX.Y.Z`, `vX.Y.Z-<tail>` or `vX.Y.Z+ys.N` tag, as the remote reports it. */
 export interface ReleaseTag {
-  /** The ref name (`v1.2.3`, `v1.0.0-beta.44`) — what we fetch by, because a bare sha may not be a
-   *  valid want. A prerelease name needs no special handling downstream: `refs/tags/<tag>` is a ref
-   *  like any other. */
+  /** The ref name (`v1.2.3`, `v1.0.0-beta.44`, `v1.1.0+ys.1`), what we fetch by, because a bare sha
+   *  may not be a valid want. A prerelease or fork name needs no special handling downstream:
+   *  `refs/tags/<tag>` is a ref like any other. */
   tag: string;
-  /** Dotted version, no leading `v`. */
+  /** Dotted version, no leading `v`, fork counter included (`1.1.0+ys.1`). */
   version: string;
   major: number;
   /** The `-` tail (`beta.44`), or null for a strict release. A prerelease tag is a candidate ONLY for
    *  an install that itself carries a tail — see {@link planUpdate}. */
   prerelease: string | null;
+  /** This fork's `+ys.N` counter, or null for a bare upstream tag. A fork tag is a candidate ONLY for
+   *  an install that itself carries one, and a bare tag only for one that does not. */
+  fork: number | null;
   /** The commit the tag resolves to — the PEELED one for an annotated tag. */
   commit: string;
 }
 
 /** Just the strict releases. The candidate set for a stable install, for `--major`, and for pinning an
- *  unversioned checkout — none of those three ever touches a prerelease. */
+ *  unversioned checkout. None of those three ever touches a prerelease. A `+ys.N` tag with no `-`
+ *  tail IS strict: the counter is build metadata, not a prerelease. */
 const strictOnly = (tags: readonly ReleaseTag[]): ReleaseTag[] => tags.filter((t) => t.prerelease === null);
 
 /**
@@ -129,10 +136,22 @@ export function parseRemoteTags(stdout: string): ReleaseTag[] {
   return [...byTag].flatMap(([tag, { commit }]) => {
     const parsed = parsePrereleaseTag(tag);
     if (parsed === null) return [];
-    return [
-      { tag, version: tag.slice(1), major: parsed.triple[0], prerelease: parsed.prerelease, commit },
-    ];
+    return [releaseTagOf(tag, parsed, commit)];
   });
+}
+
+/** One `ReleaseTag` from a parsed name, so the two documents (`ls-remote` and the `/tags` API) fill
+ *  the same fields the same way. `version` is what the tag NAMES, counter included: a fork tag
+ *  reduced to its upstream base would fetch fine and then read as current against that base. */
+function releaseTagOf(tag: string, parsed: PrereleaseTag, commit: string): ReleaseTag {
+  return {
+    tag,
+    version: versionOfTag(parsed),
+    major: parsed.triple[0],
+    prerelease: parsed.prerelease,
+    fork: parsed.fork,
+    commit,
+  };
 }
 
 /** The highest tag among `tags` by full semver, or null when there is none. Filter FIRST — this does
@@ -561,16 +580,23 @@ export function refreshRegistry(deps: UpdateDeps): void {
 }
 
 /**
- * The version with its BUILD METADATA and its non-release marker taken off — `1.0.0-beta.46+ab12cd3`
- * and `1.0.0-beta.46-dev` both read as `1.0.0-beta.46`.
+ * The version with its BUILD SHA and its non-release marker taken off: `1.0.0-beta.46+ab12cd3`
+ * and `1.0.0-beta.46-dev` both read as `1.0.0-beta.46`, and `1.1.0-dev+ys.1.ab12cd3` reads as
+ * `1.1.0+ys.1`.
  *
- * Both tails have to go before the built bundle can be compared against the manifest. `+<sha>` is the
+ * Both tails have to go before the built bundle can be compared against the manifest. `<sha>` is the
  * commit the bundle came from, which the manifest never carries. `-dev`/`-dirty` are `vite.config.ts`
  * saying "this bundle is not a tagged release" — true on a linked clone mid-development, and true on
  * any checkout whose local `v<version>` tag is STALE, and in NEITHER case evidence that the build is
- * of a different version. A prerelease tail (`-beta.46`) is part of the version and stays.
+ * of a different version. A prerelease tail (`-beta.46`) is part of the version and stays, and so is
+ * this fork's `+ys.N` counter: a bundle built from `+ys.1` is not the `+ys.2` the manifest names.
  */
-const releaseCore = (v: string): string => (v.split("+")[0] ?? v).replace(/-(?:dev|dirty)$/, "");
+export const releaseCore = (v: string): string => {
+  const plus = v.indexOf("+");
+  const head = (plus < 0 ? v : v.slice(0, plus)).replace(/-(?:dev|dirty)$/, "");
+  const fork = forkCounterOf(v);
+  return fork === null ? head : `${head}+ys.${fork}`;
+};
 
 /**
  * Is there a working Collie on disk built from the version the manifest names?
@@ -761,15 +787,7 @@ export function parseApiTags(tags: readonly ApiTag[]): ReleaseTag[] {
     const name = t.name.trim();
     const parsed = parsePrereleaseTag(name);
     if (parsed === null) return [];
-    return [
-      {
-        tag: name,
-        version: name.slice(1),
-        major: parsed.triple[0],
-        prerelease: parsed.prerelease,
-        commit: t.sha,
-      },
-    ];
+    return [releaseTagOf(name, parsed, t.sha)];
   });
 }
 

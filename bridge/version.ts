@@ -66,8 +66,19 @@ export function bareVersionFrom(buildInfo: string | null, manifest: string | nul
 }
 
 /**
- * The built bundle's stamp — `1.0.0-beta.46`, or `1.0.0-beta.46+ab12cd3` when the file names a sha.
- * Null when there is no bundle, or none this can read a version out of.
+ * A version with a build sha stamped onto it, as valid SemVer build metadata. `1.0.0-beta.46` and
+ * `ab12cd3` join as `1.0.0-beta.46+ab12cd3`; a version that ALREADY carries metadata (this fork's
+ * `1.1.0+ys.1`) takes the sha as a further dot-separated identifier, `1.1.0+ys.1.ab12cd3`, never as a
+ * second `+`. Exported because `cli/pack-update.ts` has to predict the string a levelled member will
+ * answer with, and the one way to guarantee that prediction is to build it with the same function.
+ */
+export function buildStamp(version: string, sha: string): string {
+  return version.includes("+") ? `${version}.${sha}` : `${version}+${sha}`;
+}
+
+/**
+ * The built bundle's stamp: `1.0.0-beta.46`, or `1.0.0-beta.46+ab12cd3` when the file names a sha
+ * (joined by {@link buildStamp}). Null when there is no bundle, or none this can read a version out of.
  *
  * Exported for the same reason {@link manifestVersionFrom} is: `cli/update.ts` compares what is BUILT
  * against what the manifest names, and a second reader of this file would agree today and drift.
@@ -89,7 +100,7 @@ export function readBuildInfo(text: string | null): string | null {
     sha = /"sha"[ \t]*:[ \t]*"([^"]*)"/.exec(text)?.[1];
   }
   if (!version) return null;
-  return sha ? `${version}+${sha}` : version;
+  return sha ? buildStamp(version, sha) : version;
 }
 
 /** Read the two files {@link collieVersionFrom} judges. Missing/unreadable reads as absent. */

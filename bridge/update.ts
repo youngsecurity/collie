@@ -22,12 +22,26 @@ import type { UpdateStatus } from "./types.ts";
 // unit-tested; the network + filesystem live behind injected seams on {@link UpdateMonitor}, matching
 // the NotificationCoordinator/Snooze injection style.
 
-const SEMVER_TAG = /^v(\d+)\.(\d+)\.(\d+)$/;
+// Both anchors end in the fork's OPTIONAL `+ys.N` build-metadata group. This is the Young Security
+// fork: a release of this repo is tagged `vX.Y.Z+ys.N`, where `X.Y.Z` is the upstream base the fork
+// commits are rebased onto and `N` counts the fork's releases on that base. The group is spelled
+// literally (`ys`, never `[0-9A-Za-z-]+`) so a tag carrying any OTHER build metadata
+// (`v1.1.0+other.1`) is still rejected: remote refs stay untrusted input, and only this fork's own
+// train is a release here. A bare upstream `vX.Y.Z` still parses, so the family filter downstream
+// has something to exclude rather than something it never saw.
+const FORK_TAIL = "(?:\\+ys\\.(\\d+))?";
+const SEMVER_TAG = new RegExp(`^v(\\d+)\\.(\\d+)\\.(\\d+)${FORK_TAIL}$`);
 // The same anchor with an OPTIONAL `-prerelease` tail (`v1.0.0-beta.44`, `v1.0.0-rc.1`). Dot-separated
 // identifiers of `[0-9A-Za-z-]` only, anchored at both ends, so a ref name with a slash, an empty
 // identifier (`v1.0.0-beta..1`) or a bare trailing hyphen (`v1.0.0-`) is still rejected — remote refs
 // stay untrusted input.
-const PRERELEASE_SEMVER_TAG = /^v(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
+const PRERELEASE_SEMVER_TAG = new RegExp(
+  `^v(\\d+)\\.(\\d+)\\.(\\d+)(?:-([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?${FORK_TAIL}$`,
+);
+// The `+ys.N` counter of a DOTTED version (`1.1.0+ys.2`), including one with a build sha appended
+// the way `bridge/version.ts`'s `buildStamp` does it (`1.1.0-dev+ys.2.ab12cd3`): the counter is the
+// first metadata identifier pair, and whatever follows the next dot is the sha.
+const FORK_COUNTER = /^[^+]*\+ys\.(\d+)(?:\.|$)/;
 // The upstream tag check is bounded — a hung request must never wedge the monitor's timer.
 const TAGS_TIMEOUT_MS = 10_000;
 // bridgeStale is read on every snapshot poll; recompute the on-disk stamp at most this often so a
@@ -52,15 +66,28 @@ const STALE_TTL_MS = 5_000;
  *
  *  Anything outside Collie resolving "the newest release" must read git tags, never
  *  `releases/latest`: docs/upgrading.md -> *Resolving the newest release from a script*. */
-export function parseSemverTag(tag: string): [number, number, number] | null {
+export function parseSemverTag(tag: string): ReleaseTag | null {
   const m = SEMVER_TAG.exec(tag.trim());
-  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+  if (!m) return null;
+  const fork = m[4];
+  return {
+    triple: [Number(m[1]), Number(m[2]), Number(m[3])],
+    fork: fork === undefined ? null : Number(fork),
+  };
+}
+
+/** A STRICT tag parsed by {@link parseSemverTag}: the numeric triple, plus this fork's `+ys.N`
+ *  counter when the tag carries one. */
+export interface ReleaseTag {
+  triple: [number, number, number];
+  /** `N` of a `+ys.N` tag, or null for a bare upstream tag. Which of the two an install may take is
+   *  a property of the INSTALLED version, exactly as prerelease-following is: see {@link forkCounterOf}. */
+  fork: number | null;
 }
 
 /** A tag parsed by {@link parsePrereleaseTag}: the numeric triple, plus the `-` tail kept apart
- *  because a prerelease sorts BELOW the release it leads to. */
-export interface PrereleaseTag {
-  triple: [number, number, number];
+ *  because a prerelease sorts BELOW the release it leads to, plus the fork counter. */
+export interface PrereleaseTag extends ReleaseTag {
   /** `beta.44`, `rc.1` — or null when the tag is a strict release. */
   prerelease: string | null;
 }
@@ -72,16 +99,33 @@ export function parsePrereleaseTag(tag: string): PrereleaseTag | null {
   const m = PRERELEASE_SEMVER_TAG.exec(tag.trim());
   if (!m) return null;
   const tail = m[4];
+  const fork = m[5];
   return {
     triple: [Number(m[1]), Number(m[2]), Number(m[3])],
     prerelease: tail === undefined ? null : tail,
+    fork: fork === undefined ? null : Number(fork),
   };
 }
 
-/** The dotted version a parsed tag names (`1.0.0`, `1.0.0-beta.44`) — what {@link compareSemver} eats. */
-export function versionOfTag(parsed: PrereleaseTag): string {
+/** The dotted version a parsed tag names (`1.0.0`, `1.0.0-beta.44`, `1.1.0+ys.1`), what
+ *  {@link compareSemver} eats, and what {@link githubReleaseUrl} links to. The fork counter is part of
+ *  the name: a `+ys.1` tag dropped to `1.1.0` would link to a release page that does not exist on
+ *  the fork, and would read as "already current" against an install on the bare upstream `1.1.0`. */
+export function versionOfTag(parsed: ReleaseTag & { prerelease?: string | null }): string {
   const triple = parsed.triple.join(".");
-  return parsed.prerelease === null ? triple : `${triple}-${parsed.prerelease}`;
+  const pre = parsed.prerelease ?? null;
+  const core = pre === null ? triple : `${triple}-${pre}`;
+  return parsed.fork === null ? core : `${core}+ys.${parsed.fork}`;
+}
+
+/** The `+ys.N` counter of a dotted version (`1.1.0+ys.2` → 2, `1.1.0-dev+ys.2.ab12cd3` → 2), or null
+ *  for a bare upstream version (`1.1.0`, `1.1.0+ab12cd3`). THE predicate for the fork FAMILY: an
+ *  install whose version carries a counter is on this fork's train and sees only `+ys` releases; one
+ *  without is on upstream's and sees only bare tags. The answer is read off the installed version,
+ *  never a flag, for the reason {@link isPrereleaseVersion} gives. */
+export function forkCounterOf(version: string): number | null {
+  const m = FORK_COUNTER.exec(version.trim());
+  return m ? Number(m[1]) : null;
 }
 
 /** The numeric triple of a dotted version, with any `+build` tail dropped. The `-prerelease` tail is
@@ -163,7 +207,7 @@ export function isPrereleaseVersion(version: string): boolean {
 /** The newest STRICT release WITHIN `major`, dotted, or null — the target a routine `update` may take
  *  (ADR 0020). */
 export function latestReleaseInMajor(tags: string[], major: number): string | null {
-  return latestReleaseTag(tags.filter((t) => parseSemverTag(t)?.[0] === major));
+  return latestReleaseTag(tags.filter((t) => parseSemverTag(t)?.triple[0] === major));
 }
 
 /**
@@ -213,19 +257,20 @@ export function latestReleaseAboveMajor(tags: string[], major: number): string |
   return latestReleaseTag(
     tags.filter((t) => {
       const parts = parseSemverTag(t);
-      return parts !== null && parts[0] > major;
+      return parts !== null && parts.triple[0] > major;
     }),
   );
 }
 
-/** The newest release among `tags`, as a dotted `X.Y.Z` (leading `v` stripped to match
- *  package.json's `version`), or null if none parse as a strict release tag. */
+/** The newest release among `tags`, as the dotted version the tag names (`X.Y.Z`, or `X.Y.Z+ys.N` on
+ *  this fork; leading `v` stripped to match package.json's `version`), or null if none parse as a
+ *  strict release tag. */
 export function latestReleaseTag(tags: string[]): string | null {
   let best: string | null = null;
   for (const tag of tags) {
     const parts = parseSemverTag(tag);
     if (!parts) continue;
-    const v = parts.join(".");
+    const v = versionOfTag(parts);
     if (best === null || compareSemver(v, best) > 0) best = v;
   }
   return best;
@@ -282,7 +327,11 @@ export function bridgeStampSync(bridgeDir: string, rootDir: string): string {
 
 /** The GitHub release page for a version, e.g. `…/releases/tag/v0.12.0`. Collie tags are `vX.Y.Z`
  *  (the versioning convention), so the `v` prefix is reconstructed from the bare version. GitHub
- *  serves the tag page even when there's no formal release attached, so this is always a live link. */
+ *  serves the tag page even when there's no formal release attached, so this is always a live link.
+ *
+ *  A fork tag's `+` stays LITERAL (`…/releases/tag/v1.1.0+ys.1`). GitHub resolves the literal form
+ *  (checked against the fork's own published tags), and it is the spelling `git tag` and the release
+ *  page both show, so the link an operator reads is the tag they would type. */
 export function githubReleaseUrl(repo: string, version: string): string {
   return `https://github.com/${repo}/releases/tag/v${version}`;
 }

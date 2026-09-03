@@ -453,6 +453,22 @@ describe("answersThisBuild", () => {
     expect(answersThisBuild(`${VERSION}+${SHORT}-dirty`, VERSION, COMMIT)).toBe(false);
     expect(answersThisBuild(`${VERSION}-dev+${SHORT}`, VERSION, COMMIT)).toBe(false);
   });
+
+  test("this fork's +ys.N versions carry the sha after a dot, and the counter is part of the version", () => {
+    // `bridge/version.ts`'s buildStamp: metadata already present, so the sha is a further identifier.
+    const fork = `${VERSION}+ys.1`;
+    expect(answersThisBuild(`${fork}.${SHORT}`, fork, COMMIT)).toBe(true);
+    expect(answersThisBuild(`${fork}.${COMMIT}`, fork, COMMIT)).toBe(true);
+    expect(answersThisBuild(fork, fork, COMMIT)).toBe(true); // unstamped member, as above
+    expect(answersThisBuild(`${fork}.beefbee`, fork, COMMIT)).toBe(false);
+    expect(answersThisBuild(`${fork}.${SHORT}-dirty`, fork, COMMIT)).toBe(false);
+    expect(answersThisBuild(`${VERSION}-dev+ys.1.${SHORT}`, fork, COMMIT)).toBe(false);
+    // The counter is version, not build: a `+ys.2` member did not take a `+ys.1` push, and a bare
+    // upstream build answers for neither.
+    expect(answersThisBuild(`${VERSION}+ys.2.${SHORT}`, fork, COMMIT)).toBe(false);
+    expect(answersThisBuild(`${VERSION}+${SHORT}`, fork, COMMIT)).toBe(false);
+    expect(answersThisBuild(`${fork}.${SHORT}`, VERSION, COMMIT)).toBe(false);
+  });
 });
 
 // ── The ops record ───────────────────────────────────────────────────────────

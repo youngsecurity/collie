@@ -126,4 +126,24 @@ assert_contains "$out" "no release to tag"
 out="$(run_script "$d" "HEAD..HEAD")" || fail "an empty range must pass: $out"
 assert_contains "$out" "no release to tag"
 
+# ── 7. This fork's `X.Y.Z+ys.N` versions, in both modes ───────────────────
+# The `+` is read from the manifest and the CHANGELOG heading verbatim and reaches `refs/tags/`
+# verbatim: a fork release is tagged `v1.1.0+ys.1`, and `v1.1.0` (upstream's tag) must not satisfy it.
+setup_case fork
+d="$TMP_ROOT/fork"
+release_commit "$d" 1.1.0+ys.1 "chore(release): 1.1.0+ys.1"
+git -C "$d" tag -a v1.1.0 -m "Collie 1.1.0"        # the upstream base, not the fork release
+if out="$(run_script "$d")"; then fail "an untagged fork release must fail: $out"; fi
+assert_contains "$out" 'git tag -a v1.1.0+ys.1'
+assert_contains "$out" 'Collie 1.1.0+ys.1'
+git -C "$d" tag -a v1.1.0+ys.1 -m "Collie 1.1.0+ys.1"
+out="$(run_script "$d")" || fail "a tagged fork release must pass: $out"
+assert_contains "$out" "✓"
+base="$(git -C "$d" rev-parse HEAD)"
+release_commit "$d" 1.1.0+ys.2 "chore(release): 1.1.0+ys.2"
+rel="$(git -C "$d" rev-parse --short HEAD)"
+if out="$(run_script "$d" "${base}..HEAD")"; then fail "an untagged fork release in range must fail: $out"; fi
+assert_contains "$out" "git tag -a v1.1.0+ys.2 ${rel}"
+assert_lacks "$out" 'git tag -a v1.1.0+ys.1'
+
 echo "✓ check-tag.test.sh — all cases passed"

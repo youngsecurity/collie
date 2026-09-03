@@ -39,6 +39,17 @@ describe("prereleaseLabel — what the alpha bar keys off", () => {
     expect(prereleaseLabel("1.0.0-alpha.3-dev")).toBe("ALPHA");
   });
 
+  it("reads this fork's `+ys.N` versions the same way, -dev marker included", () => {
+    // The fork's release version carries build metadata; a stable fork build is still stable…
+    expect(prereleaseLabel("1.1.0+ys.1")).toBeUndefined();
+    // …and vite.config.ts lands `-dev` BEFORE the metadata, where it must not read as a prerelease.
+    expect(prereleaseLabel("1.1.0-dev+ys.1")).toBeUndefined();
+    expect(prereleaseLabel("1.1.0-dev+ys.1.ab12cd3")).toBeUndefined();
+    // A fork prerelease keeps its train name through both.
+    expect(prereleaseLabel("1.2.0-beta.1+ys.1")).toBe("BETA");
+    expect(prereleaseLabel("1.2.0-beta.1-dev+ys.1")).toBe("BETA");
+  });
+
   it("falls back to a generic label for a numeric-only tag", () => {
     expect(prereleaseLabel("1.0.0-1")).toBe("PRERELEASE");
   });

@@ -75,7 +75,7 @@ For prereleases, pass `--beta`; see [Prereleases](upgrading.md#prereleases).
 # 1. Clone and checkout latest stable tag
 git clone https://github.com/AltanS/collie.git ~/.local/share/collie
 cd ~/.local/share/collie
-git checkout --detach "$(git tag --list 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)"
+git checkout --detach "$(git tag --list 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+(\+ys\.[0-9]+)?$' | sort -V | tail -1)"
 
 # 2. Build runtime and UI
 sh scripts/collie-ctl.sh build

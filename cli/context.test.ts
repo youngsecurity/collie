@@ -375,6 +375,16 @@ describe("version", () => {
     expect(collieVersionFrom("{}", MANIFEST)).toBe("0.24.2 (manifest; web not built)");
   });
 
+  test("this fork's +ys.N version takes the sha as a further identifier, never a second +", () => {
+    // `1.1.0+ys.1+f76be58` is not SemVer; `1.1.0+ys.1.f76be58` is, and `forkCounterOf` still reads
+    // the counter off it. A `-dev` marker sits ahead of the metadata (web/vite.config.ts).
+    expect(collieVersionFrom('{"version":"1.1.0+ys.1","sha":"f76be58"}', MANIFEST)).toBe("1.1.0+ys.1.f76be58");
+    expect(collieVersionFrom('{"version":"1.1.0-dev+ys.1","sha":"f76be58"}', MANIFEST)).toBe(
+      "1.1.0-dev+ys.1.f76be58",
+    );
+    expect(collieVersionFrom('{"version":"1.1.0+ys.1"}', MANIFEST)).toBe("1.1.0+ys.1");
+  });
+
   test("reads the two real paths off a checkout-shaped directory", () => {
     const root = mkdtempSync(join(tmpdir(), "collie-version-"));
     writeFileSync(join(root, "herdr-plugin.toml"), MANIFEST);

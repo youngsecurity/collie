@@ -4,6 +4,7 @@ import {
   type ApiTag,
   compareSemver,
   followsTrain,
+  forkCounterOf,
   githubReleaseUrl,
   isPrereleaseVersion,
   latestUpdateInMajor,
@@ -20,6 +21,7 @@ import {
   UpdateMonitor,
   type UpdateMonitorDeps,
   type UpdateStore,
+  versionOfTag,
 } from "./update.ts";
 
 describe("compareSemver", () => {
@@ -38,6 +40,18 @@ describe("compareSemver", () => {
     expect(compareSemver("1.0.0", "1.0.0-beta.5")).toBe(1);
     expect(compareSemver("1.0.0-beta.5", "0.31.1")).toBe(1);
     expect(compareSemver("1.0.0-beta.5+ab12cd3", "1.0.1")).toBe(-1);
+  });
+
+  it("ignores Young Security build metadata for precedence", () => {
+    // SemVer §10: build metadata never orders. `1.1.0+ys.1` IS `1.1.0` to this comparator, on either
+    // side; ordering INSIDE the fork family is a separate comparator's job, and a bare upstream tag
+    // must keep reading as equal to the fork release built on it.
+    expect(compareSemver("0.31.1+ys.1", "0.31.1")).toBe(0);
+    expect(compareSemver("0.31.1", "0.31.1+ys.1")).toBe(0);
+    expect(compareSemver("0.31.1+ys.2", "0.31.1+ys.1")).toBe(0);
+    expect(compareSemver("0.31.1+ys.1", "0.31.2")).toBe(-1);
+    expect(compareSemver("0.32.0+ys.1", "0.31.1")).toBe(1);
+    expect(compareSemver("1.0.0-beta.5+ys.1", "1.0.0+ys.1")).toBe(-1);
   });
 
   it("orders prerelease tails by semver §11 — the whole beta train, in order", () => {
@@ -59,9 +73,22 @@ describe("compareSemver", () => {
 
 describe("parsePrereleaseTag / isPrereleaseVersion", () => {
   it("accepts vX.Y.Z and vX.Y.Z-<tail>, and keeps the tail apart", () => {
-    expect(parsePrereleaseTag("v1.2.3")).toEqual({ triple: [1, 2, 3], prerelease: null });
-    expect(parsePrereleaseTag(" v1.0.0-beta.44 ")).toEqual({ triple: [1, 0, 0], prerelease: "beta.44" });
-    expect(parsePrereleaseTag("v1.0.0-rc.1")).toEqual({ triple: [1, 0, 0], prerelease: "rc.1" });
+    expect(parsePrereleaseTag("v1.2.3")).toEqual({ triple: [1, 2, 3], prerelease: null, fork: null });
+    expect(parsePrereleaseTag(" v1.0.0-beta.44 ")).toEqual({ triple: [1, 0, 0], prerelease: "beta.44", fork: null });
+    expect(parsePrereleaseTag("v1.0.0-rc.1")).toEqual({ triple: [1, 0, 0], prerelease: "rc.1", fork: null });
+  });
+
+  it("accepts this fork's +ys.N counter on both shapes, and keeps it apart too", () => {
+    expect(parsePrereleaseTag("v1.1.0+ys.1")).toEqual({ triple: [1, 1, 0], prerelease: null, fork: 1 });
+    expect(parsePrereleaseTag("v1.2.0-beta.3+ys.12")).toEqual({ triple: [1, 2, 0], prerelease: "beta.3", fork: 12 });
+    // The metadata group is `ys` and nothing else: another author's metadata is not a release here,
+    // and neither is a counter with no number, a trailing `+`, or metadata ahead of the prerelease.
+    expect(parsePrereleaseTag("v1.1.0+other.1")).toBeNull();
+    expect(parsePrereleaseTag("v1.1.0+ys")).toBeNull();
+    expect(parsePrereleaseTag("v1.1.0+ys.")).toBeNull();
+    expect(parsePrereleaseTag("v1.1.0+")).toBeNull();
+    expect(parsePrereleaseTag("v1.1.0+ys.1-beta.1")).toBeNull();
+    expect(parsePrereleaseTag("v1.1.0+ys.1.abc")).toBeNull();
   });
 
   it("rejects garbage — remote ref names are untrusted input", () => {
@@ -126,7 +153,26 @@ describe("majorOf / latestReleaseInMajor / latestReleaseAboveMajor", () => {
   it("reads the major off a version, prerelease and build metadata included", () => {
     expect(majorOf("1.0.0-beta.5+ab12cd3")).toBe(1);
     expect(majorOf("0.31.1")).toBe(0);
+    expect(majorOf("0.31.1+ys.1")).toBe(0);
+    expect(majorOf("1.1.0+ys.1")).toBe(1);
     expect(majorOf("unknown")).toBeNull();
+  });
+
+  it("reads the fork counter off a version, and off a build stamp, never off a bare sha", () => {
+    expect(forkCounterOf("1.1.0+ys.1")).toBe(1);
+    expect(forkCounterOf("1.1.0+ys.12")).toBe(12);
+    expect(forkCounterOf("1.2.0-beta.1+ys.2")).toBe(2);
+    // `bridge/version.ts`'s buildStamp appends the sha as a further identifier; a `-dev` marker
+    // sits ahead of the metadata (web/vite.config.ts). Both still read the counter.
+    expect(forkCounterOf("1.1.0+ys.2.ab12cd3")).toBe(2);
+    expect(forkCounterOf("1.1.0-dev+ys.2.ab12cd3-dirty")).toBe(2);
+    // Bare upstream versions, with or without a build sha, are on the other family.
+    expect(forkCounterOf("1.1.0")).toBeNull();
+    expect(forkCounterOf("1.1.0+ab12cd3")).toBeNull();
+    expect(forkCounterOf("1.1.0-dev+ab12cd3")).toBeNull();
+    expect(forkCounterOf("1.1.0+ys")).toBeNull();
+    expect(forkCounterOf("1.1.0+ys.x")).toBeNull();
+    expect(forkCounterOf("unknown")).toBeNull();
   });
 
   it("keeps the routine target inside the running major", () => {
@@ -144,11 +190,17 @@ describe("majorOf / latestReleaseInMajor / latestReleaseAboveMajor", () => {
 
 describe("parseSemverTag / latestReleaseTag", () => {
   it("accepts strict vX.Y.Z, rejects prereleases and junk", () => {
-    expect(parseSemverTag("v0.11.0")).toEqual([0, 11, 0]);
-    expect(parseSemverTag(" v1.2.3 ")).toEqual([1, 2, 3]);
+    expect(parseSemverTag("v0.11.0")).toEqual({ triple: [0, 11, 0], fork: null });
+    expect(parseSemverTag(" v1.2.3 ")).toEqual({ triple: [1, 2, 3], fork: null });
     expect(parseSemverTag("v1.0.0-rc.1")).toBeNull();
     expect(parseSemverTag("0.11.0")).toBeNull(); // no leading v
     expect(parseSemverTag("latest")).toBeNull();
+  });
+
+  it("a +ys.N tag with no prerelease tail IS strict; other metadata is junk", () => {
+    expect(parseSemverTag("v1.1.0+ys.1")).toEqual({ triple: [1, 1, 0], fork: 1 });
+    expect(parseSemverTag("v1.1.0+other.1")).toBeNull();
+    expect(parseSemverTag("v1.1.0-rc.1+ys.1")).toBeNull(); // still a prerelease
   });
 
   it("picks the max release and strips the leading v", () => {
@@ -157,6 +209,14 @@ describe("parseSemverTag / latestReleaseTag", () => {
     expect(latestReleaseTag(["v0.11.0", "v0.12.0-beta.1", "nightly"])).toBe("0.11.0");
     expect(latestReleaseTag([])).toBeNull();
     expect(latestReleaseTag(["main", "v1.0.0-rc"])).toBeNull();
+  });
+
+  it("names the tag it picked, fork counter included, so the release link resolves", () => {
+    // `1.1.0` would link to a tag that does not exist on the fork; the counter is part of the name.
+    expect(latestReleaseTag(["v1.0.0+ys.3", "v1.1.0+ys.1"])).toBe("1.1.0+ys.1");
+    expect(versionOfTag({ triple: [1, 1, 0], fork: 1 })).toBe("1.1.0+ys.1");
+    expect(versionOfTag({ triple: [1, 1, 0], fork: null, prerelease: "rc.1" })).toBe("1.1.0-rc.1");
+    expect(versionOfTag({ triple: [1, 1, 0], fork: 2, prerelease: "rc.1" })).toBe("1.1.0-rc.1+ys.2");
   });
 });
 
@@ -330,6 +390,15 @@ describe("UpdateMonitor", () => {
   it("githubReleaseUrl reconstructs the vX.Y.Z tag page", () => {
     expect(githubReleaseUrl("AltanS/collie", "0.10.3")).toBe(
       "https://github.com/AltanS/collie/releases/tag/v0.10.3",
+    );
+  });
+
+  it("githubReleaseUrl keeps a fork tag's + literal", () => {
+    // Verified against the fork's published tags: GitHub serves `releases/tag/v0.36.1+ys.1` as-is
+    // (and 404s a tag that does not exist), so no `%2B` encoding is needed and the URL reads as the
+    // tag an operator would type.
+    expect(githubReleaseUrl("youngsecurity/collie", "1.1.0+ys.1")).toBe(
+      "https://github.com/youngsecurity/collie/releases/tag/v1.1.0+ys.1",
     );
   });
 
