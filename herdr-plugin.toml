@@ -1,6 +1,6 @@
 id = "herdr.collie"
 name = "Collie"
-version = "1.1.0+ys.1"
+version = "1.1.0+ys.2"
 # This fork requires Herdr 0.8.0+ (decision D2 in docs/adoption/v1.1.0-phase0-triage.md). Herdr
 # enforces the floor on `herdr plugin install`; `collie update` and `_apply-update` enforce it too
 # (cli/update.ts `requireHerdrMinimum`), since self-update bypasses the installer.

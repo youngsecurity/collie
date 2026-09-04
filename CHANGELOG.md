@@ -25,6 +25,12 @@ at least 0.8.0 first. Fork releases are `X.Y.Z+ys.N` and a `+ys` install only ev
 
 ## [Unreleased]
 
+## [1.1.0+ys.2] - 2026-09-04
+
+### Fixed
+
+- A literal `$` or `%` in the plugin root survives the systemd unit: quoted `ExecStart=` arguments now spell them `$$` and `%%`, which double quotes alone did not protect (CodeRabbit on PR #13) (8dfd48d)
+
 ## [1.1.0+ys.1] - 2026-09-03
 
 Adopts upstream Collie 1.1.0 (youngsecurity/collie#10). The fork's deltas are re-applied on top as
