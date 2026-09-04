@@ -6,56 +6,46 @@ import { AnsiOutput } from "./ansi-output";
 
 const ESC = "\x1b";
 
-describe("AnsiOutput — terminal appearance", () => {
-  it("applies the configured font and default colors to terminal output", () => {
-    const { container } = render(
-      <AnsiOutput
-        text="plain"
-        appearance={{
-          fontFamily: "MesloLGS NF",
-          foreground: "#00ff00",
-          background: "#000000",
-        }}
-      />,
-    );
+// The device's own mirror colours (Young Security fork). A DEFAULT foreground and ground, not a
+// palette: the agent's explicit colours win over them exactly as they win over #fafafa, and a
+// painted mirror is absolute, so it drops the light-theme inversion instead of negating the
+// operator's own choice (mirror-space.ts header, ADR 0002 fork amendment).
+describe("AnsiOutput: terminal colours", () => {
+  const MATRIX = { foreground: "#00ff00", background: "#000000" };
 
+  it("paints the <pre> in the configured colours and exposes them to inverse video", () => {
+    const { container } = render(<AnsiOutput text="plain" colors={MATRIX} />);
     const pre = container.querySelector("pre")!;
-    expect(pre).toHaveStyle({
-      fontFamily: "MesloLGS NF, var(--font-mono)",
-      color: "#00ff00",
-      backgroundColor: "#000000",
-    });
+    expect(pre).toHaveStyle({ color: "#00ff00", backgroundColor: "#000000" });
     expect(pre.style.getPropertyValue("--terminal-foreground")).toBe("#00ff00");
     expect(pre.style.getPropertyValue("--terminal-background")).toBe("#000000");
+    // Still one <pre> in dark-space classes underneath: the inline style outranks them.
+    expect(pre.className).toContain("bg-[#0a0a0a]");
+  });
+
+  it("does not invert a painted mirror in light: the colours are absolute", () => {
+    const { container } = render(<AnsiOutput text="plain" colors={MATRIX} />);
+    const pre = container.querySelector("pre")!;
+    expect(pre.className).not.toContain("[filter:invert(1)_hue-rotate(180deg)]");
+    expect(pre.className).not.toContain("dark:[filter:none]");
+  });
+
+  it("drops the current find match's inner inversion too, since there is no outer one to cancel", () => {
+    const { container } = render(
+      <AnsiOutput text="find me" query="me" currentMatch={0} colors={MATRIX} />,
+    );
+    const hit = container.querySelector("[data-find-match]")!;
+    expect(hit.className).toContain("bg-yellow-400");
+    expect(hit.className).not.toContain("[filter:invert(1)_hue-rotate(180deg)]");
   });
 
   it("keeps explicit ANSI truecolor authoritative over the configured default foreground", () => {
-    render(
-      <AnsiOutput
-        text={`plain ${ESC}[38;2;255;165;216mexplicit${ESC}[0m`}
-        appearance={{
-          fontFamily: "MesloLGS NF",
-          foreground: "#00ff00",
-          background: "#000000",
-        }}
-      />,
-    );
-
+    render(<AnsiOutput text={`plain ${ESC}[38;2;255;165;216mexplicit${ESC}[0m`} colors={MATRIX} />);
     expect(screen.getByText("explicit")).toHaveStyle({ color: "rgb(255, 165, 216)" });
   });
 
   it("preserves explicit ANSI on muted rules and otherwise uses the configured foreground", () => {
-    render(
-      <AnsiOutput
-        text={`${ESC}[38;2;255;165;216m────${ESC}[0m\n────`}
-        appearance={{
-          fontFamily: "MesloLGS NF",
-          foreground: "#00ff00",
-          background: "#000000",
-        }}
-      />,
-    );
-
+    render(<AnsiOutput text={`${ESC}[38;2;255;165;216m────${ESC}[0m\n────`} colors={MATRIX} />);
     const rules = screen.getAllByText("────");
     expect(rules[0]).toHaveStyle({ color: "rgb(255, 165, 216)" });
     expect(rules[1]).toHaveStyle({ color: "#00ff00" });
@@ -63,17 +53,27 @@ describe("AnsiOutput — terminal appearance", () => {
 
   it("inherits the mirror defaults when appearance values are empty", () => {
     const { container } = render(
-      <AnsiOutput
-        text="────"
-        appearance={{ fontFamily: "", foreground: "", background: "" }}
-      />,
+      <AnsiOutput text="────" colors={{ foreground: "", background: "" }} />,
     );
+    const pre = container.querySelector("pre")!;
+    expect(pre.style.color).toBe("");
+    expect(pre.style.backgroundColor).toBe("");
+    expect(pre.style.getPropertyValue("--terminal-foreground")).toBe("");
+    // Untouched means untouched: the inversion is back and rule glyphs are on the dark-space grey.
+    expect(pre.className).toContain("[filter:invert(1)_hue-rotate(180deg)]");
+    expect(screen.getByText("────").style.color).toBe("rgb(161, 161, 161)");
+  });
 
-    const pre = container.querySelector("pre");
-    expect(pre).not.toHaveStyle({ fontFamily: "MesloLGS NF" });
-    expect(pre).not.toHaveStyle({ color: "#00ff00" });
-    expect(pre).not.toHaveStyle({ backgroundColor: "#000000" });
-    expect(screen.getByText("────")).toHaveStyle({ color: "#a1a1a1" });
+  it("paints one side alone and leaves the other on the mirror's own value", () => {
+    const { container } = render(
+      <AnsiOutput text="plain" colors={{ foreground: "#00ff00", background: "" }} />,
+    );
+    const pre = container.querySelector("pre")!;
+    expect(pre.style.color).toBe("rgb(0, 255, 0)");
+    expect(pre.style.backgroundColor).toBe("");
+    expect(pre.style.getPropertyValue("--terminal-background")).toBe("");
+    // One painted side is enough to make the surface absolute.
+    expect(pre.className).not.toContain("[filter:invert(1)_hue-rotate(180deg)]");
   });
 });
 
@@ -118,8 +118,10 @@ describe("terminal mirror colour space", () => {
   });
 });
 
-// No-wrap remains the default so terminal columns stay aligned. Wrapping is available through the
-// Display controls for prose and clips marked terminal rules to one visual row.
+// Wrap defaults OFF on this fork (upstream flipped it on in #53 for prose). Column-faithful output
+// is the fork's default so TUI tables and box drawing keep their grid; wrapping is reachable through
+// the Display sheet's "Wrap lines" switch. Both branches are pinned so neither can be dropped by a
+// later refactor without a test noticing.
 describe("mirror line wrapping", () => {
   function preFor(props: Partial<ComponentProps<typeof AnsiOutput>>) {
     const { container } = render(<AnsiOutput text="a very long line" {...props} />);
@@ -131,6 +133,12 @@ describe("mirror line wrapping", () => {
     expect(cls).toContain("whitespace-pre");
     expect(cls).toContain("overflow-x-auto");
     expect(cls).not.toContain("whitespace-pre-wrap");
+  });
+
+  it("wraps rather than panning when wrap is turned on", () => {
+    const cls = preFor({ wrap: true }).className;
+    expect(cls).toContain("whitespace-pre-wrap");
+    expect(cls).not.toContain("overflow-x-auto");
   });
 
   it("still pans, column-faithful, when wrap is turned off", () => {
@@ -157,8 +165,12 @@ describe("mirror line wrapping", () => {
     expect(clipped.className).toContain("break-normal");
     expect(clipped.textContent).toBe(border);
     expect(clipped.children).toHaveLength(2);
-    expect((clipped.children[0] as HTMLElement).style.backgroundColor).toBe("var(--ansi-1)");
-    expect((clipped.children[1] as HTMLElement).style.backgroundColor).toBe("var(--ansi-4)");
+    // SAFETY: `children` is typed `Element`, but the mirror renders every segment as a <span> with
+    // an inline style — which is exactly what these two lines assert. Two assertions, two reasons,
+    // same reason.
+    const [first, second] = [clipped.children[0] as HTMLElement, clipped.children[1] as HTMLElement];
+    expect(first.style.backgroundColor).toBe("var(--ansi-1)");
+    expect(second.style.backgroundColor).toBe("var(--ansi-4)");
     expect(clipped.querySelector("[data-find-match]")).not.toBeNull();
     expect(pre.querySelector("a")?.textContent).toBe("https://herdr.dev/docs");
     expect(pre.textContent).toBe(`ordinary prose\n${border}\nsee https://herdr.dev/docs\n`);
@@ -169,9 +181,7 @@ describe("mirror line wrapping", () => {
     const { container: plain } = render(<AnsiOutput text={`${border}\n`} wrap />);
     expect(plain.querySelector("span.inline-block")?.textContent).toBe(border);
 
-    const { container: wrapped } = render(
-      <AnsiOutput text={`unbroken-${"x".repeat(40)}\n`} wrap />,
-    );
+    const { container: wrapped } = render(<AnsiOutput text={`unbroken-${"x".repeat(40)}\n`} wrap />);
     const wrappedPre = wrapped.querySelector("pre")!;
     expect(wrappedPre.className).toContain("break-words");
     expect(wrappedPre.querySelector("span.inline-block")).toBeNull();

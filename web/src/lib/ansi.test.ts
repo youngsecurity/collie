@@ -108,6 +108,10 @@ describe("parseAnsi — SGR colour & weight", () => {
 
   it("swaps fg/bg for inverse video (7m), with terminal appearance fallbacks", () => {
     const segs = parseAnsi(`${ESC}[7mx`);
+    // The fallbacks are literal dark-space values, not theme tokens (.adr/0002 rule 2): they are
+    // --background/--foreground's dark halves. The `--terminal-*` properties are set only on a
+    // mirror surface the operator coloured (Young Security fork), so every other surface still
+    // resolves to the literal.
     expect(segs[0]!.fg).toBe("var(--terminal-background, #0a0a0a)");
     expect(segs[0]!.bg).toBe("var(--terminal-foreground, #fafafa)");
   });
@@ -263,7 +267,7 @@ describe("parseAnsi — segment shape carries pre-computed style and muted flag"
   it("every segment has a style object and a muted boolean", () => {
     const segs = parseAnsi("hello");
     expect(segs[0]!.style).toBeDefined();
-    expect(typeof segs[0]!.muted).toBe("boolean");
+    expect([true, false]).toContain(segs[0]!.muted); // a real boolean, never undefined
   });
 
   it("plain text segment is not muted and has an empty style", () => {

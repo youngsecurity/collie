@@ -154,3 +154,30 @@ be keyed to let that layer on later.
   restores the premise that a re-themed palette can work.
 - **A measured scroll regression on a mid-range phone** — which reopens it in favour of keeping the
   mirror dark, not of re-theming it.
+
+> **Amended (Young Security fork, 2026-09-02).** The fork adds one exception to "dark ground,
+> inverted in light": **a mirror the operator has coloured by hand is absolute.** Settings → Terminal
+> font carries two per-device pickers, the mirror's default foreground and background (`#rrggbb`,
+> stored beside the font in `collie:display-prefs:v4`), a Matrix preset (`meslo` face, `#00ff00` on
+> `#000000`) and a Reset. When either side is set, every mirror surface (the `<pre>`, its wrapper,
+> the statusline strip and the Settings sample) is painted in those colours under **both** themes
+> and does not carry `MIRROR_INVERT`; the current find match drops its inner inversion with it,
+> since there is no outer filter left to cancel. The inversion exists to rescue colours an agent
+> authored for a dark ground; it has nothing to rescue in a ground the operator chose, and negating
+> a hand-picked green-on-black into magenta-on-white would be the app overruling the one choice the
+> setting exists to honour.
+>
+> Three things this does **not** change. The colours are a **default**, not a palette: the agent's
+> own `38;2`/`38;5`/palette colours win over the configured foreground exactly as they win over
+> `#fafafa`, so nothing the agent said is re-themed. Rules 1 to 3 above still hold on an untouched
+> install, which renders byte for byte as before: no inline style, the same classes, the same
+> inversion. And rule 2's "one spelling" is kept with one documented seam: `lib/ansi.ts` now writes
+> inverse video's ground as `var(--terminal-background, #0a0a0a)` / `var(--terminal-foreground,
+> #fafafa)`. The two properties are not theme tokens; they are unset everywhere except on a painted
+> surface, which sets them to its own absolute values inline (`mirrorSurface()` in
+> `hooks/use-display-prefs.ts`, `mirrorColorStyle()` in `components/mirror-space.ts`), so every
+> other surface resolves the literal. Uncoloured rule glyphs take the configured foreground on a
+> painted surface and `#a1a1a1` otherwise, and a rule the agent coloured explicitly keeps that
+> colour on every surface (the fork's behaviour, carried). The per-pane "don't invert this one"
+> the Known limitation anticipates remains open; this is a per-device choice, keyed with the other
+> display prefs, and layering a per-pane bit on top of it is unaffected.
