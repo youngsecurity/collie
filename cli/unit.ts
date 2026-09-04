@@ -150,9 +150,19 @@ export function bakedTailscaleHosts(text: string | null): string {
  * volume named with one) would have systemd exec the first word of the binary's path and fail with
  * a `203/EXEC` that names a file which does not exist. Every element is quoted, not only the ones
  * that need it today, so the shape is one rule rather than a per-element judgement.
+ *
+ * Quoting does not stop systemd's own expansion: `$VAR` is substituted inside double quotes too,
+ * and `%i`-style specifiers are resolved anywhere in the unit. A literal `$` is spelled `$$` and a
+ * literal `%` is spelled `%%` (systemd.service(5), systemd.unit(5)), so a root with either in its
+ * name reaches exec unchanged instead of as an empty or rewritten path.
  */
 function quoteUnitArg(arg: string): string {
-  return `"${arg.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+  const escaped = arg
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"')
+    .replace(/\$/g, "$$$$")
+    .replace(/%/g, "%%");
+  return `"${escaped}"`;
 }
 
 export function systemdUnit(spec: ServiceSpec): string {

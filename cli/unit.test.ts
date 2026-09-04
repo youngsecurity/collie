@@ -111,6 +111,11 @@ WantedBy=default.target
     expect(spaced).toContain('ExecStart="/opt/my collie/bin/collie" "_exec-bridge"\n');
     const odd = systemdUnit({ ...SPEC, binary: '/opt/a"b\\c/collie' });
     expect(odd).toContain('ExecStart="/opt/a\\"b\\\\c/collie" "_exec-bridge"\n');
+    // Quotes do not stop systemd expanding `$VAR` or resolving `%i` specifiers, so a literal `$`
+    // is written `$$` and a literal `%` is written `%%`; otherwise a root named `/opt/$HOME-ish`
+    // would exec an empty or rewritten path.
+    const expanded = systemdUnit({ ...SPEC, binary: "/opt/c$ash 100%/bin/collie" });
+    expect(expanded).toContain('ExecStart="/opt/c$$ash 100%%/bin/collie" "_exec-bridge"\n');
     // The instance marker is quoted the same way, and `WorkingDirectory=` is a single-value
     // directive that needs no quoting.
     expect(systemdUnit({ ...SPEC, instance: "v1", port: 8788, binary: "/opt/my collie/bin/collie" })).toContain(
