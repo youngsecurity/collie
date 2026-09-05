@@ -4,6 +4,7 @@ import { NavigationRoute, registerRoute } from "workbox-routing";
 import { clientsClaim } from "workbox-core";
 
 import { decidePush, notificationPath, type NotifData, type PushPayload } from "./lib/push-decision";
+import { openNotificationTarget, type OpenOutcome } from "./lib/notification-open";
 import { FONT_URLS, NAVIGATION_NETWORK_ONLY } from "./lib/sw-routes";
 
 // Custom service worker (vite-plugin-pwa `injectManifest`). It does everything the old generated
@@ -97,7 +98,14 @@ self.addEventListener("message", (event: ExtendableMessageEvent) => {
 // ── Web Push ────────────────────────────────────────────────────────────────────────────────────
 // The branching (suppress vs show vs clear, tag/title/renotify) lives in lib/push-decision so it's
 // unit-tested; here we only parse the event, read client visibility, and run the side effect.
-const ICON = "/web-app-manifest-192x192.png";
+// Two different assets on purpose. `icon` is the large art: the mark on its tile, WITHOUT the
+// maskable safe-zone padding, so it fills the notification slot instead of floating in a frame.
+// `badge` is the small status-bar glyph: Android derives its SHAPE FROM THE ALPHA CHANNEL and tints
+// the result, so it must be a monochrome silhouette on transparency. The maskable home-screen tile
+// (`/web-app-manifest-192x192.png`) must never be used for either — it is opaque with no alpha, so
+// Android stamps it on the icon's corner as a solid grey block.
+const ICON = "/notification-icon-192x192.png";
+const BADGE = "/badge-96x96.png";
 
 self.addEventListener("push", (event: PushEvent) => {
   event.waitUntil(handlePush(event));
@@ -140,14 +148,14 @@ async function handlePush(event: PushEvent): Promise<void> {
       target: decision.target,
     } satisfies NotifData,
     icon: ICON,
-    badge: ICON,
+    badge: BADGE,
     tag: decision.tag,
     renotify: decision.renotify,
   };
   await self.registration.showNotification(decision.title, options);
 }
 
-// Tap a notification: an update push routes to Settings; everything else deep-links to the agent's
+// Tap a notification: an update push routes to the Updates page under Settings; everything else deep-links to the agent's
 // pane on the machine and in the session it lives in (never act on it blind — the reply lives
 // in-app; a cross-host blind action would be strictly worse than a same-host one). An old cached SW
 // that predates `target` simply ignores it and takes the pane path, opening "/" for a pushed update
@@ -157,21 +165,33 @@ async function handlePush(event: PushEvent): Promise<void> {
 // `scopeSearch`: the query this file used to hand-inline is now the app's own, so the string
 // compared in openPath below is byte-identical to the one the router produces for that scope.
 self.addEventListener("notificationclick", (event: NotificationEvent) => {
-  event.notification.close();
+  // The notification is closed AFTER the open attempt, and only when it worked. Closing first is
+  // what made the 1.2.0 regression silent: the notification vanished, `openWindow` was then refused
+  // for want of user activation, and the tap left the user with nothing to tap again. `close()`
+  // neither grants nor consumes activation, so deferring it costs nothing, and on a failure the
+  // notification stays on the shade as a second chance.
+  //
   // SAFETY: `Notification.data` is `any` — but it is OUR data: the only writer is `handlePush`
   // above, in this same file, which attaches a `NotifData`. Every field is optional and defaulted.
   const data = (event.notification.data as NotifData | null) ?? {};
-  event.waitUntil(openPath(notificationPath(data)));
+  event.waitUntil(
+    (async () => {
+      const outcome = await openPath(notificationPath(data));
+      if (outcome !== "failed") event.notification.close();
+    })(),
+  );
 });
 
-// Focus an existing Collie tab (navigating it to `path`) or open a new one. `path` is origin-relative.
-async function openPath(path: string): Promise<void> {
+// Focus an existing Collie tab (navigating it to `path`) or open a new one. `path` is
+// origin-relative. The choice lives in lib/notification-open, which also documents why a window is
+// opened before any discarded client is navigated (#147, and the Android regression that fix grew).
+// The `matchAll` below is deliberately the ONLY awaited call between the tap and `openWindow`.
+async function openPath(path: string): Promise<OpenOutcome> {
   const url = new URL(path, self.location.origin).href;
   const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
-  for (const client of windows) {
-    await client.focus();
-    if (client.url !== url) await client.navigate(url).catch(() => null);
-    return;
-  }
-  await self.clients.openWindow(url);
+  return openNotificationTarget({
+    url,
+    clients: windows,
+    openWindow: (target) => self.clients.openWindow(target),
+  });
 }

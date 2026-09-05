@@ -14,12 +14,13 @@ import {
 
 export interface DisplayPrefs {
   /** Whether the mirror wraps long lines (default: false on this fork). Upstream wraps by default
-   *  (issue #53: the mirror is mostly agent prose and a phone shows ~45-50 columns). The Young
-   *  Security fork keeps column-faithful output as the default and pans horizontally, because
-   *  TUI tables and box drawing are what its operators read most. Wrapping stays one tap away in
-   *  the Display sheet. */
+   *  (issue #53: the mirror is mostly agent prose and a phone shows ~45-50 columns), and since 1.4
+   *  a table pans in its own scroller INSIDE the wrap (lib/table-run.ts). The Young Security fork
+   *  keeps column-faithful output as the default and pans horizontally, because full-screen TUIs
+   *  and box drawing are what its operators read most. Wrapping stays one tap away in the Display
+   *  sheet. */
   wrap: boolean;
-  /** Font size in px for the mirror pre (default: 12, range: 9–16). */
+  /** Font size in px for the mirror pre (default: 10, range: 9–16). */
   fontSize: number;
   /**
    * Font size in px for the COMPOSER's draft field (default: 14, range: 13–16).
@@ -260,7 +261,7 @@ export const DRAFT_FONT_MIN = 13;
 export const DRAFT_FONT_MAX = 16;
 const DEFAULTS: DisplayPrefs = {
   wrap: false,
-  fontSize: 12,
+  fontSize: 10,
   draftFontSize: 14,
   fontFamily: "system",
   terminalForeground: "",
