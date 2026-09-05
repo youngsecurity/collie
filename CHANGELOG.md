@@ -32,6 +32,14 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 ## [Unreleased]
 
+- Adopts upstream Collie 1.2.0 through 1.5.1 in one merge; the upstream sections below say what each brought (youngsecurity/collie#11, #12, #14, #15, #16)
+- The update digest, the staged-checkout update path, `--to-tag` and a peer following its lead all stay on the `+ys` release family and order the fork counter; `--to-tag` refuses a tag off the install's train
+- A pack lead states its release with the `+ys.N` counter, so a `+ys.2` lead is higher than a `+ys.1` peer and the peer can follow it
+- `answersThisBuild` reads the fork's `X.Y.Z+ys.N.<sha>` build stamp, so a levelled member or a restarted service is not reported skewed against itself
+- The Herdr 0.8.0 floor is enforced on the detached update runner as well as the in-place `_apply-update`
+- The mirror's default text size is 10px, as upstream; wrap stays off by default on this fork, and a table pans in its own scroller when wrap is on
+- The two new update routes ride the peer-aware Host gate like every other route
+
 ## [1.5.1] - 2026-09-04
 
 - Docs carry phone screenshots of the update flow. ([23dfb1a](https://github.com/AltanS/collie/commit/23dfb1a))
