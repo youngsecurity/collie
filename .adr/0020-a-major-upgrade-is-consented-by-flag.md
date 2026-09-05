@@ -52,14 +52,15 @@ flagged act.**
    advance freely without shipping itself to anybody, an install deliberately rolled back no longer
    snaps forward to the tip on its next routine update, and prerelease tags stay out of reach — the
    same strictness the banner already applies, now applied by the verb that acts on it.
-   **Tag-following selects major crossings in both checkout shapes; the routine gate still respects
-   each shape.** A detached checkout has nothing to keep, so it is pointed straight at the selected
-   release tag. A linked clone keeps its branch: routine updates pre-flight the branch's own upstream
-   (`@{u}`, exactly the commit the pull will take — never `FETCH_HEAD` of `fetch origin HEAD`) before
-   `git pull --ff-only`, while `--major` fast-forwards that branch only to the next major's release
-   tag. It never detaches and never jumps across two majors just because the upstream branch is
-   further ahead. Two mechanisms, one rule: no install crosses a major unasked, and one consent buys
-   exactly one crossing.
+   **Tag-following is the MANAGED shape's mechanism; the gate covers both.** A detached checkout has
+   nothing to keep, so it is pointed straight at the release tag and target selection *is* the gate. A
+   linked clone keeps its branch and its `git pull --ff-only`: detaching it onto a tag would undo the
+   shape it was installed in and cost it the re-link ADR 0006 reserves for exactly that shape. Its
+   gate is therefore a pre-flight — fetch, read `herdr-plugin.toml` at the branch's own upstream
+   (`@{u}`, exactly the commit the pull will take — never `FETCH_HEAD` of `fetch origin HEAD`, which
+   names the remote's *default* branch and diverges from `@{u}` on any clone kept on another branch),
+   compare majors, and refuse before anything is pulled. Two mechanisms, one rule: no install crosses a major
+   unasked.
 4. **The gate ships in one final 0.x release — 0.32.0, cut from `main` *before* `v1` merges.** Only
    code in the **old** binary can protect an old install; a guard that first exists in 1.0.0 has
    already been crossed by the time it runs. Sequence, in order: ship 0.32.0 → an adoption window
@@ -68,15 +69,93 @@ flagged act.**
    `v0.32.x`. Tag-following installs receive them by the same rule as (3), which is what makes the
    freeze survivable rather than a dead end.
 
-### Young Security fork extension
+> **Amended (2026-08-20, the v1 beta train).** Two facts follow from the Context's parenthesis about
+> `SEMVER_TAG` rejecting prereleases, and are recorded here because they are accepted, not incidental:
+>
+> - **The betas are invisible to the banner by design.** For the whole `v1.0.0-beta.N` train, no
+>   install — 0.x or 1.x — is offered an update. The code stays as it is: a beta is taken by an
+>   operator who went looking for it, never by a tap. Nothing is lost, because the crossing this ADR
+>   gates is consented to by `--major` anyway; the banner may offer, only the operator crosses.
+> - **The `v1.0.0` release notes MUST carry the migration section.** That release is the *first and
+>   only* notice a 0.x user ever receives, so the `Upgrading` block named in the first Consequence
+>   below is not optional there — it has no earlier notice to lean on.
+>
+> Two mechanics support this. A prerelease tag is now published as a GitHub **prerelease**
+> (`.github/workflows/release.yml`), so it cannot take the Latest badge from the shipped 0.x line; and
+> because `releases/latest` therefore keeps answering the old stable tag for the whole train, anything
+> resolving "the newest Collie" must read git tags instead — docs/upgrading.md → *Resolving the newest release
+> from a script*.
 
-The fork keeps the same major-consent rule but publishes `vX.Y.Z+ys.N` rather than bare release
-tags. A managed checkout stays within the tag family it installed from: a Young Security build can
-advance only to another `+ys.N` build, ordered by upstream base and then fork counter, and can never
-select a bare upstream tag that would discard fork hardening. The in-app banner remains separate: it
-checks bare releases in `AltanS/collie` and ignores build metadata when comparing their precedence.
-The fork requires Herdr 0.8.0 so managed installs re-read the manifest and discover the
-`update-major` action; older cached action sets cannot provide the explicit consent path.
+> **Amended (2026-08-30, prerelease-following is a property of the installed version).** The first
+> bullet of the 2026-08-20 amendment above is **withdrawn**: a beta install is no longer frozen. It
+> was accepted on the reading that "no install is offered an update" costs nothing for the length of
+> a train. That reading held for a train of a few tags cut over days. It did not hold for
+> `v1.0.0-beta.1…44`: every recruited tester froze on the exact beta they installed, `update`
+> answered *"no release of major 1 yet — leaving this checkout where it is"* forever, and the only
+> way forward was a hand-typed `herdr plugin install --ref`. A test train nobody can walk is not a
+> test train.
+>
+> The new rule, and it is a rule about the INSTALLED version, never a flag:
+>
+> - **A strict-release install is unchanged, byte for byte.** It sees strict `vX.Y.Z` tags only —
+>   banner and verb both. Nothing can pull it onto a prerelease. That is the property this amendment
+>   protects hardest, because it is the one Decision 3 above exists to give.
+> - **A prerelease install prefers strict releases, and follows its train only as a FALLBACK.** If a
+>   strict release of the installed major is newer than the installed version, that release is the
+>   target — normal stable selection, the train ignored. Only when the major has no strict release
+>   newer than the install does the candidate set widen to every tag of that major, prereleases
+>   included, highest by full semver. So `1.0.0-beta.44` walks `1.0.0-beta.45` → … while `v1.0.0` is
+>   unpublished, and goes straight to `v1.0.0` the moment it exists — skipping any beta above it,
+>   because the release supersedes every prerelease that led to it.
+> - **The consent was to the road TO the release, not to the major's prereleases forever.** Installing
+>   a beta *is* the consent, and landing on `X.0.0` spends it. A `1.0.0-beta.5` install with `v1.0.0`
+>   and `v1.1.0-rc.1` both published lands on `v1.0.0`; the `v1.1.0-rc.1` is as invisible to it as it
+>   is to every stable install. From there the install is stable and the first bullet governs it
+>   again. There is no way back onto a train except by installing a prerelease on purpose, which is
+>   exactly how it was joined.
+> - **`--major` is untouched.** It still targets the next major's highest STRICT release. A beta of
+>   major N updates within major N until a strict release exists, and then follows the normal rules.
+>
+> Two things make this small rather than a new mechanism. There is **no flag, channel or pin file**
+> — the third *Alternatives considered* entry stands, and the installed version remains the channel,
+> which is why nothing new can disagree with `herdr-plugin.toml`. And the **banner and the verb still
+> share one resolver** — `bridge/update.ts`'s `followsTrain` decides the rule, `latestUpdateInMajor`
+> applies it, both over the prerelease-aware `PRERELEASE_SEMVER_TAG` (`parseSemverTag` stays strict
+> for every caller that means "releases only") — so the verb still cannot land where the banner would
+> not have announced.
+>
+> The second bullet of the 2026-08-20 amendment — the `v1.0.0` release notes MUST carry the
+> migration section — and both of its mechanics (prerelease tags publish as GitHub prereleases; read
+> git tags, never `releases/latest`) are unaffected and still hold.
+
+> **Amended (Young Security fork, 2026-09-02, the `+ys` family is a property of the installed
+> version too).** This fork publishes `vX.Y.Z+ys.N` tags and never a bare release: `X.Y.Z` is the
+> upstream base the release was cut on, `N` the fork counter. The major-consent rule above is kept
+> unchanged; what the fork adds is one more rule about the INSTALLED version, in the same shape as
+> the 2026-08-30 amendment:
+>
+> - **A `+ys` install stays in the `+ys` family.** Banner and verb both select only `+ys` tags, so a
+>   fork build can never be advanced onto a bare upstream tag that would discard the fork's
+>   hardening. A bare install (upstream, or a fork checkout that was never released) sees only bare
+>   tags, byte for byte as before.
+> - **Inside the family the counter orders.** `1.1.0+ys.2` supersedes `1.1.0+ys.1`, which is how a
+>   fork rebuild on the same upstream base is reachable by a routine `update`. Against bare tags the
+>   SemVer rule holds: build metadata has the precedence of its base, so `1.1.0+ys.3` is neither
+>   ahead of nor behind `1.1.0`. Precedence lives in `bridge/update.ts` and is shared by the banner
+>   and the verb; the family filter is applied before `latestUpdateInMajor` and `--major`'s
+>   next-major selection, never inside `compareSemver`.
+> - **`--major` crosses exactly one major, to that major's newest `+ys` release, in both checkout
+>   shapes.** On a linked clone it fast-forwards the branch to that release tag, never to the branch
+>   tip, so one consent buys one crossing even when two majors are published.
+> - **The updater and the banner read `COLLIE_UPDATE_REPO`, which defaults to `youngsecurity/collie`
+>   on this fork.** Upstream's own copy of that default is what makes `collie update` refuse on a
+>   fork checkout; here the refusal fires only if `origin` points somewhere else.
+> - **Herdr 0.8.0 is the floor.** Managed installs below it hold the action set cached at install
+>   time (ADR 0006) and cannot discover `update-major`, which is the consent path this ADR requires;
+>   the manifest says `min_herdr_version = "0.8.0"` and `update` refuses below it.
+>
+> There is still no flag, channel or pin file. The installed version's build metadata is the
+> channel, exactly as its prerelease tail is for the amendment above.
 
 ## Consequences
 

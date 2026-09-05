@@ -38,11 +38,17 @@ function ansiVar(n: number): string {
   return `var(--ansi-${n})`;
 }
 
-/** The mirror's own ground for inverse video that names no colours of its own. An AnsiOutput may
- *  override these variables with its device-local terminal appearance; every other surface keeps
- *  the dark-space fallbacks that match MIRROR_SPACE. */
+/** The mirror's own ground, for inverse video that names no colours of its own. The fallbacks are
+ *  byte-exact matches for --background / --foreground's dark halves, and for MIRROR_SPACE in
+ *  components/mirror-space. The custom properties are the Young Security fork's seam: a mirror
+ *  surface the operator has coloured sets them on itself (see mirrorSurface in
+ *  hooks/use-display-prefs), so inverse video swaps the operator's ground rather than the dark one.
+ *  Nowhere else defines them, so every other surface resolves to the literal. */
 const MIRROR_BG = "var(--terminal-background, #0a0a0a)";
 const MIRROR_FG = "var(--terminal-foreground, #fafafa)";
+
+// One axis of xterm's 6x6x6 colour cube: level 0 is black, the rest start at 55 and step by 40.
+const cubeLevel = (x: number): number => (x === 0 ? 0 : 55 + x * 40);
 
 function color256(n: number): string {
   if (n < 16) return ansiVar(n);
@@ -54,8 +60,7 @@ function color256(n: number): string {
   const r = Math.floor(i / 36);
   const g = Math.floor((i % 36) / 6);
   const b = i % 6;
-  const c = (x: number) => (x === 0 ? 0 : 55 + x * 40);
-  return `rgb(${c(r)},${c(g)},${c(b)})`;
+  return `rgb(${cubeLevel(r)},${cubeLevel(g)},${cubeLevel(b)})`;
 }
 
 interface State {
@@ -157,9 +162,11 @@ export function parseAnsi(input: string): AnsiSegment[] {
 
   const flush = () => {
     if (!buf) return;
-    // Inverse video with no explicit colours swaps the mirror's own dark-space ground. The custom
-    // properties let AnsiOutput supply an explicit terminal appearance; their fallbacks remain the
-    // literal MIRROR_SPACE colors on every other surface.
+    // Inverse video with no explicit colours swaps the mirror's own ground. Not
+    // var(--background)/var(--foreground): everything inside the <pre> is dark-space (.adr/0002,
+    // rule 2), and the fallbacks ARE those tokens' dark halves. The `--terminal-*` properties are
+    // not theme tokens: they are unset except on a surface the operator coloured by hand, where
+    // they hold that surface's own absolute values (fork amendment to the ADR).
     const fg = state.inverse ? (state.bg ?? MIRROR_BG) : state.fg;
     const bg = state.inverse ? (state.fg ?? MIRROR_FG) : state.bg;
     segs.push({

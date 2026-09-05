@@ -13,26 +13,46 @@
 // no flag, no race — and because a navigation aborts any in-flight revalidation, the nav is instant
 // even while a poll's doomed fetch is still hanging.
 
-import { fetchHistory, fetchPane, fetchSnapshot, isApiErrorStatus } from "@/lib/api";
+import {
+  fetchDevices,
+  fetchHistory,
+  fetchPack,
+  fetchPane,
+  fetchSnapshot,
+  isApiErrorStatus,
+} from "@/lib/api";
 import { parseAnsi } from "@/lib/ansi";
 import { splitLines } from "@/lib/blocks";
 import { isLostLatched } from "@/lib/connection-health";
+import { ambientSpaces } from "@/lib/hosts";
 import {
+  type Cached,
   dropLastPaneText,
   loadLastPaneText,
   loadLastSnapshot,
   saveLastPaneText,
   saveLastSnapshot,
-  type Cached,
 } from "@/lib/last-seen";
 import { detectNoEchoPrompt } from "@/lib/no-echo";
-import { SESSION_PARAM, normalizeSession } from "@/lib/session";
+import { clearNotPaired, markNotPaired } from "@/lib/pairing";
+import {
+  internScope,
+  paneScopeKey,
+  type Scope,
+  scopeFromUrl,
+  scopeKey,
+  snapshotKey,
+  viewAllFromUrl,
+} from "@/lib/scope";
 import type {
   AgentView,
   BridgeStatus,
   DeviceAuth,
+  PackStatusResponse,
+  PairedDeviceWire,
   PaneHistoryResponse,
   PaneReadResponse,
+  ServerSummary,
   SessionSummary,
   SnapshotResponse,
   TabView,
@@ -61,16 +81,18 @@ export const ROOT_ROUTE_ID = "root";
 // route) so the connection bar can date the MIRROR on screen rather than the herd behind it.
 export const PANE_ROUTE_ID = "pane";
 
-// The session a loader run was scoped to, read from the request URL's `?s=`. Extracted once per run
-// and threaded into every fetch + cache key so a session switch (a plain URL change picked up by the
-// revalidator) is automatically correct. Undefined = primary.
-function sessionFromRequest(request?: Request): string | undefined {
-  if (!request) return undefined;
-  try {
-    return normalizeSession(new URL(request.url).searchParams.get(SESSION_PARAM));
-  } catch {
-    return undefined;
-  }
+// The scope a loader run was addressed to — which machine (`?h=`) and which named session (`?s=`),
+// read off the request URL. Extracted once per run and threaded into every fetch + cache key, so a
+// host OR session switch (a plain URL change picked up by the revalidator) is automatically correct.
+// Both absent = the lead's primary session, i.e. today's behaviour on today's URLs.
+//
+// Free consequence worth naming: because the host rides in the URL, a host switch changes the URL,
+// so the nav-vs-revalidate discriminator below already classifies it as a NAVIGATION — the offline
+// fast path is correct for it without a special case.
+function scopeFromRequest(request?: Request): Scope {
+  // Interned, so `data.scope` keeps a STABLE identity across revalidations — it replaces a plain
+  // string in React dep arrays and in identity compares, and must not churn on every poll.
+  return internScope(scopeFromUrl(request?.url));
 }
 
 export interface HomeData {
@@ -83,8 +105,32 @@ export interface HomeData {
   tabs: TabView[];
   /** The bridge's session registry (primary-first); empty on a single-session / older bridge. */
   sessions: SessionSummary[];
-  /** The session this snapshot was fetched for (undefined = primary) — so children don't re-derive. */
-  session: string | undefined;
+  /**
+   * The pack roster (lead first); EMPTY on a solo bridge, which emits no `servers` at all. Kept as
+   * an array rather than `ServerSummary[] | undefined` for the same reason `sessions` is: consumers
+   * ask "more than one?" (lib/hosts.ts `isMultiHost`), never "was the key present?".
+   */
+  servers: ServerSummary[];
+  /**
+   * The snapshot's own timestamp — the LEAD's clock when it assembled this body. Carried because it
+   * is the only sound thing to measure `ServerSummary.lastSeenAt` against, which the lead also stamps
+   * (lib/host-health.ts; PACK_PROTOCOL.md §10.2). Measuring a peer's freshness with the phone's clock
+   * would measure the skew between two machines instead. `0` on the empty stale shape below, where
+   * there are no servers to date anyway.
+   */
+  ts: number;
+  /** The scope this snapshot was fetched for (host + session) — so children don't re-derive it. */
+  scope: Scope;
+  /**
+   * True when this body was WIDENED (`?all=1`): its pane lists hold every Herdr session on the
+   * addressed machine, and every pane in them carries its own `session`. False is every view that
+   * existed before, where the lists hold one session and no pane names it.
+   *
+   * Deliberately NOT folded into {@link scope}: a scope is an ADDRESS and this is a breadth. See
+   * lib/scope.ts `ALL_PARAM` for the whole argument — the short version is that folding it in would
+   * carry it onto every pane URL and split every per-pane cache entry in two.
+   */
+  viewAll: boolean;
   /** Active notification snooze deadline (epoch ms), or null when not snoozed. */
   snoozedUntil: number | null;
   /** Version / upgrade status for the footer update banner; undefined on an older bridge. */
@@ -103,8 +149,9 @@ export interface HomeData {
 
 export interface PaneData {
   paneId: string;
-  /** The session this pane was fetched for (undefined = primary) — threaded into every write. */
-  session: string | undefined;
+  /** The scope this pane was fetched in (host + session) — threaded into every read and write, so
+   * a reply can never land on the right pane name on the wrong machine. */
+  scope: Scope;
   text: string;
   /** True when the buffer was cut off at the requested line count — older scrollback still exists. */
   truncated: boolean;
@@ -121,22 +168,28 @@ export interface PaneData {
   lastSeenAt?: number;
 }
 
-// Keep-previous-data cache is now PER-SESSION: switching sessions must not show the other session's
-// herd flagged as stale. Keyed by session name ("" = primary).
+// Keep-previous-data cache is PER-SCOPE: switching host or session must not show the other one's
+// herd flagged as stale. Keyed by the NUL-joined (host, session) pair via lib/scope.
+//
+// Each entry carries the wall-clock of the fetch that produced it, the same `Cached<T>` shape the
+// write-through store uses. The two tiers can disagree: a full or disabled sessionStorage leaves the
+// store holding an OLDER body than this map, and a stale render dated off the store would then put
+// the older time under the newer screen. Keeping the stamp beside the body means whichever tier the
+// body came from, the time shown is that body's own.
 const lastSnapshot = new Map<string, Cached<SnapshotResponse>>();
 
-// A latched navigation skips the network, so retain whether the last real outcome for each session
-// was an auth rejection. Store only rejected sessions; every other real outcome removes the marker.
-const authErrorSessions = new Set<string>();
+// A latched navigation skips the network, so retain whether the last real outcome for each scope was
+// an auth rejection. Store only rejected scopes; every other real outcome removes the marker.
+const authErrorScopes = new Set<string>();
 
-function rememberAuthError(session: string | undefined, authError: boolean): void {
-  const key = session ?? "";
-  if (authError) authErrorSessions.add(key);
-  else authErrorSessions.delete(key);
+function rememberAuthError(scope: Scope, authError: boolean): void {
+  const key = scopeKey(scope);
+  if (authError) authErrorScopes.add(key);
+  else authErrorScopes.delete(key);
 }
 
-function hasAuthError(session: string | undefined): boolean {
-  return authErrorSessions.has(session ?? "");
+function hasAuthError(scope: Scope): boolean {
+  return authErrorScopes.has(scopeKey(scope));
 }
 
 function isAuthError<TThrown>(error: TThrown): boolean {
@@ -163,7 +216,8 @@ function isPaneUrl(url: string | undefined): boolean {
 
 function toHomeData(
   snap: SnapshotResponse,
-  session: string | undefined,
+  scope: Scope,
+  viewAll: boolean,
   error: boolean,
   lastSeenAt?: number,
 ): HomeData {
@@ -173,18 +227,25 @@ function toHomeData(
     device: snap.device,
     agents: snap.agents,
     shellPanes: snap.shellPanes ?? [],
-    workspaces: snap.workspaces ?? [],
-    tabs: snap.tabs ?? [],
+    // Narrowed to the address the URL is on, for the reason `ambientPanes` narrows the panes drawn
+    // beside them: the navigator is a tree of ONE machine, and on a pack the lead's merged body now
+    // carries every machine's spaces. A solo body carries no host on any row, so both calls pass
+    // everything through by identity and nothing about a solo dashboard changes.
+    workspaces: ambientSpaces(snap.workspaces ?? [], scope, snap.servers),
+    tabs: ambientSpaces(snap.tabs ?? [], scope, snap.servers),
     sessions: snap.sessions ?? [],
-    session,
+    servers: snap.servers ?? [],
+    ts: snap.ts ?? 0,
+    scope,
+    viewAll,
     snoozedUntil: snap.notifications?.snoozedUntil ?? null,
     update: snap.update,
     error,
-    authError: error && hasAuthError(session),
+    authError: error && hasAuthError(scope),
   };
 }
 
-// Last-known home for a session, flagged stale — the cached snapshot if we have one, else an empty
+// Last-known home for a scope, flagged stale — the cached snapshot if we have one, else an empty
 // error snapshot. Shared by BOTH the failed-refresh catch and the offline navigation fast path, so the
 // two return byte-identical shapes (the UI can't tell "fetch just failed" from "navigated while known-
 // offline" — both are "stale-but-present, flagged").
@@ -194,12 +255,12 @@ function toHomeData(
 // restored PWA has an empty module cache and a failing first fetch, and without it the operator gets an
 // empty herd instead of the screen they left. A restored snapshot is promoted into the module cache so
 // the rest of this page session behaves exactly as if we had fetched it.
-function staleHome(session: string | undefined): HomeData {
-  const restored = loadLastSnapshot(session);
-  const cached = lastSnapshot.get(session ?? "") ?? restored;
+function staleHome(scope: Scope, viewAll: boolean): HomeData {
+  const key = snapshotKey(scope, viewAll);
+  const cached = lastSnapshot.get(key) ?? loadLastSnapshot(scope, viewAll);
   if (cached) {
-    lastSnapshot.set(session ?? "", cached);
-    return toHomeData(cached.value, session, true, cached.at);
+    lastSnapshot.set(key, cached);
+    return toHomeData(cached.value, scope, viewAll, true, cached.at);
   }
   // Nothing cached at all — an outage on a tab that never saw a good snapshot. `error: true` is what
   // keeps this apart from a genuinely empty herd downstream: the empty state is only allowed to say
@@ -213,16 +274,23 @@ function staleHome(session: string | undefined): HomeData {
     workspaces: [],
     tabs: [],
     sessions: [],
-    session,
+    servers: [],
+    ts: 0,
+    scope,
+    viewAll,
     snoozedUntil: null,
     update: undefined,
     error: true,
-    authError: hasAuthError(session),
+    authError: hasAuthError(scope),
   };
 }
 
 export async function rootLoader({ request }: { request?: Request } = {}): Promise<HomeData> {
-  const session = sessionFromRequest(request);
+  const scope = scopeFromRequest(request);
+  // The BREADTH, read off the same URL as the address and kept beside it rather than inside it. It
+  // is a home-view concept only: no other loader reads it, and nothing downstream may put it in a
+  // pane URL (lib/scope.ts ALL_PARAM).
+  const viewAll = viewAllFromUrl(request?.url);
   // Nav-vs-revalidate: a revalidation (poll) re-runs at the SAME url; a navigation runs at a different
   // one. Cold start (lastRootUrl undefined) reads as a navigation too, but the latch gate below is
   // never set that early, so the first run always really fetches (BootSplash + escalation, as today).
@@ -235,37 +303,41 @@ export async function rootLoader({ request }: { request?: Request } = {}): Promi
   // Fast path: a navigation during a known, escalated outage returns last-known data INSTANTLY rather
   // than hanging on a doomed fetch. Revalidations fall through and really fetch (so recovery lands and
   // markLive clears the latch → the next run fetches live and replaces the stale herd).
-  if (isNavigation && isLostLatched()) return staleHome(session);
+  if (isNavigation && isLostLatched()) return staleHome(scope, viewAll);
 
   try {
-    const snap = await fetchSnapshot(session, request?.signal);
+    const snap = await fetchSnapshot(scope, request?.signal, viewAll);
+    // One stamp for both tiers, so a stale render dates the body by the fetch that produced it
+    // whichever tier it is read back from.
     const at = Date.now();
-    lastSnapshot.set(session ?? "", { at, value: snap });
-    // Write-through: the same body and timestamp in a store that outlives this page.
-    saveLastSnapshot(session, snap, at);
-    rememberAuthError(session, false);
-    return toHomeData(snap, session, false);
+    lastSnapshot.set(snapshotKey(scope, viewAll), { at, value: snap });
+    // Write-through: the same body, dated, in a store that outlives this page (lib/last-seen.ts).
+    saveLastSnapshot(scope, snap, at, viewAll);
+    rememberAuthError(scope, false);
+    return toHomeData(snap, scope, viewAll, false);
   } catch (e) {
     if (isAbortError(e)) throw e; // superseded revalidation — let React Router drop it
-    rememberAuthError(session, isAuthError(e));
+    rememberAuthError(scope, isAuthError(e));
     // Keep the last good herd on screen, flagged so the ConnectionBanner can say "reconnecting…".
-    return staleHome(session);
+    return staleHome(scope, viewAll);
   }
 }
 
-// Pane ids are per-session, so every per-pane cache is keyed by (session, paneId) — a NUL joiner
-// keeps the two fields unambiguous. "" session = primary.
-function paneKey(paneId: string, session?: string): string {
-  return `${session ?? ""}\u0000${paneId}`;
+// Pane ids are unique only within one session on one machine, so every per-pane cache is keyed by
+// the whole (host, session, paneId) triple. The key is built by lib/scope, shared with api.ts's
+// ETag cache — the two must not hand-roll the same string.
+function paneKey(paneId: string, scope?: Scope): string {
+  return paneScopeKey(scope, paneId);
 }
 
+// Dated for the reason lastSnapshot is: the stamp travels with the text it dates.
 const lastPaneText = new Map<string, Cached<string>>();
 // Cap the per-pane stale-text cache so it can't grow without bound over a long session of opening
 // many panes. Evict the oldest (insertion-order) entry beyond the cap — dumb FIFO is plenty for a
 // phone that views one pane at a time.
 const PANE_TEXT_MAX = 20;
 
-function rememberPaneText(key: string, text: string, at: number = Date.now()): void {
+function rememberPaneText(key: string, text: string, at: number): void {
   lastPaneText.set(key, { at, value: text });
   if (lastPaneText.size > PANE_TEXT_MAX) {
     const oldest = lastPaneText.keys().next().value;
@@ -293,19 +365,19 @@ export const DETAIL_HISTORY_MAX = 1000;
 const requestedLines = new Map<string, number>();
 
 /** The scrollback window currently requested for a pane (defaults to the base window). */
-export function getRequestedLines(paneId: string, session?: string): number {
-  return requestedLines.get(paneKey(paneId, session)) ?? DETAIL_HISTORY_LINES;
+export function getRequestedLines(paneId: string, scope?: Scope): number {
+  return requestedLines.get(paneKey(paneId, scope)) ?? DETAIL_HISTORY_LINES;
 }
 
 /** True while more scrollback can still be requested (below the cap). */
-export function canGrowRequestedLines(paneId: string, session?: string): boolean {
-  return getRequestedLines(paneId, session) < DETAIL_HISTORY_MAX;
+export function canGrowRequestedLines(paneId: string, scope?: Scope): boolean {
+  return getRequestedLines(paneId, scope) < DETAIL_HISTORY_MAX;
 }
 
 /** Raise the requested scrollback by one step (capped) and return the new value. */
-export function growRequestedLines(paneId: string, session?: string): number {
-  const next = Math.min(getRequestedLines(paneId, session) + DETAIL_HISTORY_STEP, DETAIL_HISTORY_MAX);
-  requestedLines.set(paneKey(paneId, session), next);
+export function growRequestedLines(paneId: string, scope?: Scope): number {
+  const next = Math.min(getRequestedLines(paneId, scope) + DETAIL_HISTORY_STEP, DETAIL_HISTORY_MAX);
+  requestedLines.set(paneKey(paneId, scope), next);
   if (requestedLines.size > PANE_TEXT_MAX) {
     const oldest = requestedLines.keys().next().value;
     if (oldest !== undefined) requestedLines.delete(oldest);
@@ -314,9 +386,9 @@ export function growRequestedLines(paneId: string, session?: string): number {
 }
 
 /** Reset a pane's requested scrollback back to the base window (used by tests). */
-export function resetRequestedLines(paneId?: string, session?: string): void {
+export function resetRequestedLines(paneId?: string, scope?: Scope): void {
   if (paneId === undefined) requestedLines.clear();
-  else requestedLines.delete(paneKey(paneId, session));
+  else requestedLines.delete(paneKey(paneId, scope));
 }
 
 // Last-known pane payload, flagged degraded — stale text (empty if this pane was never fetched),
@@ -325,19 +397,20 @@ export function resetRequestedLines(paneId?: string, session?: string): void {
 //
 // Same two tiers as staleHome: the module cache, then the write-through sessionStorage mirror that
 // survives the page being discarded. A restored mirror is promoted into the module cache.
-function stalePane(paneId: string, session: string | undefined, lines: number): PaneData {
-  const key = paneKey(paneId, session);
-  const cached = lastPaneText.get(key) ?? loadLastPaneText(session, paneId) ?? undefined;
+function stalePane(paneId: string, scope: Scope, lines: number): PaneData {
+  const key = paneKey(paneId, scope);
+  const cached = lastPaneText.get(key) ?? loadLastPaneText(scope, paneId);
   if (cached) rememberPaneText(key, cached.value, cached.at);
   return {
     paneId,
-    session,
+    scope,
     text: cached?.value ?? "",
     truncated: false,
     requestedLines: lines,
     revision: 0,
     error: true,
-    authError: hasAuthError(session),
+    authError: hasAuthError(scope),
+    // An empty cached screen is still a dated one: the operator's own `clear` is a real read.
     lastSeenAt: cached?.at,
   };
 }
@@ -373,9 +446,9 @@ export async function paneLoader({
   // The route is `/pane/:paneId`, so a missing param means a misconfigured route, not a user state
   // — fail loudly to the error boundary rather than fetching `/api/pane/` and rendering an empty pane.
   if (!paneId) throw new Error("paneLoader: missing :paneId route param");
-  const session = sessionFromRequest(request);
-  const key = paneKey(paneId, session);
-  const lines = getRequestedLines(paneId, session);
+  const scope = scopeFromRequest(request);
+  const key = paneKey(paneId, scope);
+  const lines = getRequestedLines(paneId, scope);
   // Nav-vs-revalidate, as in rootLoader. `lastPaneUrl` also flips to undefined whenever rootLoader sees
   // a non-pane URL, so opening a pane (even one just left) reads as a navigation, and polling within it
   // (same URL) reads as a revalidation.
@@ -385,27 +458,32 @@ export async function paneLoader({
 
   // Fast path: navigating to a pane during a known, escalated outage shows its last-known mirror (or an
   // empty degraded pane if never visited) INSTANTLY — never a 10s hang on a fetch that can't land.
-  if (isNavigation && isLostLatched()) return stalePane(paneId, session, lines);
+  if (isNavigation && isLostLatched()) return stalePane(paneId, scope, lines);
 
   try {
-    // On a 304 fetchPane returns the cached body, so `read.text` is populated either way. An empty
-    // string is also a real successful screen (for example after `clear`) and must replace stale text.
-    const read: PaneReadResponse = await fetchPane(paneId, lines, session, request?.signal);
+    // On a 304 fetchPane returns the cached body (and throws when it has none to return), so
+    // `read.text` is the real screen on every success path, and both paths are a success (not the
+    // error branch) so the connection bar doesn't flicker on an unchanged poll. The text is taken
+    // AS IS: an empty string is a real screen too (the operator just ran `clear`), and it must
+    // replace the stale text rather than let the old screen win an `||`.
+    const read: PaneReadResponse = await fetchPane(paneId, lines, scope, request?.signal);
     const text = read.text;
-    // Keep no-echo prompts out of BOTH cache tiers. Deleting only sessionStorage would let a failed
-    // poll restore the prompt from this module's lastPaneText map.
+    // Neither tier keeps a pane that is asking for a secret; see holdsNoEchoPrompt (ADR 0017). The
+    // module map is purged as well as the store: dropping only sessionStorage would let the very
+    // next failed poll hand the prompt straight back out of memory through stalePane.
     if (holdsNoEchoPrompt(text)) {
       lastPaneText.delete(key);
-      dropLastPaneText(session, paneId);
+      dropLastPaneText(scope, paneId);
     } else {
+      // One stamp for both tiers, as in rootLoader.
       const at = Date.now();
       rememberPaneText(key, text, at);
-      saveLastPaneText(session, paneId, text, at);
+      saveLastPaneText(scope, paneId, text, at);
     }
-    rememberAuthError(session, false);
+    rememberAuthError(scope, false);
     return {
       paneId,
-      session,
+      scope,
       text,
       truncated: read.truncated,
       requestedLines: lines,
@@ -415,9 +493,74 @@ export async function paneLoader({
     };
   } catch (e) {
     if (isAbortError(e)) throw e; // superseded revalidation — let React Router drop it
-    rememberAuthError(session, isAuthError(e));
+    rememberAuthError(scope, isAuthError(e));
     // Genuine network / server failure: show stale text flagged as degraded.
-    return stalePane(paneId, session, lines);
+    return stalePane(paneId, scope, lines);
+  }
+}
+
+// ── Paired devices (the Settings registry) ────────────────────────────────────
+//
+// The settings route's loader. Unlike the snapshot this is NOT a live signal anything else depends
+// on — it exists so the pairing card renders from route data (and so a revoke/pair is just
+// `revalidator.revalidate()`, like every other mutation in the app). It rides the poll while
+// Settings is open, which is what keeps a device revoked from another phone disappearing from the
+// list here.
+
+export interface DevicesData {
+  /** Whether writes require a bearer token — i.e. whether anything at all is paired. */
+  enforced: boolean;
+  /** The label THIS device's token authenticated as, or null (unpaired, or its token was revoked). */
+  current: string | null;
+  devices: PairedDeviceWire[];
+  /** True when the fetch failed — the lists below are then empty rather than authoritative. */
+  error: boolean;
+}
+
+export async function devicesLoader({ request }: { request?: Request } = {}): Promise<DevicesData> {
+  try {
+    const res = await fetchDevices(request?.signal);
+    // This read is the ONLY thing that can positively clear (or set) the refusal latch without a
+    // write: it is the one endpoint that reports back who our token authenticated as. Enforcement
+    // off means there is nothing to be unpaired from.
+    if (!res.enforced || res.current !== null) clearNotPaired();
+    else markNotPaired();
+    return { enforced: res.enforced, current: res.current, devices: res.devices, error: false };
+  } catch (e) {
+    if (isAbortError(e)) throw e; // superseded revalidation — let React Router drop it
+    // A failed read says nothing about pairing, so the latch is left exactly as it was.
+    return { enforced: false, current: null, devices: [], error: true };
+  }
+}
+
+// ── The pack census (the /pack overview) ─────────────────────────────────────
+//
+// The pack route's own loader, shaped exactly like `devicesLoader`: it rides the poll loop while the
+// page is open (so a member going quiet shows up here without a reload), and a failure DEGRADES —
+// it never throws, because a page that answers "how is my pack doing?" with an error boundary has
+// answered the question badly.
+//
+// The 404 is not a failure and must not be rendered as one. Only a lead serves `/api/pack`; a solo
+// collie and a peer refuse, and that refusal is the truthful answer "there is no pack here". So it
+// is folded to `status: null, error: false`, and the route says so in one honest card. Every OTHER
+// refusal — a real outage, a 500 — keeps `status: null` but sets `error`, because "I could not ask"
+// and "there is nothing to ask about" are different sentences and the operator's next move differs.
+
+export interface PackData {
+  /** The census, or `null` when this collie leads no pack (404) or the fetch failed. */
+  status: PackStatusResponse | null;
+  /** True only for a fetch that FAILED — a 404 is an answer, not an error. */
+  error: boolean;
+}
+
+export async function packLoader({ request }: { request?: Request } = {}): Promise<PackData> {
+  try {
+    return { status: await fetchPack(request?.signal), error: false };
+  } catch (e) {
+    if (isAbortError(e)) throw e; // superseded revalidation — let React Router drop it
+    // Solo or peer: there is no pack to report, and that is a complete answer.
+    if (isApiErrorStatus(e, 404)) return { status: null, error: false };
+    return { status: null, error: true };
   }
 }
 
@@ -443,7 +586,7 @@ export const HISTORY_PAGE_SIZE = 5000;
 
 export interface HistoryData {
   paneId: string;
-  session: string | undefined;
+  scope: Scope;
   /** Oldest-first. Empty when unavailable or on a failed fetch. */
   entries: TranscriptEntry[];
   /** Older turns exist before `entries[0]` — the view pages back with `before`. */
@@ -464,20 +607,20 @@ export async function historyLoader({
 }): Promise<HistoryData> {
   const { paneId } = params;
   if (!paneId) throw new Error("historyLoader: missing :paneId route param");
-  const session = sessionFromRequest(request);
-  const base = { paneId, session, entries: [], hasMore: false, total: 0, fileTruncated: false };
+  const scope = scopeFromRequest(request);
+  const base = { paneId, scope, entries: [], hasMore: false, total: 0, fileTruncated: false };
 
   try {
     const res: PaneHistoryResponse = await fetchHistory(
       paneId,
       { limit: HISTORY_PAGE_SIZE },
-      session,
+      scope,
       request?.signal,
     );
     if (!res.available) return { ...base, unavailable: res.reason };
     return {
       paneId,
-      session,
+      scope,
       entries: res.entries,
       hasMore: res.hasMore,
       total: res.total,

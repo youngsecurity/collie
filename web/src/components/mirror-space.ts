@@ -26,17 +26,55 @@
 //
 // NEVER add a `dark:` variant inside one: it tracks the ROOT theme, which is backwards in an element
 // that is dark under every theme and inverts in light.
+//
+// THE ONE EXCEPTION TO "DARK GROUND, INVERTED IN LIGHT" (Young Security fork): a surface the
+// operator has coloured by hand. Settings lets a device pick the mirror's default foreground and
+// background, and those are ABSOLUTE: the operator chose green on black and gets green on black
+// under both themes. So a painted surface carries `mirrorColorStyle()` inline (which outranks the
+// MIRROR_SPACE classes) and does NOT carry MIRROR_INVERT. The agent's own explicit colours still win
+// over the default foreground, exactly as they win over #fafafa, so this re-grounds the mirror
+// without re-theming anything the agent said. See the fork amendment appended to ADR 0002.
 import type { CSSProperties } from "react";
 
+import type { TerminalColors } from "@/hooks/use-display-prefs";
 import type { AnsiSegment } from "@/lib/ansi";
 
 export const MIRROR_SPACE = "[color-scheme:dark] bg-[#0a0a0a] text-[#fafafa]";
 export const MIRROR_INVERT = "[filter:invert(1)_hue-rotate(180deg)] dark:[filter:none]";
 
+/** --muted-foreground's dark half, written literally to match MIRROR_SPACE. */
+const MIRROR_MUTED = "#a1a1a1";
+
 /** A segment's inline style. `muted` is the parser's own "this is TUI chrome" mark rather than an
  *  ANSI colour: drop the ANSI dim opacity so box-drawing and rule glyphs stay visible (var(--border)
- *  + dim was nearly invisible on mobile) and resolve it to #a1a1a1 — --muted-foreground's dark half,
- *  written literally to match MIRROR_SPACE, since everything on these surfaces is dark-space. */
-export function styleFor(s: AnsiSegment): CSSProperties {
-  return s.muted ? { ...s.style, color: "#a1a1a1", fontWeight: 400, opacity: 1 } : s.style;
+ *  + dim was nearly invisible on mobile). A rule the agent coloured explicitly keeps that colour; one
+ *  it did not resolves to the operator's default foreground where the surface has one (fork), else
+ *  to #a1a1a1, since everything on these surfaces is dark-space. */
+export function styleFor(s: AnsiSegment, foreground = ""): CSSProperties {
+  if (!s.muted) return s.style;
+  const fallback = foreground === "" ? MIRROR_MUTED : foreground;
+  return { ...s.style, color: s.style.color ?? fallback, fontWeight: 400, opacity: 1 };
+}
+
+/** An inline style that may also set the two custom properties lib/ansi.ts's inverse-video
+ *  fallbacks read. React's CSSProperties has no index signature, so the two names are spelled. */
+export interface MirrorColorStyle extends CSSProperties {
+  "--terminal-foreground"?: string;
+  "--terminal-background"?: string;
+}
+
+/** The inline style that paints a mirror surface in the operator's colours: each side that is set
+ *  becomes the element's own colour AND the custom property inverse video swaps to. A side left ""
+ *  writes nothing, so the MIRROR_SPACE class keeps that side. */
+export function mirrorColorStyle(colors: TerminalColors): MirrorColorStyle {
+  const style: MirrorColorStyle = {};
+  if (colors.foreground !== "") {
+    style.color = colors.foreground;
+    style["--terminal-foreground"] = colors.foreground;
+  }
+  if (colors.background !== "") {
+    style.backgroundColor = colors.background;
+    style["--terminal-background"] = colors.background;
+  }
+  return style;
 }
