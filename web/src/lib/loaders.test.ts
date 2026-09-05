@@ -917,6 +917,20 @@ describe("cold boot with no network", () => {
       expect(sessionStorage.getItem(PANE_KEY)).toBeNull();
     });
 
+
+    it("reads as an unchanged screen to the poll cadence, so a standing prompt never holds the burst", async () => {
+      // This fork keeps no previous text for such a pane, so without an ETag every poll would compare
+      // against nothing and read as movement. The prompt is static; the cadence is told so.
+      sudoPane();
+      const { paneLoader } = await import("./loaders");
+      const { lastPollChanged, markPollResult } = await import("./poll-intent");
+      markPollResult(true);
+      await paneLoader({ params: { paneId: "w1:p1" } });
+      expect(lastPollChanged()).toBe(false);
+      await paneLoader({ params: { paneId: "w1:p1" } });
+      expect(lastPollChanged()).toBe(false);
+    });
+
     it("still caches the snapshot — the exclusion is the pane's text, not the herd", async () => {
       sudoPane();
       const { paneLoader, rootLoader } = await import("./loaders");

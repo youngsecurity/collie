@@ -135,3 +135,38 @@ function readIfPresent(p: string): string | null {
     return null;
   }
 }
+
+/**
+ * Does `reported` name the build at `(version, commit)`?
+ *
+ * TWO CALLERS, ONE QUESTION. `cli/pack-update.ts` asks it of a peer that was just levelled to this
+ * lead's commit; `cli/update-run.ts`'s health gate asks it of the local service that just restarted
+ * onto a staged version. Both are comparing a string a running Collie ANSWERS with against a version
+ * and a commit, and both learned the same lesson: a built Collie reports `<semver>+<short sha>`, so
+ * comparing against the bare semver reports a mismatch about a machine running exactly the right
+ * code.
+ *
+ * The build metadata is compared as an ABBREVIATION of the commit rather than byte for byte: git
+ * chooses that length per repository, so the other build may spell the same commit with more digits
+ * than this one does — and it stays a mismatch the moment the digits disagree, or a `-dirty`/`-dev`
+ * marker says the build is not that commit. A Collie with no build stamp at all can only report its
+ * manifest version; that is the version it was given, and it is not evidence against the build.
+ *
+ * The sha is whatever follows the version plus ONE separator, and that separator is the one
+ * {@link buildStamp} would have used for this version, so `1.1.0+ys.1.fd1a9b3` answers for
+ * `1.1.0+ys.1`, and `1.1.0+ys.2.fd1a9b3` does not, because the counter is part of the version.
+ * Splitting on the first `+` instead would read this fork's `ys.1.fd1a9b3` as the sha.
+ *
+ * An EMPTY `commit` is "no commit to compare", not "a commit nothing matches": both callers document
+ * that shape (`ApplyPlan.commit` may be `""`), and a health gate that read it as a mismatch would
+ * roll back a service running exactly the version it was asked for. The version half still has to
+ * agree, and the sha half is then any well-formed stamp.
+ */
+export function answersThisBuild(reported: string, version: string, commit: string): boolean {
+  if (reported === version) return true;
+  const stamped = buildStamp(version, "");
+  if (!reported.startsWith(stamped)) return false;
+  const build = reported.slice(stamped.length);
+  if (build.length < 4) return false;
+  return commit === "" || commit.toLowerCase().startsWith(build.toLowerCase());
+}

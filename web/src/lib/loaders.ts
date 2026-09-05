@@ -22,6 +22,7 @@ import {
   isApiErrorStatus,
 } from "@/lib/api";
 import { parseAnsi } from "@/lib/ansi";
+import { noteUpdateRun } from "./self-update";
 import { splitLines } from "@/lib/blocks";
 import { isLostLatched } from "@/lib/connection-health";
 import { ambientSpaces } from "@/lib/hosts";
@@ -34,6 +35,7 @@ import {
   saveLastSnapshot,
 } from "@/lib/last-seen";
 import { detectNoEchoPrompt } from "@/lib/no-echo";
+import { markPollResult } from "@/lib/poll-intent";
 import { clearNotPaired, markNotPaired } from "@/lib/pairing";
 import {
   internScope,
@@ -221,6 +223,10 @@ function toHomeData(
   error: boolean,
   lastSeenAt?: number,
 ): HomeData {
+  // Where the Collie UPDATE run is, on every snapshot — the self-updater must not reload the bundle
+  // out from under a running update, and it must reload once that run is done (M15/05). Stamped here
+  // rather than in the card so the hold applies on every route, not only where the card is mounted.
+  noteUpdateRun(snap.update?.run?.state);
   return {
     lastSeenAt,
     bridge: snap.bridge,
@@ -468,10 +474,26 @@ export async function paneLoader({
     // replace the stale text rather than let the old screen win an `||`.
     const read: PaneReadResponse = await fetchPane(paneId, lines, scope, request?.signal);
     const text = read.text;
+    // THE "IS THE SCREEN STILL MOVING" SIGNAL, taken at the one place that can honestly answer it.
+    //
+    // A 304 is the bridge saying the mirror is byte-identical, which is exactly "unchanged". The
+    // text compare behind it is not redundant: a bridge that serves no ETag would otherwise report
+    // every poll as a change and the burst would never end. Read BEFORE the write-through below,
+    // since `rememberPaneText` is what makes this text the previous one.
+    //
+    // The cadence consumes it (hooks/use-polling.ts): a mirror that keeps moving is one the operator
+    // is watching move.
+    //
+    // A pane asking for a secret reads as UNCHANGED, whatever the bytes say. This fork keeps no
+    // previous text for such a pane (the purge just below), so without an ETag every poll of a
+    // standing password prompt would compare against nothing, read as movement, and hold the burst
+    // cadence for as long as the prompt stood. The prompt itself is static; nothing is moving.
+    const noEcho = holdsNoEchoPrompt(text);
+    markPollResult(!noEcho && read.notModified !== true && text !== lastPaneText.get(key)?.value);
     // Neither tier keeps a pane that is asking for a secret; see holdsNoEchoPrompt (ADR 0017). The
     // module map is purged as well as the store: dropping only sessionStorage would let the very
     // next failed poll hand the prompt straight back out of memory through stalePane.
-    if (holdsNoEchoPrompt(text)) {
+    if (noEcho) {
       lastPaneText.delete(key);
       dropLastPaneText(scope, paneId);
     } else {
