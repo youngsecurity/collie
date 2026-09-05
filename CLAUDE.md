@@ -126,10 +126,12 @@ version on the remote. **GitHub Actions do not run in this org**, so `release.ym
 the notes format and nothing more: the GitHub Release is created by hand from the CHANGELOG block
 (`gh release create 'vX.Y.Z+ys.N' --notes-file …`), and the update banner links to it.
 
-**The GitHub Release page is built, not written.** `release.yml` populates it with the update
-commands, a link to that version's section in `CHANGELOG.md`, and GitHub's generated notes:
-merged pull requests with their authors, new contributors, and the "Full Changelog" compare link
-listing every commit. Nobody writes release notes by hand.
+**The GitHub Release page is assembled from the CHANGELOG, not written from scratch.** Upstream's
+`release.yml` builds it on a tag push; here Actions do not run, so the same page is cut by hand: the
+version's `## [X.Y.Z+ys.N]` block from `CHANGELOG.md`, the Herdr update and restart actions, and a
+link to the fork's install notes, passed as `--notes-file` to `gh release create` (the previous
+release's notes are the template). `gh release create … --generate-notes` may be added for the
+compare link and the contributor list, but the CHANGELOG block is the source of truth.
 
 `scripts/check-tag.sh` checks this: with no arguments it asks whether the version the repo currently
 claims has a tag; given a rev-list selector it asks the same of every `chore(release):` commit the
