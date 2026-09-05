@@ -32,13 +32,19 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 ## [Unreleased]
 
-- Adopts upstream Collie 1.2.0 through 1.5.1 in one merge; the upstream sections below say what each brought (youngsecurity/collie#11, #12, #14, #15, #16)
-- The update digest, the staged-checkout update path, `--to-tag` and a peer following its lead all stay on the `+ys` release family and order the fork counter; `--to-tag` refuses a tag off the install's train
-- A pack lead states its release with the `+ys.N` counter, so a `+ys.2` lead is higher than a `+ys.1` peer and the peer can follow it
-- `answersThisBuild` reads the fork's `X.Y.Z+ys.N.<sha>` build stamp, so a levelled member or a restarted service is not reported skewed against itself
-- The Herdr 0.8.0 floor is enforced on the detached update runner as well as the in-place `_apply-update`
-- The mirror's default text size is 10px, as upstream; wrap stays off by default on this fork, and a table pans in its own scroller when wrap is on
-- The two new update routes ride the peer-aware Host gate like every other route
+## [1.5.1+ys.1] - 2026-09-05
+
+Adopts upstream Collie 1.2.0 through 1.5.1 in one merge against the fork's base v1.1.0, closing
+youngsecurity/collie#11, #12, #14, #15 and #16. The upstream sections below say what each release
+brought; this section is the fork's side of the reconciliation.
+
+- The update digest, the staged-checkout update path, `--to-tag` and a peer following its lead all stay on the `+ys` release family and order the fork counter; `--to-tag` refuses a tag off the install's train ([022958d](https://github.com/youngsecurity/collie/commit/022958d))
+- A pack lead states its release with the `+ys.N` counter, so a `+ys.2` lead is higher than a `+ys.1` peer and the peer can follow it ([022958d](https://github.com/youngsecurity/collie/commit/022958d)) ([a58dc49](https://github.com/youngsecurity/collie/commit/a58dc49))
+- `answersThisBuild` reads the fork's `X.Y.Z+ys.N.<sha>` build stamp, so a levelled member or a restarted service is not reported skewed against itself ([022958d](https://github.com/youngsecurity/collie/commit/022958d))
+- The Herdr 0.8.0 floor is enforced on the detached update runner as well as the in-place `_apply-update` ([022958d](https://github.com/youngsecurity/collie/commit/022958d))
+- The mirror's default text size is 10px, as upstream; wrap stays off by default on this fork, and a table pans in its own scroller when wrap is on ([022958d](https://github.com/youngsecurity/collie/commit/022958d))
+- The two new update routes ride the peer-aware Host gate like every other route ([022958d](https://github.com/youngsecurity/collie/commit/022958d))
+- The pairing shell suite pins the one tailnet probe behind `collie pair`'s QR, taken from upstream ahead of its next release ([8f2677d](https://github.com/youngsecurity/collie/commit/8f2677d))
 
 ## [1.5.1] - 2026-09-04
 
