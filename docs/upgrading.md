@@ -514,6 +514,11 @@ git merge v1.5.1                                            # the tag you decide
 bash scripts/collie-ctl.sh build
 # Herdr-managed: invoke the `restart` action instead
 bin/collie restart
+# A cut that is never tagged is not a release: nothing can update to it. Tag it as you push it,
+# then create the GitHub Release the in-app banner links to (Actions do not run on this fork):
+git tag -a 'vX.Y.Z+ys.1' -m 'Collie X.Y.Z+ys.1'
+git push --follow-tags
+gh release create 'vX.Y.Z+ys.1' --title 'Collie X.Y.Z+ys.1' --notes-file <notes-from-the-CHANGELOG-block>
 ```
 
 If you run your **own** fork of this fork, set `COLLIE_UPDATE_REPO=you/collie` and tag your releases

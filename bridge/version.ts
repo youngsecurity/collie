@@ -156,11 +156,17 @@ function readIfPresent(p: string): string | null {
  * {@link buildStamp} would have used for this version, so `1.1.0+ys.1.fd1a9b3` answers for
  * `1.1.0+ys.1`, and `1.1.0+ys.2.fd1a9b3` does not, because the counter is part of the version.
  * Splitting on the first `+` instead would read this fork's `ys.1.fd1a9b3` as the sha.
+ *
+ * An EMPTY `commit` is "no commit to compare", not "a commit nothing matches": both callers document
+ * that shape (`ApplyPlan.commit` may be `""`), and a health gate that read it as a mismatch would
+ * roll back a service running exactly the version it was asked for. The version half still has to
+ * agree, and the sha half is then any well-formed stamp.
  */
 export function answersThisBuild(reported: string, version: string, commit: string): boolean {
   if (reported === version) return true;
   const stamped = buildStamp(version, "");
   if (!reported.startsWith(stamped)) return false;
   const build = reported.slice(stamped.length);
-  return build.length >= 4 && commit.toLowerCase().startsWith(build.toLowerCase());
+  if (build.length < 4) return false;
+  return commit === "" || commit.toLowerCase().startsWith(build.toLowerCase());
 }

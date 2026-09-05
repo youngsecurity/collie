@@ -32,6 +32,8 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 ## [Unreleased]
 
+- A standing password prompt no longer reads as a moving screen to the poll cadence on this fork, which keeps no previous text for such a pane; `answersThisBuild` treats an empty commit as nothing to compare rather than a mismatch; a fork-counter-only delta deliberately takes the daily digest window, and the comment says so (CodeRabbit on PR #17)
+
 ## [1.5.1+ys.1] - 2026-09-05
 
 Adopts upstream Collie 1.2.0 through 1.5.1 in one merge against the fork's base v1.1.0, closing

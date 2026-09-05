@@ -365,7 +365,13 @@ export function updatesNewerThan(tags: string[], current: string): string[] {
 }
 
 /** Whether two dotted versions differ ONLY in their patch component — `1.3.0` vs `1.3.1`, but not
- *  `1.3.0` vs `1.4.0` and not `1.0.0-beta.44` vs `1.0.0-beta.45` (same patch, different train stop). */
+ *  `1.3.0` vs `1.4.0` and not `1.0.0-beta.44` vs `1.0.0-beta.45` (same patch, different train stop).
+ *
+ *  A fork-counter-only delta (`1.5.1+ys.1` vs `1.5.1+ys.2`) is DELIBERATELY not patch-only: the
+ *  counter carries no axis (CLAUDE.md → Versioning: fork-only work increments `N` whatever the axis
+ *  says), so a `+ys.2` may hold a minor's worth of change on the same base, and the digest cannot
+ *  tell. Unknown takes the louder window. `versionParts` drops the counter, so equal triples fall
+ *  through to `false` below. */
 function isPatchOnlyDelta(current: string, candidate: string): boolean {
   const a = versionParts(current);
   const b = versionParts(candidate);

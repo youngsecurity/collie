@@ -736,6 +736,15 @@ describe("answersThisBuild", () => {
     expect(answersThisBuild(`${VERSION}+${SHORT}`, fork, COMMIT)).toBe(false);
     expect(answersThisBuild(`${fork}.${SHORT}`, VERSION, COMMIT)).toBe(false);
   });
+
+  test("an empty commit is no commit to compare: the version half still decides, the sha half is any stamp", () => {
+    // Both callers document `commit` may be "" (cli/update-run.ts ApplyPlan); a health gate that read
+    // that as a mismatch would roll back a service running exactly the version it was asked for.
+    expect(answersThisBuild(`${VERSION}+${SHORT}`, VERSION, "")).toBe(true);
+    expect(answersThisBuild(`${VERSION}+ys.1.${SHORT}`, `${VERSION}+ys.1`, "")).toBe(true);
+    expect(answersThisBuild(`${OLD_VERSION}+${SHORT}`, VERSION, "")).toBe(false);
+    expect(answersThisBuild(`${VERSION}+ab`, VERSION, "")).toBe(false); // still a malformed stamp
+  });
 });
 
 // ── The ops record ───────────────────────────────────────────────────────────

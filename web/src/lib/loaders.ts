@@ -483,11 +483,17 @@ export async function paneLoader({
     //
     // The cadence consumes it (hooks/use-polling.ts): a mirror that keeps moving is one the operator
     // is watching move.
-    markPollResult(read.notModified !== true && text !== lastPaneText.get(key)?.value);
+    //
+    // A pane asking for a secret reads as UNCHANGED, whatever the bytes say. This fork keeps no
+    // previous text for such a pane (the purge just below), so without an ETag every poll of a
+    // standing password prompt would compare against nothing, read as movement, and hold the burst
+    // cadence for as long as the prompt stood. The prompt itself is static; nothing is moving.
+    const noEcho = holdsNoEchoPrompt(text);
+    markPollResult(!noEcho && read.notModified !== true && text !== lastPaneText.get(key)?.value);
     // Neither tier keeps a pane that is asking for a secret; see holdsNoEchoPrompt (ADR 0017). The
     // module map is purged as well as the store: dropping only sessionStorage would let the very
     // next failed poll hand the prompt straight back out of memory through stalePane.
-    if (holdsNoEchoPrompt(text)) {
+    if (noEcho) {
       lastPaneText.delete(key);
       dropLastPaneText(scope, paneId);
     } else {
