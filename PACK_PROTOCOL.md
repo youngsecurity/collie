@@ -2568,6 +2568,14 @@ Each is a refusal with a recorded reason, and each is on the member:
 7. **A turn naming this member.**
 8. **The tag resolves upstream**, against the member's own configured repository, anonymously.
 
+**Young Security fork note.** On this fork the "bare version" in `X-Pack-Lead-Release` keeps its
+`+ys.N` counter (`1.5.1+ys.1`) and drops only the build sha, and rule 3's "strictly higher" is
+`compareRelease` (`bridge/update.ts`): the counter breaks a SemVer tie, so a `+ys.2` lead is higher
+than a `+ys.1` member. The tag a member resolves in rule 8 is then on its own release family, which
+`--to-tag` refuses to leave. Additive-optional as before, and never mixed: `pack add` pushes the
+lead's own commit (ADR 0016), so every member of a fork lead runs the fork and reads the counter the
+same way.
+
 Plus a rate limit the member enforces on itself: **at most one self-level attempt per hour**,
 whatever the headers say. It is not a tuning knob — it is the guard against a buggy or hostile lead
 cycling a member through restarts, and the clock is that member's own run record, so it survives the
