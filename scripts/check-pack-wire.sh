@@ -32,6 +32,9 @@ WIRE_FILES=(
   bridge/pack/peer-gate.ts
   bridge/pack/signing.ts
   bridge/pack/tags.ts
+  # The standby door's four routes and their bodies are specified in §18.15, and the phone reads
+  # them: a change here is bytes on a wire a second implementation would have to match.
+  bridge/pack/standby.ts
 )
 
 if [ "${SKIP_PACK_WIRE_CHECK:-}" = "1" ]; then

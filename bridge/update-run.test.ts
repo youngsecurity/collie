@@ -3,7 +3,7 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { standbyUpdateAnswer, STANDBY_UPDATE_PATH } from "./pack/standby.ts";
+import { standbyUpdateAnswer, STANDBY_UPDATE_PATH, standbyUpdateWire } from "./pack/standby.ts";
 import {
   inFlight,
   parseUpdateLock,
@@ -107,12 +107,43 @@ describe("a stale marker", () => {
 describe("the standby door", () => {
   const get = (path: string) => new Request(`http://d${path}`);
 
-  test("standby update state is served while the main port is down", async () => {
-    const run = record({ state: "restarting" });
+  test("standby update state is served while the main port is down: the run's shape and progress", async () => {
+    const run = record({ state: "restarting", runId: "r-7" });
     const res = standbyUpdateAnswer(get(STANDBY_UPDATE_PATH), new URL(`http://d${STANDBY_UPDATE_PATH}`), () => run);
     expect(res?.status).toBe(200);
-    expect(await res?.json()).toEqual({ ...run });
+    expect(await res?.json()).toEqual({
+      schema: UPDATE_RUN_SCHEMA,
+      state: "restarting",
+      from: "v1.0.0",
+      to: "v1.1.0",
+      startedAt: NOW - 60_000,
+      updatedAt: NOW - 60_000,
+      attempt: 0,
+      runId: "r-7",
+    });
     expect(res?.headers.get("cache-control")).toBe("no-store");
+  });
+
+  // This door is ungated by design, so its body is held to the line `/standby/health` draws: never
+  // a body a stranger can learn a path, a unit name or a log line from (#20). The three fields a
+  // failed run carries are exactly those, and they stay behind the front door's authenticated read.
+  test("the standby answer NEVER carries reason, logTail, recovery or pid", async () => {
+    const failed = record({
+      state: "stuck",
+      reason: "health gate timed out",
+      logTail: "Sep 05 collie[1]: something the operator's unit printed",
+      recovery: "ln -sfn /home/operator/.local/share/collie/versions/v1.0.0 /home/operator/.local/share/collie/current",
+      pid: 4242,
+    });
+    const res = standbyUpdateAnswer(get(STANDBY_UPDATE_PATH), new URL(`http://d${STANDBY_UPDATE_PATH}`), () => failed);
+    const body = JSON.stringify(await res?.json());
+    for (const secret of ["reason", "logTail", "recovery", "pid", "/home/operator", "operator's unit", "timed out"]) {
+      expect(body).not.toContain(secret);
+    }
+    // The projection is spelled field by field, so a field added to UpdateRun never rides out by default.
+    expect(Object.keys(standbyUpdateWire(failed)).toSorted()).toEqual(
+      ["attempt", "from", "schema", "startedAt", "state", "to", "updatedAt"],
+    );
   });
 
   test("standby update state answers `idle` when this install has never updated", async () => {

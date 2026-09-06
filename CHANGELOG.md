@@ -33,6 +33,7 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 ## [Unreleased]
 
 - A pairing code enrols one device even under two concurrent claims, and a `devices revoke` can no longer be undone by a `lastSeenAt` stamp or an enrolment landing from the bridge: every read-modify-write of `paired-devices.json`, in the bridge and in the CLI, runs inside a lock file beside it (`paired-devices.lock`, stale after 10s, waited on for 5s, then refused) (#19)
+- `GET /standby/update` answers the run's shape and progress only: `reason`, `logTail`, `recovery` and `pid` stay behind the front door's authenticated read, and PACK_PROTOCOL.md §18.15 now names the route as the fourth (#20)
 
 ## [1.5.1+ys.2] - 2026-09-05
 
