@@ -759,3 +759,15 @@ describe("the dispatcher", () => {
     expect(update.summary).toContain("--check");
   });
 });
+
+describe("update --check --to-tag with no value (#21)", () => {
+  test("is a usage error, never a check of the highest release", async () => {
+    for (const args of [["--to-tag"], ["--to-tag", "--json"], ["--to-tag="]]) {
+      const h = harness();
+      expect(await cmdUpdateCheck(h.deps, args)).toBe(EXIT.USAGE);
+      expect(h.io.stderr.join("\n")).toContain("`--to-tag` names a release tag and was given none");
+      // Nothing was asked of git or the remote.
+      expect(h.exec.calls.filter((c) => c.includes("ls-remote"))).toEqual([]);
+    }
+  });
+});

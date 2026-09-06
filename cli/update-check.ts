@@ -38,6 +38,7 @@ import {
   planToTag,
   planUpdate,
   type ReleaseTag,
+  toTagArgError,
   wantsToTag,
 } from "./update.ts";
 
@@ -801,6 +802,11 @@ function render(deps: UpdateCheckDeps, report: PreflightReport): void {
  * learns to pass `--force` to.
  */
 export async function cmdUpdateCheck(deps: UpdateCheckDeps, args: readonly string[] = []): Promise<number> {
+  const toTagError = toTagArgError(args);
+  if (toTagError !== null) {
+    deps.io.err(`error: ${toTagError}.`);
+    return EXIT.USAGE;
+  }
   const report = await preflight(deps, { local: wantsLocal(args), toTag: wantsToTag(args) });
   if (args.includes("--json")) {
     // stdout and nothing else: the whole point of `--json` is that spec 05 and spec 06 can read it.

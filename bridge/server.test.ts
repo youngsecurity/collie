@@ -2138,9 +2138,28 @@ describe("the update write gate — POST api/update rides the pane path's own ga
     const handler = src.slice(updateAt, src.indexOf("\n      }\n", updateAt));
     // The handoff is a plain call — nothing here awaits the child, and the answer carries the 202
     // that says "started", not the 200 that would say "finished".
-    expect(handler).toContain("const started = action.start({ major: verdict.major, runId });");
+    expect(handler).toContain("const launched = action.start({ major: verdict.major, runId });");
     expect(handler).not.toContain("await action.start");
     expect(handler).toContain("202,");
+  });
+
+  test("update confirm: the path is reserved BEFORE the awaited preflight and released in a finally (#21)", () => {
+    // Two confirms inside one forced preflight both saw no lock and no run, and both spawned an
+    // updater. The reservation is the earlier refusal; its order relative to the await is the whole
+    // point, so the order is what is pinned. `UpdateConfirmGate` itself is tested in update-action.
+    const src = readFileSync(join(import.meta.dir, "server.ts"), "utf8");
+    const updateAt = src.indexOf('if (pathname === "/api/update" && req.method === "POST")');
+    const handler = src.slice(updateAt, src.indexOf("\n      }\n", updateAt));
+    const take = handler.indexOf("updateConfirm.take(() => action.lockHeld())");
+    const preflight = handler.indexOf("await action.preflight(true)");
+    const release = handler.indexOf("updateConfirm.release(started)");
+    expect(take).toBeGreaterThan(0);
+    expect(take).toBeLessThan(preflight);
+    expect(handler.slice(release - 40, release)).toContain("finally {");
+    expect(handler).toContain("started = true;");
+    // One gate per SERVER, not per request: a request-scoped flag would guard nothing.
+    expect(src).toContain("const updateConfirm = new UpdateConfirmGate();");
+    expect(src.indexOf("const updateConfirm = new UpdateConfirmGate();")).toBeLessThan(src.indexOf("async fetch(req)"));
   });
 
   test("update check GET: an unknown latest triggers a bounded on-demand poll before answering", () => {

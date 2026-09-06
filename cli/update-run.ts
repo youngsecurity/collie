@@ -203,7 +203,8 @@ export function readRun(
 
 /** Whether a run may start, and the sentence explaining a refusal. */
 export type LockVerdict =
-  | { readonly ok: true }
+  /** `stale` is the dead lock this verdict judged breakable, or null when there was none at all. */
+  | { readonly ok: true; readonly stale: UpdateLock | null }
   | { readonly ok: false; readonly reason: string; readonly held: UpdateLock };
 
 /**
@@ -215,8 +216,8 @@ export type LockVerdict =
  * still holds, so a retry cannot race the tail of a run that is only just finishing.
  */
 export function lockVerdict(held: UpdateLock | null, now: number, alive: boolean, staleAfterMs: number): LockVerdict {
-  if (held === null) return { ok: true };
-  if (!alive && now - held.at >= staleAfterMs) return { ok: true };
+  if (held === null) return { ok: true, stale: null };
+  if (!alive && now - held.at >= staleAfterMs) return { ok: true, stale: held };
   const who = alive ? `pid ${held.pid} is still running it` : `pid ${held.pid} took it`;
   return {
     ok: false,
@@ -230,10 +231,39 @@ export function readLock(files: Files, stateDir: string): UpdateLock | null {
   return parseUpdateLock(files.read(updateLockPath(stateDir)));
 }
 
-/** Take the lock for `pid`. The caller has already asked {@link lockVerdict} whether it may. */
-export function takeLock(files: Files, stateDir: string, pid: number, now: number): void {
+/**
+ * Take the lock for `pid`, EXCLUSIVELY. The caller has already asked {@link lockVerdict} whether it
+ * may; this is the second half of that question, answered by the filesystem: O_CREAT | O_EXCL, so
+ * two starters that both passed the verdict cannot both write the file (#21). `false` means somebody
+ * else got there first, and the caller refuses exactly as it would have on a held verdict.
+ *
+ * Two shapes are not exclusive, and each is named so it cannot be reached by accident:
+ *   • `inheritFrom` — the detached runner taking over the lock the staging process wrote for it
+ *     (`--handoff <pid>`). The file on disk names that pid, and this process replaces it with its own.
+ *   • `breakable` — the stale lock the verdict judged dead. It is removed first, and only if it is
+ *     still the same lock (same pid, same stamp); a lock that changed underneath is a live one.
+ */
+export function takeLock(
+  files: Files,
+  stateDir: string,
+  pid: number,
+  now: number,
+  allow: { readonly inheritFrom?: number | null; readonly breakable?: UpdateLock | null } = {},
+): boolean {
   files.mkdirp(stateDir, 0o700);
-  files.write(updateLockPath(stateDir), `${JSON.stringify({ pid, at: now })}\n`, RUN_FILE_MODE);
+  const path = updateLockPath(stateDir);
+  const body = `${JSON.stringify({ pid, at: now })}\n`;
+  const held = readLock(files, stateDir);
+  const inheritFrom = allow.inheritFrom ?? null;
+  if (inheritFrom !== null && held !== null && held.pid === inheritFrom) {
+    files.write(path, body, RUN_FILE_MODE);
+    return true;
+  }
+  const breakable = allow.breakable ?? null;
+  if (breakable !== null && held !== null && held.pid === breakable.pid && held.at === breakable.at) {
+    files.remove(path);
+  }
+  return files.createExclusive(path, body, RUN_FILE_MODE);
 }
 
 /** Drop the lock. Always, on every exit path — a run that ends holding one blocks the next retry. */

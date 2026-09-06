@@ -25,9 +25,11 @@ import {
   launchPlan,
   lockVerdict,
   LOG_TAIL_LINES,
+  readLock,
   REDACTED,
   reduce,
   scrubSecrets,
+  takeLock,
 } from "./update-run.ts";
 import { EXIT } from "./io.ts";
 import type { JsonObject } from "../bridge/json.ts";
@@ -55,6 +57,7 @@ import {
   trainInMajor,
   updateCheckout,
   type UpdateDeps,
+  toTagArgError,
   wantsMajor,
   wantsRunId,
   wantsToTag,
@@ -2032,6 +2035,95 @@ describe("the update state file and its lock", () => {
     expect(lockVerdict({ pid: 999, at: now - 1_000 }, now, false, STALE_AFTER_MS).ok).toBe(false);
   });
 
+  // ── The lock is EXCLUSIVE (#21) ─────────────────────────────────────────────
+  // The verdict reads the file; two starters that both read "no lock" a moment apart both passed it.
+  // The filesystem has the last word now: O_CREAT | O_EXCL, and the loser refuses.
+  test("takeLock: free is taken; held is refused and left alone", () => {
+    const h = binaryHarness();
+    expect(takeLock(h.files, STATE, 4242, 1_000)).toBe(true);
+    expect(readLock(h.files, STATE)).toEqual({ pid: 4242, at: 1_000 });
+    expect(takeLock(h.files, STATE, 4343, 2_000)).toBe(false);
+    expect(readLock(h.files, STATE)).toEqual({ pid: 4242, at: 1_000 });
+  });
+
+  test("takeLock: the runner inherits the staging process's lock by pid, and nobody else's", () => {
+    const h = binaryHarness();
+    expect(takeLock(h.files, STATE, 4242, 1_000)).toBe(true);
+    // The wrong `--handoff` is somebody else's run.
+    expect(takeLock(h.files, STATE, 5000, 2_000, { inheritFrom: 9999 })).toBe(false);
+    expect(takeLock(h.files, STATE, 5000, 2_000, { inheritFrom: 4242 })).toBe(true);
+    expect(readLock(h.files, STATE)).toEqual({ pid: 5000, at: 2_000 });
+  });
+
+  test("takeLock: a stale lock the verdict judged dead is broken, but only while it is still that lock", () => {
+    const now = 2_000_000_000_000;
+    const h = binaryHarness();
+    const dead = { pid: 999, at: now - STALE_AFTER_MS - 1 };
+    h.files.write(LOCK_FILE, `${JSON.stringify(dead)}\n`);
+    const verdict = lockVerdict(dead, now, false, STALE_AFTER_MS);
+    expect(verdict).toEqual({ ok: true, stale: dead });
+    // Changed underneath between the verdict and the take: a live run took it. Refused.
+    h.files.write(LOCK_FILE, `${JSON.stringify({ pid: 1234, at: now })}\n`);
+    expect(takeLock(h.files, STATE, 4242, now, { breakable: verdict.ok ? verdict.stale : null })).toBe(false);
+    expect(readLock(h.files, STATE)).toEqual({ pid: 1234, at: now });
+    // Still the dead one: broken and taken.
+    h.files.write(LOCK_FILE, `${JSON.stringify(dead)}\n`);
+    expect(takeLock(h.files, STATE, 4242, now, { breakable: dead })).toBe(true);
+    expect(readLock(h.files, STATE)).toEqual({ pid: 4242, at: now });
+  });
+
+  test("a start whose exclusive create loses refuses and spawns nothing", async () => {
+    const h = binaryHarness();
+    // The verdict sees nothing (no lock on disk); the create then finds one: the other starter won.
+    h.files.createExclusive = () => false;
+    expect(await cmdUpdate(h.deps)).toBe(EXIT.FAIL);
+    expect(h.io.stderr.join("\n")).toContain("another update is in flight — it took the lock just now");
+    expect(h.exec.spawned).toEqual([]);
+    expect(h.files.read(RUN_FILE)).toBeNull();
+  });
+
+  test("an effect that throws releases the lock and leaves an INTERRUPTED record naming the way back", async () => {
+    const h = binaryHarness();
+    // The record write is the effect that throws: the second `writeRun` of the drive (the one after
+    // the flip and the restart) finds the disk full. Everything after it, the record of the throw
+    // included, is allowed to land again, which is the "disk came back" shape.
+    const rename = h.files.rename;
+    let renames = 0;
+    h.files.rename = (from, to) => {
+      if (to.endsWith("update.json") && ++renames === 2) throw new Error("ENOSPC: no space left on device");
+      rename(from, to);
+    };
+    expect(await runner(h, BINARY_APPLY)).toBe(EXIT.FAIL);
+    // The lock is gone: the next `collie update` is not told to wait ten minutes for a dead run.
+    expect(h.files.read(LOCK_FILE)).toBeNull();
+    const run = parseUpdateRun(h.files.read(RUN_FILE));
+    expect(run?.state).toBe("interrupted");
+    expect(run?.reason).toBe("the updater threw: ENOSPC: no space left on device");
+    expect(run?.recovery).toBe(`${INST}/versions/1.0.0/bin/collie update --rollback`);
+    const err = h.io.stderr.join("\n");
+    expect(err).toContain("failed part-way through");
+    expect(err).toContain("ENOSPC");
+    expect(err).toContain("update --rollback");
+    // And a retry is not refused by a lock that outlived its run.
+    const again = binaryHarness();
+    for (const [p, entry] of h.files.entries) again.files.entries.set(p, entry);
+    expect(await cmdUpdate(again.deps)).toBe(EXIT.OK);
+  });
+
+  test("a throw that the record cannot be written for still releases the lock and says so", async () => {
+    const h = binaryHarness();
+    // The disk that threw is the disk the record goes to: every record write from the second on fails.
+    const rename = h.files.rename;
+    let renames = 0;
+    h.files.rename = (from, to) => {
+      if (to.endsWith("update.json") && ++renames >= 2) throw new Error("ENOSPC");
+      rename(from, to);
+    };
+    expect(await runner(h, BINARY_APPLY)).toBe(EXIT.FAIL);
+    expect(h.files.read(LOCK_FILE)).toBeNull();
+    expect(h.io.stderr.join("\n")).toContain("could not record the failure");
+  });
+
   test("the updater dies mid-flight: the stale marker reads as interrupted and the retry proceeds", async () => {
     const h = binaryHarness();
     // Well past the ten-minute rule on the fixture clock — the marker is old AND its pid is gone.
@@ -2222,13 +2314,30 @@ describe("collie update --to-tag", () => {
     expect(plan.kind === "refused" && plan.reason).toContain("crosses a major");
   });
 
-  test("to-tag reads both spellings off the argv and blank is absent", () => {
+  test("to-tag reads both spellings off the argv, and a blank value is a usage error, never absent", () => {
     expect(wantsToTag(["update", "--to-tag", "v1.1.0"])).toBe("v1.1.0");
     expect(wantsToTag(["update", "--to-tag=v1.1.0"])).toBe("v1.1.0");
     expect(wantsToTag(["update"])).toBeNull();
-    expect(wantsToTag(["update", "--to-tag"])).toBeNull();
     // `--to` is the detached runner's own flag and is NOT read as a target tag.
     expect(wantsToTag(["_apply-update", "--to", "1.1.0"])).toBeNull();
+    // The flag with nothing after it used to read as "no target", which is a ROUTINE update to the
+    // highest release of the major: an update to something else entirely (#21).
+    expect(toTagArgError(["update"])).toBeNull();
+    expect(toTagArgError(["update", "--to-tag", "v1.1.0"])).toBeNull();
+    for (const args of [["update", "--to-tag"], ["update", "--to-tag", "--major"], ["update", "--to-tag="]]) {
+      expect(toTagArgError(args)).toContain("was given none");
+    }
+  });
+
+  test("to-tag with no value refuses before any plan is made: usage exit, nothing spawned, no lock", async () => {
+    for (const args of [["--to-tag"], ["--to-tag", "--major"]]) {
+      const h = binaryHarness();
+      expect(await cmdUpdate(h.deps, args)).toBe(EXIT.USAGE);
+      expect(h.io.stderr.join("\n")).toContain("`--to-tag` names a release tag and was given none");
+      expect(h.exec.spawned).toEqual([]);
+      expect(h.files.read(LOCK_FILE)).toBeNull();
+      expect(h.files.read(RUN_FILE)).toBeNull();
+    }
   });
 
   test("to-tag on a binary install takes the named release", async () => {
