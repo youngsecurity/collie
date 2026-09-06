@@ -1,5 +1,5 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
@@ -48,6 +48,127 @@ export const CODE_ALPHABET = "23456789ABCDEFGHJKMNPQRSTWXYZ";
 
 /** At most one `lastSeenAt` write per device per this interval — a poll every 1.5s must not be a write. */
 export const SEEN_THROTTLE_MS = 60_000;
+
+// ── THE REGISTRY LOCK: ONE WRITER ACROSS PROCESSES, NOT ONE PER PROCESS ───────────────────────
+//
+// `paired-devices.json` has two writers in two processes: this bridge (enrol, stamp, adopt, revoke
+// over the API) and `bin/collie devices revoke` (the CLI, `cli/pairing.ts`). Each write is a
+// read-modify-write of the whole file, and the in-process queue below (`PairingStore.serialize`)
+// orders only this bridge's own. A CLI revoke landing between the bridge's read and its write was
+// overwritten by that write, and the revoked device's token hash came back (youngsecurity/collie#19).
+// A credential store may not undo a revocation, so every read-modify-write, in BOTH processes, now
+// runs inside one exclusive section: a lock FILE beside the registry, created with O_EXCL, which is
+// the one primitive every filesystem answers atomically.
+//
+// The lock is bounded on both sides. A holder that died mid-write leaves a file; a waiter breaks it
+// once it is older than {@link LOCK_STALE_MS}, which is orders of magnitude longer than any registry
+// write. A waiter gives up after {@link LOCK_WAIT_MS} and the operation fails loudly rather than
+// proceeding unlocked: a write that could not prove itself exclusive is a write that must not land.
+
+/** File under the state dir that serialises registry writes across processes. */
+export const LOCK_FILENAME = "paired-devices.lock";
+/** A lock older than this was left by a process that died holding it; a waiter may break it. */
+export const LOCK_STALE_MS = 10_000;
+/** How long a writer waits for the lock before failing. A registry write takes milliseconds. */
+export const LOCK_WAIT_MS = 5_000;
+/** How often a waiter looks again. */
+export const LOCK_POLL_MS = 20;
+
+/**
+ * What one failed `createExclusive` means, as a pure decision over the facts a filesystem answers:
+ * `wait` (someone holds it and it is recent), `break` (older than the stale bound: its holder is
+ * gone), or `retry` (it vanished between the create and the stat, so the next create may win).
+ */
+export function lockVerdict(mtimeMs: number | null, now: number, staleMs = LOCK_STALE_MS): "wait" | "break" | "retry" {
+  if (mtimeMs === null) return "retry";
+  return now - mtimeMs >= staleMs ? "break" : "wait";
+}
+
+/** What the lock file says, for the operator who finds one: which process, and when. */
+export function lockBody(pid: number, now: number): string {
+  return `${JSON.stringify({ pid, at: now })}\n`;
+}
+
+/** The message a writer fails with when the lock never came free. */
+export function lockTimeoutMessage(path: string, waitedMs: number): string {
+  return `could not lock the paired-device registry within ${waitedMs}ms — another writer holds ${path}; if no \`collie\` process is running, remove it`;
+}
+
+/**
+ * The three filesystem facts a lock needs, in the SYNCHRONOUS spelling the CLI's `Files` seam
+ * offers. The bridge has its own async loop below over `fs/promises`; the decision both make per
+ * attempt is {@link lockVerdict}, so they cannot disagree about when a lock is stale.
+ */
+export interface LockFsSync {
+  /** Create `path` holding `text` only if it does not exist yet. False when it already does. */
+  createExclusive(path: string, text: string): boolean;
+  /** `path`'s mtime in epoch ms, or null when it is gone. */
+  mtimeMs(path: string): number | null;
+  /** Remove `path`; missing is success. */
+  remove(path: string): void;
+}
+
+/**
+ * Take the registry lock synchronously and return the release. Throws after {@link LOCK_WAIT_MS};
+ * the caller reports and does NOT write. `sleep` and `now` are injected so a test can run the loop
+ * without a clock.
+ */
+export function acquireRegistryLockSync(
+  fs: LockFsSync,
+  stateDir: string,
+  deps: { now: () => number; sleep: (ms: number) => void; pid: number },
+  bounds: { staleMs?: number; waitMs?: number; pollMs?: number } = {},
+): () => void {
+  const path = join(stateDir, LOCK_FILENAME);
+  const staleMs = bounds.staleMs ?? LOCK_STALE_MS;
+  const waitMs = bounds.waitMs ?? LOCK_WAIT_MS;
+  const pollMs = bounds.pollMs ?? LOCK_POLL_MS;
+  const started = deps.now();
+  for (;;) {
+    if (fs.createExclusive(path, lockBody(deps.pid, deps.now()))) return () => fs.remove(path);
+    const verdict = lockVerdict(fs.mtimeMs(path), deps.now(), staleMs);
+    if (verdict === "break") {
+      fs.remove(path);
+      continue;
+    }
+    // `wait` and `retry` both pay the poll and both count against the bound: a lock that keeps
+    // refusing the create while answering no mtime (a directory at the path, a stat that fails) must
+    // still end in the refusal below, never in a loop that spins.
+    if (deps.now() - started >= waitMs) throw new Error(lockTimeoutMessage(path, waitMs));
+    deps.sleep(pollMs);
+  }
+}
+
+/** The async twin of {@link LockFsSync}, for the bridge. */
+export interface LockFsAsync {
+  createExclusive(path: string, text: string): Promise<boolean>;
+  mtimeMs(path: string): Promise<number | null>;
+  remove(path: string): Promise<void>;
+}
+
+/** The async twin of {@link acquireRegistryLockSync}: same loop, same verdicts, same bounds. */
+export async function acquireRegistryLock(
+  fs: LockFsAsync,
+  stateDir: string,
+  deps: { now: () => number; sleep: (ms: number) => Promise<void>; pid: number },
+  bounds: { staleMs?: number; waitMs?: number; pollMs?: number } = {},
+): Promise<() => Promise<void>> {
+  const path = join(stateDir, LOCK_FILENAME);
+  const staleMs = bounds.staleMs ?? LOCK_STALE_MS;
+  const waitMs = bounds.waitMs ?? LOCK_WAIT_MS;
+  const pollMs = bounds.pollMs ?? LOCK_POLL_MS;
+  const started = deps.now();
+  for (;;) {
+    if (await fs.createExclusive(path, lockBody(deps.pid, deps.now()))) return () => fs.remove(path);
+    const verdict = lockVerdict(await fs.mtimeMs(path), deps.now(), staleMs);
+    if (verdict === "break") {
+      await fs.remove(path);
+      continue;
+    }
+    if (deps.now() - started >= waitMs) throw new Error(lockTimeoutMessage(path, waitMs));
+    await deps.sleep(pollMs);
+  }
+}
 
 /** A minted, not-yet-claimed pairing code. Only its hash is ever persisted. */
 export type PendingPairing = {
@@ -131,6 +252,15 @@ export function generateToken(random: (n: number) => Buffer = randomBytes): stri
 /** A fresh pending pairing for `code`, expiring `ttlMs` from `now`. */
 export function newPending(code: string, now: number, ttlMs = CODE_TTL_MS): PendingPairing {
   return { codeHash: sha256Hex(normalizeCode(code)), expiresAt: now + ttlMs, attemptsLeft: CODE_ATTEMPTS };
+}
+
+/**
+ * The one line a failed `lastSeenAt` stamp is allowed to cost. The operation's own body catches its
+ * disk errors; this handles the lock refusing BEFORE the body runs (`serialize` takes it first), so
+ * a stamp, which is decoration, is a warning and never an unhandled rejection.
+ */
+function warnStampFailed<TError>(err: TError): void {
+  console.warn(`[pairing] could not stamp lastSeenAt: ${err instanceof Error ? err.message : String(err)}`);
 }
 
 /** Coerce an untrusted parsed value into a {@link PendingPairing}, or null if it isn't one. */
@@ -294,6 +424,12 @@ export interface PairingIo {
   writeRegistry(registry: PairedRegistry): Promise<void>;
   /** The registry as of now, read synchronously. Null ⇒ no registry file. */
   readRegistrySync(): JsonValue | null;
+  /**
+   * Take the cross-process registry lock and resolve to its release. Every read-modify-write of the
+   * registry runs between the two ({@link PairingStore.serialize}); a reader never takes it, because
+   * a write is one `rename` and a reader sees the old file or the new one.
+   */
+  lockRegistry(): Promise<() => Promise<void>>;
 }
 
 /**
@@ -354,6 +490,39 @@ export function filePairingIo(stateDir: string): PairingIo {
       await writeAtomic(registryPath, JSON.stringify(registry, null, 2));
       cache = null;
     },
+    async lockRegistry() {
+      await mkdir(stateDir, { recursive: true, mode: 0o700 });
+      return acquireRegistryLock(
+        {
+          async createExclusive(path, text) {
+            try {
+              // `wx`: O_CREAT | O_EXCL. The one atomic "is anyone else here" every filesystem answers.
+              await writeFile(path, text, { flag: "wx", mode: 0o600 });
+              return true;
+            } catch (err) {
+              if (err instanceof Error && "code" in err && err.code === "EEXIST") return false;
+              throw err;
+            }
+          },
+          async mtimeMs(path) {
+            try {
+              return (await stat(path)).mtimeMs;
+            } catch {
+              return null;
+            }
+          },
+          async remove(path) {
+            try {
+              await unlink(path);
+            } catch {
+              /* gone already */
+            }
+          },
+        },
+        stateDir,
+        { now: Date.now, sleep: (ms) => new Promise((r) => setTimeout(r, ms)), pid: process.pid },
+      );
+    },
     readRegistrySync() {
       let key: string;
       try {
@@ -399,12 +568,23 @@ export class PairingStore {
   private writeQueue: Promise<unknown> = Promise.resolve();
 
   /**
-   * Run `op` after every registry write already queued on this store, and return what it returns.
-   * `op` is passed as BOTH handlers so a failed operation still lets the next one start, and the
-   * stored tail can never reject — nothing awaits it for a value, only for its turn.
+   * Run `op` after every registry write already queued on this store, INSIDE the cross-process
+   * registry lock, and return what it returns. The queue orders this bridge's own writes; the lock
+   * orders them against the CLI's (`cli/pairing.ts`, `devices revoke`), which is the other process
+   * that writes this file. `op` is passed as BOTH handlers so a failed operation still lets the next
+   * one start, and the stored tail can never reject — nothing awaits it for a value, only for its
+   * turn. The lock is released whatever `op` does.
    */
   private serialize<T>(op: () => Promise<T>): Promise<T> {
-    const next = this.writeQueue.then(op, op);
+    const locked = async (): Promise<T> => {
+      const release = await this.io.lockRegistry();
+      try {
+        return await op();
+      } finally {
+        await release();
+      }
+    };
+    const next = this.writeQueue.then(locked, locked);
     this.writeQueue = next.catch(() => undefined);
     return next;
   }
@@ -461,7 +641,7 @@ export class PairingStore {
             `[pairing] could not stamp lastSeenAt: ${err instanceof Error ? err.message : String(err)}`,
           );
         }
-      });
+      }).catch(warnStampFailed);
     }
     return device;
   }
@@ -470,31 +650,35 @@ export class PairingStore {
    * Claim the pending code and enrol `label`. On success the token is returned ONCE — it is not
    * stored, recoverable or re-derivable — and the pending pairing is destroyed, so a code is
    * single-use even within its TTL.
+   *
+   * VALIDATE, ENROL AND CONSUME ARE ONE SERIALIZED SECTION. Checking the code before entering it let
+   * two concurrent claims with one code and two labels both pass the check, both enrol, and both
+   * walk away with a token (youngsecurity/collie#19). The pending file is read, judged, and deleted
+   * or rewritten in the same turn as the registry write, so the second claim reads the record the
+   * first one already spent.
    */
   async claim(code: string, label: string): Promise<{ ok: true; token: string } | { ok: false; reason: ClaimFailure }> {
-    const pending = coercePending(await this.io.readPending());
-    const verdict = checkClaim(pending, code, this.now());
-    if (!verdict.ok) {
-      if (verdict.pending === null) await this.io.deletePending();
-      else await this.io.writePending(verdict.pending);
-      return { ok: false, reason: verdict.reason };
-    }
-    const token = generateToken(this.random);
-    const enrolled = await this.serialize(async () => {
+    return this.serialize(async () => {
+      const pending = coercePending(await this.io.readPending());
+      const verdict = checkClaim(pending, code, this.now());
+      if (!verdict.ok) {
+        if (verdict.pending === null) await this.io.deletePending();
+        else await this.io.writePending(verdict.pending);
+        return { ok: false, reason: verdict.reason };
+      }
+      const token = generateToken(this.random);
       const next = addDevice(coerceRegistry(await this.io.readRegistry()), {
         label,
         tokenHash: sha256Hex(token),
         now: this.now(),
       });
-      if (!next) return false;
+      // A duplicate label leaves the pending pairing alive: the operator retries with another name
+      // rather than re-running `collie pair`.
+      if (!next) return { ok: false, reason: "duplicate-label" };
       await this.io.writeRegistry(next);
-      return true;
+      await this.io.deletePending();
+      return { ok: true, token };
     });
-    // A duplicate label leaves the pending pairing alive: the operator retries with another name
-    // rather than re-running `collie pair`.
-    if (!enrolled) return { ok: false, reason: "duplicate-label" };
-    await this.io.deletePending();
-    return { ok: true, token };
   }
 
   /**

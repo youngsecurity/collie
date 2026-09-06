@@ -100,7 +100,11 @@ export interface SeededFiles {
 }
 
 export interface FakeFiles extends Files {
-  entries: Map<string, { text: string; mode?: number }>;
+  entries: Map<string, { text: string; mode?: number; mtimeMs?: number }>;
+  /** The clock `mtimeMs` and `createExclusive` stamp with; a test moves it to age a lock. */
+  clock: { now: number };
+  /** `lock <p>` / `unlock <p>`, in order: every exclusive create and the remove that let it go. */
+  locks: string[];
   /** Paths `remove` refuses to delete — the `rm -f` failures teardown must survive. */
   undeletable: Set<string>;
   /** Destructive filesystem operations in order: `rm -rf <p>` / `mv <from> <to>`. Ordering is the assertion `build` lives or dies by. */
@@ -108,10 +112,12 @@ export interface FakeFiles extends Files {
 }
 
 export function fakeFiles(seed: SeededFiles = {}): FakeFiles {
-  const entries = new Map<string, { text: string; mode?: number }>();
-  for (const [p, text] of Object.entries(seed)) entries.set(p, { text });
+  const entries = new Map<string, { text: string; mode?: number; mtimeMs?: number }>();
+  const clock = { now: 1_000_000 };
+  for (const [p, text] of Object.entries(seed)) entries.set(p, { text, mtimeMs: clock.now });
   const undeletable = new Set<string>();
   const ops: string[] = [];
+  const locks: string[] = [];
   // Paths are a flat set, so a "directory" is whatever entries sit under it — enough to model the
   // staging swap, whose whole content is `web/dist/**`.
   const under = (p: string): string[] =>
@@ -120,6 +126,8 @@ export function fakeFiles(seed: SeededFiles = {}): FakeFiles {
     entries,
     undeletable,
     ops,
+    clock,
+    locks,
     exists: (p) => under(p).length > 0,
     read: (p) => entries.get(p)?.text ?? null,
     list: (p) => [
@@ -129,10 +137,18 @@ export function fakeFiles(seed: SeededFiles = {}): FakeFiles {
           .map((k) => k.slice(p.length + 1).split("/")[0]!),
       ),
     ],
-    write: (p, text, mode) => void entries.set(p, { text, mode }),
+    write: (p, text, mode) => void entries.set(p, { text, mode, mtimeMs: clock.now }),
     mkdirp: () => {},
+    createExclusive: (p, text, mode) => {
+      if (entries.has(p)) return false;
+      locks.push(`lock ${p}`);
+      entries.set(p, { text, mode, mtimeMs: clock.now });
+      return true;
+    },
+    mtimeMs: (p) => entries.get(p)?.mtimeMs ?? null,
     remove: (p) => {
       if (undeletable.has(p)) return;
+      if (p.endsWith(".lock")) locks.push(`unlock ${p}`);
       entries.delete(p);
     },
     removeTree: (p) => {

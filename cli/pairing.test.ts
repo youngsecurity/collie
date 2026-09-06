@@ -7,6 +7,9 @@ import {
   CODE_TTL_MS,
   coercePending,
   DEVICES_FILENAME,
+  LOCK_FILENAME,
+  LOCK_STALE_MS,
+  LOCK_WAIT_MS,
   type PairedDevice,
   PENDING_FILENAME,
   sha256Hex,
@@ -28,6 +31,7 @@ import {
 
 const PENDING = `${STATE}/${PENDING_FILENAME}`;
 const REGISTRY = `${STATE}/${DEVICES_FILENAME}`;
+const LOCK = `${STATE}/${LOCK_FILENAME}`;
 const NOW = 1_700_000_000_000;
 
 /** Deterministic entropy: a fixed byte per position, so the minted code is a fixed string. */
@@ -287,5 +291,73 @@ describe("the devices parent verb", () => {
       // Only a real mistake is called one.
       expect(err.includes("unknown devices subcommand")).toBe(args[0] === "lst");
     }
+  });
+});
+
+// ── The revoke takes the registry lock the bridge takes (#19) ────────────────────────────────
+// The bridge stamps and enrols from another process. A revoke that read the registry, and then
+// wrote it after the bridge's own read-modify-write had landed in between, put the revoked device
+// straight back. The lock file is the fix on both sides; these pin the CLI's half of it.
+describe("collie devices revoke — the registry lock (#19)", () => {
+  test("takes the lock before reading and lets it go after writing, and leaves no lock file", () => {
+    const d = deps(registryFile(device({ label: "pixel" })));
+    expect(cmdDevicesRevoke(d, ["pixel"])).toBe(EXIT.OK);
+    expect(d.files.locks).toEqual([`lock ${LOCK}`, `unlock ${LOCK}`]);
+    expect(d.files.entries.has(LOCK)).toBe(false);
+  });
+
+  test("waits on a lock another process holds, and revokes once it is gone", () => {
+    const d = deps({ ...registryFile(device({ label: "pixel" })), [LOCK]: '{"pid":999}' });
+    // The seeded lock is fresh: stamped at the fake clock's now.
+    let waited = 0;
+    d.sleep = (ms) => {
+      waited += ms;
+      // The other process finishes after a few polls.
+      if (waited >= 60) d.files.entries.delete(LOCK);
+    };
+    // The lock's staleness is read off the fake clock, and revoke's `now` is the same NOW; keep the
+    // lock fresh by leaving both where they are.
+    d.now = () => d.files.clock.now;
+    expect(cmdDevicesRevoke(d, ["pixel"])).toBe(EXIT.OK);
+    expect(waited).toBeGreaterThanOrEqual(60);
+    expect(JSON.parse(d.files.entries.get(REGISTRY)!.text)).toEqual({ devices: [] });
+    expect(d.files.entries.has(LOCK)).toBe(false);
+  });
+
+  test("a lock that never comes free is a refusal that names the file, and the registry is untouched", () => {
+    const before = JSON.stringify({ devices: [device({ label: "pixel" })] });
+    const d = deps({ [REGISTRY]: before, [LOCK]: '{"pid":999}' });
+    let clock = d.files.clock.now;
+    d.now = () => clock;
+    d.sleep = (ms) => void (clock += ms);
+    expect(cmdDevicesRevoke(d, ["pixel"])).toBe(EXIT.FAIL);
+    expect(d.io.stderr.join("\n")).toContain(`could not lock the paired-device registry within ${LOCK_WAIT_MS}ms`);
+    expect(d.io.stderr.join("\n")).toContain(LOCK);
+    expect(d.files.entries.get(REGISTRY)!.text).toBe(before);
+    expect(d.files.entries.has(LOCK)).toBe(true); // not ours to remove: it is fresh
+  });
+
+  test("a stale lock, left by a process that died, is broken and the revoke proceeds", () => {
+    const d = deps({ ...registryFile(device({ label: "pixel" })), [LOCK]: '{"pid":999}' });
+    d.now = () => d.files.clock.now + LOCK_STALE_MS;
+    d.sleep = () => {
+      throw new Error("a stale lock must not be waited on");
+    };
+    expect(cmdDevicesRevoke(d, ["pixel"])).toBe(EXIT.OK);
+    expect(d.files.locks).toEqual([`unlock ${LOCK}`, `lock ${LOCK}`, `unlock ${LOCK}`]);
+    expect(d.files.entries.has(LOCK)).toBe(false);
+  });
+
+  test("the lock is released when the write fails, and when the label is unknown", () => {
+    const failing = deps(registryFile(device({ label: "pixel" })));
+    failing.files.write = () => {
+      throw new Error("ENOSPC");
+    };
+    expect(cmdDevicesRevoke(failing, ["pixel"])).toBe(EXIT.FAIL);
+    expect(failing.files.entries.has(LOCK)).toBe(false);
+
+    const unknown = deps(registryFile(device({ label: "pixel" })));
+    expect(cmdDevicesRevoke(unknown, ["nope"])).toBe(EXIT.FAIL);
+    expect(unknown.files.locks).toEqual([`lock ${LOCK}`, `unlock ${LOCK}`]);
   });
 });

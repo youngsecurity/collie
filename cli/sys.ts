@@ -7,6 +7,7 @@ import {
   readFileSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { dirname } from "node:path";
@@ -87,6 +88,15 @@ export interface Files {
    * how `build` can replace `bin/collie` while a supervised process is executing the old one.
    */
   rename(from: string, to: string): void;
+  /**
+   * Create `p` holding `text` only if nothing is there yet: O_CREAT | O_EXCL, the one atomic
+   * "is anyone else here" a filesystem answers. False when the path exists. This is the lock
+   * primitive `bridge/pairing.ts`'s registry lock is built on (`LockFsSync`), which `devices revoke`
+   * takes because the bridge writes the same file from another process.
+   */
+  createExclusive(p: string, text: string, mode?: number): boolean;
+  /** `p`'s mtime in epoch ms, or null when it is gone. The staleness reading of that lock. */
+  mtimeMs(p: string): number | null;
 }
 
 /**
@@ -302,6 +312,22 @@ export const realFiles: Files = {
   },
   rename(from, to) {
     renameSync(from, to);
+  },
+  createExclusive(p, text, mode) {
+    try {
+      writeFileSync(p, text, { flag: "wx", mode });
+      return true;
+    } catch (err) {
+      if (err instanceof Error && "code" in err && err.code === "EEXIST") return false;
+      throw err;
+    }
+  },
+  mtimeMs(p) {
+    try {
+      return statSync(p).mtimeMs;
+    } catch {
+      return null;
+    }
   },
 };
 

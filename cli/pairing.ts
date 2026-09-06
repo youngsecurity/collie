@@ -1,6 +1,7 @@
 import { join } from "node:path";
 
 import {
+  acquireRegistryLockSync,
   coerceRegistry,
   DEVICES_FILENAME,
   generateCode,
@@ -53,6 +54,17 @@ export interface PairingDeps {
   now?: () => number;
   /** Injected so a test can pin the minted code; production leaves it. */
   random?: (n: number) => Buffer;
+  /** The synchronous wait the registry lock polls with; a test injects a clock, production leaves it. */
+  sleep?: (ms: number) => void;
+}
+
+/**
+ * A synchronous sleep with no busy loop: `Atomics.wait` on a buffer nobody notifies returns on the
+ * timeout. The CLI's verbs are synchronous by design (they run under `env -i` from a Herdr action),
+ * and the registry lock is the one place one of them has to wait for another process.
+ */
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
 const pendingPath = (ctx: CliContext): string => join(ctx.stateDir, PENDING_FILENAME);
@@ -177,32 +189,62 @@ export function cmdDevicesList(deps: PairingDeps): number {
   return EXIT.OK;
 }
 
-/** `collie devices revoke <label>` — drop one device's credential. */
+/**
+ * `collie devices revoke <label>` — drop one device's credential.
+ *
+ * The read, the decision and the write happen INSIDE the registry lock the bridge takes for its own
+ * writes (`bridge/pairing.ts`, #19): the bridge stamps `lastSeenAt` and enrols from another process,
+ * and a revoke that landed between one of its reads and its write was overwritten by that write, so
+ * the revoked device came back. A lock that cannot be taken is a refusal, never an unlocked write.
+ */
 export function cmdDevicesRevoke(deps: PairingDeps, args: readonly string[]): number {
   const label = args[0];
   if (label === undefined || label === "") {
     deps.io.err("usage: collie devices revoke <label>");
     return EXIT.USAGE;
   }
-  const registry = readRegistry(deps);
-  const next = removeDevice(registry, label);
-  if (next === null) {
-    deps.io.err(`error: no paired device labelled \`${label}\``);
-    deps.io.err(
-      registry.devices.length === 0
-        ? "  nothing is paired on this machine — `collie devices list`."
-        : `  paired: ${registry.devices.map((d) => d.label).join(", ")}`,
+  // The lock file lives beside the registry, so the directory has to exist before either does.
+  deps.files.mkdirp(deps.ctx.stateDir, 0o700);
+  let release: () => void;
+  try {
+    release = acquireRegistryLockSync(
+      {
+        createExclusive: (p, text) => deps.files.createExclusive(p, text, 0o600),
+        mtimeMs: (p) => deps.files.mtimeMs(p),
+        remove: (p) => deps.files.remove(p),
+      },
+      deps.ctx.stateDir,
+      { now: deps.now ?? Date.now, sleep: deps.sleep ?? sleepSync, pid: process.pid },
     );
+  } catch (err) {
+    deps.io.err(`error: ${err instanceof Error ? err.message : String(err)}`);
     return EXIT.FAIL;
   }
 
+  let next: PairedRegistry;
   try {
-    writeOwnerOnly(deps, registryPath(deps.ctx), next);
-  } catch (err) {
-    deps.io.err(
-      `error: could not write ${registryPath(deps.ctx)} — ${err instanceof Error ? err.message : String(err)}`,
-    );
-    return EXIT.FAIL;
+    const registry = readRegistry(deps);
+    const removed = removeDevice(registry, label);
+    if (removed === null) {
+      deps.io.err(`error: no paired device labelled \`${label}\``);
+      deps.io.err(
+        registry.devices.length === 0
+          ? "  nothing is paired on this machine — `collie devices list`."
+          : `  paired: ${registry.devices.map((d) => d.label).join(", ")}`,
+      );
+      return EXIT.FAIL;
+    }
+    next = removed;
+    try {
+      writeOwnerOnly(deps, registryPath(deps.ctx), next);
+    } catch (err) {
+      deps.io.err(
+        `error: could not write ${registryPath(deps.ctx)} — ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return EXIT.FAIL;
+    }
+  } finally {
+    release();
   }
 
   deps.io.out(`✓ revoked "${label}" — it loses write access on its next request (no restart needed).`);
