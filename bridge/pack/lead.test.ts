@@ -136,6 +136,38 @@ describe("PackLead — the sweep rides the lead's poll, it does not arm a timer"
     expect(h.calls).toEqual(["laptop"]);
   });
 
+
+  // ── A re-sweep asked for mid-sweep is replayed, not dropped (#23) ─────────
+  // `resweep()` is a microtask, and the guard above refuses a re-entrant `sweep()`. A turn released
+  // INSIDE a sweep (`follow.turns.observe(...).released`, observed while `sweeping` is still set)
+  // therefore asked for a sweep that the guard threw away, and the next member waited out the whole
+  // idle cadence, which is the delay §20 says a released turn must not pay.
+  test("a re-sweep asked for during a sweep runs once that sweep ends, and exactly once", async () => {
+    const h = lead([member({ memberId: "laptop" })], (_link, call) => {
+      if (call === 1) {
+        // Two requests from inside the sweep, as two released turns would make: one replay.
+        h.lead.resweep();
+        h.lead.resweep();
+      }
+      return ok(body);
+    });
+    await h.lead.sweep();
+    // The replay is a microtask off the sweep's own end, so it may already be under way here.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(h.calls).toEqual(["laptop", "laptop"]);
+    // And nothing lingers: the flag was spent by the replay.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(h.calls).toEqual(["laptop", "laptop"]);
+  });
+
+  test("a re-sweep asked for while idle is one sweep on the next microtask, as before", async () => {
+    const h = lead([member({ memberId: "laptop" })], () => ok(body));
+    h.lead.resweep();
+    expect(h.calls).toEqual([]);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(h.calls).toEqual(["laptop"]);
+  });
+
   test("peers are dialled concurrently, not serially (§10.1)", async () => {
     const started: number[] = [];
     const h = lead([member({ memberId: "a" }), member({ memberId: "b" }), member({ memberId: "c" })], () => {

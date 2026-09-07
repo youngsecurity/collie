@@ -265,6 +265,12 @@ export class PackLead {
   private readonly memory = new Map<string, PeerMemory>();
   private readonly now: () => number;
   private sweeping = false;
+  /**
+   * A {@link resweep} asked for WHILE a sweep was running. Replayed as one sweep when that sweep ends:
+   * the guard in {@link sweep} refuses a re-entrant call, and a re-sweep that reached it mid-sweep was
+   * simply lost, so a turn released inside the sweep waited out the whole idle cadence (#23).
+   */
+  private resweepRequested = false;
   /** Members with a verdict probe in flight. At most one per member, ever — see {@link probe}. */
   private readonly probing = new Set<string>();
   /** Members with a warrant push in flight. At most one per member — see {@link pushWarrant}. */
@@ -392,6 +398,12 @@ export class PackLead {
       console.warn(`[pack] sweep failed: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       this.sweeping = false;
+      // One replay, not one per request: every re-sweep asked for during this sweep wants the same
+      // thing, the freshest look, and one sweep is that.
+      if (this.resweepRequested) {
+        this.resweepRequested = false;
+        queueMicrotask(() => void this.sweep());
+      }
     }
   }
 
@@ -652,8 +664,16 @@ export class PackLead {
    * **Not a timer** (§10.1, §11): a microtask, fired at most once per turn release, so the member
    * next in line starts within one sweep of its turn instead of waiting out the idle cadence. The
    * re-entrancy guard in {@link PackLead.sweep} is what keeps it from stacking.
+   *
+   * Asked for DURING a sweep, it is remembered and replayed once that sweep ends, never dropped: a
+   * released turn's next member must start within one sweep of the release (§20), and the release
+   * is observed inside the very sweep whose guard would otherwise refuse the request (#23).
    */
   resweep(): void {
+    if (this.sweeping) {
+      this.resweepRequested = true;
+      return;
+    }
     queueMicrotask(() => void this.sweep());
   }
 
