@@ -47,6 +47,7 @@ import {
   parseApiTags,
   parseHerdrVersion,
   parseRemoteTags,
+  pinPlan,
   planToTag,
   planUpdate,
   platformId,
@@ -1845,6 +1846,28 @@ describe("the staged checkout path", () => {
     expect(h.link.ops).toEqual([]);
   });
 
+  // ── `--to-tag` naming the version already installed (#24) ─────────────────
+  // The lead's leg of `pack update` pins its own updater to the release it pushes. On a linked
+  // clone that advanced (the manifest names the release) without being built (the bundle answers
+  // the old one), that tag EQUALS the installed version; it used to be refused as "not higher", so
+  // the one case the leg exists for could not be taken through the updater at all.
+  test("to-tag equal to the installed version stages it when what is on disk is not the build it names", async () => {
+    // Manifest at 0.32.0 (HEAD is the tag's commit), bundle stamped as the old release.
+    const h = legacyClone({ installed: "0.32.0", answers: [[`${GIT} rev-parse HEAD`, { stdout: "b2peeled\n" }]] });
+    h.files.entries.set(`${DIST}/build-info.json`, { text: JSON.stringify({ version: "0.31.1", sha: "a1a1a1a" }) });
+    expect(await cmdUpdate(h.deps, ["--to-tag", "v0.32.0"])).toBe(EXIT.OK);
+    expect(gitRuns(h.exec)).toContain(`${GIT} worktree add --detach --force ${WT("v0.32.0")} refs/tags/v0.32.0`);
+    expect(h.io.stderr.join("\n")).not.toContain("never downgrades");
+  });
+
+  test("to-tag equal to the installed version on a whole install says so and stages nothing", async () => {
+    const h = legacyClone({ installed: "0.32.0", answers: [[`${GIT} rev-parse HEAD`, { stdout: "b2peeled\n" }]] });
+    h.files.entries.set(`${DIST}/build-info.json`, { text: JSON.stringify({ version: "0.32.0", sha: "b2peele" }) });
+    expect(await cmdUpdate(h.deps, ["--to-tag", "v0.32.0"])).toBe(EXIT.OK);
+    expect(h.io.stdout.join("\n")).toContain("already current");
+    expect(gitRuns(h.exec).join("\n")).not.toContain("worktree add");
+  });
+
   test("retention keeps `current` plus the two newest previous versions", () => {
     const h = stagedHarness({
       versions: { "v0.7.0": "0.7.0", "v0.8.0": "0.8.0", "v0.9.0": "0.9.0", "v1.0.0": "1.0.0" },
@@ -2302,11 +2325,16 @@ describe("collie update --to-tag", () => {
     expect(plan.kind === "refused" && plan.reason).toContain("prerelease");
   });
 
-  test("to-tag refuses a tag that is not higher than the installed version", () => {
+  test("to-tag refuses a tag LOWER than the installed version; equal is not a downgrade", () => {
     const plan = planToTag({ tags: TAGS, installed: "1.1.0", wanted: "v1.0.0" });
-    expect(plan.kind === "refused" && plan.reason).toContain("never downgrades");
-    // Equal is refused too. There is no "re-install this version" spelling here.
-    expect(planToTag({ tags: TAGS, installed: "1.1.0", wanted: "v1.1.0" }).kind).toBe("refused");
+    expect(plan.kind === "refused" && plan.reason).toBe("`v1.0.0` is lower than the installed 1.1.0 — `--to-tag` never downgrades");
+    // Equal is "make sure you are running this": pinned, and `pinPlan` reads it as `current` at that
+    // tag, so a checkout that advanced without being built stages it and a whole one stops (#24).
+    const same = planToTag({ tags: TAGS, installed: "1.1.0", wanted: "v1.1.0" });
+    expect(same.kind).toBe("pinned");
+    const pinned = pinPlan({ kind: "no-release", major: 1, higher: null }, { tags: TAGS, installed: "1.1.0", wanted: "v1.1.0" });
+    expect(pinned.ok && pinned.plan.kind).toBe("current");
+    expect(pinned.ok && pinned.plan.kind === "current" && pinned.plan.at.tag).toBe("v1.1.0");
   });
 
   test("to-tag refuses a major crossing", () => {

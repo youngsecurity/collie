@@ -6,6 +6,7 @@ import type { OpsRecord } from "../bridge/pack/ops-store.ts";
 import { buildStamp } from "../bridge/version.ts";
 import type { TrustedMember, TrustStoreData } from "../bridge/pack/trust-store.ts";
 import { STALE_AFTER_MS, type UpdateRun } from "../bridge/update-run.ts";
+import { parsePrereleaseTag, versionOfTag } from "../bridge/update.ts";
 import { answersThisBuild } from "../bridge/version.ts";
 import { collieVersionBare } from "./context.ts";
 import { updateDeps } from "./deps.ts";
@@ -84,8 +85,13 @@ export { answersThisBuild };
 
 /** How this lead's OWN update is asked for and watched — `collie update`'s detached runner (M15/04). */
 export interface LeadUpdate {
-  /** Stage and hand off, exactly as `collie update` does. `EXIT.OK` ⇒ the runner is away. */
-  start(): Promise<number>;
+  /**
+   * Stage and hand off, exactly as `collie update --to-tag <tag>` does. `EXIT.OK` ⇒ the runner is
+   * away. PINNED to the release being pushed, never "the highest of my major": the peers receive
+   * this checkout's commit as a bundle, and a lead that took a newer release than the one it hands
+   * out would be the skew this leg exists to prevent (#24).
+   */
+  start(tag: string): Promise<number>;
   /** That runner's record as of now, through the one staleness rule. Null ⇒ nothing has been written. */
   record(): UpdateRun | null;
 }
@@ -203,14 +209,14 @@ function lazyLead(io: Io): LeadUpdate {
     if (resolved === null) {
       const deps = updateDeps(io);
       resolved = {
-        start: () => cmdUpdate(deps, []),
+        start: (tag) => cmdUpdate(deps, ["--to-tag", tag]),
         record: () =>
           readRun(deps.files, deps.ctx.stateDir, deps.now(), (pid) => deps.exec.processCommand(pid) !== null),
       };
     }
     return resolved;
   };
-  return { start: () => real().start(), record: () => real().record() };
+  return { start: (tag) => real().start(tag), record: () => real().record() };
 }
 
 async function updateRun(deps: Wired, args: readonly string[]): Promise<number> {
@@ -290,7 +296,7 @@ async function updateRun(deps: Wired, args: readonly string[]): Promise<number> 
 
     // 4. THE LEAD FIRST. A lead that is not running the build it is handing out gets it first, and a
     //    lead that cannot take it is a lead whose peers must not take it either.
-    if (behind && !(await updateLead(deps, version))) {
+    if (behind && !(await updateLead(deps, version, commit))) {
       leaveRest(deps, targets, outcomes, "not attempted — this lead's own update did not land");
       return report(deps, targets, outcomes, version, false);
     }
@@ -597,24 +603,57 @@ function leadIsBehind(deps: Wired, version: string, commit: string): boolean {
 }
 
 /**
- * The lead's leg: hand off to its own updater, then WAIT for the record to settle.
+ * The release tag at `commit`, or null: the ONE thing the lead's own updater can be pointed at.
+ *
+ * `collie update` takes releases from origin by tag, and only by tag; a commit nobody tagged has no
+ * name the updater can stage. The tag must also name the version the commit's manifest carries,
+ * since that is the version every peer is told it is getting.
+ */
+function releaseTagAt(deps: Wired, commit: string, version: string): string | null {
+  const listed = gitOut(deps, ["tag", "--points-at", commit]);
+  if (listed === null) return null;
+  for (const named of listed.split("\n")) {
+    const tag = named.trim();
+    const parsed = parsePrereleaseTag(tag);
+    if (parsed === null || parsed.prerelease !== null) continue;
+    if (versionOfTag(parsed) === version) return tag;
+  }
+  return null;
+}
+
+/**
+ * The lead's leg: hand off to its own updater, PINNED to the release being pushed, then WAIT for the
+ * record to settle and CHECK that it settled on that release.
  *
  * It is the same runner `collie update` uses and the same record `collie update --status` reads —
  * the health gate and the one rollback come with it (M15/04), so a lead that does not come up rolls
  * itself back and this run stops before a single peer is touched.
  *
+ * Pinned, because the peers get this checkout's COMMIT as a bundle while an unpinned `collie update`
+ * takes the highest release of the lead's major: with a newer release on origin the lead landed
+ * there while the peers received `HEAD`, the "✓ this lead is running ${version}" line below was
+ * false, and the invariant this leg exists for did not hold (#24). A commit that is not a tagged
+ * release has nothing the updater can stage, so the leg refuses and names the by-hand route.
+ *
  * The wait is bounded by the record's own staleness rule rather than by the health budget: this leg
  * covers a full build, which is minutes on small hardware, and a killed updater is reported as
  * `interrupted` by that rule long before the ten minutes are up.
  */
-async function updateLead(deps: Wired, version: string): Promise<boolean> {
+async function updateLead(deps: Wired, version: string, commit: string): Promise<boolean> {
   const ours = collieVersionBare(deps.ctx.root, (p) => deps.files.read(p));
   line(deps, "");
   line(deps, `this lead: ${ours} — it takes ${version} first, before any peer does.`);
-  const started = await deps.lead.start();
+  const tag = releaseTagAt(deps, commit, version);
+  if (tag === null) {
+    deps.io.err(`error: ${commit.slice(0, 12)} is not a tagged release, and this lead's updater takes releases only.`);
+    deps.io.err(`       Build and restart this checkout by hand (\`collie build\`, then the restart action),`);
+    deps.io.err("       or tag the release, then re-run this command. No peer was touched.");
+    return false;
+  }
+  const started = await deps.lead.start(tag);
   if (started !== EXIT.OK) {
     deps.io.err(`error: this lead's own update would not start (exit ${started}) — no peer was touched.`);
-    deps.io.err("       Run `collie update` here, then re-run this command.");
+    deps.io.err(`       Run \`collie update --to-tag ${tag}\` here, then re-run this command.`);
     return false;
   }
   const outcome = await awaitRunRecord(() => deps.lead.record(), {
@@ -624,6 +663,15 @@ async function updateLead(deps: Wired, version: string): Promise<boolean> {
     pollMs: LEAD_POLL_MS,
   });
   if (outcome.kind === "done") {
+    // The record names what the runner actually landed on: the tag on a checkout, the version on a
+    // binary install. Anything else is a lead that updated to something other than what it pushes.
+    const landed = deps.lead.record()?.to ?? null;
+    if (landed !== tag && landed !== version) {
+      deps.io.err(`error: this lead's own update landed on ${landed ?? "nothing it recorded"}, not ${tag}.`);
+      deps.io.err("       No peer was touched: the peers would be on a build their lead is not running.");
+      skewNote(deps);
+      return false;
+    }
     line(deps, `  ✓ this lead is running ${version} — the peers can have it.`);
     return true;
   }

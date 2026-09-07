@@ -426,10 +426,14 @@ export function planToTag(a: {
       reason: `\`${target.tag}\` is not on the release family of the installed ${a.installed} — \`--to-tag\` never changes trains`,
     };
   }
-  if (compareRelease(target.version, a.installed) <= 0) {
+  // LOWER is refused; EQUAL is not a downgrade. `--to-tag X` on an install whose manifest already
+  // names X means "make sure you are running X": `pinPlan` reads it as `current`, and the caller's
+  // own "is what is on disk whole" question decides whether that stages the build or ends the verb.
+  // That is the lead's leg of `pack update` on a checkout that advanced without being built (#24).
+  if (compareRelease(target.version, a.installed) < 0) {
     return {
       kind: "refused",
-      reason: `\`${target.tag}\` is not higher than the installed ${a.installed} — \`--to-tag\` never downgrades`,
+      reason: `\`${target.tag}\` is lower than the installed ${a.installed} — \`--to-tag\` never downgrades`,
     };
   }
   const major = majorOf(a.installed);
@@ -461,6 +465,12 @@ export function pinPlan(
   if (a.wanted === null) return { ok: true, plan };
   const pinned = planToTag({ tags: a.tags, installed: a.installed, wanted: a.wanted });
   if (pinned.kind === "refused") return { ok: false, reason: pinned.reason };
+  // A pin onto the version already installed is `current` at that tag, exactly what `planUpdate`
+  // answers when the newest release is the one on disk: the caller then stages it only when what is
+  // on disk is not whole (a checkout advanced without being built), and otherwise says so and stops.
+  if (a.installed !== null && compareRelease(pinned.target.version, a.installed) === 0) {
+    return { ok: true, plan: { kind: "current", at: pinned.target, higher: null } };
+  }
   return { ok: true, plan: advanceTo(pinned.target) };
 }
 
