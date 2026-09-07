@@ -840,6 +840,7 @@ export const es: Dictionary = {
   "settings.updateCard.peer.state.stuck": "atascado",
   "settings.updateCard.peer.state.interrupted": "detenido",
   "settings.updateCard.peer.state.idle": "en espera",
+  "settings.updateCard.peer.state.unknown": "en curso",
   "updates.title": "Actualizaciones",
   "updates.nav.back": "Atrás",
   "updates.entry.title": "Actualizaciones",

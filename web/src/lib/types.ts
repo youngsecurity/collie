@@ -490,6 +490,8 @@ export type PackUpdateRow = UpdatePackMember;
  */
 export interface UpdatePeerLeg {
   name: string;
+  /** OPEN, see the type: every reader needs a fallback branch, and `update-pack.ts`'s `legInFlight` and
+   *  `peerStateWord` are those branches. Do not narrow this by switching on it without a `default`. */
   state: UpdatePeerLegState;
   /** The version that peer runs right now, when the lead knows it. */
   version?: string | null;

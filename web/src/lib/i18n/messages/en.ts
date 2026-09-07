@@ -857,6 +857,7 @@ export const en = {
   "settings.updateCard.peer.state.stuck": "stuck",
   "settings.updateCard.peer.state.interrupted": "stopped",
   "settings.updateCard.peer.state.idle": "waiting",
+  "settings.updateCard.peer.state.unknown": "in progress",
 
   // --- updates (the page, and the Settings row that opens it), M16/01 ---
   "updates.title": "Updates",

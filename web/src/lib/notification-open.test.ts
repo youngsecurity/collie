@@ -196,3 +196,52 @@ describe("openNotificationTarget", () => {
     );
   });
 });
+
+// ── A fallback that never settles does not block the next one (#26) ───────────────────────────
+describe("openNotificationTarget — bounded fallbacks", () => {
+  test("when openWindow is refused, a stale fallback that never settles yields to the next one", async () => {
+    const log: string[] = [];
+    const stale = fakeClient(log, "stale", { url: URL_B, navigate: "never" });
+    const live = fakeClient(log, "live", { url: URL_B, navigate: "ok" });
+    const openWindow = vi.fn(async (url: string) => {
+      log.push(`openWindow(${url})`);
+      return null; // both attempts refused: the fallbacks are all that is left
+    });
+    await expect(
+      openNotificationTarget({ url: URL_A, clients: [stale, live], openWindow, stepTimeoutMs: 20 }),
+    ).resolves.toBe("navigated");
+    expect(log).toEqual([
+      `openWindow(${URL_A})`,
+      `openWindow(${URL_A})`,
+      `stale.navigate(${URL_A})`,
+      `live.navigate(${URL_A})`,
+      "live.focus",
+    ]);
+  });
+
+  test("a focus that never settles is bounded the same way", async () => {
+    const log: string[] = [];
+    const frozen: OpenTargetClient = {
+      ...fakeClient(log, "frozen", { url: URL_A }),
+      focus: () => {
+        log.push("frozen.focus");
+        return new Promise(() => {});
+      },
+    };
+    const live = fakeClient(log, "live", { url: URL_B });
+    await expect(
+      openNotificationTarget({ url: URL_A, clients: [frozen, live], openWindow: async () => null, stepTimeoutMs: 20 }),
+    ).resolves.toBe("navigated");
+    expect(log.slice(0, 1)).toEqual(["frozen.focus"]);
+    expect(log.at(-1)).toBe("live.focus");
+  });
+
+  test("with every fallback frozen the open still ends, as failed, so the notification stays for a second tap", async () => {
+    const log: string[] = [];
+    const a = fakeClient(log, "a", { url: URL_B, navigate: "never" });
+    const b = fakeClient(log, "b", { url: URL_B, navigate: "never" });
+    await expect(
+      openNotificationTarget({ url: URL_A, clients: [a, b], openWindow: async () => null, stepTimeoutMs: 10 }),
+    ).resolves.toBe("failed");
+  });
+});

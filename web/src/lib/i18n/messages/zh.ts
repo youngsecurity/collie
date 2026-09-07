@@ -809,6 +809,7 @@ export const zh: Dictionary = {
   "settings.updateCard.peer.state.stuck": "卡住",
   "settings.updateCard.peer.state.interrupted": "已停止",
   "settings.updateCard.peer.state.idle": "等待中",
+  "settings.updateCard.peer.state.unknown": "进行中",
   "updates.title": "更新",
   "updates.nav.back": "返回",
   "updates.entry.title": "更新",
