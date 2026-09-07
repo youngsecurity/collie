@@ -40,6 +40,7 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 - `collie pack update`: the lead's own leg runs `collie update --to-tag` for the release at the checkout's `HEAD` and checks the record landed on it, instead of taking the newest release of its major while the peers received `HEAD`; an untagged `HEAD` is refused with the by-hand route. `--to-tag` naming the installed version is no longer refused as a downgrade: it stages the build when what is on disk is not that release, and says "already current" when it is (#24)
 - A new tab, launch or worktree opens on the host and session the create was addressed to, even when the phone switched host while the bridge was answering (#25)
 - A notification tap no longer hangs on a discarded tab whose `navigate()` never settles: each fallback client gets three seconds, then the next is tried; a peer leg state this client has never heard of is drawn as in progress with a word, never as an empty, finished row (#26)
+- `collie stt test` reports a probe that timed out or got no answer as that, and only the provider's own refusal as a container it will not take (#27)
 
 ## [1.5.1+ys.2] - 2026-09-05
 

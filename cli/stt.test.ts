@@ -392,6 +392,49 @@ describe("collie stt test", () => {
     expect(output).toContain("Container support is provider-specific");
   });
 
+
+  // ── A failure that is not a refusal is not a container diagnosis (#27) ──────
+  // Every probe error used to land in `refused`. WAV ok and then a WebM TIMEOUT reported "your
+  // provider takes wav but not webm" and sent the operator to reconfigure a provider that works.
+  test("wav accepted and webm timing out is a failure, not a refusal of the container", async () => {
+    const provider = fakeProvider("");
+    const accept = provider.transcribe.bind(provider);
+    const flaky: SttProvider = {
+      ...provider,
+      async transcribe(input) {
+        if (input.mimeType.startsWith("audio/webm")) throw new SttError("timeout");
+        return accept(input);
+      },
+    };
+    const d = deps({ seed: configured, create: () => flaky });
+    expect(await cmdSttTest(d)).toBe(EXIT.FAIL);
+    const output = said(d);
+    expect(output).toContain("✗ timeout: transcription timed out");
+    expect(output).toContain("1 of 3 clips did not transcribe, and none was refused");
+    expect(output).toContain("the provider not answering");
+    expect(output).not.toContain("takes audio/wav, but not");
+    expect(output).not.toContain("whisper-large-v3-turbo");
+  });
+
+  test("a refusal beside a timeout names only the refused container", async () => {
+    const provider = fakeProvider("");
+    const accept = provider.transcribe.bind(provider);
+    const mixed: SttProvider = {
+      ...provider,
+      async transcribe(input) {
+        if (input.mimeType.startsWith("audio/webm")) throw new SttError("timeout");
+        if (input.mimeType === "audio/mp4") throw new SttError("refused", "the transcription service answered 400 for audio/mp4");
+        return accept(input);
+      },
+    };
+    const d = deps({ seed: configured, create: () => mixed });
+    expect(await cmdSttTest(d)).toBe(EXIT.FAIL);
+    const output = said(d);
+    expect(output).toContain("the provider refused 1 of 3 clips");
+    expect(output).toContain("takes audio/wav, but not audio/mp4.");
+    expect(output).not.toContain("but not audio/webm");
+  });
+
   test("both phone containers refused are named together in one paragraph", async () => {
     const provider = refusingProvider(["audio/webm;codecs=opus", "audio/mp4"]);
     const d = deps({ seed: configured, create: () => provider });
