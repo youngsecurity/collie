@@ -127,6 +127,13 @@ The rule is right about internal code and wrong about a parse boundary — at th
   validator at each boundary (zod/valibot), decoding into a named domain type — which would delete
   the override list. That is a legitimate future improvement, and it was **explicitly scoped out of
   this milestone**: it is a design change to every parse site, not a lint pay-down.
+- **Fork amendment (2026-09-05, youngsecurity/collie#22).** Two files joined the disk-backed-state
+  override: `bridge/update-run.ts` (`<stateDir>/update.json` and `update.lock`) and
+  `cli/update-check.ts` (the preflight report another machine printed over ssh). Both had stayed
+  off the list by dodging the rule rather than honouring it, with `Number(value)` and
+  `String(value) !== value` coercions and unchecked property reads, and the dodge is what let a
+  `null` document crash its reader. The override is the honest shape; the glob was verified with a
+  planted violation in scope and a negative control out of scope, as the CLAUDE.md rule requires.
 
 ### The triage pass
 

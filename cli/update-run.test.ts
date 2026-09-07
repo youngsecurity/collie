@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
+import type { JsonValue } from "../bridge/json.ts";
 import { STANDBY_VERSION_HEADER } from "../bridge/pack/standby.ts";
 import { leadStore, member, peerStore } from "../bridge/pack/fixtures.ts";
 import { serializeTrustStore } from "../bridge/pack/trust-store.ts";
@@ -126,6 +127,30 @@ describe("probe target: the standby door's answer", () => {
   test("a door that is not listening is the failure it looks like", async () => {
     const net = netAnswering({ ok: false, failure: { status: null, message: "connection refused" } });
     expect(await healthProbe(net, target)()).toEqual({ ok: false, reason: "connection refused" });
+  });
+});
+
+describe("probe target: the front door's answer", () => {
+  const target = probeTarget(config({ pinsALead: false, standbyPort: null }));
+  const netJson = (value: JsonValue): Net => ({
+    getJson: () => Promise.resolve({ ok: true, value }),
+    download: () => Promise.resolve({ ok: false, failure: { status: null, message: "no network in tests" } }),
+    probe: () => Promise.resolve({ ok: false, failure: { status: null, message: "no network in tests" } }),
+  });
+
+  test("a body that is not an object is 'not up yet', never a throw out of the gate", async () => {
+    // A literal `null` body made `body.version` throw; that rejection left `awaitHealth`, left
+    // `driveApply`, and aborted the runner before it could roll back (#22).
+    for (const body of [null, [], 42, "up"]) {
+      expect(await healthProbe(netJson(body), target)()).toEqual({ ok: false, reason: "the health answer named no version" });
+    }
+    // A version that is not a string is the WRONG version, reported as such, never a throw downstream.
+    expect(await healthProbe(netJson({ version: 7 }), target)()).toEqual({ ok: true, version: "7", deposed: false });
+    expect(await healthProbe(netJson({ version: "1.4.0", deposed: "yes" }), target)()).toEqual({
+      ok: true,
+      version: "1.4.0",
+      deposed: false,
+    });
   });
 });
 

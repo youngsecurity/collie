@@ -60,6 +60,30 @@ describe("parsing the update run record", () => {
     expect(parseUpdateLock("nonsense")).toBeNull();
   });
 
+  // A corrupt file used to THROW out of both parsers on the first property read, so `--status`,
+  // the snapshot and the runner crashed on `null` where they should have read "no record" (#22).
+  test("a document that is not an object is no document, and never a throw", () => {
+    for (const text of ["null", "[]", "42", '"restarting"', "true"]) {
+      expect(parseUpdateRun(text)).toBeNull();
+      expect(parseUpdateLock(text)).toBeNull();
+    }
+    expect(parseUpdateLock(JSON.stringify({ pid: "7", at: NOW }))).toBeNull(); // a string is not a pid
+  });
+
+  test("every optional field is kept only as a string, and from/to only as a string or null", () => {
+    const run = parseUpdateRun(
+      JSON.stringify({ ...record({ state: "stuck" }), reason: null, logTail: 42, recovery: ["x"], to: 7, from: { v: 1 } }),
+    );
+    expect(run).not.toBeNull();
+    expect("reason" in run!).toBe(false);
+    expect("logTail" in run!).toBe(false);
+    expect("recovery" in run!).toBe(false);
+    expect(run?.to).toBeNull();
+    expect(run?.from).toBeNull();
+    // A numeric field that is not a number is the fallback, never a coerced string.
+    expect(parseUpdateRun(JSON.stringify({ ...record(), attempt: "1" }))?.attempt).toBe(0);
+  });
+
   test("only the in-flight states can go stale", () => {
     expect(inFlight("verifying")).toBe(true);
     expect(inFlight("restarting")).toBe(true);

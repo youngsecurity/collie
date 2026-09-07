@@ -465,9 +465,14 @@ export function healthProbe(net: Net, target: ProbeTarget): () => Promise<Health
     if (!got.ok) return { ok: false, reason: got.failure.message };
     // SAFETY: `Net.getJson` hands back what `Response.json()` produced, which IS a JSON value by
     // construction. Both fields are checked here before use, and a body that carries neither reads
-    // as "not up yet" — which is what an unparseable answer means to a gate that is polling.
-    const body = got.value as { version?: string; deposed?: boolean };
-    const version = body.version ?? "";
+    // as "not up yet" — which is what an unparseable answer means to a gate that is polling. The
+    // `?? {}` is load-bearing: a body of literal `null` made `body.version` THROW, and that rejection
+    // left `awaitHealth`, left `driveApply` and aborted the runner before it could roll back (#22).
+    // `standbyAnswer` below already reads its body this way.
+    const body = (got.value ?? {}) as { version?: string; deposed?: boolean };
+    // `String(...)`: a version that is not a string cannot match the build the gate wants, and it must
+    // not throw on `.startsWith` downstream either; it reads as the wrong version, which it is.
+    const version = String(body.version ?? "");
     if (version === "") return { ok: false, reason: "the health answer named no version" };
     return { ok: true, version, deposed: body.deposed === true };
   };

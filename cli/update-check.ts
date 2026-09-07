@@ -601,21 +601,63 @@ export function parseReport(stdout: string): PreflightReport | null {
   const start = stdout.indexOf("{");
   const end = stdout.lastIndexOf("}");
   if (start < 0 || end <= start) return null;
-  let doc: Partial<PreflightReport> | null;
+  let doc: JsonValue;
   try {
-    // SAFETY: the assertion asserts NOTHING about the document — every field it names is checked
-    // below before it is used, and a value that is not an object at all reads every one of them as
-    // `undefined` and fails the first check. It exists only to give `JSON.parse`'s `any` a name.
-    doc = JSON.parse(stdout.slice(start, end + 1)) as Partial<PreflightReport> | null;
+    // SAFETY: `JSON.parse` answers a JSON value by construction; every field is checked below.
+    doc = JSON.parse(stdout.slice(start, end + 1)) as JsonValue;
   } catch {
     return null;
   }
-  if (doc === null || doc === undefined) return null;
-  if (doc.schema !== PREFLIGHT_SCHEMA || !Array.isArray(doc.checks)) return null;
-  const verdict = doc.verdict;
-  if (verdict !== "green" && verdict !== "amber" && verdict !== "red") return null;
-  const report: PreflightReport = { schema: PREFLIGHT_SCHEMA, verdict, checks: doc.checks };
-  return doc.pack === undefined ? report : { ...report, pack: doc.pack };
+  const rec = asRecord(doc);
+  if (rec === null) return null;
+  if (rec.schema !== PREFLIGHT_SCHEMA || !Array.isArray(rec.checks)) return null;
+  const verdict = asVerdict(rec.verdict);
+  if (verdict === null) return null;
+  // ELEMENT BY ELEMENT. The document arrives from another machine's stdout (`remoteChecks`), so its
+  // elements are not this build's to assume: a `{}` in `checks` used to pass and then throw in
+  // `checkLine` on `c.id.padEnd`, and an unknown verdict read as `RANK[undefined]`, which is a check
+  // that silently counted green (youngsecurity/collie#22). A malformed element is dropped, never
+  // guessed at, and the report's verdict is the worst of what it claimed and what survived: a
+  // claimed red stays red with no checks to show, and a claimed green cannot hide a surviving red.
+  const checks = rec.checks.map(asCheck).filter((c): c is PreflightCheck => c !== null);
+  const claimed = worst([verdict, ...checks.map((c) => c.verdict)]);
+  const report: PreflightReport = { schema: PREFLIGHT_SCHEMA, verdict: claimed, checks };
+  if (rec.pack === undefined) return report;
+  if (!Array.isArray(rec.pack)) return report;
+  const pack = rec.pack.map(asMember).filter((m): m is PreflightMember => m !== null);
+  return { ...report, pack };
+}
+
+/** A JSON object, or null for every other JSON value. */
+function asRecord(value: JsonValue | undefined): { readonly [key: string]: JsonValue | undefined } | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
+}
+
+/** One of the three verdicts, or null: an unknown word is not a fourth colour. */
+function asVerdict(value: JsonValue | undefined): Verdict | null {
+  return value === "green" || value === "amber" || value === "red" ? value : null;
+}
+
+/** One check, or null when any required field is missing or mistyped. `remedy` is kept only as a string. */
+function asCheck(value: JsonValue | undefined): PreflightCheck | null {
+  const rec = asRecord(value);
+  if (rec === null) return null;
+  const verdict = asVerdict(rec.verdict);
+  if (typeof rec.id !== "string" || rec.id === "" || typeof rec.reason !== "string" || verdict === null) return null;
+  const check: PreflightCheck = { id: rec.id, verdict, reason: rec.reason };
+  return typeof rec.remedy === "string" ? { ...check, remedy: rec.remedy } : check;
+}
+
+/** One member row, its checks read by {@link asCheck}; its verdict is re-derived the same way. */
+function asMember(value: JsonValue | undefined): PreflightMember | null {
+  const rec = asRecord(value);
+  if (rec === null) return null;
+  const verdict = asVerdict(rec.verdict);
+  if (typeof rec.memberId !== "string" || rec.memberId === "" || typeof rec.host !== "string" || verdict === null) {
+    return null;
+  }
+  const checks = Array.isArray(rec.checks) ? rec.checks.map(asCheck).filter((c): c is PreflightCheck => c !== null) : [];
+  return { memberId: rec.memberId, host: rec.host, verdict: worst([verdict, ...checks.map((c) => c.verdict)]), checks };
 }
 
 /** ssh never started, or could not connect — the transport family, distinct from a remote failure. */

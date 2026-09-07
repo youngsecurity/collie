@@ -771,3 +771,50 @@ describe("update --check --to-tag with no value (#21)", () => {
     }
   });
 });
+
+// ── The remote report is read element by element (#22) ──────────────────────
+// The document arrives from another machine's stdout, so its elements are not this build's to
+// assume. `{}` in `checks` used to pass `parseReport` and then throw in `checkLine`; an unknown
+// verdict read as `RANK[undefined]` and counted green.
+describe("parseReport validates every element", () => {
+  const good = { id: "git", verdict: "green", reason: "clean" };
+
+  test("a malformed check is dropped, and a claimed green cannot hide a surviving red", () => {
+    const doc = {
+      schema: 1,
+      verdict: "green",
+      checks: [good, {}, { id: "x" }, { id: "y", verdict: "purple", reason: "?" }, { id: "disk", verdict: "red", reason: "full", remedy: 7 }],
+    };
+    const report = parseReport(JSON.stringify(doc))!;
+    expect(report.checks.map((c) => c.id)).toEqual(["git", "disk"]);
+    expect(report.checks[1]).toEqual({ id: "disk", verdict: "red", reason: "full" }); // the non-string remedy is dropped
+    expect(report.verdict).toBe("red");
+  });
+
+  test("a claimed red with nothing to show stays red; a non-object document is null", () => {
+    expect(parseReport(JSON.stringify({ schema: 1, verdict: "red", checks: [{}] }))!.verdict).toBe("red");
+    expect(parseReport(JSON.stringify({ schema: 1, verdict: "green", checks: [{}] }))!.checks).toEqual([]);
+    for (const text of ["null", "[]", '{"schema":1,"verdict":"green","checks":{}}', '{"schema":1,"verdict":"olive","checks":[]}']) {
+      expect(parseReport(text)).toBeNull();
+    }
+  });
+
+  test("pack rows are read the same way: a malformed member is dropped, its checks are filtered", () => {
+    const doc = {
+      schema: 1,
+      verdict: "green",
+      checks: [good],
+      pack: [
+        { memberId: "bluefin", host: "bluefin.ts.net", verdict: "green", checks: [good, {}] },
+        { memberId: "", host: "x", verdict: "green", checks: [] },
+        { memberId: "attic", verdict: "green", checks: [] },
+        "nonsense",
+        { memberId: "workshop", host: "", verdict: "green", checks: [{ id: "bun", verdict: "red", reason: "old" }] },
+      ],
+    };
+    const report = parseReport(JSON.stringify(doc))!;
+    expect(report.pack?.map((m) => `${m.memberId}:${m.verdict}:${m.checks.length}`)).toEqual(["bluefin:green:1", "workshop:red:1"]);
+    // A `pack` that is not an array reads as no pack at all.
+    expect(parseReport(JSON.stringify({ ...doc, pack: {} }))!.pack).toBeUndefined();
+  });
+});
