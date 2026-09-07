@@ -41,6 +41,7 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 - A new tab, launch or worktree opens on the host and session the create was addressed to, even when the phone switched host while the bridge was answering (#25)
 - A notification tap no longer hangs on a discarded tab whose `navigate()` never settles: each fallback client gets three seconds, then the next is tried; a peer leg state this client has never heard of is drawn as in progress with a word, never as an empty, finished row (#26)
 - `collie stt test` reports a probe that timed out or got no answer as that, and only the provider's own refusal as a container it will not take (#27)
+- The playground's dashboard fixture carries synthetic names and paths of the same lengths instead of a captured workstation's (#28)
 
 ## [1.5.1+ys.2] - 2026-09-05
 
