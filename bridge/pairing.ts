@@ -4,6 +4,7 @@ import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 import type { JsonObject, JsonValue } from "./json.ts";
+import { pidIsAlive } from "./update-run.ts";
 
 // ── DEVICE PAIRING: A CREDENTIAL THE DEVICE HOLDS, NOT A NAME THE NETWORK ASSERTS ─────────────
 //
@@ -84,13 +85,31 @@ export const LOCK_POLL_MS = 20;
 export const LOCK_BREAK_FILENAME = "paired-devices.lock.break";
 
 /**
- * What one failed `createExclusive` means, as a pure decision over the facts a filesystem answers:
- * `wait` (someone holds it and it is recent), `break` (older than the stale bound: its holder is
- * gone), or `retry` (it vanished between the create and the stat, so the next create may win).
+ * What one failed `createExclusive` means, as a pure decision over the facts a filesystem and the
+ * process table answer: `wait` (someone holds it, and is either alive or recent), `break` (its
+ * holder's pid is gone AND it is older than the stale bound), or `retry` (it vanished between the
+ * create and the stat, so the next create may win).
  */
-export function lockVerdict(mtimeMs: number | null, now: number, staleMs = LOCK_STALE_MS): "wait" | "break" | "retry" {
+export function lockVerdict(
+  mtimeMs: number | null,
+  now: number,
+  alive: boolean,
+  staleMs = LOCK_STALE_MS,
+): "wait" | "break" | "retry" {
   if (mtimeMs === null) return "retry";
+  // A holder whose process is ALIVE holds, whatever the lock's age: a paused process, a stopped
+  // shell, a machine that slept, is still the holder, and reclaiming its lock by age alone was the
+  // one way two writers could reach the section at once. Only a dead pid's stale lock is broken.
+  // The same single rule `cli/update-run.ts` reads `update.lock` with.
+  if (alive) return "wait";
   return now - mtimeMs >= staleMs ? "break" : "wait";
+}
+
+/** The pid a lock body names, or null for a body this build cannot read. */
+export function lockPidOf(body: string | null): number | null {
+  if (body === null) return null;
+  const m = /"pid"\s*:\s*(\d+)/.exec(body);
+  return m === null ? null : Number(m[1]);
 }
 
 /** What the lock file says, for the operator who finds one: which process, and when. */
@@ -120,12 +139,11 @@ export interface LockFsSync {
 }
 
 /**
- * The lock as the holder sees it. NOT just a release: a lock is taken by age as well as by absence
- * (a holder that died leaves a file, and a waiter breaks it once it is older than
- * {@link LOCK_STALE_MS}), so a holder that is merely PAUSED that long, a stopped process, a machine
- * asleep, comes back holding a lock somebody else has since replaced. Two writers would then be in
- * the section at once, and the old release would delete the new lock. So ownership is proved at
- * write time: {@link assertHeld} reads the file and compares it with the body this holder wrote
+ * The lock as the holder sees it. NOT just a release. A lock is broken only when its holder's pid is
+ * gone AND it is stale ({@link lockVerdict}), so a live holder, however long it pauses, keeps it; the
+ * ownership proof below is the second line, for the one shape that rule cannot see, a pid the kernel
+ * reused after the holder died, or a lock broken by a process whose view of the process table was
+ * wrong. Ownership is proved at write time: {@link assertHeld} reads the file and compares it with the body this holder wrote
  * (pid and stamp, never the pid alone), and {@link release} removes the file only while it is still
  * that body. A holder that lost its lock cannot write, which is the one thing that must hold.
  */
@@ -149,9 +167,14 @@ export function lockLostMessage(path: string): string {
 export function acquireRegistryLockSync(
   fs: LockFsSync,
   stateDir: string,
-  deps: { now: () => number; sleep: (ms: number) => void; pid: number },
+  deps: { now: () => number; sleep: (ms: number) => void; pid: number; alive: (pid: number) => boolean },
   bounds: { staleMs?: number; waitMs?: number; pollMs?: number } = {},
 ): RegistryLock {
+  /** Whether the process a lock or marker body names is still running. An unreadable body is not alive. */
+  const holderAlive = (text: string | null): boolean => {
+    const pid = lockPidOf(text);
+    return pid !== null && deps.alive(pid);
+  };
   const path = join(stateDir, LOCK_FILENAME);
   const staleMs = bounds.staleMs ?? LOCK_STALE_MS;
   const waitMs = bounds.waitMs ?? LOCK_WAIT_MS;
@@ -170,14 +193,14 @@ export function acquireRegistryLockSync(
         },
       };
     }
-    const verdict = lockVerdict(fs.mtimeMs(path), deps.now(), staleMs);
+    const verdict = lockVerdict(fs.mtimeMs(path), deps.now(), holderAlive(fs.read(path)), staleMs);
     if (verdict === "break") {
       const marker = join(stateDir, LOCK_BREAK_FILENAME);
       if (fs.createExclusive(marker, lockBody(deps.pid, deps.now()))) {
-        // Under the marker, and only then: still the stale lock, or one somebody replaced meanwhile?
-        if (lockVerdict(fs.mtimeMs(path), deps.now(), staleMs) === "break") fs.remove(path);
+        // Under the marker, and only then: still the dead holder's lock, or one somebody replaced meanwhile?
+        if (lockVerdict(fs.mtimeMs(path), deps.now(), holderAlive(fs.read(path)), staleMs) === "break") fs.remove(path);
         fs.remove(marker);
-      } else if (lockVerdict(fs.mtimeMs(marker), deps.now(), staleMs) === "break") {
+      } else if (lockVerdict(fs.mtimeMs(marker), deps.now(), holderAlive(fs.read(marker)), staleMs) === "break") {
         fs.remove(marker);
       }
     }
@@ -207,9 +230,13 @@ export interface RegistryLockAsync {
 export async function acquireRegistryLock(
   fs: LockFsAsync,
   stateDir: string,
-  deps: { now: () => number; sleep: (ms: number) => Promise<void>; pid: number },
+  deps: { now: () => number; sleep: (ms: number) => Promise<void>; pid: number; alive: (pid: number) => boolean },
   bounds: { staleMs?: number; waitMs?: number; pollMs?: number } = {},
 ): Promise<RegistryLockAsync> {
+  const holderAlive = async (text: Promise<string | null>): Promise<boolean> => {
+    const pid = lockPidOf(await text);
+    return pid !== null && deps.alive(pid);
+  };
   const path = join(stateDir, LOCK_FILENAME);
   const staleMs = bounds.staleMs ?? LOCK_STALE_MS;
   const waitMs = bounds.waitMs ?? LOCK_WAIT_MS;
@@ -228,13 +255,13 @@ export async function acquireRegistryLock(
         },
       };
     }
-    const verdict = lockVerdict(await fs.mtimeMs(path), deps.now(), staleMs);
+    const verdict = lockVerdict(await fs.mtimeMs(path), deps.now(), await holderAlive(fs.read(path)), staleMs);
     if (verdict === "break") {
       const marker = join(stateDir, LOCK_BREAK_FILENAME);
       if (await fs.createExclusive(marker, lockBody(deps.pid, deps.now()))) {
-        if (lockVerdict(await fs.mtimeMs(path), deps.now(), staleMs) === "break") await fs.remove(path);
+        if (lockVerdict(await fs.mtimeMs(path), deps.now(), await holderAlive(fs.read(path)), staleMs) === "break") await fs.remove(path);
         await fs.remove(marker);
-      } else if (lockVerdict(await fs.mtimeMs(marker), deps.now(), staleMs) === "break") {
+      } else if (lockVerdict(await fs.mtimeMs(marker), deps.now(), await holderAlive(fs.read(marker)), staleMs) === "break") {
         await fs.remove(marker);
       }
     }
@@ -600,7 +627,7 @@ export function filePairingIo(stateDir: string): PairingIo {
           },
         },
         stateDir,
-        { now: Date.now, sleep: (ms) => new Promise((r) => setTimeout(r, ms)), pid: process.pid },
+        { now: Date.now, sleep: (ms) => new Promise((r) => setTimeout(r, ms)), pid: process.pid, alive: pidIsAlive },
       );
     },
     readRegistrySync() {

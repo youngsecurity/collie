@@ -216,7 +216,12 @@ export function cmdDevicesRevoke(deps: PairingDeps, args: readonly string[]): nu
         remove: (p) => deps.files.remove(p),
       },
       deps.ctx.stateDir,
-      { now: deps.now ?? Date.now, sleep: deps.sleep ?? sleepSync, pid: process.pid },
+      {
+        now: deps.now ?? Date.now,
+        sleep: deps.sleep ?? sleepSync,
+        pid: process.pid,
+        alive: (pid) => deps.exec.processCommand(pid) !== null,
+      },
     );
   } catch (err) {
     deps.io.err(`error: ${err instanceof Error ? err.message : String(err)}`);

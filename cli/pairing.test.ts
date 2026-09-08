@@ -383,3 +383,18 @@ describe("collie devices revoke — ownership is proved before the write", () =>
     expect(d.files.entries.get(LOCK)?.text).toBe('{"pid":424242,"at":9}'); // the new holder's, untouched
   });
 });
+
+describe("collie devices revoke — a live holder is never reclaimed", () => {
+  test("a stale lock whose pid is still running holds, and the revoke refuses at the bound", () => {
+    const before = JSON.stringify({ devices: [device({ label: "pixel" })] });
+    const d = deps({ [REGISTRY]: before, [LOCK]: '{"pid":999,"at":0}' });
+    let clock = d.files.clock.now + LOCK_STALE_MS * 5; // stale by age, many times over
+    d.now = () => clock;
+    d.sleep = (ms) => void (clock += ms);
+    d.exec.processCommand = (pid) => (pid === 999 ? "collie _exec-bridge" : null);
+    expect(cmdDevicesRevoke(d, ["pixel"])).toBe(EXIT.FAIL);
+    expect(d.io.stderr.join("\n")).toContain("could not lock the paired-device registry");
+    expect(d.files.entries.get(REGISTRY)!.text).toBe(before);
+    expect(d.files.entries.get(LOCK)?.text).toBe('{"pid":999,"at":0}'); // never broken
+  });
+});
