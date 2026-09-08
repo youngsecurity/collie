@@ -650,8 +650,11 @@ describe("UpdateConfirmGate", () => {
     expect(gate.take(() => false)).toBe(false);
     // The lock appeared: let the verdict refuse with the run's own state rather than a guess.
     expect(gate.take(() => true)).toBe(true);
-    gate.release(false);
+    gate.release(true); // a start again, so the grace is OPEN for the bound to be the thing that ends it
+    expect(gate.take(() => false)).toBe(false);
     // The grace is bounded, so a child that never took the lock cannot wedge the button.
+    now = START_GRACE_MS - 1;
+    expect(gate.take(() => false)).toBe(false);
     now = START_GRACE_MS;
     expect(gate.take(() => false)).toBe(true);
   });

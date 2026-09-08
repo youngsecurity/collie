@@ -337,15 +337,19 @@ describe("collie devices revoke — the registry lock (#19)", () => {
     expect(d.files.entries.has(LOCK)).toBe(true); // not ours to remove: it is fresh
   });
 
-  test("a stale lock, left by a process that died, is broken and the revoke proceeds", () => {
+  test("a stale lock, left by a process that died, is broken under the break marker and the revoke proceeds", () => {
     const d = deps({ ...registryFile(device({ label: "pixel" })), [LOCK]: '{"pid":999}' });
     d.now = () => d.files.clock.now + LOCK_STALE_MS;
-    d.sleep = () => {
-      throw new Error("a stale lock must not be waited on");
-    };
+    let polls = 0;
+    d.sleep = () => void polls++;
     expect(cmdDevicesRevoke(d, ["pixel"])).toBe(EXIT.OK);
-    expect(d.files.locks).toEqual([`unlock ${LOCK}`, `lock ${LOCK}`, `unlock ${LOCK}`]);
+    // The break is exclusive: the marker is taken, the stale lock goes, the marker goes, ONE poll is
+    // paid (the break path is bounded like every other), and the lock is then taken.
+    const MARKER = `${LOCK}.break`;
+    expect(d.files.locks).toEqual([`lock ${MARKER}`, `unlock ${LOCK}`, `unlock ${MARKER}`, `lock ${LOCK}`, `unlock ${LOCK}`]);
+    expect(polls).toBe(1);
     expect(d.files.entries.has(LOCK)).toBe(false);
+    expect(d.files.entries.has(MARKER)).toBe(false);
   });
 
   test("the lock is released when the write fails, and when the label is unknown", () => {

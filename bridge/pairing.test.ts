@@ -22,6 +22,7 @@ import {
   generateCode,
   generateToken,
   hashesEqual,
+  LOCK_BREAK_FILENAME,
   LOCK_FILENAME,
   LOCK_STALE_MS,
   lockVerdict,
@@ -719,22 +720,32 @@ describe("concurrent lastSeenAt stamps (#159)", () => {
 // file both processes take; these pin the loop, the store's use of it, and the on-disk shape.
 describe("the registry lock (#19)", () => {
   /** An in-memory LockFsSync: the lock file is one entry with an mtime; `removed` counts breaks. */
-  function memoryLockFs(seed: { held?: boolean; mtime?: number } = {}) {
-    const state = { file: seed.held ? { mtime: seed.mtime ?? 0 } : null, removed: 0 };
+  /**
+   * An in-memory LockFsSync over PATHS: the lock and its break marker are two entries, each with the
+   * mtime it was created at, so the takeover's own exclusivity can be exercised. `removed` lists
+   * every remove, in order.
+   */
+  function memoryLockFs(seed: { held?: boolean; mtime?: number } = {}, clock: () => number = () => 0) {
+    const files = new Map<string, { mtime: number }>();
+    if (seed.held) files.set("/state/" + LOCK_FILENAME, { mtime: seed.mtime ?? 0 });
+    const removed: string[] = [];
+    const state = { files, removed };
     const fs: LockFsSync = {
-      createExclusive: () => {
-        if (state.file) return false;
-        state.file = { mtime: 0 };
+      createExclusive: (path) => {
+        if (files.has(path)) return false;
+        files.set(path, { mtime: clock() });
         return true;
       },
-      mtimeMs: () => state.file?.mtime ?? null,
-      remove: () => {
-        state.file = null;
-        state.removed++;
+      mtimeMs: (path) => files.get(path)?.mtime ?? null,
+      remove: (path) => {
+        files.delete(path);
+        state.removed.push(path);
       },
     };
     return { fs, state };
   }
+  const LOCK = "/state/" + LOCK_FILENAME;
+  const MARKER = "/state/" + LOCK_BREAK_FILENAME;
 
   test("lockVerdict: a fresh lock is waited on, a stale one is broken, a vanished one is retried", () => {
     expect(lockVerdict(1_000, 1_000 + LOCK_STALE_MS - 1)).toBe("wait");
@@ -746,10 +757,10 @@ describe("the registry lock (#19)", () => {
     const { fs, state } = memoryLockFs();
     const slept: number[] = [];
     const release = acquireRegistryLockSync(fs, "/state", { now: () => 0, sleep: (ms) => slept.push(ms), pid: 1 });
-    expect(state.file).not.toBeNull();
+    expect(state.files.has(LOCK)).toBe(true);
     expect(slept).toEqual([]);
     release();
-    expect(state.file).toBeNull();
+    expect(state.files.has(LOCK)).toBe(false);
   });
 
   test("sync: held and fresh ⇒ waits, then takes it the moment the holder lets go", () => {
@@ -763,23 +774,68 @@ describe("the registry lock (#19)", () => {
         sleep: (ms) => {
           clock += ms;
           // The other process finishes after three polls.
-          if (clock >= 60) state.file = null;
+          if (clock >= 60) state.files.delete(LOCK);
         },
         pid: 1,
       },
       { pollMs: 20 },
     );
     expect(clock).toBe(60);
-    expect(state.removed).toBe(0); // waited for it, never broke it
+    expect(state.removed).toEqual([]); // waited for it, never broke it
     release();
   });
 
-  test("sync: held and stale ⇒ broken and taken, so a holder that died cannot wedge the registry", () => {
+  test("sync: held and stale ⇒ broken under the marker, then taken, so a holder that died cannot wedge the registry", () => {
     const { fs, state } = memoryLockFs({ held: true, mtime: 0 });
-    const release = acquireRegistryLockSync(fs, "/state", { now: () => LOCK_STALE_MS, sleep: () => {}, pid: 1 });
-    expect(state.removed).toBe(1);
-    expect(state.file).not.toBeNull();
+    let clock = LOCK_STALE_MS;
+    const release = acquireRegistryLockSync(fs, "/state", { now: () => clock, sleep: (ms) => void (clock += ms), pid: 1 });
+    expect(state.removed).toEqual([LOCK, MARKER]);
+    expect(state.files.has(LOCK)).toBe(true);
+    expect(state.files.has(MARKER)).toBe(false);
     release();
+  });
+
+  // Two waiters that both read the same stale mtime used to both `remove`, and the second remove
+  // took away the FRESH lock the first had just created: two writers inside the section at once.
+  test("sync: a lock replaced between the stale reading and the break is NOT removed", () => {
+    let clock = LOCK_STALE_MS;
+    const { fs, state } = memoryLockFs({ held: true, mtime: 0 }, () => clock);
+    // Between this waiter's stale reading and its remove, another waiter breaks the lock and takes
+    // a fresh one. Modelled on the marker's create: the moment this waiter wins the marker, the
+    // other has already replaced the lock.
+    const create = fs.createExclusive;
+    fs.createExclusive = (path, text) => {
+      const won = create(path, text);
+      if (won && path === MARKER) state.files.set(LOCK, { mtime: clock }); // the other's fresh lock
+      return won;
+    };
+    expect(() =>
+      acquireRegistryLockSync(fs, "/state", { now: () => clock, sleep: (ms) => void (clock += ms), pid: 1 }, { waitMs: 100, pollMs: 20 }),
+    ).toThrow("could not lock");
+    // The fresh lock was re-read under the marker, judged live, and left alone; only the marker went.
+    expect(state.removed.filter((p) => p === LOCK)).toEqual([]);
+    expect(state.files.has(LOCK)).toBe(true);
+  });
+
+  test("sync: a break marker left by a breaker that died is itself broken once stale", () => {
+    let clock = LOCK_STALE_MS * 2;
+    const { fs, state } = memoryLockFs({ held: true, mtime: 0 }, () => clock);
+    state.files.set(MARKER, { mtime: 0 }); // a breaker that died holding the marker
+    const release = acquireRegistryLockSync(fs, "/state", { now: () => clock, sleep: (ms) => void (clock += ms), pid: 1 });
+    expect(state.removed).toEqual([MARKER, LOCK, MARKER]);
+    release();
+  });
+
+  test("sync: a remove that silently fails still ends in the refusal, never a spin", () => {
+    let clock = LOCK_STALE_MS;
+    const { fs, state } = memoryLockFs({ held: true, mtime: 0 }, () => clock);
+    fs.remove = (path) => void state.removed.push(path); // the unlink that does nothing
+    const polls: number[] = [];
+    expect(() =>
+      acquireRegistryLockSync(fs, "/state", { now: () => clock, sleep: (ms) => void (polls.push(ms), (clock += ms)) , pid: 1 }, { waitMs: 100, pollMs: 20 }),
+    ).toThrow("could not lock the paired-device registry within 100ms");
+    expect(polls.length).toBeGreaterThan(0);
+    expect(polls.length).toBeLessThanOrEqual(6);
   });
 
   test("sync: never freed ⇒ throws after the wait bound and names the file, and NOTHING is written", () => {
@@ -792,8 +848,8 @@ describe("the registry lock (#19)", () => {
         { now: () => clock, sleep: (ms) => void (clock += ms), pid: 1 },
         { staleMs: 1_000_000, waitMs: 100, pollMs: 20 },
       ),
-    ).toThrow(`could not lock the paired-device registry within 100ms — another writer holds /state/${LOCK_FILENAME}`);
-    expect(state.removed).toBe(0);
+    ).toThrow(`could not lock the paired-device registry within 100ms — another writer holds ${LOCK}`);
+    expect(state.removed).toEqual([]);
   });
 
   test("sync: a create that keeps failing with no mtime to read is bounded too, never a spin", () => {
@@ -813,22 +869,26 @@ describe("the registry lock (#19)", () => {
     expect(slept).toEqual([20, 20, 20, 20, 20]);
   });
 
-  test("async: the same loop, the same verdicts", async () => {
-    const { fs: sync, state } = memoryLockFs({ held: true, mtime: 0 });
-    let clock = 0;
-    const fs = {
+  /** The async twin over the same in-memory files. */
+  function asyncOf(sync: LockFsSync) {
+    return {
       createExclusive: async (p: string, t: string) => sync.createExclusive(p, t),
       mtimeMs: async (p: string) => sync.mtimeMs(p),
       remove: async (p: string) => sync.remove(p),
     };
+  }
+
+  test("async: the same loop, the same verdicts", async () => {
+    const { fs: sync, state } = memoryLockFs({ held: true, mtime: 0 });
+    let clock = 0;
     const release = await acquireRegistryLock(
-      fs,
+      asyncOf(sync),
       "/state",
       {
         now: () => clock,
         sleep: async (ms) => {
           clock += ms;
-          if (clock >= 40) state.file = null;
+          if (clock >= 40) state.files.delete(LOCK);
         },
         pid: 1,
       },
@@ -836,7 +896,22 @@ describe("the registry lock (#19)", () => {
     );
     expect(clock).toBe(40);
     await release();
-    expect(state.file).toBeNull();
+    expect(state.files.has(LOCK)).toBe(false);
+  });
+
+  test("async: the takeover is exclusive and bounded exactly as the sync one is", async () => {
+    let clock = LOCK_STALE_MS;
+    const stale = memoryLockFs({ held: true, mtime: 0 }, () => clock);
+    const release = await acquireRegistryLock(asyncOf(stale.fs), "/state", { now: () => clock, sleep: async (ms) => void (clock += ms), pid: 1 });
+    expect(stale.state.removed).toEqual([LOCK, MARKER]);
+    await release();
+
+    // A remove that silently fails (filePairingIo's `remove` swallows unlink errors) is bounded.
+    const stuck = memoryLockFs({ held: true, mtime: 0 }, () => clock);
+    stuck.fs.remove = () => {};
+    await expect(
+      acquireRegistryLock(asyncOf(stuck.fs), "/state", { now: () => clock, sleep: async (ms) => void (clock += ms), pid: 1 }, { waitMs: 100, pollMs: 20 }),
+    ).rejects.toThrow("could not lock the paired-device registry within 100ms");
   });
 
   test("every registry write the store makes sits between a lock and its release", async () => {

@@ -78,6 +78,8 @@ function lead(
 ) {
   const roster = [...members];
   const calls: string[] = [];
+  /** Whether each snapshot call asked for a fresh preflight, in call order. */
+  const fresh: boolean[] = [];
   let clock = NOW;
   const registry = new PackRegistry({
     sessions: { get: () => undefined },
@@ -86,8 +88,9 @@ function lead(
   });
   const l = new PackLead({
     registry,
-    snapshot: async (link) => {
+    snapshot: async (link, freshPreflight) => {
       calls.push(link.memberId);
+      fresh.push(freshPreflight === true);
       return script(link, calls.filter((c) => c === link.memberId).length);
     },
     proxy: neverProxy,
@@ -99,6 +102,7 @@ function lead(
     lead: l,
     registry,
     calls,
+    fresh,
     roster,
     advance: (ms: number) => {
       clock += ms;
@@ -158,6 +162,29 @@ describe("PackLead — the sweep rides the lead's poll, it does not arm a timer"
     // And nothing lingers: the flag was spent by the replay.
     await new Promise((r) => setTimeout(r, 0));
     expect(h.calls).toEqual(["laptop", "laptop"]);
+  });
+
+
+  test("a fresh-preflight REQUEST made mid-sweep is folded into the replay, with its option, and awaited", async () => {
+    const h = lead([member({ memberId: "laptop" })], () => ok(body));
+    const first = h.lead.sweep();
+    // A tick's sweep is in flight; the phone asks for a fresh check now.
+    let settled = false;
+    const requested = h.lead.request({ freshPreflight: true }).then(() => {
+      settled = true;
+      return settled;
+    });
+    await first;
+    expect(settled).toBe(false); // not answered by the sweep that was already running
+    await requested;
+    expect(h.calls).toEqual(["laptop", "laptop"]);
+    expect(h.fresh).toEqual([false, true]);
+  });
+
+  test("a request while idle is just a sweep, and resolves when it does", async () => {
+    const h = lead([member({ memberId: "laptop" })], () => ok(body));
+    await h.lead.request({ freshPreflight: true });
+    expect(h.calls).toEqual(["laptop"]);
   });
 
   test("a re-sweep asked for while idle is one sweep on the next microtask, as before", async () => {

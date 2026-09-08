@@ -148,7 +148,7 @@ export function fakeFiles(seed: SeededFiles = {}): FakeFiles {
     mtimeMs: (p) => entries.get(p)?.mtimeMs ?? null,
     remove: (p) => {
       if (undeletable.has(p)) return;
-      if (p.endsWith(".lock")) locks.push(`unlock ${p}`);
+      if (p.endsWith(".lock") || p.endsWith(".break")) locks.push(`unlock ${p}`);
       entries.delete(p);
     },
     removeTree: (p) => {

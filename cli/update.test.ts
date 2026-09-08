@@ -2133,6 +2133,42 @@ describe("the update state file and its lock", () => {
     expect(await cmdUpdate(again.deps)).toBe(EXIT.OK);
   });
 
+
+  test("a staging write that throws in the handoff releases the lock and spawns nothing", async () => {
+    // The lock is held from the take to the spawn; a throw between them used to leave it behind with
+    // no run to show for it, the same ten-minute refusal the runner's finally exists to prevent.
+    const h = binaryHarness();
+    const rename = h.files.rename;
+    h.files.rename = (from, to) => {
+      if (to.endsWith("update.json")) throw new Error("ENOSPC: no space left on device");
+      rename(from, to);
+    };
+    expect(await cmdUpdate(h.deps)).toBe(EXIT.FAIL);
+    expect(h.io.stderr.join("\n")).toContain("staging failed before the updater could start — ENOSPC");
+    expect(h.files.read(LOCK_FILE)).toBeNull();
+    expect(h.exec.spawned).toEqual([]);
+    // And the very next update is not refused by a lock that outlived nothing.
+    const again = binaryHarness();
+    for (const [p, entry] of h.files.entries) again.files.entries.set(p, entry);
+    expect(await cmdUpdate(again.deps)).toBe(EXIT.OK);
+  });
+
+  test("a throw before the drive's first write still records both versions on the interrupted record", async () => {
+    const h = binaryHarness();
+    const rename = h.files.rename;
+    let renames = 0;
+    h.files.rename = (from, to) => {
+      // The runner's FIRST record write fails: there is no in-flight record to fold the reason into.
+      if (to.endsWith("update.json") && ++renames === 1) throw new Error("ENOSPC");
+      rename(from, to);
+    };
+    expect(await runner(h, BINARY_APPLY)).toBe(EXIT.FAIL);
+    const run = parseUpdateRun(h.files.read(RUN_FILE));
+    expect(run?.state).toBe("interrupted");
+    expect(run?.from).toBe("1.0.0");
+    expect(run?.to).toBe(NEW);
+  });
+
   test("a throw that the record cannot be written for still releases the lock and says so", async () => {
     const h = binaryHarness();
     // The disk that threw is the disk the record goes to: every record write from the second on fails.

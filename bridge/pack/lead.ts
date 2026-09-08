@@ -266,11 +266,13 @@ export class PackLead {
   private readonly now: () => number;
   private sweeping = false;
   /**
-   * A {@link resweep} asked for WHILE a sweep was running. Replayed as one sweep when that sweep ends:
-   * the guard in {@link sweep} refuses a re-entrant call, and a re-sweep that reached it mid-sweep was
-   * simply lost, so a turn released inside the sweep waited out the whole idle cadence (#23).
+   * The sweep asked for WHILE a sweep was running, by {@link resweep} or {@link request}. Replayed as
+   * ONE sweep when that sweep ends: the guard in {@link sweep} refuses a re-entrant call, and a
+   * request that reached it mid-sweep was simply lost, so a turn released inside the sweep waited
+   * out the whole idle cadence (#23). `fresh` is true when any of the folded requests wanted §19's
+   * fresh preflight, and every awaiting caller is released after the replay.
    */
-  private resweepRequested = false;
+  private pending: { fresh: boolean; readonly waiters: (() => void)[] } | null = null;
   /** Members with a verdict probe in flight. At most one per member, ever — see {@link probe}. */
   private readonly probing = new Set<string>();
   /** Members with a warrant push in flight. At most one per member — see {@link pushWarrant}. */
@@ -398,11 +400,17 @@ export class PackLead {
       console.warn(`[pack] sweep failed: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       this.sweeping = false;
-      // One replay, not one per request: every re-sweep asked for during this sweep wants the same
-      // thing, the freshest look, and one sweep is that.
-      if (this.resweepRequested) {
-        this.resweepRequested = false;
-        queueMicrotask(() => void this.sweep());
+      // One replay, not one per request: every request made during this sweep wants the same thing,
+      // the freshest look, and one sweep is that. A fresh preflight asked for by any of them is
+      // carried, and each awaiting caller is released once the replay has run.
+      const pending = this.pending;
+      this.pending = null;
+      if (pending !== null) {
+        queueMicrotask(() => {
+          void this.sweep({ freshPreflight: pending.fresh }).finally(() => {
+            for (const release of pending.waiters) release();
+          });
+        });
       }
     }
   }
@@ -671,10 +679,26 @@ export class PackLead {
    */
   resweep(): void {
     if (this.sweeping) {
-      this.resweepRequested = true;
+      this.pending ??= { fresh: false, waiters: [] };
       return;
     }
     queueMicrotask(() => void this.sweep());
+  }
+
+  /**
+   * A sweep the caller WAITS for, with its options honoured even when a sweep is already running.
+   *
+   * {@link sweep} is the poll tick, and a tick that finds one in flight is refused: back-to-back
+   * ticks must not stack. A REQUEST is different: the phone's on-demand read asks for a fresh
+   * preflight (§19) and awaits the answer, and a request that returned at once because a tick's
+   * sweep was mid-flight had not run the preflight it promised. So a request made mid-sweep is
+   * folded into the replay with its options, and resolves after that replay has run.
+   */
+  request(opts: { readonly freshPreflight?: boolean } = {}): Promise<void> {
+    if (!this.sweeping) return this.sweep(opts);
+    const pending = (this.pending ??= { fresh: false, waiters: [] });
+    pending.fresh ||= opts.freshPreflight === true;
+    return new Promise((resolve) => pending.waiters.push(resolve));
   }
 
   updateRows(): PackUpdateRow[] {

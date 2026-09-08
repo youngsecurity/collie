@@ -776,6 +776,9 @@ const STATE_DIR_ENTRIES = [
   // `paired-devices.json`, and gone again the moment the write lands.
   "paired-devices.json",
   "paired-devices.lock",
+  // The lock's break marker: taken exclusively by the one waiter that may remove a stale lock, and
+  // gone again the moment it has (the takeover race in #19's review).
+  "paired-devices.lock.break",
   "pairing-pending.json",
   "push-subscriptions.json",
   "snooze.json",

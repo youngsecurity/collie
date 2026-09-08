@@ -2155,6 +2155,7 @@ describe("the update write gate — POST api/update rides the pane path's own ga
     const release = handler.indexOf("updateConfirm.release(started)");
     expect(take).toBeGreaterThan(0);
     expect(take).toBeLessThan(preflight);
+    expect(release).toBeGreaterThan(0); // a slice from -1 would read the tail and still find a `finally`
     expect(handler.slice(release - 40, release)).toContain("finally {");
     expect(handler).toContain("started = true;");
     // One gate per SERVER, not per request: a request-scoped flag would guard nothing.
@@ -2209,8 +2210,10 @@ describe("the update write gate — POST api/update rides the pane path's own ga
     const src = readFileSync(join(import.meta.dir, "server.ts"), "utf8");
     const checkAt = src.indexOf('if (pathname === "/api/update/check" && req.method === "GET")');
     const checkHandler = src.slice(checkAt, checkAt + 4500);
-    expect(checkHandler).toContain("opts.packLead?.sweep({ freshPreflight: true })");
-    expect([...checkHandler.matchAll(/sweep\(/g)]).toHaveLength(1);
+    // `request`, not `sweep`: a tick's sweep in flight would make a bare `sweep` return at once
+    // without the fresh preflight it promised; a request is folded into the replay and awaited.
+    expect(checkHandler).toContain("opts.packLead?.request({ freshPreflight: true })");
+    expect([...checkHandler.matchAll(/(?:sweep|request)\(/g)]).toHaveLength(1);
   });
 
   test("update check answers a stale asOf, never a fabricated green: the wait is the existing bound", () => {

@@ -73,6 +73,15 @@ export const LOCK_STALE_MS = 10_000;
 export const LOCK_WAIT_MS = 5_000;
 /** How often a waiter looks again. */
 export const LOCK_POLL_MS = 20;
+/**
+ * The BREAK marker beside the lock, named in full so `solo-baseline.test.ts`'s scan can guard it. Breaking a stale lock is
+ * itself exclusive, through this second O_EXCL file, because two waiters that both read the same
+ * stale mtime would otherwise both `remove`, and the second remove could take away the FRESH lock the
+ * first had just created. Only the waiter holding the marker removes the lock, and it re-reads the
+ * lock's age under the marker first; a marker left by a breaker that died is itself broken once it
+ * is stale.
+ */
+export const LOCK_BREAK_FILENAME = "paired-devices.lock.break";
 
 /**
  * What one failed `createExclusive` means, as a pure decision over the facts a filesystem answers:
@@ -128,12 +137,18 @@ export function acquireRegistryLockSync(
     if (fs.createExclusive(path, lockBody(deps.pid, deps.now()))) return () => fs.remove(path);
     const verdict = lockVerdict(fs.mtimeMs(path), deps.now(), staleMs);
     if (verdict === "break") {
-      fs.remove(path);
-      continue;
+      const marker = join(stateDir, LOCK_BREAK_FILENAME);
+      if (fs.createExclusive(marker, lockBody(deps.pid, deps.now()))) {
+        // Under the marker, and only then: still the stale lock, or one somebody replaced meanwhile?
+        if (lockVerdict(fs.mtimeMs(path), deps.now(), staleMs) === "break") fs.remove(path);
+        fs.remove(marker);
+      } else if (lockVerdict(fs.mtimeMs(marker), deps.now(), staleMs) === "break") {
+        fs.remove(marker);
+      }
     }
-    // `wait` and `retry` both pay the poll and both count against the bound: a lock that keeps
-    // refusing the create while answering no mtime (a directory at the path, a stat that fails) must
-    // still end in the refusal below, never in a loop that spins.
+    // Every verdict pays the poll and counts against the bound, the break included: a remove that
+    // silently fails, or a lock that keeps refusing the create while answering no mtime (a directory
+    // at the path, a stat that fails), must still end in the refusal below, never in a loop that spins.
     if (deps.now() - started >= waitMs) throw new Error(lockTimeoutMessage(path, waitMs));
     deps.sleep(pollMs);
   }
@@ -162,8 +177,13 @@ export async function acquireRegistryLock(
     if (await fs.createExclusive(path, lockBody(deps.pid, deps.now()))) return () => fs.remove(path);
     const verdict = lockVerdict(await fs.mtimeMs(path), deps.now(), staleMs);
     if (verdict === "break") {
-      await fs.remove(path);
-      continue;
+      const marker = join(stateDir, LOCK_BREAK_FILENAME);
+      if (await fs.createExclusive(marker, lockBody(deps.pid, deps.now()))) {
+        if (lockVerdict(await fs.mtimeMs(path), deps.now(), staleMs) === "break") await fs.remove(path);
+        await fs.remove(marker);
+      } else if (lockVerdict(await fs.mtimeMs(marker), deps.now(), staleMs) === "break") {
+        await fs.remove(marker);
+      }
     }
     if (deps.now() - started >= waitMs) throw new Error(lockTimeoutMessage(path, waitMs));
     await deps.sleep(pollMs);

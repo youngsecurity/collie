@@ -602,6 +602,38 @@ describe("preflight pack — the members of a lead", () => {
     expect(await cmdUpdateCheck(h.deps, ["--json"])).toBe(EXIT.FAIL);
   });
 
+
+  // The report's verdict, not only its checks: `parseReport` drops a malformed element, so a member
+  // that said red with nothing readable to show for it contributed no red check, its row read green,
+  // and the gate opened on a peer that had refused (CodeRabbit on PR #34).
+  test("a member that claims red with only malformed checks is still red, with one check saying so", async () => {
+    const remoteReport = { schema: 1, verdict: "red", checks: [{}, { id: "x" }] };
+    const h = harness({
+      store: lead(["nas"]),
+      ops: { nas: record() },
+      remote: () => (script) =>
+        script.includes("update --check") ? { ...ok(JSON.stringify(remoteReport)), code: 1 } : ok(probeOut()),
+    });
+    const report = await preflight(h.deps);
+    const row = report.pack![0]!;
+    expect(row.verdict).toBe("red");
+    const claim = row.checks.find((c) => c.id === "report")!;
+    expect(claim.verdict).toBe("red");
+    expect(claim.reason).toBe("that member reported red with no readable check to show for it");
+    expect(report.verdict).toBe("red");
+    expect(await cmdUpdateCheck(h.deps, ["--json"])).toBe(EXIT.FAIL);
+    // And a claim no worse than its checks adds nothing.
+    const honest = harness({
+      store: lead(["nas"]),
+      ops: { nas: record() },
+      remote: () => (script) =>
+        script.includes("update --check")
+          ? ok(JSON.stringify({ schema: 1, verdict: "green", checks: [{ id: "git", verdict: "green", reason: "clean" }] }))
+          : ok(probeOut()),
+    });
+    expect((await preflight(honest.deps)).pack![0]!.checks.map((c) => c.id)).not.toContain("report");
+  });
+
   test("a peer too old for --check is amber: peer predates preflight", async () => {
     const h = harness({
       store: lead(["nas"]),

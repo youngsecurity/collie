@@ -32,6 +32,8 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 ## [Unreleased]
 
+- Review of 1.5.1+ys.3 (CodeRabbit on PR #34): a pack member that reports red with nothing readable to show for it stays red at the lead's preflight instead of reading green; breaking a stale registry lock is exclusive through a `.break` marker, so two waiters cannot remove each other's fresh lock, and a remove that fails silently is bounded; a staging write that throws in the handoff releases the update lock; a throw before the runner's first write still names both versions on the record; the phone's fresh-preflight request is folded into the replay when a sweep is already running, with its option honoured and its answer awaited
+
 ## [1.5.1+ys.3] - 2026-09-08
 
 The ten issues CodeRabbit's review of the 1.5.1 adoption raised on this fork (youngsecurity/collie#19 to #28), each implemented against its own tests and, where a real process could show it, checked in one.

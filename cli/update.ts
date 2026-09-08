@@ -2151,22 +2151,33 @@ function handOff(
     { kind: "stage" },
     now,
   );
-  writeRun(deps.files, deps.ctx.stateDir, staging);
-
-  const plan = launchPlan({
-    platform: deps.platform,
-    binary: runnerBinary(deps),
-    args: applyArgv({ ...a, handoff: deps.pid }),
-    unit: unitName(deps.ctx.instance),
-    stamp: now.toString(36),
-    hasSystemdRun: deps.exec.which("systemd-run") !== null,
-    hasSetsid: deps.exec.which("setsid") !== null,
-  });
-  const pid = deps.exec.spawnDetached(plan.command, {
-    cwd: layout.installRoot,
-    env: runnerEnv(deps.ctx.env),
-    logPath: logFilePath(deps.ctx.configDir, deps.ctx.instance),
-  });
+  // The lock is held from here to the spawn. A write or a `which` that throws (ENOSPC, EACCES) must
+  // not leave it behind with no run to show for it: that is the same ten-minute refusal the runner's
+  // own finally exists to prevent (#21), one step earlier.
+  let plan: ReturnType<typeof launchPlan>;
+  let pid: number | null;
+  try {
+    writeRun(deps.files, deps.ctx.stateDir, staging);
+    plan = launchPlan({
+      platform: deps.platform,
+      binary: runnerBinary(deps),
+      args: applyArgv({ ...a, handoff: deps.pid }),
+      unit: unitName(deps.ctx.instance),
+      stamp: now.toString(36),
+      hasSystemdRun: deps.exec.which("systemd-run") !== null,
+      hasSetsid: deps.exec.which("setsid") !== null,
+    });
+    pid = deps.exec.spawnDetached(plan.command, {
+      cwd: layout.installRoot,
+      env: runnerEnv(deps.ctx.env),
+      logPath: logFilePath(deps.ctx.configDir, deps.ctx.instance),
+    });
+  } catch (err) {
+    releaseLock(deps.files, deps.ctx.stateDir);
+    deps.io.err(`error: staging failed before the updater could start — ${err instanceof Error ? err.message : String(err)}`);
+    deps.io.err("       Nothing was swapped, and the lock is released; fix the cause and run `collie update` again.");
+    return EXIT.FAIL;
+  }
   if (pid === null) {
     releaseLock(deps.files, deps.ctx.stateDir);
     writeRun(deps.files, deps.ctx.stateDir, reduce(staging, { kind: "abort", reason: plan.note }, deps.now()));
@@ -2229,15 +2240,22 @@ export const wantsStatus = (args: readonly string[]): boolean => args.includes("
  * the operator has the way back without opening a log. A record that cannot be written (the disk that
  * threw is the disk this writes to) is one line on stderr, and the caller still releases the lock.
  */
-function recordThrow<TError>(deps: UpdateDeps, stateDir: string, recovery: string, err: TError): UpdateRun {
+function recordThrow<TError>(
+  deps: UpdateDeps,
+  stateDir: string,
+  a: { readonly from: string | null; readonly to: string; readonly recovery: string },
+  err: TError,
+): UpdateRun {
   const message = err instanceof Error ? err.message : String(err);
   const reason = `the updater threw: ${message}`;
   const last = parseUpdateRun(deps.files.read(updateRunPath(stateDir)));
   const base = last !== null && inFlight(last.state) ? last : null;
+  // The fallback is the case where the drive's FIRST write already failed, so the runner's own
+  // knowledge of the two versions is the only place they can come from.
   const record: UpdateRun =
     base !== null
-      ? { ...reduce(base, { kind: "interrupt", reason }, deps.now()), recovery }
-      : { ...idleRun(deps.now()), state: "interrupted", pid: deps.pid, reason, recovery };
+      ? { ...reduce(base, { kind: "interrupt", reason }, deps.now()), recovery: a.recovery }
+      : { ...idleRun(deps.now()), state: "interrupted", from: a.from, to: a.to, pid: deps.pid, reason, recovery: a.recovery };
   try {
     writeRun(deps.files, stateDir, record);
   } catch (writeErr) {
@@ -2319,7 +2337,7 @@ async function runApply(deps: UpdateDeps, a: ApplyArgs): Promise<number> {
       start,
     );
   } catch (err) {
-    run = recordThrow(deps, stateDir, recovery, err);
+    run = recordThrow(deps, stateDir, { from: a.from, to: a.to, recovery }, err);
   } finally {
     // ALWAYS. Every effect above touches the world (a file, a directory, a process, a request), and
     // a full disk mid-update is the realistic throw. A lock that outlives a dead run blocks every

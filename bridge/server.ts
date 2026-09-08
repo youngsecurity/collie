@@ -1427,7 +1427,7 @@ export function startServer(opts: {
         // The peer's own `PREFLIGHT_TTL_MS` is what keeps this cheap: the header is honoured at most
         // once a minute per member, so a phone sitting on the page cannot make a peer shell out to
         // git and `doctor` on every poll.
-        const freshSweep = opts.packLead?.sweep({ freshPreflight: true });
+        const freshSweep = opts.packLead?.request({ freshPreflight: true });
         if (freshSweep !== undefined) {
           await Promise.race([
             freshSweep,

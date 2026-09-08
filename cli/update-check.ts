@@ -752,7 +752,18 @@ async function remoteChecks(runner: RemoteRunner, root: string): Promise<readonl
       ),
     ];
   }
-  return report.checks;
+  // The report's OWN verdict rides along. `parseReport` re-derives it as the worst of what the member
+  // claimed and what survived its element check, and only the checks were read here: a member that
+  // said red with nothing readable to show for it contributed no red check, so its row read green
+  // and the gate opened on it. A claim worse than its surviving checks becomes one check that says so.
+  const shown = worst(report.checks.map((c) => c.verdict));
+  if (RANK[report.verdict] <= RANK[shown]) return report.checks;
+  const claim: PreflightCheck = {
+    id: "report",
+    verdict: report.verdict,
+    reason: `that member reported ${report.verdict} with no readable check to show for it`,
+  };
+  return [...report.checks, claim];
 }
 
 const firstLine = (text: string): string => text.split("\n").find((l) => l.trim() !== "")?.trim() ?? "";
