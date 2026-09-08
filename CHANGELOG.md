@@ -32,7 +32,11 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 ## [Unreleased]
 
-- Third review of PR #34: a registry lock whose holder's process is still running is never reclaimed, however old it is; only a dead pid's stale lock is broken, the same rule `update.lock` has always had. The write-time ownership proof stays as the second line
+## [1.5.1+ys.6] - 2026-09-08
+
+- Third review of PR #34: a registry lock whose holder's process is still running is never reclaimed, however old it is; only a dead pid's stale lock is broken, the same rule `update.lock` has always had. The write-time ownership proof stays as the second line ([eaf28a2](https://github.com/youngsecurity/collie/commit/eaf28a2))
+
+A patch on top of [1.5.1+ys.5](https://github.com/youngsecurity/collie/releases/tag/v1.5.1%2Bys.5).
 
 ## [1.5.1+ys.5] - 2026-09-08
 
