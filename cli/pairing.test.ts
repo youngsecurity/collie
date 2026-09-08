@@ -365,3 +365,21 @@ describe("collie devices revoke — the registry lock (#19)", () => {
     expect(unknown.files.locks).toEqual([`lock ${LOCK}`, `unlock ${LOCK}`]);
   });
 });
+
+describe("collie devices revoke — ownership is proved before the write", () => {
+  test("a revoke whose lock was taken over while it sat writes nothing and leaves the new lock alone", () => {
+    const before = JSON.stringify({ devices: [device({ label: "pixel" })] });
+    const d = deps({ [REGISTRY]: before });
+    // Between this revoke's take and its write, another writer broke the lock (it sat past the
+    // stale bound) and took it: modelled at the registry read, which is where the pause would be.
+    const read = d.files.read;
+    d.files.read = (p) => {
+      if (p === REGISTRY) d.files.entries.set(LOCK, { text: '{"pid":424242,"at":9}', mtimeMs: d.files.clock.now });
+      return read(p);
+    };
+    expect(cmdDevicesRevoke(d, ["pixel"])).toBe(EXIT.FAIL);
+    expect(d.io.stderr.join("\n")).toContain("is no longer this process's");
+    expect(d.files.entries.get(REGISTRY)!.text).toBe(before);
+    expect(d.files.entries.get(LOCK)?.text).toBe('{"pid":424242,"at":9}'); // the new holder's, untouched
+  });
+});

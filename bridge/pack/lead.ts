@@ -405,13 +405,7 @@ export class PackLead {
       // carried, and each awaiting caller is released once the replay has run.
       const pending = this.pending;
       this.pending = null;
-      if (pending !== null) {
-        queueMicrotask(() => {
-          void this.sweep({ freshPreflight: pending.fresh }).finally(() => {
-            for (const release of pending.waiters) release();
-          });
-        });
-      }
+      if (pending !== null) queueMicrotask(() => this.replay(pending));
     }
   }
 
@@ -683,6 +677,24 @@ export class PackLead {
       return;
     }
     queueMicrotask(() => void this.sweep());
+  }
+
+  /**
+   * The replay of what was asked for during a sweep. If another sweep started in the gap between
+   * that sweep's end and this microtask (an idle `resweep()` can), `sweep()` would return at its
+   * guard and the waiters would be released without the fresh preflight they were promised; they are
+   * folded into THAT sweep's pending set instead, and released after the sweep that honours them.
+   */
+  private replay(pending: { fresh: boolean; readonly waiters: (() => void)[] }): void {
+    if (this.sweeping) {
+      const active = (this.pending ??= { fresh: false, waiters: [] });
+      active.fresh ||= pending.fresh;
+      active.waiters.push(...pending.waiters);
+      return;
+    }
+    void this.sweep({ freshPreflight: pending.fresh }).finally(() => {
+      for (const release of pending.waiters) release();
+    });
   }
 
   /**

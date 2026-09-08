@@ -3,6 +3,7 @@ import { join } from "node:path";
 import {
   acquireRegistryLockSync,
   coerceRegistry,
+  type RegistryLock,
   DEVICES_FILENAME,
   generateCode,
   newPending,
@@ -205,12 +206,13 @@ export function cmdDevicesRevoke(deps: PairingDeps, args: readonly string[]): nu
   }
   // The lock file lives beside the registry, so the directory has to exist before either does.
   deps.files.mkdirp(deps.ctx.stateDir, 0o700);
-  let release: () => void;
+  let lock: RegistryLock;
   try {
-    release = acquireRegistryLockSync(
+    lock = acquireRegistryLockSync(
       {
         createExclusive: (p, text) => deps.files.createExclusive(p, text, 0o600),
         mtimeMs: (p) => deps.files.mtimeMs(p),
+        read: (p) => deps.files.read(p),
         remove: (p) => deps.files.remove(p),
       },
       deps.ctx.stateDir,
@@ -236,6 +238,9 @@ export function cmdDevicesRevoke(deps: PairingDeps, args: readonly string[]): nu
     }
     next = removed;
     try {
+      // Immediately before the write: a revoke that sat past the stale bound (a stopped shell, a
+      // machine asleep) has had its lock taken over, and must not write over the new holder's work.
+      lock.assertHeld();
       writeOwnerOnly(deps, registryPath(deps.ctx), next);
     } catch (err) {
       deps.io.err(
@@ -244,7 +249,7 @@ export function cmdDevicesRevoke(deps: PairingDeps, args: readonly string[]): nu
       return EXIT.FAIL;
     }
   } finally {
-    release();
+    lock.release();
   }
 
   deps.io.out(`✓ revoked "${label}" — it loses write access on its next request (no restart needed).`);

@@ -32,6 +32,8 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 ## [Unreleased]
 
+- Second review of PR #34: a registry lock holder proves ownership immediately before every write and a release removes only its own lock, so a holder paused past the stale bound cannot write over its replacement or delete it; a pack lead's replay that finds another sweep already running folds its waiters into that sweep instead of releasing them unanswered
+
 ## [1.5.1+ys.4] - 2026-09-08
 
 - Review of 1.5.1+ys.3 (CodeRabbit on PR #34): a pack member that reports red with nothing readable to show for it stays red at the lead's preflight instead of reading green; breaking a stale registry lock is exclusive through a `.break` marker, so two waiters cannot remove each other's fresh lock, and a remove that fails silently is bounded; a staging write that throws in the handoff releases the update lock; a throw before the runner's first write still names both versions on the record; the phone's fresh-preflight request is folded into the replay when a sweep is already running, with its option honoured and its answer awaited ([1e859ef](https://github.com/youngsecurity/collie/commit/1e859ef))
