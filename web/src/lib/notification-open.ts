@@ -86,6 +86,30 @@ export interface OpenNotificationTargetInput {
   clients: readonly OpenTargetClient[];
   /** Injected `clients.openWindow`. Resolves null (or throws) when the browser refuses. */
   openWindow: (url: string) => Promise<OpenedWindow | null>;
+  /** How long one fallback client's `navigate` or `focus` may take before the next is tried. Tests shrink it. */
+  stepTimeoutMs?: number;
+}
+
+/**
+ * The bound on ONE fallback step. A discarded tab's `navigate()` can hang rather than resolve null
+ * (#147's Android shape, modelled by the tests as `navigate: "never"`); when `openWindow` has already
+ * come back empty, that hang used to block every later fallback and leave the whole open pending, so
+ * the tap opened nothing (#26). Three seconds is generous for a live client and short enough that a
+ * second fallback still lands while the tap is fresh in the operator's mind.
+ */
+export const FALLBACK_STEP_MS = 3_000;
+
+/** `promise`, or `fallback` once `ms` have passed without it settling. The timer is cleared either way. */
+async function within<TValue>(promise: Promise<TValue>, ms: number, fallback: TValue): Promise<TValue> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const clock = new Promise<TValue>((resolve) => {
+    timer = setTimeout(() => resolve(fallback), ms);
+  });
+  try {
+    return await Promise.race([promise.catch(() => fallback), clock]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** `openWindow` is retried once on a throw: NotAllowedError is racy, and a second try is cheap. */
@@ -105,14 +129,17 @@ async function tryNavigate(
   for (const index of indices) {
     const client = input.clients[index];
     if (!client) continue;
+    const step = input.stepTimeoutMs ?? FALLBACK_STEP_MS;
     if (client.url !== input.url) {
-      // A discarded tab resolves null here (#147). Treat it as no client at all and move on.
-      const navigated = await client.navigate(input.url).catch(() => null);
+      // A discarded tab resolves null here (#147), or never settles at all: both read as no client,
+      // and neither may hold the next fallback hostage (`within`, #26).
+      const navigated = await within(client.navigate(input.url), step, null);
       if (!navigated) continue;
     }
-    const focused = await client.focus().then(
-      () => true,
-      () => false,
+    const focused = await within(
+      client.focus().then(() => true),
+      step,
+      false,
     );
     if (focused) return true;
   }

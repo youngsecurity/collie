@@ -823,6 +823,7 @@ export const ko: Dictionary = {
   "settings.updateCard.peer.state.stuck": "멈춤",
   "settings.updateCard.peer.state.interrupted": "중단됨",
   "settings.updateCard.peer.state.idle": "대기 중",
+  "settings.updateCard.peer.state.unknown": "진행 중",
   "updates.title": "업데이트",
   "updates.nav.back": "뒤로",
   "updates.entry.title": "업데이트",

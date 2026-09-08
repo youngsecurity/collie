@@ -602,6 +602,38 @@ describe("preflight pack — the members of a lead", () => {
     expect(await cmdUpdateCheck(h.deps, ["--json"])).toBe(EXIT.FAIL);
   });
 
+
+  // The report's verdict, not only its checks: `parseReport` drops a malformed element, so a member
+  // that said red with nothing readable to show for it contributed no red check, its row read green,
+  // and the gate opened on a peer that had refused (CodeRabbit on PR #34).
+  test("a member that claims red with only malformed checks is still red, with one check saying so", async () => {
+    const remoteReport = { schema: 1, verdict: "red", checks: [{}, { id: "x" }] };
+    const h = harness({
+      store: lead(["nas"]),
+      ops: { nas: record() },
+      remote: () => (script) =>
+        script.includes("update --check") ? { ...ok(JSON.stringify(remoteReport)), code: 1 } : ok(probeOut()),
+    });
+    const report = await preflight(h.deps);
+    const row = report.pack![0]!;
+    expect(row.verdict).toBe("red");
+    const claim = row.checks.find((c) => c.id === "report")!;
+    expect(claim.verdict).toBe("red");
+    expect(claim.reason).toBe("that member reported red with no readable check to show for it");
+    expect(report.verdict).toBe("red");
+    expect(await cmdUpdateCheck(h.deps, ["--json"])).toBe(EXIT.FAIL);
+    // And a claim no worse than its checks adds nothing.
+    const honest = harness({
+      store: lead(["nas"]),
+      ops: { nas: record() },
+      remote: () => (script) =>
+        script.includes("update --check")
+          ? ok(JSON.stringify({ schema: 1, verdict: "green", checks: [{ id: "git", verdict: "green", reason: "clean" }] }))
+          : ok(probeOut()),
+    });
+    expect((await preflight(honest.deps)).pack![0]!.checks.map((c) => c.id)).not.toContain("report");
+  });
+
   test("a peer too old for --check is amber: peer predates preflight", async () => {
     const h = harness({
       store: lead(["nas"]),
@@ -757,5 +789,64 @@ describe("the dispatcher", () => {
     expect(update.run.toString()).toContain("wantsCheck");
     expect(update.run.toString()).toContain("cmdUpdateCheck");
     expect(update.summary).toContain("--check");
+  });
+});
+
+describe("update --check --to-tag with no value (#21)", () => {
+  test("is a usage error, never a check of the highest release", async () => {
+    for (const args of [["--to-tag"], ["--to-tag", "--json"], ["--to-tag="]]) {
+      const h = harness();
+      expect(await cmdUpdateCheck(h.deps, args)).toBe(EXIT.USAGE);
+      expect(h.io.stderr.join("\n")).toContain("`--to-tag` names a release tag and was given none");
+      // Nothing was asked of git or the remote.
+      expect(h.exec.calls.filter((c) => c.includes("ls-remote"))).toEqual([]);
+    }
+  });
+});
+
+// ── The remote report is read element by element (#22) ──────────────────────
+// The document arrives from another machine's stdout, so its elements are not this build's to
+// assume. `{}` in `checks` used to pass `parseReport` and then throw in `checkLine`; an unknown
+// verdict read as `RANK[undefined]` and counted green.
+describe("parseReport validates every element", () => {
+  const good = { id: "git", verdict: "green", reason: "clean" };
+
+  test("a malformed check is dropped, and a claimed green cannot hide a surviving red", () => {
+    const doc = {
+      schema: 1,
+      verdict: "green",
+      checks: [good, {}, { id: "x" }, { id: "y", verdict: "purple", reason: "?" }, { id: "disk", verdict: "red", reason: "full", remedy: 7 }],
+    };
+    const report = parseReport(JSON.stringify(doc))!;
+    expect(report.checks.map((c) => c.id)).toEqual(["git", "disk"]);
+    expect(report.checks[1]).toEqual({ id: "disk", verdict: "red", reason: "full" }); // the non-string remedy is dropped
+    expect(report.verdict).toBe("red");
+  });
+
+  test("a claimed red with nothing to show stays red; a non-object document is null", () => {
+    expect(parseReport(JSON.stringify({ schema: 1, verdict: "red", checks: [{}] }))!.verdict).toBe("red");
+    expect(parseReport(JSON.stringify({ schema: 1, verdict: "green", checks: [{}] }))!.checks).toEqual([]);
+    for (const text of ["null", "[]", '{"schema":1,"verdict":"green","checks":{}}', '{"schema":1,"verdict":"olive","checks":[]}']) {
+      expect(parseReport(text)).toBeNull();
+    }
+  });
+
+  test("pack rows are read the same way: a malformed member is dropped, its checks are filtered", () => {
+    const doc = {
+      schema: 1,
+      verdict: "green",
+      checks: [good],
+      pack: [
+        { memberId: "bluefin", host: "bluefin.ts.net", verdict: "green", checks: [good, {}] },
+        { memberId: "", host: "x", verdict: "green", checks: [] },
+        { memberId: "attic", verdict: "green", checks: [] },
+        "nonsense",
+        { memberId: "workshop", host: "", verdict: "green", checks: [{ id: "bun", verdict: "red", reason: "old" }] },
+      ],
+    };
+    const report = parseReport(JSON.stringify(doc))!;
+    expect(report.pack?.map((m) => `${m.memberId}:${m.verdict}:${m.checks.length}`)).toEqual(["bluefin:green:1", "workshop:red:1"]);
+    // A `pack` that is not an array reads as no pack at all.
+    expect(parseReport(JSON.stringify({ ...doc, pack: {} }))!.pack).toBeUndefined();
   });
 });

@@ -265,7 +265,12 @@ collie pack update --all
 It runs as one sequence over your own SSH. It preflights every machine first, and prints each peer's
 own report beside the answer it gets over SSH, so a disagreement is explicit rather than averaged.
 It asks for one consent. It then updates the lead itself, if the lead is not yet running the build
-it is handing out. Next it takes each peer in turn: the peer is pushed the lead's commit as a git
+it is handing out, and that update is pinned to the release being pushed: the lead runs
+`collie update --to-tag <tag>` for the tag at the checkout's `HEAD`, never "the newest release of
+my major", and the run stops if the lead's updater lands anywhere else. `HEAD` must therefore be a
+tagged release; a checkout at an untagged commit is refused with the by-hand route (`collie build`
+and the restart action on the lead), because the updater stages releases by tag and nothing else.
+Next it takes each peer in turn: the peer is pushed the lead's commit as a git
 bundle, rebuilt, restarted, and polled until it answers the new build within the same 30 second
 budget.
 

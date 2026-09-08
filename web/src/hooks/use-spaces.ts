@@ -93,7 +93,10 @@ export function useSpaceActions() {
       creatingTabRef.current.add(workspaceId);
       setCreatingTab(new Set(creatingTabRef.current));
       try {
-        open(await api.createTab(workspaceId, {}, scopeRef.current), "tab");
+        // CAPTURED before the await, and handed to `open` too: a host or session change while the
+        // request is in flight would otherwise open the returned pane id on the wrong machine (#25).
+        const scope = scopeRef.current;
+        open(await api.createTab(workspaceId, {}, scope), "tab", scope);
       } catch (e) {
         setStatus(describeThrownError(e), "error");
       } finally {
@@ -144,7 +147,8 @@ export function useSpaceActions() {
       creatingSpaceRef.current = true;
       setCreatingSpace(true);
       try {
-        open(await api.createWorktree(workspaceId, branch, scopeRef.current), "space");
+        const scope = scopeRef.current;
+        open(await api.createWorktree(workspaceId, branch, scope), "space", scope);
       } catch (e) {
         setStatus(describeThrownError(e), "error");
       } finally {
@@ -161,7 +165,8 @@ export function useSpaceActions() {
     async (workspaceId: string, path: string) => {
       if (readOnlyRef.current) return setStatus(blockedText(), "error");
       try {
-        open(await api.openWorktree(workspaceId, path, scopeRef.current), "space");
+        const scope = scopeRef.current;
+        open(await api.openWorktree(workspaceId, path, scope), "space", scope);
       } catch (e) {
         setStatus(describeThrownError(e), "error");
       }
@@ -190,7 +195,8 @@ export function useSpaceActions() {
       launchingRef.current.add(command);
       setLaunching(new Set(launchingRef.current));
       try {
-        open(await api.launch(command, beside, scopeRef.current), beside !== undefined ? "tab" : "space");
+        const scope = scopeRef.current;
+        open(await api.launch(command, beside, scope), beside !== undefined ? "tab" : "space", scope);
       } catch (e) {
         setStatus(describeThrownError(e), "error");
       } finally {

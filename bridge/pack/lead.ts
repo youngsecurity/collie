@@ -265,6 +265,14 @@ export class PackLead {
   private readonly memory = new Map<string, PeerMemory>();
   private readonly now: () => number;
   private sweeping = false;
+  /**
+   * The sweep asked for WHILE a sweep was running, by {@link resweep} or {@link request}. Replayed as
+   * ONE sweep when that sweep ends: the guard in {@link sweep} refuses a re-entrant call, and a
+   * request that reached it mid-sweep was simply lost, so a turn released inside the sweep waited
+   * out the whole idle cadence (#23). `fresh` is true when any of the folded requests wanted §19's
+   * fresh preflight, and every awaiting caller is released after the replay.
+   */
+  private pending: { fresh: boolean; readonly waiters: (() => void)[] } | null = null;
   /** Members with a verdict probe in flight. At most one per member, ever — see {@link probe}. */
   private readonly probing = new Set<string>();
   /** Members with a warrant push in flight. At most one per member — see {@link pushWarrant}. */
@@ -392,6 +400,12 @@ export class PackLead {
       console.warn(`[pack] sweep failed: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       this.sweeping = false;
+      // One replay, not one per request: every request made during this sweep wants the same thing,
+      // the freshest look, and one sweep is that. A fresh preflight asked for by any of them is
+      // carried, and each awaiting caller is released once the replay has run.
+      const pending = this.pending;
+      this.pending = null;
+      if (pending !== null) queueMicrotask(() => this.replay(pending));
     }
   }
 
@@ -652,9 +666,51 @@ export class PackLead {
    * **Not a timer** (§10.1, §11): a microtask, fired at most once per turn release, so the member
    * next in line starts within one sweep of its turn instead of waiting out the idle cadence. The
    * re-entrancy guard in {@link PackLead.sweep} is what keeps it from stacking.
+   *
+   * Asked for DURING a sweep, it is remembered and replayed once that sweep ends, never dropped: a
+   * released turn's next member must start within one sweep of the release (§20), and the release
+   * is observed inside the very sweep whose guard would otherwise refuse the request (#23).
    */
   resweep(): void {
+    if (this.sweeping) {
+      this.pending ??= { fresh: false, waiters: [] };
+      return;
+    }
     queueMicrotask(() => void this.sweep());
+  }
+
+  /**
+   * The replay of what was asked for during a sweep. If another sweep started in the gap between
+   * that sweep's end and this microtask (an idle `resweep()` can), `sweep()` would return at its
+   * guard and the waiters would be released without the fresh preflight they were promised; they are
+   * folded into THAT sweep's pending set instead, and released after the sweep that honours them.
+   */
+  private replay(pending: { fresh: boolean; readonly waiters: (() => void)[] }): void {
+    if (this.sweeping) {
+      const active = (this.pending ??= { fresh: false, waiters: [] });
+      active.fresh ||= pending.fresh;
+      active.waiters.push(...pending.waiters);
+      return;
+    }
+    void this.sweep({ freshPreflight: pending.fresh }).finally(() => {
+      for (const release of pending.waiters) release();
+    });
+  }
+
+  /**
+   * A sweep the caller WAITS for, with its options honoured even when a sweep is already running.
+   *
+   * {@link sweep} is the poll tick, and a tick that finds one in flight is refused: back-to-back
+   * ticks must not stack. A REQUEST is different: the phone's on-demand read asks for a fresh
+   * preflight (§19) and awaits the answer, and a request that returned at once because a tick's
+   * sweep was mid-flight had not run the preflight it promised. So a request made mid-sweep is
+   * folded into the replay with its options, and resolves after that replay has run.
+   */
+  request(opts: { readonly freshPreflight?: boolean } = {}): Promise<void> {
+    if (!this.sweeping) return this.sweep(opts);
+    const pending = (this.pending ??= { fresh: false, waiters: [] });
+    pending.fresh ||= opts.freshPreflight === true;
+    return new Promise((resolve) => pending.waiters.push(resolve));
   }
 
   updateRows(): PackUpdateRow[] {

@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
+import type { JsonObject, JsonValue } from "./json.ts";
+
 // The update RUN record: `<state dir>/update.json`, written by the detached updater and read by
 // everybody else (M15/04).
 //
@@ -125,8 +127,8 @@ export interface UpdateLock {
   readonly at: number;
 }
 
-const finite = (value: number | undefined, fallback: number): number =>
-  Number.isFinite(Number(value)) ? Number(value) : fallback;
+const finite = (value: JsonValue | undefined, fallback: number): number =>
+  typeof value === "number" && Number.isFinite(value) ? value : fallback;
 
 /**
  * `value` when the document really carried a non-empty string there, else null.
@@ -135,8 +137,28 @@ const finite = (value: number | undefined, fallback: number): number =>
  * readers, but the document is foreign and may hold a number, an object or nothing at all. `String(v)
  * === v` is true for a string and for nothing else, so the round trip IS the check.
  */
-const nonEmptyString = (value: string | undefined): string | null =>
-  value === undefined || value === null || String(value) !== value || value === "" ? null : value;
+const nonEmptyString = (value: JsonValue | undefined): string | null =>
+  typeof value === "string" && value !== "" ? value : null;
+
+/** `value` when it is a string, else null: an optional sentence that a foreign document may fill with anything. */
+const optionalString = (value: JsonValue | undefined): string | null => (typeof value === "string" ? value : null);
+
+/**
+ * The parsed document as an object, or null for anything else. `JSON.parse("null")` is `null`,
+ * `JSON.parse("[]")` is an array, and a property read off either used to THROW out of the parsers
+ * below, so a corrupt `update.json` or `update.lock` crashed its reader instead of reading as absent
+ * (youngsecurity/collie#22). Half a document is no document; a non-document is no document either.
+ */
+function parseObject(text: string): JsonObject | null {
+  let doc: JsonValue;
+  try {
+    // SAFETY: `JSON.parse` answers a JSON value by construction; the shape test below is the check.
+    doc = JSON.parse(text) as JsonValue;
+  } catch {
+    return null;
+  }
+  return typeof doc === "object" && doc !== null && !Array.isArray(doc) ? doc : null;
+}
 
 /**
  * The record in `text`, or null when there is none this build can read as one.
@@ -147,31 +169,11 @@ const nonEmptyString = (value: string | undefined): string | null =>
  */
 export function parseUpdateRun(text: string | null): UpdateRun | null {
   if (text === null) return null;
-  let doc: {
-    schema?: number;
-    state?: string;
-    from?: string | null;
-    to?: string | null;
-    startedAt?: number;
-    updatedAt?: number;
-    pid?: number;
-    attempt?: number;
-    runId?: string;
-    reason?: string;
-    logTail?: string;
-    recovery?: string;
-  };
-  try {
-    // SAFETY: `JSON.parse` answers a JSON value, and every field read off it below is either
-    // validated (`state` against the closed set, the numbers through `Number.isFinite`) or only ever
-    // printed. Nothing here becomes a path, a command or a credential.
-    doc = JSON.parse(text) as { schema?: number };
-  } catch {
-    return null;
-  }
+  const doc = parseObject(text);
+  if (doc === null) return null;
   const schema = finite(doc.schema, 0);
   if (!READABLE_UPDATE_RUN_SCHEMAS.has(schema)) return null;
-  const state = doc.state ?? "";
+  const state = typeof doc.state === "string" ? doc.state : "";
   if (!STATES.has(state)) return null;
   // Assigned, never conditionally spread: a record without a reason must carry NO such key rather
   // than one whose value is `undefined`.
@@ -182,8 +184,9 @@ export function parseUpdateRun(text: string | null): UpdateRun | null {
     // SAFETY: `STATES` holds exactly the members of `UpdateRunState`, and the guard above returned
     // for every string that is not one of them.
     state: state as UpdateRunState,
-    from: doc.from ?? null,
-    to: doc.to ?? null,
+    // A version directory name or null; a number or an object there is a foreign document, read as null.
+    from: optionalString(doc.from),
+    to: optionalString(doc.to),
     startedAt: finite(doc.startedAt, 0),
     updatedAt: finite(doc.updatedAt, 0),
     pid: finite(doc.pid, 0),
@@ -194,9 +197,14 @@ export function parseUpdateRun(text: string | null): UpdateRun | null {
   // any JSON value here, and only a real string is one.
   const id = nonEmptyString(doc.runId);
   if (id !== null) run.runId = id;
-  if (doc.reason !== undefined) run.reason = doc.reason;
-  if (doc.logTail !== undefined) run.logTail = doc.logTail;
-  if (doc.recovery !== undefined) run.recovery = doc.recovery;
+  // Only when they are strings: a persisted `null` here reached `peerRunWire`'s `.slice` and threw,
+  // which failed the snapshot response (#22).
+  const reason = optionalString(doc.reason);
+  if (reason !== null) run.reason = reason;
+  const logTail = optionalString(doc.logTail);
+  if (logTail !== null) run.logTail = logTail;
+  const recovery = optionalString(doc.recovery);
+  if (recovery !== null) run.recovery = recovery;
   return run;
 }
 
@@ -223,14 +231,8 @@ interface DraftRun {
 /** The lock in `text`, or null. Same posture as {@link parseUpdateRun}: half a lock is no lock. */
 export function parseUpdateLock(text: string | null): UpdateLock | null {
   if (text === null) return null;
-  let doc: { pid?: number; at?: number };
-  try {
-    // SAFETY: as above — a parsed JSON document whose two numeric fields are both range-checked
-    // before use, and neither ever leaves this module as anything but a number.
-    doc = JSON.parse(text) as { pid?: number; at?: number };
-  } catch {
-    return null;
-  }
+  const doc = parseObject(text);
+  if (doc === null) return null;
   const pid = finite(doc.pid, 0);
   if (pid <= 0) return null;
   return { pid, at: finite(doc.at, 0) };

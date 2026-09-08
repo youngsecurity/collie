@@ -36,6 +36,22 @@ const FAILED: ReadonlySet<UpdatePeerLegState> = new Set<UpdatePeerLegState>([
   "interrupted",
 ]);
 
+/** The leg states that are a leg at rest: nothing is moving and nothing went wrong. */
+const SETTLED: ReadonlySet<UpdatePeerLegState> = new Set<UpdatePeerLegState>(["waiting", "done", "idle"]);
+
+/**
+ * Is `state` one this client knows? A NEWER bridge may send a word outside the union this client was
+ * compiled against (`UpdatePeerLegState`'s doc says so, and `update-ribbon.ts` already reads such a
+ * word as still moving). Every reader below asks this before it ranks or names a state, so an unknown
+ * word is drawn as in flight rather than as a healthy, finished row (#26).
+ */
+const known = (state: UpdatePeerLegState): boolean => FAILED.has(state) || IN_FLIGHT.has(state) || SETTLED.has(state);
+
+/** In flight: the states somebody is driving, and every state this client cannot place. */
+export function legInFlight(state: UpdatePeerLegState): boolean {
+  return IN_FLIGHT.has(state) || !known(state);
+}
+
 /** One line in the card's peer list: name · version · verdict-or-state · reason when it is bad. */
 export interface PeerRow {
   name: string;
@@ -63,7 +79,7 @@ function rankOfVerdict(verdict: UpdatePackVerdict): number {
 
 function rankOfState(state: UpdatePeerLegState): number {
   if (FAILED.has(state)) return 0;
-  if (IN_FLIGHT.has(state)) return 4;
+  if (legInFlight(state)) return 4;
   return 5;
 }
 
@@ -94,6 +110,9 @@ export function peerStateWord(state: UpdatePeerLegState): string {
       return t("settings.updateCard.peer.state.interrupted");
     case "idle":
       return t("settings.updateCard.peer.state.idle");
+    default:
+      // A word from a newer bridge: not empty, and not any of the settled words above.
+      return t("settings.updateCard.peer.state.unknown");
   }
 }
 
@@ -148,7 +167,7 @@ export function peerRows(pack: UpdatePackMember[] = [], legs: UpdatePeerLeg[] = 
       reason: failed ? (leg.reason ?? t("settings.updateCard.peer.unknownReason")) : null,
       asOf: leg.updatedAt ?? census?.asOf ?? null,
       rank: rankOfState(leg.state),
-      inFlight: IN_FLIGHT.has(leg.state),
+      inFlight: legInFlight(leg.state),
     });
   }
 

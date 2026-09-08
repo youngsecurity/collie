@@ -597,7 +597,10 @@ function RunSection({ run, onRetry }: { run: UpdateRun; onRetry: () => void }) {
         <p className="mt-1 text-xs text-muted-foreground">{t("settings.updateCard.progressNote")}</p>
       )}
 
-      {run.state === "stuck" && run.recovery !== undefined && (
+      {/* `interrupted` carries one too when the updater threw part-way (cli/update.ts recordThrow, #21):
+          the machine is wherever the last effect left it, and the way back is the one thing worth
+          showing. */}
+      {(run.state === "stuck" || run.state === "interrupted") && run.recovery !== undefined && (
         <pre className="mt-2 overflow-x-auto rounded-md bg-muted p-2 font-mono text-xs">{run.recovery}</pre>
       )}
 

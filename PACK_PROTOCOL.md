@@ -2224,8 +2224,9 @@ second listener or no feature.
 - **Plain HTTP behind the operator's own ingress.** Collie **binds** it and publishes nothing: no
   `tailscale serve`, never `funnel`, no ownership record. ADR 0001's criterion is untouched — we still
   manage only what we run and can test.
-- **Three routes, and no more.** No PWA, no `/api/*`, no SPA fallback, no `/auth` placeholder; every
-  other path on that port is a bare `404`. *A route that does not exist cannot be mis-gated.*
+- **Four routes, and no more** *(three until 2026-09-03; `/standby/update` added with the detached
+  updater, M15/04)*. No PWA, no `/api/*`, no SPA fallback, no `/auth` placeholder; every other path
+  on that port is a bare `404`. *A route that does not exist cannot be mis-gated.*
 
 - **Every response on this port carries `X-Collie-Version: <semver>+<sha>` *(added 2026-09-03)*.**
   Any path, any status, armed or cold, the `404` included. It is additive: no body changes and no
@@ -2242,6 +2243,7 @@ second listener or no feature.
 | `GET` | `/standby/health` | none | `503` + `{"state":"cold",…}` while the lead is fresh; `200` + `{"state":"armed","silentForMs":…}` once armed. Both answers also carry `version` (`<semver>+<sha>`) and `build` (the on-disk bundle id). **Never a body a stranger can learn a member id from.** |
 | `GET` | `/standby` | none (a read) | The page, in both states. |
 | `POST` | `/standby/takeover` | **pairing bearer credential only** | Runs §18.16. `409` with the reason while cold — the credential is not even consulted there. |
+| `GET` | `/standby/update` | none (a read) | The machine's own update run, **projected**: `schema`, `state`, `from`, `to`, `startedAt`, `updatedAt`, `attempt`, `runId`; `{"state":"idle"}` when it has never updated. Answered in EVERY role the listener can hold, deposed included, and mounted ahead of the role dispatch for that reason: the phone reads it during the seconds the front door is restarting. **Never `reason`, `logTail`, `recovery` or `pid`** (added 2026-09-05, youngsecurity/collie#20): a log line and a path built from the install root are not a body a stranger may read, and the front door's authenticated `GET /api/update/check` carries them the moment it is back. |
 
 **Armed** — the definition, and all three factors are required:
 

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { packAction, packActionLabel, peerRows, peersBehind, peersRolledBack } from "./update-pack";
-import type { UpdatePackMember, UpdatePeerLeg } from "./types";
+import { legInFlight, packAction, packActionLabel, peerRows, peersBehind, peersRolledBack, peerStateWord } from "./update-pack";
+import type { UpdatePackMember, UpdatePeerLeg, UpdatePeerLegState } from "./types";
 
 // The pack half of the update card, as pure functions. Ordering, counting and the three button
 // labels are pinned here rather than by pulling a card apart in the DOM.
@@ -29,6 +29,35 @@ describe("peerRows", () => {
       "amber-one",
       "green-one",
     ]);
+  });
+
+
+  // The union is documented as OPEN to words a newer bridge may send, and `update-ribbon.ts` already
+  // reads such a word as still moving. This side treated it as closed: an unknown state got an empty
+  // word and the rank of a healthy, finished row (#26).
+  it("a leg state this client has never heard of is drawn as still moving, with a word, never as done", () => {
+    // SAFETY: the plant is the point — a wire value outside the union this client compiles against,
+    // which is exactly what an older client reading a newer bridge receives.
+    const levitating = "levitating" as UpdatePeerLegState;
+    expect(legInFlight(levitating)).toBe(true);
+    expect(peerStateWord(levitating)).not.toBe("");
+    const rows = peerRows([member({ name: "minibuch" })], [{ name: "minibuch", state: levitating }]);
+    expect(rows[0]?.inFlight).toBe(true);
+    expect(rows[0]?.word).not.toBe("");
+    // It sorts with the moving legs, ahead of a green row and behind a failed one.
+    const mixed = peerRows(
+      [member({ name: "green-one" }), member({ name: "failed-one" }), member({ name: "minibuch" })],
+      [
+        { name: "failed-one", state: "rolled-back", reason: "health gate never went green" },
+        { name: "minibuch", state: levitating },
+      ],
+    );
+    expect(mixed.map((r) => r.name)).toEqual(["failed-one", "minibuch", "green-one"]);
+    // The known words are unchanged by the fallback.
+    expect(legInFlight("done")).toBe(false);
+    expect(legInFlight("waiting")).toBe(false);
+    expect(legInFlight("verifying")).toBe(true);
+    expect(legInFlight("rolled-back")).toBe(false);
   });
 
   it("gives a red and an unknown a reason, and gives a green none", () => {

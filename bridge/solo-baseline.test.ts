@@ -770,9 +770,15 @@ const STATE_DIR_ENTRIES = [
   // instance whose operator never ran `collie hooks install` never has this directory at all.
   "beacons",
   "notify-prefs.json",
-  // Device pairing. Both are absent until the operator runs `collie pair`, and an install that
-  // never does keeps writing exactly the six entries above it.
+  // Device pairing. All three are absent until the operator runs `collie pair`, and an install that
+  // never does keeps writing exactly the six entries above it. The `.lock` is the cross-process
+  // registry lock (#19): taken by the bridge and by `collie devices revoke` around every write of
+  // `paired-devices.json`, and gone again the moment the write lands.
   "paired-devices.json",
+  "paired-devices.lock",
+  // The lock's break marker: taken exclusively by the one waiter that may remove a stale lock, and
+  // gone again the moment it has (the takeover race in #19's review).
+  "paired-devices.lock.break",
   "pairing-pending.json",
   "push-subscriptions.json",
   "snooze.json",

@@ -9,6 +9,8 @@ import {
   mergedUpdateVerdict,
   PACK_PREFLIGHT_MAX_CHECKS,
   PACK_PREFLIGHT_TRUNCATED_ID,
+  START_GRACE_MS,
+  UpdateConfirmGate,
   packPreflightChecks,
   packUpdateRows,
   parsePeerPreflight,
@@ -624,5 +626,43 @@ describe("the fresh-preflight request, across the link", () => {
     // A stale entry stays readable and stays HONEST about its age — never re-run on the pack path.
     expect(cache.peek()).toEqual({ report: GREEN, at: 1_000 });
     expect(runs).toBe(1);
+  });
+});
+
+// ── The confirm reservation (#21) ─────────────────────────────────────────────
+// The handler awaits a forced preflight before it reads the lock and the run, so two confirms inside
+// that await both saw "nothing running" and both spawned an updater. The gate is the earlier refusal.
+describe("UpdateConfirmGate", () => {
+  test("one confirm at a time: the second is refused while the first is inside the path", () => {
+    const gate = new UpdateConfirmGate(() => 0);
+    expect(gate.take(() => false)).toBe(true);
+    expect(gate.take(() => false)).toBe(false);
+    gate.release(false);
+    expect(gate.take(() => false)).toBe(true);
+  });
+
+  test("a successful start opens a grace: no lock on disk yet still reads as in progress", () => {
+    let now = 0;
+    const gate = new UpdateConfirmGate(() => now);
+    expect(gate.take(() => false)).toBe(true);
+    gate.release(true);
+    // The child has been spawned but has not written its lock: the window the verdict cannot see.
+    expect(gate.take(() => false)).toBe(false);
+    // The lock appeared: let the verdict refuse with the run's own state rather than a guess.
+    expect(gate.take(() => true)).toBe(true);
+    gate.release(true); // a start again, so the grace is OPEN for the bound to be the thing that ends it
+    expect(gate.take(() => false)).toBe(false);
+    // The grace is bounded, so a child that never took the lock cannot wedge the button.
+    now = START_GRACE_MS - 1;
+    expect(gate.take(() => false)).toBe(false);
+    now = START_GRACE_MS;
+    expect(gate.take(() => false)).toBe(true);
+  });
+
+  test("a refused or failed confirm opens no grace", () => {
+    const gate = new UpdateConfirmGate(() => 0);
+    expect(gate.take(() => false)).toBe(true);
+    gate.release(false);
+    expect(gate.take(() => false)).toBe(true);
   });
 });

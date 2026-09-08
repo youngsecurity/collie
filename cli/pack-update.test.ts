@@ -84,6 +84,8 @@ interface HarnessOptions {
   leadVersion?: string;
   /** This lead's own update: what `start` returns, and the records its runner writes, in order. */
   lead?: { start?: number; records?: readonly (UpdateRun | null)[] };
+  /** The release tags at HEAD. Absent ⇒ `v<VERSION>`, the pushed commit IS a tagged release. */
+  tagsAtHead?: readonly string[];
   /** Which members answer `hello`, and with which version. `false` ⇒ it does not answer at all. */
   hello?: Record<string, string | false>;
   bundle?: string | null;
@@ -107,6 +109,8 @@ function harness(opts: HarnessOptions = {}) {
   };
   const out = capture();
   const calls: Recorded[] = [];
+  /** The tag each lead leg was pinned to (#24). */
+  const leadStarts: string[] = [];
   // Everything that happens on a machine, in the order it happened — the ssh legs AND the lead's own
   // update, which is what "lead first" is asserted against.
   const events: string[] = [];
@@ -128,6 +132,7 @@ function harness(opts: HarnessOptions = {}) {
       [`git -C ${ROOT} rev-parse --short ${COMMIT}`, { stdout: `${SHORT}\n` }],
       [`git -C ${ROOT} status --porcelain`, { stdout: "" }],
       [`git -C ${ROOT} show ${COMMIT}:herdr-plugin.toml`, { stdout: `version = "${VERSION}"\n` }],
+      [`git -C ${ROOT} tag --points-at ${COMMIT}`, { stdout: `${(opts.tagsAtHead ?? [`v${VERSION}`]).join("\n")}\n` }],
     ],
   });
 
@@ -170,8 +175,9 @@ function harness(opts: HarnessOptions = {}) {
       Promise.resolve(opts.preflight ?? { schema: PREFLIGHT_SCHEMA, verdict: "green", checks: [] }),
     peerReported: () => Promise.resolve(opts.peerReported ?? []),
     lead: {
-      start: () => {
+      start: (tag) => {
         events.push("lead");
+        leadStarts.push(tag);
         return Promise.resolve(opts.lead?.start ?? EXIT.OK);
       },
       record: () => {
@@ -205,7 +211,7 @@ function harness(opts: HarnessOptions = {}) {
     reload: () => Promise.resolve(initial),
   };
 
-  return { deps, io: out, calls, confirms, ops, events };
+  return { deps, io: out, calls, confirms, ops, events, leadStarts };
 }
 
 /** One update record, as the lead's runner would have written it. */
@@ -517,6 +523,54 @@ describe("the lead goes first", () => {
     expect(await cmdPackUpdate(h.deps, ["nas"])).toBe(EXIT.FAIL);
     expect(text(h.io)).toContain("this lead's own update would not start");
     expect(legs(h)).toEqual(["nas.example:probe"]);
+  });
+
+  // ── The leg is PINNED to the release being pushed (#24) ─────────────────────
+  // The peers get this checkout's commit as a bundle. An unpinned `collie update` on the lead took
+  // the highest release of its major, so with a newer release on origin the lead landed there while
+  // the peers received HEAD, and "✓ this lead is running …" was false.
+  test("the lead's own update is started with --to-tag naming the pushed commit's release", async () => {
+    const h = harness({ leadVersion: OLD_VERSION });
+    expect(await cmdPackUpdate(h.deps, ["nas"])).toBe(EXIT.OK);
+    expect(h.leadStarts).toEqual([`v${VERSION}`]);
+  });
+
+  test("a pushed commit that is not a tagged release refuses the lead leg and touches no peer", async () => {
+    const h = harness({ leadVersion: OLD_VERSION, tagsAtHead: [] });
+    expect(await cmdPackUpdate(h.deps, ["nas"])).toBe(EXIT.FAIL);
+    const rendered = text(h.io);
+    expect(rendered).toContain(`${COMMIT.slice(0, 12)} is not a tagged release`);
+    expect(rendered).toContain("collie build");
+    expect(h.leadStarts).toEqual([]);
+    expect(legs(h)).toEqual(["nas.example:probe"]);
+  });
+
+  test("a prerelease or a tag naming another version at HEAD is not the release being pushed", async () => {
+    // Only a strict release tag whose version is the manifest's counts; the rest are somebody's
+    // other names for the same commit.
+    const wrong = harness({ leadVersion: OLD_VERSION, tagsAtHead: [`v${VERSION}-rc.1`, "v9.9.9", "nightly"] });
+    expect(await cmdPackUpdate(wrong.deps, ["nas"])).toBe(EXIT.FAIL);
+    expect(wrong.leadStarts).toEqual([]);
+    const right = harness({ leadVersion: OLD_VERSION, tagsAtHead: ["nightly", `v${VERSION}`] });
+    expect(await cmdPackUpdate(right.deps, ["nas"])).toBe(EXIT.OK);
+    expect(right.leadStarts).toEqual([`v${VERSION}`]);
+  });
+
+  test("a lead whose runner landed on a different release stops the run, and says which", async () => {
+    const h = harness({ leadVersion: OLD_VERSION, lead: { records: [run("done", { to: "1.2.4" })] } });
+    expect(await cmdPackUpdate(h.deps, ["nas"])).toBe(EXIT.FAIL);
+    const rendered = text(h.io);
+    expect(rendered).toContain(`this lead's own update landed on 1.2.4, not v${VERSION}`);
+    expect(rendered).not.toContain("the peers can have it");
+    expect(legs(h)).toEqual(["nas.example:probe"]);
+  });
+
+  test("the record may name the tag or the bare version: a checkout stages by tag, a binary install by version", async () => {
+    for (const to of [`v${VERSION}`, VERSION]) {
+      const h = harness({ leadVersion: OLD_VERSION, lead: { records: [run("done", { to })] } });
+      expect(await cmdPackUpdate(h.deps, ["nas"])).toBe(EXIT.OK);
+      expect(text(h.io)).toContain("the peers can have it");
+    }
   });
 });
 

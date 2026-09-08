@@ -123,3 +123,19 @@ action only while three independent facts are true.**
 - **Evidence that operators want a browser surface on a peer generally.** That is a *second front door
   per pack* and re-opens ADR 0001 at pack scale, exactly as ADR 0013 says; it would need its own ADR
   rather than a widening of this one.
+
+## Amendment (2026-09-05, youngsecurity/collie#20)
+
+**Four routes, and the fourth is a projection.** Upstream 1.4.0 (M15/04) added `GET /standby/update`
+so the phone can watch an update while the front door is restarting, which is the one window in
+which the front door cannot answer. It is mounted ahead of the role dispatch and answers in every
+state the listener can hold, deposed included. The route is right; what it answered was not: the
+whole `UpdateRun` record, which carries `recovery` (an absolute path built from the install root and
+the home directory), `logTail` (a tail of the service log) and `reason`. This door is ungated by
+design, and `/standby/health`'s own rule, *never a body a stranger can learn a member id from*,
+applies to paths, unit names and log lines just as well. The route now answers a projection
+(`bridge/pack/standby.ts` `standbyUpdateWire`): shape and progress only, spelled field by field so a
+field added to the record never rides out by default. The three fields it withholds are read from the
+front door's authenticated `GET /api/update/check`, which the card is back on by the time a failed
+run needs explaining. The count in the Decision above is therefore four, with the same rule attached:
+no fifth route, and no route whose body names the machine.

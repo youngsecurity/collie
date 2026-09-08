@@ -29,6 +29,7 @@ import { imageExtFromBytes, SNIFF_BYTES } from "./uploads.ts";
 import type { UpdateMonitor } from "./update.ts";
 import {
   parseUpdateStartRequest,
+  UpdateConfirmGate,
   updateStartVerdict,
   type PreflightReport,
 } from "./update-action.ts";
@@ -642,6 +643,9 @@ export function startServer(opts: {
   // One gate per Bun server, not per request: two slow uploads and their two provider calls share
   // the same bounded process-local capacity (bridge/stt/http.ts).
   const sttAdmission = createSttAdmission();
+  // One confirm at a time through POST /api/update, per server: the handler awaits a forced preflight
+  // before it reads the lock, and two confirms inside that await would both start an updater (#21).
+  const updateConfirm = new UpdateConfirmGate();
   /** Who the requester is, across both device gates — see {@link requestDevice}. */
   const whois = (req: Request): DeviceAuth => requestDevice(req, cfg, pairing);
   const packLead = opts.packLead;
@@ -1423,7 +1427,7 @@ export function startServer(opts: {
         // The peer's own `PREFLIGHT_TTL_MS` is what keeps this cheap: the header is honoured at most
         // once a minute per member, so a phone sitting on the page cannot make a peer shell out to
         // git and `doctor` on every poll.
-        const freshSweep = opts.packLead?.sweep({ freshPreflight: true });
+        const freshSweep = opts.packLead?.request({ freshPreflight: true });
         if (freshSweep !== undefined) {
           await Promise.race([
             freshSweep,
@@ -1463,70 +1467,81 @@ export function startServer(opts: {
         if (parsed === null) {
           return jsonError(apiError("update.confirm_required"), 400, req.headers.get("accept-encoding"));
         }
-        // FORCED, never the cached report: the client's disabled button is a courtesy and this is
-        // the actual gate, so it asks the machine now rather than trusting a minute-old answer.
-        const report = await action.preflight(true);
-        const status = updateMonitor.status();
-        const verdict = updateStartVerdict(parsed, {
-          current: status.current,
-          latest: status.latest,
-          majorAvailable: status.majorAvailable,
-          run: status.run ?? null,
-          lockHeld: action.lockHeld(),
-          preflight: report,
-          // One confirm covers the pack (M16/03): the members' banked verdicts gate this start the
-          // same way the lead's own does. Read, never fetched — the sweep is the only thing that
-          // talks to a member.
-          pack: opts.packLead?.updateRows() ?? [],
-          // And the legs of the last run, which is what "Retry pack update" is about (M16/04).
-          peers: opts.packLead?.updatePeers() ?? [],
-        });
-        if (verdict.kind === "refuse") {
-          return jsonError(verdict.body, verdict.status, req.headers.get("accept-encoding"));
+        // RESERVED before the await below, released after the start or the refusal. A second confirm
+        // that lands inside the preflight is answered as the run in progress it is about to become.
+        if (!updateConfirm.take(() => action.lockHeld())) {
+          return jsonError(apiError("update.in_progress", { state: "preflight" }), 409, req.headers.get("accept-encoding"));
         }
-        // ONE id per confirm, minted here and nowhere else. It is what the peers' turns carry and
-        // what a member that rolled back keys its "not twice" memory on — so a fresh confirm, and
-        // only a fresh confirm, permits one further attempt at the same tag.
-        const runId = action.newRunId();
-        // ── A PEERS-ONLY RUN MOVES NOTHING HERE ────────────────────────────
-        // The lead is already current. It starts no updater, spawns nothing and restarts nothing:
-        // it opens a run whose only legs are the peers, and the first of §20's three immediate
-        // sweeps carries the first turn out.
-        if (verdict.kind === "peers") {
+        let started = false;
+        try {
+          // FORCED, never the cached report: the client's disabled button is a courtesy and this is
+          // the actual gate, so it asks the machine now rather than trusting a minute-old answer.
+          const report = await action.preflight(true);
+          const status = updateMonitor.status();
+          const verdict = updateStartVerdict(parsed, {
+            current: status.current,
+            latest: status.latest,
+            majorAvailable: status.majorAvailable,
+            run: status.run ?? null,
+            lockHeld: action.lockHeld(),
+            preflight: report,
+            // One confirm covers the pack (M16/03): the members' banked verdicts gate this start the
+            // same way the lead's own does. Read, never fetched — the sweep is the only thing that
+            // talks to a member.
+            pack: opts.packLead?.updateRows() ?? [],
+            // And the legs of the last run, which is what "Retry pack update" is about (M16/04).
+            peers: opts.packLead?.updatePeers() ?? [],
+          });
+          if (verdict.kind === "refuse") {
+            return jsonError(verdict.body, verdict.status, req.headers.get("accept-encoding"));
+          }
+          // ONE id per confirm, minted here and nowhere else. It is what the peers' turns carry and
+          // what a member that rolled back keys its "not twice" memory on — so a fresh confirm, and
+          // only a fresh confirm, permits one further attempt at the same tag.
+          const runId = action.newRunId();
+          // ── A PEERS-ONLY RUN MOVES NOTHING HERE ────────────────────────────
+          // The lead is already current. It starts no updater, spawns nothing and restarts nothing:
+          // it opens a run whose only legs are the peers, and the first of §20's three immediate
+          // sweeps carries the first turn out.
+          if (verdict.kind === "peers") {
+            action.beginPackRun?.({ runId, to: verdict.to });
+            audit.record({
+              action: "update",
+              device: whois(req).device,
+              detail: { to: verdict.to, major: false, peersOnly: true },
+            });
+            return json({ ok: true, to: verdict.to, major: false, run: status.run ?? null }, req.headers.get("accept-encoding"), 202);
+          }
+          const launched = action.start({ major: verdict.major, runId });
+          if (!launched.ok) {
+            return jsonError(
+              apiError("update.start_failed", { reason: launched.reason }),
+              500,
+              req.headers.get("accept-encoding"),
+            );
+          }
+          started = true;
+          // The peers ride the SAME confirm and the same id. Their turns are granted once this lead's
+          // own health gate settles — a lead that announced a version it has not finished taking would
+          // send its whole pack after a release it may itself roll back from (§20).
           action.beginPackRun?.({ runId, to: verdict.to });
           audit.record({
             action: "update",
             device: whois(req).device,
-            detail: { to: verdict.to, major: false, peersOnly: true },
+            detail: { to: verdict.to, major: verdict.major },
           });
-          return json({ ok: true, to: verdict.to, major: false, run: status.run ?? null }, req.headers.get("accept-encoding"), 202);
-        }
-        const started = action.start({ major: verdict.major, runId });
-        if (!started.ok) {
-          return jsonError(
-            apiError("update.start_failed", { reason: started.reason }),
-            500,
+          // 202, and the request ENDS HERE. The update stages and then restarts this very process —
+          // holding the request open across that would mean answering with a socket that is about to
+          // be closed by the thing the request asked for. The card watches the run record instead, on
+          // the snapshot it already polls, and on `/standby/update` while this door is shut.
+          return json(
+            { ok: true, to: verdict.to, major: verdict.major, run: status.run ?? null },
             req.headers.get("accept-encoding"),
+            202,
           );
+        } finally {
+          updateConfirm.release(started);
         }
-        // The peers ride the SAME confirm and the same id. Their turns are granted once this lead's
-        // own health gate settles — a lead that announced a version it has not finished taking would
-        // send its whole pack after a release it may itself roll back from (§20).
-        action.beginPackRun?.({ runId, to: verdict.to });
-        audit.record({
-          action: "update",
-          device: whois(req).device,
-          detail: { to: verdict.to, major: verdict.major },
-        });
-        // 202, and the request ENDS HERE. The update stages and then restarts this very process —
-        // holding the request open across that would mean answering with a socket that is about to
-        // be closed by the thing the request asked for. The card watches the run record instead, on
-        // the snapshot it already polls, and on `/standby/update` while this door is shut.
-        return json(
-          { ok: true, to: verdict.to, major: verdict.major, run: status.run ?? null },
-          req.headers.get("accept-encoding"),
-          202,
-        );
       }
 
       // ── Speech-to-text (bridge/stt/) ─────────────────────────────────────

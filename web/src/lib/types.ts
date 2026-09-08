@@ -425,13 +425,24 @@ export interface UpdateRun {
   to: string | null;
   startedAt: number;
   updatedAt: number;
-  pid: number;
+  /**
+   * The updater's pid. Absent from the STANDBY door's answer (`GET /standby/update`), which is the
+   * run's shape and progress only; nothing on this side reads it.
+   */
+  pid?: number;
   attempt: number;
-  /** Why it is where it is, when that needs a sentence. */
+  /** Why it is where it is, when that needs a sentence. Never from the standby door (below). */
   reason?: string;
-  /** A bounded, credential-scrubbed tail of the service log, recorded on a failure. */
+  /**
+   * A bounded, credential-scrubbed tail of the service log, recorded on a failure. Never from the
+   * standby door: that port is ungated, and a log line is not a body a stranger may read.
+   */
   logTail?: string;
-  /** The command the operator runs by hand — carried only by `stuck`. */
+  /**
+   * The command the operator runs by hand — carried only by `stuck`, and never from the standby door,
+   * because it names this machine's paths. The front door's authenticated read carries it, and the
+   * card is back on that door by the time a `stuck` needs showing.
+   */
   recovery?: string;
   /**
    * The run's own opaque id (M16/04). Absent on a run started before the pack learned to follow, and
@@ -479,6 +490,8 @@ export type PackUpdateRow = UpdatePackMember;
  */
 export interface UpdatePeerLeg {
   name: string;
+  /** OPEN, see the type: every reader needs a fallback branch, and `update-pack.ts`'s `legInFlight` and
+   *  `peerStateWord` are those branches. Do not narrow this by switching on it without a `default`. */
   state: UpdatePeerLegState;
   /** The version that peer runs right now, when the lead knows it. */
   version?: string | null;

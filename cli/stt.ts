@@ -478,7 +478,12 @@ export async function cmdSttTest(deps: SttDeps): Promise<number> {
   const clock = deps.now ?? Date.now;
   deps.io.out(`provider: ${describeProvider(settings)}`);
 
+  // TWO tallies, because they mean two different things. A refusal is the provider saying it will
+  // not take that container, which is the diagnosis this verb exists for; a timeout or an outage is
+  // a probe that did not get an answer, and reporting it as "your provider does not take webm" sent
+  // the operator to reconfigure a provider that works (#27).
   const refused: string[] = [];
+  let failed = 0;
   let wavPassed = false;
   try {
     for (const clip of STT_PROBE_CLIPS) {
@@ -502,12 +507,15 @@ export async function cmdSttTest(deps: SttDeps): Promise<number> {
           );
         }
       } catch (err) {
-        refused.push(clip.mimeType);
+        failed += 1;
         // The kind the bridge would report, then the sentence it carries. A caught value is not a
         // parsed input, so it is narrowed here rather than handed to a helper that would have to
-        // take `unknown`.
+        // take `unknown`. Only the provider's own REFUSAL counts against the container.
         let reason = err instanceof Error ? err.message : String(err);
-        if (err instanceof SttError) reason = `${err.kind}: ${err.message}`;
+        if (err instanceof SttError) {
+          reason = `${err.kind}: ${err.message}`;
+          if (err.kind === "refused") refused.push(clip.mimeType);
+        }
         deps.io.out(`${label} ✗ ${reason}`);
       }
     }
@@ -517,7 +525,13 @@ export async function cmdSttTest(deps: SttDeps): Promise<number> {
     provider.close?.();
   }
 
-  if (refused.length === 0) return EXIT.OK;
+  if (failed === 0) return EXIT.OK;
+  if (refused.length === 0) {
+    deps.io.err(`error: ${failed} of ${STT_PROBE_CLIPS.length} clips did not transcribe, and none was refused.`);
+    deps.io.err("       That is the provider not answering, not a container it will not take: check the");
+    deps.io.err("       endpoint and the network, then run this again.");
+    return EXIT.FAIL;
+  }
   deps.io.err(`error: the provider refused ${refused.length} of ${STT_PROBE_CLIPS.length} clips.`);
   if (wavPassed) sayContainerRefusal(deps, refused);
   return EXIT.FAIL;

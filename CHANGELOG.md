@@ -32,6 +32,39 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 ## [Unreleased]
 
+## [1.5.1+ys.6] - 2026-09-08
+
+- Third review of PR #34: a registry lock whose holder's process is still running is never reclaimed, however old it is; only a dead pid's stale lock is broken, the same rule `update.lock` has always had. The write-time ownership proof stays as the second line ([eaf28a2](https://github.com/youngsecurity/collie/commit/eaf28a2))
+
+A patch on top of [1.5.1+ys.5](https://github.com/youngsecurity/collie/releases/tag/v1.5.1%2Bys.5).
+
+## [1.5.1+ys.5] - 2026-09-08
+
+- Second review of PR #34: a registry lock holder proves ownership immediately before every write and a release removes only its own lock, so a holder paused past the stale bound cannot write over its replacement or delete it; a pack lead's replay that finds another sweep already running folds its waiters into that sweep instead of releasing them unanswered ([d391f2c](https://github.com/youngsecurity/collie/commit/d391f2c))
+
+A patch on top of [1.5.1+ys.4](https://github.com/youngsecurity/collie/releases/tag/v1.5.1%2Bys.4).
+
+## [1.5.1+ys.4] - 2026-09-08
+
+- Review of 1.5.1+ys.3 (CodeRabbit on PR #34): a pack member that reports red with nothing readable to show for it stays red at the lead's preflight instead of reading green; breaking a stale registry lock is exclusive through a `.break` marker, so two waiters cannot remove each other's fresh lock, and a remove that fails silently is bounded; a staging write that throws in the handoff releases the update lock; a throw before the runner's first write still names both versions on the record; the phone's fresh-preflight request is folded into the replay when a sweep is already running, with its option honoured and its answer awaited ([1e859ef](https://github.com/youngsecurity/collie/commit/1e859ef))
+
+A patch on top of [1.5.1+ys.3](https://github.com/youngsecurity/collie/releases/tag/v1.5.1%2Bys.3), which carries the ten issues and their notes.
+
+## [1.5.1+ys.3] - 2026-09-08
+
+The ten issues CodeRabbit's review of the 1.5.1 adoption raised on this fork (youngsecurity/collie#19 to #28), each implemented against its own tests and, where a real process could show it, checked in one.
+
+- A pairing code enrols one device even under two concurrent claims, and a `devices revoke` can no longer be undone by a `lastSeenAt` stamp or an enrolment landing from the bridge: every read-modify-write of `paired-devices.json`, in the bridge and in the CLI, runs inside a lock file beside it (`paired-devices.lock`, stale after 10s, waited on for 5s, then refused) (#19) ([520937d](https://github.com/youngsecurity/collie/commit/520937d))
+- `GET /standby/update` answers the run's shape and progress only: `reason`, `logTail`, `recovery` and `pid` stay behind the front door's authenticated read, and PACK_PROTOCOL.md §18.15 now names the route as the fourth (#20) ([0f0ba28](https://github.com/youngsecurity/collie/commit/0f0ba28))
+- `collie update`: an effect that throws inside the detached runner no longer leaves `update.lock` behind for ten minutes; the run is recorded `interrupted` with the recovery command, and the next update can start. The lock is taken with an exclusive create, so two starters that both read "no lock" cannot both win. `POST /api/update` reserves the confirm path before its awaited preflight and for a grace after a start, so a double confirm answers `update.in_progress` instead of spawning twice. `--to-tag` with no value is a usage error, not a routine update (#21) ([f826a07](https://github.com/youngsecurity/collie/commit/f826a07))
+- A corrupt `update.json` or `update.lock` (a `null`, an array, a mistyped field) reads as no record instead of crashing `--status`, the snapshot and the runner; a health answer that is not an object reads as "not up yet" instead of aborting the runner mid-update; a member's preflight report is read element by element, a malformed check is dropped and an unknown verdict never counts green (#22) ([7181246](https://github.com/youngsecurity/collie/commit/7181246))
+- A pack lead no longer drops a re-sweep asked for while a sweep is running: a turn released inside the sweep is followed by one replay sweep, so the next member starts within one sweep of the release instead of waiting out the idle cadence (#23) ([d9b038d](https://github.com/youngsecurity/collie/commit/d9b038d))
+- `collie pack update`: the lead's own leg runs `collie update --to-tag` for the release at the checkout's `HEAD` and checks the record landed on it, instead of taking the newest release of its major while the peers received `HEAD`; an untagged `HEAD` is refused with the by-hand route. `--to-tag` naming the installed version is no longer refused as a downgrade: it stages the build when what is on disk is not that release, and says "already current" when it is (#24) ([9d71ecd](https://github.com/youngsecurity/collie/commit/9d71ecd))
+- A new tab, launch or worktree opens on the host and session the create was addressed to, even when the phone switched host while the bridge was answering (#25) ([c7e5725](https://github.com/youngsecurity/collie/commit/c7e5725))
+- A notification tap no longer hangs on a discarded tab whose `navigate()` never settles: each fallback client gets three seconds, then the next is tried; a peer leg state this client has never heard of is drawn as in progress with a word, never as an empty, finished row (#26) ([0898df6](https://github.com/youngsecurity/collie/commit/0898df6))
+- `collie stt test` reports a probe that timed out or got no answer as that, and only the provider's own refusal as a container it will not take (#27) ([397c378](https://github.com/youngsecurity/collie/commit/397c378))
+- The playground's dashboard fixture carries synthetic names and paths of the same lengths instead of a captured workstation's (#28) ([8706800](https://github.com/youngsecurity/collie/commit/8706800))
+
 ## [1.5.1+ys.2] - 2026-09-05
 
 - A standing password prompt no longer reads as a moving screen to the poll cadence on this fork, which keeps no previous text for such a pane; `answersThisBuild` treats an empty commit as nothing to compare rather than a mismatch; a fork-counter-only delta deliberately takes the daily digest window, and the comment says so (CodeRabbit on PR #17) ([ab21914](https://github.com/youngsecurity/collie/commit/ab21914))

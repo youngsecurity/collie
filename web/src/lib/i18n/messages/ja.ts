@@ -831,6 +831,7 @@ export const ja: Dictionary = {
   "settings.updateCard.peer.state.stuck": "停止",
   "settings.updateCard.peer.state.interrupted": "中断",
   "settings.updateCard.peer.state.idle": "待機中",
+  "settings.updateCard.peer.state.unknown": "進行中",
   "updates.title": "アップデート",
   "updates.nav.back": "戻る",
   "updates.entry.title": "アップデート",

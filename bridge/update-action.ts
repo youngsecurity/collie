@@ -770,6 +770,54 @@ function peersNeedLevelling(state: UpdateStartState): boolean {
   return behind || fellBack;
 }
 
+// ── The confirm reservation (#21) ──────────────────────────────────────────────
+
+/** How long a just-started run is presumed in flight before its lock shows up on disk. */
+export const START_GRACE_MS = 10_000;
+
+/**
+ * One confirm at a time through `POST /api/update`.
+ *
+ * The verdict above reads `lockHeld` and `run` at one instant, but the handler AWAITS a forced
+ * preflight before it reads them: two confirms that both arrive during that preflight both see no
+ * lock and no run, and both spawn an updater. The updater's own lock is exclusive now
+ * (`cli/update-run.ts` `takeLock`), so one of the two children loses there; this gate is the earlier,
+ * cheaper refusal, and the one that answers the phone honestly (`update.in_progress`) instead of
+ * letting a second child fail on a lock and leave a second `staging` record behind.
+ *
+ * Two things it holds: the confirm path itself while a request is inside it, and a GRACE after a
+ * successful start, until the child's lock is seen on disk or {@link START_GRACE_MS} passes. The
+ * grace is what closes the window between "spawned" and "took the lock", which the verdict alone
+ * cannot see. Per process, because the bridge is the only thing that answers this route.
+ */
+export class UpdateConfirmGate {
+  private inFlight = false;
+  private graceUntil = 0;
+
+  constructor(
+    private readonly now: () => number = Date.now,
+    private readonly graceMs: number = START_GRACE_MS,
+  ) {}
+
+  /**
+   * Reserve the confirm path. `false` when another confirm is inside it, or a run started moments
+   * ago has not yet shown its lock (`lockHeld` is asked so a lock that HAS appeared lets the verdict
+   * refuse with the run's own state rather than this gate's guess).
+   */
+  take(lockHeld: () => boolean): boolean {
+    if (this.inFlight) return false;
+    if (this.now() < this.graceUntil && !lockHeld()) return false;
+    this.inFlight = true;
+    return true;
+  }
+
+  /** Let the next confirm in. `started` opens the grace; a refusal or a failure opens none. */
+  release(started: boolean): void {
+    this.inFlight = false;
+    this.graceUntil = started ? this.now() + this.graceMs : 0;
+  }
+}
+
 // ── The handoff ──────────────────────────────────────────────────────────────
 
 /**

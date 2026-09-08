@@ -19,8 +19,10 @@ import type { UpdateRun } from "../update-run.ts";
 // was a second listener or no feature.
 //
 // ── WHAT IT IS, AND WHAT IT IS NOT ───────────────────────────────────────────
-// Three routes, no more. No PWA, no `/api/*`, no SPA fallback, no `/auth` placeholder — **a route
-// that does not exist cannot be mis-gated** (ADR 0013's own words). Collie BINDS it and publishes
+// Four routes, no more (three, until `/standby/update` joined with the detached updater; ADR 0028's
+// amendment). No PWA, no `/api/*`, no SPA fallback, no `/auth` placeholder — **a route that does
+// not exist cannot be mis-gated** (ADR 0013's own words), and the one route that reports a run
+// answers a projection of it, never the record (`standbyUpdateWire`). Collie BINDS it and publishes
 // nothing: no `tailscale serve`, never `funnel`, no ownership record (ADR 0001 is untouched — we
 // still manage only what we run and can test). Plain HTTP behind the operator's own failover proxy,
 // which is RFC §14.2's deployment and docs/deployment.md Variant C/E's posture already.
@@ -539,13 +541,53 @@ export function createStandbyDoor(deps: StandbyDoorDeps) {
  * the same path with `503` before this is consulted, which is exactly the flip the proxy needs.
  */
 /**
+ * What `/standby/update` answers: the run's SHAPE and PROGRESS, and nothing that names this machine.
+ *
+ * The full record (`UpdateRun`) carries `recovery`, an absolute path built from the install root and
+ * the home directory; `logTail`, a tail of the service log; and `reason`, a sentence about what went
+ * wrong. Those three belong behind the front door's authenticated `GET /api/update/check`, which is
+ * where the card reads them the moment the door is back. This door is ungated by design (it exists
+ * for the seconds in which the front door is restarting), so its body is held to the same line
+ * `/standby/health` draws: never a body a stranger can learn a path, a unit or a log line from
+ * (youngsecurity/collie#20). `pid` goes too: it is the lock's business, not the phone's.
+ *
+ * The phone reads this as its own optional-field `UpdateRun`, so a projection is not a second type on
+ * that side; `updatedAt` is what it ranks records by, and that survives.
+ */
+export interface StandbyUpdateWire {
+  readonly schema: number;
+  readonly state: UpdateRun["state"];
+  readonly from: string | null;
+  readonly to: string | null;
+  readonly startedAt: number;
+  readonly updatedAt: number;
+  readonly attempt: number;
+  readonly runId?: string;
+}
+
+/** The projection, spelled field by field so a field added to `UpdateRun` never rides out by default. */
+export function standbyUpdateWire(run: UpdateRun): StandbyUpdateWire {
+  const wire: StandbyUpdateWire = {
+    schema: run.schema,
+    state: run.state,
+    from: run.from,
+    to: run.to,
+    startedAt: run.startedAt,
+    updatedAt: run.updatedAt,
+    attempt: run.attempt,
+  };
+  return run.runId === undefined ? wire : { ...wire, runId: run.runId };
+}
+
+/**
  * `/standby/update` on the standby listener, in EVERY state that listener can be in — deposed, lead,
  * deputy or a plain peer that merely binds the port. It is mounted ahead of all of them in
  * `bridge/index.ts` for that reason: the question it answers ("what is this machine's update doing?")
  * has one answer whatever role the machine holds, and a deposed collie is exactly the machine whose
  * operator needs it.
  *
- * `null` for any other path, so this adds no surface: the listener turns that into its bare 404.
+ * `null` for any other path, so this adds no surface: the listener turns that into its bare 404. The
+ * body is {@link standbyUpdateWire}, never the record itself.
  */
 export function standbyUpdateAnswer(
   req: Request,
@@ -558,7 +600,8 @@ export function standbyUpdateAnswer(
   }
   // An install that has never updated answers `idle` rather than 404: "nothing is happening" is a
   // fact the phone can render, and a missing route is not.
-  const run = read() ?? { state: "idle" };
+  const record = read();
+  const run = record === null ? { state: "idle" } : standbyUpdateWire(record);
   return new Response(JSON.stringify(run), {
     status: 200,
     headers: { ...JSON_HEADERS, "cache-control": "no-store" },

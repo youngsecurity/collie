@@ -78,6 +78,8 @@ function lead(
 ) {
   const roster = [...members];
   const calls: string[] = [];
+  /** Whether each snapshot call asked for a fresh preflight, in call order. */
+  const fresh: boolean[] = [];
   let clock = NOW;
   const registry = new PackRegistry({
     sessions: { get: () => undefined },
@@ -86,8 +88,9 @@ function lead(
   });
   const l = new PackLead({
     registry,
-    snapshot: async (link) => {
+    snapshot: async (link, freshPreflight) => {
       calls.push(link.memberId);
+      fresh.push(freshPreflight === true);
       return script(link, calls.filter((c) => c === link.memberId).length);
     },
     proxy: neverProxy,
@@ -99,6 +102,7 @@ function lead(
     lead: l,
     registry,
     calls,
+    fresh,
     roster,
     advance: (ms: number) => {
       clock += ms;
@@ -133,6 +137,84 @@ describe("PackLead — the sweep rides the lead's poll, it does not arm a timer"
     const first = h.lead.sweep();
     await h.lead.sweep(); // returns immediately — the freshest answer is the only one that matters
     await first;
+    expect(h.calls).toEqual(["laptop"]);
+  });
+
+
+  // ── A re-sweep asked for mid-sweep is replayed, not dropped (#23) ─────────
+  // `resweep()` is a microtask, and the guard above refuses a re-entrant `sweep()`. A turn released
+  // INSIDE a sweep (`follow.turns.observe(...).released`, observed while `sweeping` is still set)
+  // therefore asked for a sweep that the guard threw away, and the next member waited out the whole
+  // idle cadence, which is the delay §20 says a released turn must not pay.
+  test("a re-sweep asked for during a sweep runs once that sweep ends, and exactly once", async () => {
+    const h = lead([member({ memberId: "laptop" })], (_link, call) => {
+      if (call === 1) {
+        // Two requests from inside the sweep, as two released turns would make: one replay.
+        h.lead.resweep();
+        h.lead.resweep();
+      }
+      return ok(body);
+    });
+    await h.lead.sweep();
+    // The replay is a microtask off the sweep's own end, so it may already be under way here.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(h.calls).toEqual(["laptop", "laptop"]);
+    // And nothing lingers: the flag was spent by the replay.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(h.calls).toEqual(["laptop", "laptop"]);
+  });
+
+
+  test("a fresh-preflight REQUEST made mid-sweep is folded into the replay, with its option, and awaited", async () => {
+    const h = lead([member({ memberId: "laptop" })], () => ok(body));
+    const first = h.lead.sweep();
+    // A tick's sweep is in flight; the phone asks for a fresh check now.
+    let settled = false;
+    const requested = h.lead.request({ freshPreflight: true }).then(() => {
+      settled = true;
+      return settled;
+    });
+    await first;
+    expect(settled).toBe(false); // not answered by the sweep that was already running
+    await requested;
+    expect(h.calls).toEqual(["laptop", "laptop"]);
+    expect(h.fresh).toEqual([false, true]);
+  });
+
+
+  test("a replay that finds another sweep already running folds its waiters into that sweep, not the void", async () => {
+    // The gap this guards is between a sweep's finally and its replay microtask: a sweep that starts
+    // there would make `sweep()` in the replay return at its guard, and the waiters would be released
+    // against a sweep that never asked for the fresh preflight they were promised. Driven at the
+    // seam, because the gap is one microtask wide and cannot be staged from outside.
+    const h = lead([member({ memberId: "laptop" })], (_link, call) => {
+      if (call === 1) {
+        // Mid-sweep: a replay arrives carrying a fresh request and its waiter.
+        h.lead["replay"]({ fresh: true, waiters: [() => void released.push("fresh")] });
+      }
+      return ok(body);
+    });
+    const released: string[] = [];
+    await h.lead.sweep();
+    // Not released by the sweep that was running: it did not ask for a fresh preflight.
+    expect(released).toEqual([]);
+    await new Promise((r) => setTimeout(r, 0));
+    // The fold put it on that sweep's pending set; the replay honoured the flag and released it.
+    expect(released).toEqual(["fresh"]);
+    expect(h.fresh).toEqual([false, true]);
+  });
+
+  test("a request while idle is just a sweep, and resolves when it does", async () => {
+    const h = lead([member({ memberId: "laptop" })], () => ok(body));
+    await h.lead.request({ freshPreflight: true });
+    expect(h.calls).toEqual(["laptop"]);
+  });
+
+  test("a re-sweep asked for while idle is one sweep on the next microtask, as before", async () => {
+    const h = lead([member({ memberId: "laptop" })], () => ok(body));
+    h.lead.resweep();
+    expect(h.calls).toEqual([]);
+    await new Promise((r) => setTimeout(r, 0));
     expect(h.calls).toEqual(["laptop"]);
   });
 

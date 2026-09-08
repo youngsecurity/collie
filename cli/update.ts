@@ -17,7 +17,7 @@ import {
   versionOfTag,
 } from "../bridge/update.ts";
 import { HERDR_MUX } from "../bridge/mux/herdr/adapter.ts";
-import { STALE_AFTER_MS, type UpdateRun } from "../bridge/update-run.ts";
+import { inFlight, parseUpdateRun, STALE_AFTER_MS, type UpdateLock, type UpdateRun, updateRunPath } from "../bridge/update-run.ts";
 import { manifestMinHerdrFrom, manifestVersionFrom, readBuildInfo } from "../bridge/version.ts";
 import { type BuildDeps, cmdBuild } from "./build.ts";
 import { logFilePath } from "./lifecycle.ts";
@@ -344,6 +344,19 @@ export function wantsToTag(args: readonly string[]): string | null {
 }
 
 /**
+ * The sentence `--to-tag` with no value is refused with, or null when the flag is absent or carries
+ * one. The doc block above promises the refusal: `wantsToTag` alone reads `collie update --to-tag`
+ * and `collie update --to-tag --major` as "no target", and no target is a ROUTINE update to the
+ * highest release of the major, which is an update to something else entirely (#21). Checked by
+ * every verb that reads the flag, before it plans anything.
+ */
+export function toTagArgError(args: readonly string[]): string | null {
+  const present = args.includes("--to-tag") || args.some((a) => a.startsWith("--to-tag="));
+  if (!present || wantsToTag(args) !== null) return null;
+  return "`--to-tag` names a release tag and was given none — `collie update --to-tag v<x.y.z>`, and nothing was taken";
+}
+
+/**
  * `--run-id <opaque>` — the other plumbing flag: the id of the run this update belongs to (M16/04).
  *
  * It is written into `<state dir>/update.json` and read back by the pack and by nobody else: a peer's
@@ -413,10 +426,14 @@ export function planToTag(a: {
       reason: `\`${target.tag}\` is not on the release family of the installed ${a.installed} — \`--to-tag\` never changes trains`,
     };
   }
-  if (compareRelease(target.version, a.installed) <= 0) {
+  // LOWER is refused; EQUAL is not a downgrade. `--to-tag X` on an install whose manifest already
+  // names X means "make sure you are running X": `pinPlan` reads it as `current`, and the caller's
+  // own "is what is on disk whole" question decides whether that stages the build or ends the verb.
+  // That is the lead's leg of `pack update` on a checkout that advanced without being built (#24).
+  if (compareRelease(target.version, a.installed) < 0) {
     return {
       kind: "refused",
-      reason: `\`${target.tag}\` is not higher than the installed ${a.installed} — \`--to-tag\` never downgrades`,
+      reason: `\`${target.tag}\` is lower than the installed ${a.installed} — \`--to-tag\` never downgrades`,
     };
   }
   const major = majorOf(a.installed);
@@ -448,6 +465,12 @@ export function pinPlan(
   if (a.wanted === null) return { ok: true, plan };
   const pinned = planToTag({ tags: a.tags, installed: a.installed, wanted: a.wanted });
   if (pinned.kind === "refused") return { ok: false, reason: pinned.reason };
+  // A pin onto the version already installed is `current` at that tag, exactly what `planUpdate`
+  // answers when the newest release is the one on disk: the caller then stages it only when what is
+  // on disk is not whole (a checkout advanced without being built), and otherwise says so and stops.
+  if (a.installed !== null && compareRelease(pinned.target.version, a.installed) === 0) {
+    return { ok: true, plan: { kind: "current", at: pinned.target, higher: null } };
+  }
   return { ok: true, plan: advanceTo(pinned.target) };
 }
 
@@ -1046,6 +1069,12 @@ export async function cmdUpdate(deps: UpdateDeps, args: readonly string[] = []):
   // The record, not the act — `--status` reads `<state dir>/update.json` and touches nothing, so it
   // is answered before the lock, before the install kind matters and before any network call.
   if (wantsStatus(args)) return cmdUpdateStatus(deps, args);
+  // A flag that names nothing is a usage error, answered before any plan could read it as absent.
+  const toTagError = toTagArgError(args);
+  if (toTagError !== null) {
+    deps.io.err(`error: ${toTagError}.`);
+    return EXIT.USAGE;
+  }
   if (args.includes("--rollback")) {
     if (install.kind === "binary") return await rollbackBinary(deps);
     if (staged && layout !== null) return await rollbackCheckout(deps, layout);
@@ -2107,7 +2136,14 @@ function handOff(
     return EXIT.FAIL;
   }
   const now = deps.now();
-  takeLock(deps.files, deps.ctx.stateDir, deps.pid, now);
+  // The verdict said yes; the filesystem has the last word (#21). Two `collie update`s that both read
+  // "no lock" a moment ago cannot both create the file, and the one that loses says what the
+  // verdict would have said had it looked a moment later.
+  if (!takeLock(deps.files, deps.ctx.stateDir, deps.pid, now, { breakable: verdict.stale })) {
+    deps.io.err("error: another update is in flight — it took the lock just now.");
+    deps.io.err("       Watch it with `collie update --status`.");
+    return EXIT.FAIL;
+  }
   // The run id rides the RECORD, not the runner's argv: `runApply` picks the staging record up off
   // disk and keeps driving it, so the id reaches every later state without `--to` growing a sibling.
   const staging = reduce(
@@ -2115,22 +2151,33 @@ function handOff(
     { kind: "stage" },
     now,
   );
-  writeRun(deps.files, deps.ctx.stateDir, staging);
-
-  const plan = launchPlan({
-    platform: deps.platform,
-    binary: runnerBinary(deps),
-    args: applyArgv({ ...a, handoff: deps.pid }),
-    unit: unitName(deps.ctx.instance),
-    stamp: now.toString(36),
-    hasSystemdRun: deps.exec.which("systemd-run") !== null,
-    hasSetsid: deps.exec.which("setsid") !== null,
-  });
-  const pid = deps.exec.spawnDetached(plan.command, {
-    cwd: layout.installRoot,
-    env: runnerEnv(deps.ctx.env),
-    logPath: logFilePath(deps.ctx.configDir, deps.ctx.instance),
-  });
+  // The lock is held from here to the spawn. A write or a `which` that throws (ENOSPC, EACCES) must
+  // not leave it behind with no run to show for it: that is the same ten-minute refusal the runner's
+  // own finally exists to prevent (#21), one step earlier.
+  let plan: ReturnType<typeof launchPlan>;
+  let pid: number | null;
+  try {
+    writeRun(deps.files, deps.ctx.stateDir, staging);
+    plan = launchPlan({
+      platform: deps.platform,
+      binary: runnerBinary(deps),
+      args: applyArgv({ ...a, handoff: deps.pid }),
+      unit: unitName(deps.ctx.instance),
+      stamp: now.toString(36),
+      hasSystemdRun: deps.exec.which("systemd-run") !== null,
+      hasSetsid: deps.exec.which("setsid") !== null,
+    });
+    pid = deps.exec.spawnDetached(plan.command, {
+      cwd: layout.installRoot,
+      env: runnerEnv(deps.ctx.env),
+      logPath: logFilePath(deps.ctx.configDir, deps.ctx.instance),
+    });
+  } catch (err) {
+    releaseLock(deps.files, deps.ctx.stateDir);
+    deps.io.err(`error: staging failed before the updater could start — ${err instanceof Error ? err.message : String(err)}`);
+    deps.io.err("       Nothing was swapped, and the lock is released; fix the cause and run `collie update` again.");
+    return EXIT.FAIL;
+  }
   if (pid === null) {
     releaseLock(deps.files, deps.ctx.stateDir);
     writeRun(deps.files, deps.ctx.stateDir, reduce(staging, { kind: "abort", reason: plan.note }, deps.now()));
@@ -2186,6 +2233,40 @@ export function cmdUpdateStatus(deps: UpdateDeps, args: readonly string[]): numb
 export const wantsStatus = (args: readonly string[]): boolean => args.includes("--status");
 
 /**
+ * The runner threw. Leave a TERMINAL record behind, from whatever the last write said, so the phone
+ * and `--status` see a run that ended rather than one that is still "restarting" until the
+ * staleness rule gives up on it ten minutes later. `interrupted` is the reducer's word for "nobody is
+ * driving this any more", which is exactly what a throw out of the drive is; `recovery` rides it so
+ * the operator has the way back without opening a log. A record that cannot be written (the disk that
+ * threw is the disk this writes to) is one line on stderr, and the caller still releases the lock.
+ */
+function recordThrow<TError>(
+  deps: UpdateDeps,
+  stateDir: string,
+  a: { readonly from: string | null; readonly to: string; readonly recovery: string },
+  err: TError,
+): UpdateRun {
+  const message = err instanceof Error ? err.message : String(err);
+  const reason = `the updater threw: ${message}`;
+  const last = parseUpdateRun(deps.files.read(updateRunPath(stateDir)));
+  const base = last !== null && inFlight(last.state) ? last : null;
+  // The fallback is the case where the drive's FIRST write already failed, so the runner's own
+  // knowledge of the two versions is the only place they can come from.
+  const record: UpdateRun =
+    base !== null
+      ? { ...reduce(base, { kind: "interrupt", reason }, deps.now()), recovery: a.recovery }
+      : { ...idleRun(deps.now()), state: "interrupted", from: a.from, to: a.to, pid: deps.pid, reason, recovery: a.recovery };
+  try {
+    writeRun(deps.files, stateDir, record);
+  } catch (writeErr) {
+    deps.io.err(
+      `error: could not record the failure in ${updateRunPath(stateDir)} — ${writeErr instanceof Error ? writeErr.message : String(writeErr)}`,
+    );
+  }
+  return record;
+}
+
+/**
  * The runner proper: flip, restart, verify, roll back once. Everything impure is an effect handed to
  * {@link driveApply}, which is where the machine lives.
  */
@@ -2195,14 +2276,19 @@ async function runApply(deps: UpdateDeps, a: ApplyArgs): Promise<number> {
   // The lock this run inherits is the one the staging process took (`--handoff <pid>`). Any other
   // holder is somebody else's run and refuses us, exactly as it refuses a second `collie update`.
   const held = readLock(deps.files, stateDir);
+  let breakable: UpdateLock | null = null;
   if (held !== null && held.pid !== a.handoff) {
     const verdict = updateLockVerdict(deps);
     if (!verdict.ok) {
       deps.io.err(`error: ${verdict.reason} — this runner will not touch \`current\`.`);
       return EXIT.FAIL;
     }
+    breakable = verdict.stale;
   }
-  takeLock(deps.files, stateDir, deps.pid, deps.now());
+  if (!takeLock(deps.files, stateDir, deps.pid, deps.now(), { inheritFrom: a.handoff, breakable })) {
+    deps.io.err("error: another update took the lock just now — this runner will not touch `current`.");
+    return EXIT.FAIL;
+  }
 
   const onDisk = currentRun(deps);
   const start: UpdateRun =
@@ -2219,35 +2305,45 @@ async function runApply(deps: UpdateDeps, a: ApplyArgs): Promise<number> {
       ? flipCurrent(deps, layout, dir)
       : flipToStaged(deps, layout, { dir, version: dir.replace(/^v/, ""), complete: true }).ok;
 
-  const run = await driveApply(
-    {
-      flip: flipTo,
-      // Through `current`, for BOTH install kinds. This process is the OLD version, and its own
-      // `restart` would rewrite the unit from its own root — pinning the supervisor to the version
-      // the flip just left, which would make the flip cosmetic.
-      restart: () => Promise.resolve(restartThroughCurrent(deps, layout)),
-      // Not "loopback and the front-door port": a wide bind and a peer's TLS-pinned listener are
-      // both real, and both make that URL the wrong door (`cli/update-run.ts` → `probeTarget`).
-      health: healthProbe(
-        deps.net,
-        probeTarget(probeConfigOf(deps.ctx.env, deps.files, deps.ctx.stateDir, deps.ctx.port)),
-      ),
-      prune: () => {
-        if (a.kind === "binary") collectOldVersions(deps, layout, a.to);
-        else pruneVersions(deps, layout);
+  const recovery = recoveryCommand(layout, a.from);
+  let run: UpdateRun;
+  try {
+    run = await driveApply(
+      {
+        flip: flipTo,
+        // Through `current`, for BOTH install kinds. This process is the OLD version, and its own
+        // `restart` would rewrite the unit from its own root — pinning the supervisor to the version
+        // the flip just left, which would make the flip cosmetic.
+        restart: () => Promise.resolve(restartThroughCurrent(deps, layout)),
+        // Not "loopback and the front-door port": a wide bind and a peer's TLS-pinned listener are
+        // both real, and both make that URL the wrong door (`cli/update-run.ts` → `probeTarget`).
+        health: healthProbe(
+          deps.net,
+          probeTarget(probeConfigOf(deps.ctx.env, deps.files, deps.ctx.stateDir, deps.ctx.port)),
+        ),
+        prune: () => {
+          if (a.kind === "binary") collectOldVersions(deps, layout, a.to);
+          else pruneVersions(deps, layout);
+        },
+        logTail: () =>
+          serviceLogTail(deps, unitName(deps.ctx.instance), logFilePath(deps.ctx.configDir, deps.ctx.instance)),
+        now: deps.now,
+        sleep: deps.sleep,
+        write: (record) => writeRun(deps.files, stateDir, record),
+        timeoutMs: healthTimeoutMs(deps.ctx.env),
+        pollMs: HEALTH_POLL_MS,
       },
-      logTail: () =>
-        serviceLogTail(deps, unitName(deps.ctx.instance), logFilePath(deps.ctx.configDir, deps.ctx.instance)),
-      now: deps.now,
-      sleep: deps.sleep,
-      write: (record) => writeRun(deps.files, stateDir, record),
-      timeoutMs: healthTimeoutMs(deps.ctx.env),
-      pollMs: HEALTH_POLL_MS,
-    },
-    { to: a.to, from: a.from, version: a.version, commit: a.commit, recovery: recoveryCommand(layout, a.from) },
-    start,
-  );
-  releaseLock(deps.files, stateDir);
+      { to: a.to, from: a.from, version: a.version, commit: a.commit, recovery },
+      start,
+    );
+  } catch (err) {
+    run = recordThrow(deps, stateDir, { from: a.from, to: a.to, recovery }, err);
+  } finally {
+    // ALWAYS. Every effect above touches the world (a file, a directory, a process, a request), and
+    // a full disk mid-update is the realistic throw. A lock that outlives a dead run blocks every
+    // retry for STALE_AFTER_MS with "another update is in flight" (#21).
+    releaseLock(deps.files, stateDir);
+  }
 
   if (run.state === "done") {
     // The two names that must follow a flip, and the nudge that must be asked of the NEW binary.
@@ -2264,6 +2360,14 @@ async function runApply(deps: UpdateDeps, a: ApplyArgs): Promise<number> {
   if (run.state === "rolled-back") {
     deps.io.err(`error: ${a.to} did not pass its health check — rolled back to ${a.from ?? "?"}.`);
     deps.io.err(`       ${run.reason ?? "no reason recorded"}`);
+    return EXIT.FAIL;
+  }
+  if (run.state === "interrupted") {
+    // The throw path above: the machine is wherever the last effect left it, which may be flipped
+    // and restarted, and nothing here will guess. The record says so and names the way back.
+    deps.io.err(`error: the updater failed part-way through ${a.to}. Nothing will restart again.`);
+    deps.io.err(`       ${run.reason ?? "no reason recorded"}`);
+    deps.io.err(`       Check with \`collie update --status\`; recover with: ${run.recovery ?? recovery}`);
     return EXIT.FAIL;
   }
   deps.io.err(`error: ${a.to} did not come up, and neither did the rollback. Nothing will restart again.`);
