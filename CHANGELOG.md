@@ -32,18 +32,20 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 ## [Unreleased]
 
+## [1.6.0+ys.1] - 2026-09-08
+
 Adopts upstream Collie 1.5.2 through 1.6.0 in one merge against the fork's base v1.5.1, closing
 youngsecurity/collie#18, #29, #30, #31, #32 and #33. The upstream sections below say what each
 release brought; this section is the fork's side of the reconciliation.
 
-- The `+ys` release family survives the packaged-install work: a peer still follows its lead by `compareRelease` and the fork counter, the managed checkout's tag reads ride upstream's `https::` transport against the fork's own origin, and the fork's linked-clone `--major` crossing records the release it aimed at
-- The confirm reservation (#21) and the element-by-element remote report (#22) carry upstream's `installKind` through: a packaged install is refused at the bridge's gate, and a member's kind is read only when it is one this build knows
-- The upload sniffer keeps the exact GIF87a/GIF89a and RIFF+WEBP signatures, with the image list published on `/api/config` beside the new text types; the composer's in-flight guard rides the renamed `uploadFile` and its local size and type refusals
-- The mirror keeps wrap off by default and keeps an agent's explicit colour on a muted rule; upstream's `package-managed` peer leg state joins the fork's known set instead of drawing as in flight
-- The Herdr 0.8.0 floor stays, and its remedy names the instance's own plugin id
-- Traditional Chinese carries the fork's mirror-colour and unknown-peer strings
-- The fork install note covers upstream's new package routes (Arch `collie-bin`, the Nix flake, mise), which install upstream, not the fork
-- Bun 1.4.1 is the build's reference, as upstream's flake pins it: one upstream STT test spins forever under 1.3.14's fake timers
+- The `+ys` release family survives the packaged-install work: a peer still follows its lead by `compareRelease` and the fork counter, the managed checkout's tag reads ride upstream's `https::` transport against the fork's own origin, and the fork's linked-clone `--major` crossing records the release it aimed at ([b3f4a47](https://github.com/youngsecurity/collie/commit/b3f4a47))
+- The confirm reservation (#21) and the element-by-element remote report (#22) carry upstream's `installKind` through: a packaged install is refused at the bridge's gate, and a member's kind is read only when it is one this build knows ([b3f4a47](https://github.com/youngsecurity/collie/commit/b3f4a47))
+- The upload sniffer keeps the exact GIF87a/GIF89a and RIFF+WEBP signatures, with the image list published on `/api/config` beside the new text types; the composer's in-flight guard rides the renamed `uploadFile` and its local size and type refusals ([b3f4a47](https://github.com/youngsecurity/collie/commit/b3f4a47))
+- The mirror keeps wrap off by default and keeps an agent's explicit colour on a muted rule; upstream's `package-managed` peer leg state joins the fork's known set instead of drawing as in flight ([b3f4a47](https://github.com/youngsecurity/collie/commit/b3f4a47))
+- The Herdr 0.8.0 floor stays, and its remedy names the instance's own plugin id ([b3f4a47](https://github.com/youngsecurity/collie/commit/b3f4a47))
+- Traditional Chinese carries the fork's mirror-colour and unknown-peer strings ([b3f4a47](https://github.com/youngsecurity/collie/commit/b3f4a47))
+- The fork install note covers upstream's new package routes (Arch `collie-bin`, the Nix flake, mise), which install upstream, not the fork ([b3f4a47](https://github.com/youngsecurity/collie/commit/b3f4a47))
+- Bun 1.4.1 is the build's reference, as upstream's flake pins it: one upstream STT test spins forever under 1.3.14's fake timers ([b3f4a47](https://github.com/youngsecurity/collie/commit/b3f4a47))
 
 ## [1.6.0] - 2026-09-08
 
