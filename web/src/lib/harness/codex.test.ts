@@ -37,6 +37,7 @@ const PINNED = [
   "codex--draft-wrapped.txt",
   "codex--draft.txt",
   "codex--fresh-idle.txt",
+  "codex--queue-context-inline.txt",
   "codex--submitted-fill-labelled-rule.txt",
   "codex--trust-prompt.txt",
   "codex--v0150-custom-status.txt",
@@ -85,6 +86,7 @@ describe("composerReady — the gate the reply path pre-flights on", () => {
     "codex--draft-wrapped.txt",
     "codex--v0151-draft-indented-line.txt",
     "codex--working.txt",
+    "codex--queue-context-inline.txt",
   ])(
     "%s: the composer is on screen ⇒ true",
     (name) => {
@@ -160,6 +162,19 @@ describe("chrome", () => {
     expect(status).toHaveLength(1);
     expect(lineText(status[0]!)).toMatch(/ · Context \d+% left/);
     expect(codexAdapter.composerPrompt!(lines)).toMatch(/^› /);
+  });
+
+  // RED-FIRST regression: before the parser fix, this real footer shape made the visible composer
+  // indistinguishable from a modal and the guarded reply stalled before submit.
+  it("locates the composer when queue hint and context percentage share one footer row", () => {
+    const lines = fixtureLines("codex--queue-context-inline.txt");
+    expect(lineText(lines.at(-1)!)).toContain("to queue message");
+    expect(lineText(lines.at(-1)!)).toContain("93% context left");
+    expect(locateComposer(lines)).not.toBeNull();
+    expect(codexAdapter.composerReady!(lines)).toBe(true);
+    expect(codexAdapter.extractInputDraft(lines)).toBe(
+      "continue the release checklist",
+    );
   });
 
   it("a transcript `› ` echo without a status row beneath is not a composer", () => {
@@ -586,12 +601,6 @@ describe("Codex mobile display cleanup", () => {
     return decorateCodexDisplay(fixtureLines(FIXTURE));
   }
 
-  it("clips the fixture's labelled rule, and nothing else on the screen", () => {
-    const clipped = decoratedFixture().filter((line) => line.noWrap);
-    expect(clipped).toHaveLength(1);
-    expect(lineText(clipped[0]!)).toContain("Worked for 3m 12s");
-  });
-
   it("marks the fixture's submitted-message fill, and leaves both diff rows alone", () => {
     const marked = decoratedFixture().filter((line) =>
       line.segments.some((segment) => segment.mobileTransparentBg),
@@ -606,35 +615,20 @@ describe("Codex mobile display cleanup", () => {
     expect(diffBackgrounds).toEqual(["rgb(33,58,43)", "rgb(74,34,34)"]);
   });
 
-  it("changes not one byte of the fixture's visible text", () => {
+  it("changes not one byte and leaves the already-refined labelled rule untouched", () => {
     const lines = fixtureLines(FIXTURE);
-    expect(decorateCodexDisplay(lines).map(lineText)).toEqual(lines.map(lineText));
+    const decorated = decorateCodexDisplay(lines);
+    const rule = lines.find((line) => lineText(line).includes("Worked for 3m 12s"))!;
+    const decoratedRule = decorated.find((line) => lineText(line).includes("Worked for 3m 12s"));
+
+    expect(decorated.map(lineText)).toEqual(lines.map(lineText));
+    expect(decoratedRule).toBe(rule);
+    expect(decoratedRule!.segments).toBe(rule.segments);
   });
 
   it("returns the same array when a screen carries neither row", () => {
     const lines = fixtureLines("codex--fresh-idle.txt");
     expect(decorateCodexDisplay(lines)).toBe(lines);
-  });
-
-  it("clips a labelled rule without changing its text", () => {
-    const rule = `\u2500 Worked for 31m 11s ${"\u2500".repeat(80)}`;
-    const [decorated] = decorateCodexDisplay(splitLines(parseAnsi(rule)));
-
-    expect(decorated!.noWrap).toBe(true);
-    expect(lineText(decorated!)).toBe(rule);
-  });
-
-  // The shape is the guard: a long rule run somewhere inside a row is ordinary Codex output, and
-  // clipping it would hide the row's right edge on a phone.
-  it.each([
-    ["a table row with a long inner rule", `| id | ${"\u2500".repeat(40)} | note |`],
-    ["a rule with text after it", `${"\u2500".repeat(40)} and then some prose about it`],
-    ["a labelled rule whose tail is too short", `\u2500 Worked for 3s ${"\u2500".repeat(8)}`],
-    ["a label carrying its own rule glyph", `\u2500 a \u2500 b ${"\u2500".repeat(40)}`],
-    ["a long leading rule before the label", `${"\u2500".repeat(9)} label ${"\u2500".repeat(40)}`],
-  ])("leaves %s wrapping", (_name, text) => {
-    const [decorated] = decorateCodexDisplay(splitLines(parseAnsi(text)));
-    expect(decorated!.noWrap).toBeUndefined();
   });
 
   it("marks only Codex's observed user-message fill for mobile transparency", () => {

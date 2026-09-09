@@ -48,6 +48,8 @@ Thumbs.db
 !.claude/settings.json
 !.claude/hooks/
 .hermes/
+
+# The tracker lives in the collie-workspace repo, never here
 .tracker/
 
 # Bug-repro screenshots — evidence for a fix, not documentation. Keep them local;

@@ -15,6 +15,7 @@ const BASE: DisplayPrefs = {
   terminalBackground: "",
   rawTerminal: false,
   tapToFocus: true,
+  expandClippedReply: true,
 };
 
 /** A full DisplayPrefs for a test to hand to a component, with any fields it cares about set. */
