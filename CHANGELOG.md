@@ -34,20 +34,22 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 ## [Unreleased]
 
+## [1.7.0+ys.1] - 2026-09-10
+
 Adopts upstream Collie 1.7.0 in one merge against the fork's base v1.6.0, closing
 youngsecurity/collie#36. The upstream section below says what the release brought; this section is
 the fork's side of the reconciliation.
 
 ### Changed
 
-- **The Herdr 0.8.0 floor runs ahead of the staging record.** `requireHerdrMinimum` still refuses before any arm fetches, and only then does upstream's `withStagingRecord` open the window that reports itself to the phone; a lost lock create now leaves an `idle` record carrying the staging abort reason rather than no file.
-- **The lock is released on a thrown handoff, manager-confirmed or not.** The fork's try/catch around the staging write and launch (#21) now encloses upstream's `systemd-run` confirmation, its service-cgroup refusal and the recorded `refused` abort, so a write or a `which` that throws still frees the lock.
-- **The mirror keeps the device's own colours beside inline images.** `mirrorColorStyle` and `TerminalColors` ride with upstream's image-cluster rendering in one component, and the standby door still never carries a run's `logTail`.
-- **The fork's changelog takes upstream's grouped shape from here.** Bullets under `## [Unreleased]` sit under `### Added` / `### Changed` / `### Fixed` / `### Packaging` / `### Docs` with a bold lead, the pre-commit hook refuses one that does not, and the release page is built from those leads by hand with `scripts/release-notes.ts`. Sections cut before this one keep their flat shape.
+- **The Herdr 0.8.0 floor runs ahead of the staging record.** `requireHerdrMinimum` still refuses before any arm fetches, and only then does upstream's `withStagingRecord` open the window that reports itself to the phone; a lost lock create now leaves an `idle` record carrying the staging abort reason rather than no file. ([7c0c44b](https://github.com/youngsecurity/collie/commit/7c0c44b))
+- **The lock is released on a thrown handoff, manager-confirmed or not.** The fork's try/catch around the staging write and launch (#21) now encloses upstream's `systemd-run` confirmation, its service-cgroup refusal and the recorded `refused` abort, so a write or a `which` that throws still frees the lock. ([7c0c44b](https://github.com/youngsecurity/collie/commit/7c0c44b))
+- **The mirror keeps the device's own colours beside inline images.** `mirrorColorStyle` and `TerminalColors` ride with upstream's image-cluster rendering in one component, and the standby door still never carries a run's `logTail`. ([7c0c44b](https://github.com/youngsecurity/collie/commit/7c0c44b))
+- **The fork's changelog takes upstream's grouped shape from here.** Bullets under `## [Unreleased]` sit under `### Added` / `### Changed` / `### Fixed` / `### Packaging` / `### Docs` with a bold lead, the pre-commit hook refuses one that does not, and the release page is built from those leads by hand with `scripts/release-notes.ts`. Sections cut before this one keep their flat shape. ([7c0c44b](https://github.com/youngsecurity/collie/commit/7c0c44b))
 
 ### Fixed
 
-- **`scripts/release-notes.ts` reads a `+ys.N` section.** The heading pattern escaped only the dot, so the `+` in a fork version read as a regex quantifier and the script found no section to publish; every metacharacter is escaped now, and the changelog anchor drops the `+` exactly as GitHub's slugger does.
+- **`scripts/release-notes.ts` reads a `+ys.N` section.** The heading pattern escaped only the dot, so the `+` in a fork version read as a regex quantifier and the script found no section to publish; every metacharacter is escaped now, and the changelog anchor drops the `+` exactly as GitHub's slugger does. ([bd6b945](https://github.com/youngsecurity/collie/commit/bd6b945))
 
 ## [1.7.0] - 2026-09-09
 
