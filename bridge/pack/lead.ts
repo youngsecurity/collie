@@ -1,7 +1,16 @@
 import type { JsonValue } from "../json.ts";
-import type { SnapshotResponse } from "../types.ts";
+import type { SnapshotView } from "../sessions.ts";
+import type { MuxConfig, SnapshotResponse } from "../types.ts";
 import { forwardToPeer, type ForwardDeps, type ForwardTransport } from "./forward.ts";
-import { mergeSnapshot, parsePeerSnapshot, type PeerContribution, type PeerSnapshotBody } from "./merge.ts";
+import {
+  mergeSnapshot,
+  narrowPeerBody,
+  parsePeerSnapshot,
+  SWEEP_VIEW,
+  type PeerContribution,
+  type PeerSnapshotBody,
+  type SnapshotPlan,
+} from "./merge.ts";
 import { parsePeerVersion, sweepPeers, type PackLink, type PeerOutcome } from "./peer-client.ts";
 import type { HostResolution, HostSelector, PackRegistry, PeerState } from "./registry.ts";
 import { PAIRING_LABEL_COLLISION } from "./router.ts";
@@ -102,9 +111,51 @@ export function foldPeerMemory(
   return { ...base, incompatibleRuns: 0, probeAfter: 0 };
 }
 
-/** Whether this member is dialled on this tick. Only an incompatible one is ever skipped. */
-export function dueForProbe(memory: PeerMemory | undefined, now: number): boolean {
-  return memory === undefined || now >= memory.probeAfter;
+/**
+ * At most one backoff reset per member per this window (M20/02).
+ *
+ * The reset is triggered by the peer, so without a floor a peer that dials in a loop would keep
+ * itself permanently due and turn the ladder into a hot loop this lead pays for. Ten seconds is far
+ * longer than the sweep cadence, so the reset always gets its dial, and far shorter than the ladder's
+ * first step, so it is still a shortcut.
+ */
+export const CONTACT_RESET_FLOOR_MS = 10_000;
+
+/**
+ * How many resets one member gets before the ladder stands (M20/02).
+ *
+ * Contact is EVIDENCE that the lead's guess is stale, and five pieces of evidence that never once
+ * produced a successful sweep answer is not evidence any more, it is a peer that can reach us and
+ * cannot serve us. The ladder is the right answer to that, and the counter is cleared by the one
+ * thing that settles the question: an `ok` answer to a real dial.
+ */
+export const MAX_CONTACT_RESETS = 5;
+
+/**
+ * `memory` with its incompatible backoff forgotten — pure, and the only shape a reset may take.
+ *
+ * `undefined` in, `undefined` out: a member this lead has never folded has no backoff to clear and is
+ * already due, so there is nothing here to invent. Every other field is carried through untouched,
+ * `body` above all: the last good snapshot is what §10.2 promises a peer's sessions never lose, and a
+ * reset is about the SCHEDULE and never about what this lead knows.
+ */
+export function clearPeerBackoff(memory: PeerMemory | undefined): PeerMemory | undefined {
+  if (memory === undefined) return undefined;
+  return { ...memory, incompatibleRuns: 0, probeAfter: 0 };
+}
+
+/**
+ * Whether this member is dialled on this tick. Only an incompatible one is ever skipped, and only
+ * while no live run is waiting on it.
+ *
+ * `urgent` is the run's veto (M20/01): a member with an open leg is dialled every sweep, whatever
+ * `probeAfter` holds. It is a SECOND RULE and not a cap, which is the counsel decision of
+ * 2026-09-07. A cap would write the run's opinion into the backoff record, and the peer's real
+ * backoff would be gone the moment the run touched it. Here the run reads and never writes, so the
+ * ladder the peer earned is intact and waiting the moment the run is over.
+ */
+export function dueForProbe(memory: PeerMemory | undefined, now: number, urgent = false): boolean {
+  return urgent || memory === undefined || now >= memory.probeAfter;
 }
 
 export interface PackLeadDeps {
@@ -115,7 +166,14 @@ export interface PackLeadDeps {
    */
   readonly maxUploadBytes: number;
   /**
-   * `(link) => the peer's /pack/v1/snapshot outcome`. Injected so the sweep is testable without TLS.
+   * `(link, view) => the peer's /pack/v1/snapshot outcome`. Injected so the sweep is testable
+   * without TLS.
+   *
+   * `view` is how much of that machine to ask for (M22/06). {@link PackLead.sweep} always passes
+   * `SWEEP_VIEW`, so the lead's cache holds every session a member has and the narrowing happens at
+   * the merge instead — a view the lead does not already hold cannot be fetched inside a phone poll
+   * (§10.1). It is additive and optional on the wire: a member too old to read the parameter answers
+   * with its primary session, exactly as before.
    *
    * `freshPreflight` is §19's one header reaching through: the phone's own on-demand read asks every
    * member to re-run its update check on this one dial. It is a REQUEST — a peer that ignores it
@@ -123,6 +181,7 @@ export interface PackLeadDeps {
    */
   readonly snapshot: (
     link: PackLink,
+    view: SnapshotView,
     freshPreflight?: boolean,
     follow?: { readonly leadRelease?: string | null; readonly turn?: string | null },
   ) => Promise<PeerOutcome<unknown>>;
@@ -147,7 +206,9 @@ export interface PackLeadDeps {
    * exercisable without a socket, and a lead built without one simply keeps the pre-2026-08-18
    * behaviour (a timed-out sweep is the whole verdict). Every production wiring supplies it.
    */
-  readonly hello?: (link: PackLink) => Promise<PeerOutcome<{ readonly version: string | null }>>;
+  readonly hello?: (
+    link: PackLink,
+  ) => Promise<PeerOutcome<{ readonly version: string | null; readonly mux?: MuxConfig | null }>>;
   /** This collie's member id and label — the `servers[0]` entry (§9.2). */
   readonly self: { readonly id: string; readonly name: string };
   /**
@@ -278,6 +339,31 @@ export interface WarrantDistribution {
 export class PackLead {
   private readonly memory = new Map<string, PeerMemory>();
   /**
+   * What each member last said its own multiplexer can do (M22/03), for `/api/config?host=<member>`.
+   *
+   * Beside the peer memory rather than in the registry, for the memory's own reason: the registry
+   * owns HEALTH, and this is the other kind of per-member fact, the last thing a member said about
+   * itself. A member with no entry is a member that has published nothing, and that reads as **"use
+   * the lead's answer"** — exactly the reading the phone gives every pane today.
+   *
+   * **REPLACED on every successful hello, never merged into.** A restart or an adapter change is a
+   * whole new declaration, so folding the new answer into the old one could leave a key alive that
+   * the member no longer answers for. A successful hello that carried NO block drops the entry, for
+   * the same reason: the member's current answer is "nothing", and "nothing" means the lead's.
+   */
+  private readonly muxBlocks = new Map<string, MuxConfig>();
+  /**
+   * Members whose CURRENT link has already answered a hello, so their block is as fresh as the link.
+   *
+   * The sweep dials `snapshot`, not `hello`, so without this the lead would only ever learn a block
+   * from the §10.4 verdict probe, which fires when a sweep times out. That is the wrong moment and
+   * for most packs it is never. So a member that answers a sweep while this set does not hold it
+   * earns ONE hello, off the tick and un-awaited, exactly as the verdict probe is (no new timer,
+   * §10.1). Any failed dial forgets it, so a reconnect re-asks and a stale block is never served
+   * past one.
+   */
+  private readonly muxAsked = new Set<string>();
+  /**
    * The state each member's last journal line named. A line is written when this string changes and
    * never otherwise, so the sweep's 1.5 s cadence cannot turn a down peer into a stream.
    */
@@ -299,10 +385,53 @@ export class PackLead {
   private readonly pushingWarrant = new Set<string>();
   /** At most one pairing sync in flight. **Nothing about what landed is remembered** — §18.14. */
   private pushingPairing = false;
+  /** Per member: when its backoff was last cleared by contact, and how many times running (M20/02). */
+  private readonly contactResets = new Map<string, { at: number; count: number }>();
+  /**
+   * Per member: the dial this lead is currently waiting on. Bumped on EVERY re-dial (M22/05).
+   *
+   * ── THE FENCE, AND THE FAILURE IT PREVENTS ────────────────────────────────
+   * The pattern already exists one level up: {@link PackLead.sweep} reads `runAtStart` before the
+   * dials, because a run that begins while dials are in flight has a roster this sweep never asked
+   * about. A LINK deserves the same fence. Two calls about one member can be in flight at once — the
+   * sweep's `snapshot` and the verdict `hello` of {@link PackLead.probe}, which is deliberately not
+   * awaited — so a slow answer from an older dial can land after a newer one and overwrite it. The
+   * registry would then hold an older world, and the fold would report it as the current one: a peer
+   * that is answering reads slow-linked, or a peer that has come back reads away.
+   *
+   * It is a COUNTER and not a timestamp, because two dials in the same millisecond are ordinary and a
+   * clock cannot separate them. Named `dialGeneration` and never `generation`: the warrant already
+   * owns that word (`registry.ts`, `warrant.ts`), and these two must never be read as the same thing.
+   */
+  private readonly dialGenerations = new Map<string, number>();
 
   constructor(private readonly deps: PackLeadDeps) {
     this.now = deps.now ?? Date.now;
     this.log = deps.log ?? ((line) => console.log(line));
+  }
+
+  /**
+   * Claim the next dial generation for a member, just before it is dialled. Every re-dial bumps.
+   */
+  private nextDialGeneration(memberId: string): number {
+    const next = (this.dialGenerations.get(memberId) ?? 0) + 1;
+    this.dialGenerations.set(memberId, next);
+    return next;
+  }
+
+  /**
+   * Whether a reply from `dialGeneration` has been overtaken — i.e. this member was re-dialled while
+   * that call was in flight.
+   *
+   * **The drop is a VALUE, not an error.** Nothing throws, nothing empties a member's rows, and the
+   * registry keeps exactly what the newer dial taught it. The line names both numbers, because the
+   * gap between them is the fact worth reading in a journal.
+   */
+  private staleDial(memberId: string, dialGeneration: number, what: string): boolean {
+    const current = this.dialGenerations.get(memberId) ?? 0;
+    if (dialGeneration >= current) return false;
+    this.log(`[pack] ${memberId}: dropped a stale ${what} reply, dial ${dialGeneration} of ${current}`);
+    return true;
   }
 
   /**
@@ -324,28 +453,63 @@ export class PackLead {
       // stale row — the registry's contract, and its body goes with it.
       for (const id of this.deps.registry.prune()) {
         this.memory.delete(id);
+        // A member that left takes its declaration with it, so nothing can answer `?host=` for a
+        // machine this lead no longer knows.
+        this.muxBlocks.delete(id);
+        this.muxAsked.delete(id);
         this.loggedState.delete(id);
+        this.contactResets.delete(id);
+        this.dialGenerations.delete(id);
         this.deps.onPeerGone?.(id);
       }
 
-      const now = this.now();
-      const due = this.deps.registry.links().filter((l) => dueForProbe(this.memory.get(l.memberId), now));
-      if (due.length === 0) return;
-
       // §20: what this lead may state, computed ONCE per sweep. The turn is per member — at most
-      // one member holds it — so it is read inside the loop below.
+      // one member holds it — so it is read inside the loop below. Read before `due`, because the
+      // run's open legs are half of what makes a member due.
       const follow = this.deps.follow;
+      const now = this.now();
+      // The run this sweep is ABOUT, read before the dials. `due` is computed from it and cannot be
+      // recomputed halfway: a run that begins while the dials are in flight (the operator's confirm,
+      // or the boot-time gate) has a roster this sweep never asked about, and folding it would settle
+      // that run on a list of members it has not looked at once. See the guard below the dials.
+      const runAtStart = follow?.turns.current()?.runId ?? null;
+      const due = this.deps.registry
+        .links()
+        .filter((l) => dueForProbe(this.memory.get(l.memberId), now, follow?.turns.hasOpenLeg(l.memberId) ?? false));
+      // A QUIET SWEEP IS NOT A STILL ONE. Nobody is due, so nobody is dialled — but the fold and the
+      // settle check still run, because a leg that has aged past the wall clock can end on the
+      // evidence already in hand. Returning before them is what let the drill's run sit open with
+      // every fact needed to close it already banked.
+      if (due.length === 0) {
+        this.foldTurns(follow, [], new Map());
+        return;
+      }
+
       const leadRelease = follow?.leadRelease() ?? null;
+      // The dial each member is about to make, claimed BEFORE the call and carried beside the answer
+      // — the link's `runAtStart`. See {@link PackLead.dialGenerations}.
+      const dialled = new Map(due.map((link) => [link.memberId, this.nextDialGeneration(link.memberId)]));
       const outcomes = await sweepPeers(due, (link) =>
-        this.deps.snapshot(link, opts.freshPreflight === true, {
+        this.deps.snapshot(link, SWEEP_VIEW, opts.freshPreflight === true, {
           leadRelease,
           turn: follow?.turns.turnFor(link.memberId) ?? null,
         }),
       );
+      // Every member whose answer survived the fence. The dropped ones are removed from `outcomes`
+      // too, so nothing downstream — the leg fold, the warrant push, the pairing sync — can reach an
+      // answer this lead has already decided not to believe.
+      const folded: PackLink[] = [];
       for (const link of due) {
         const outcome = outcomes.get(link.memberId);
         if (outcome === undefined) continue;
         const memberId = link.memberId;
+        // THE FENCE. A reply from a dial this lead has already re-made is dropped here, before the
+        // registry, before `foldPeerMemory` and before the merge can see it.
+        if (this.staleDial(memberId, dialled.get(memberId) ?? 0, "snapshot")) {
+          outcomes.delete(memberId);
+          continue;
+        }
+        folded.push(link);
         // §5/§19's version sibling, read off the very answer this sweep already has. An OBSERVATION
         // is passed only when one was actually carried: `parsePeerVersion` answering `null` means
         // this answer said nothing (a peer older than the amendment, or a body without the field),
@@ -361,6 +525,12 @@ export class PackLead {
         // poll exactly as §10.1 requires. A refusal, a reset or a DNS failure is skipped: those are
         // answers from the world, and re-asking them slowly would only be slower.
         if (!outcome.ok && outcome.state === "unreachable" && outcome.timedOut === true) this.probe(link);
+        // M22/03: the member answered, so the lead may ask it ONCE what its multiplexer can do. It
+        // goes through the same seam the verdict probe uses, so it arms no timer (§10.1) and at most
+        // one hello per member is ever in flight. Any other outcome forgets the answer instead, so
+        // the next return re-asks rather than serving a block from before the link dropped.
+        if (outcome.ok) this.learnCapabilities(link);
+        else this.muxAsked.delete(memberId);
         // §18.10: this member follows somebody else. Handed straight over — a lead that has been
         // deposed stops sweeping, so there is nothing here to back off or remember.
         if (!outcome.ok && outcome.state === "conflicted") {
@@ -379,6 +549,9 @@ export class PackLead {
         const previous = this.memory.get(memberId);
         const next = foldPeerMemory(previous, outcome, this.now());
         this.memory.set(memberId, next);
+        // The question the reset counter exists to ask is now settled for this member: it answered a
+        // real dial. Whatever it took to get here, the ladder starts from zero again (M20/02).
+        if (outcome.ok) this.contactResets.delete(memberId);
         this.logVerdict(memberId, outcome, previous, next);
         // Identity, not equality: `parsePeerSnapshot` mints a fresh object on every success and the
         // fold RETAINS the old one on every failure, so `!==` is exactly "this poll produced a body".
@@ -392,36 +565,22 @@ export class PackLead {
       // back, and who has now missed three sweeps. A turn RELEASED here earns an immediate re-sweep
       // — the third of the three triggers — so the next member starts within one sweep of its turn
       // rather than within the periodic cadence.
-      if (follow !== undefined) {
-        const members = due.map((link): TurnMember => {
-          const outcome = outcomes.get(link.memberId);
-          const state = this.deps.registry.state(link.memberId);
-          const turnMember: TurnMember = {
-            memberId: link.memberId,
-            enrolledAt: follow.enrolledAt(link.memberId),
-            version: state.version,
-            verdict: state.preflight?.verdict ?? null,
-            answered: outcome?.ok === true,
-            // SAFETY: `value` is a peer's HTTP body after `res.json()` — a JsonValue by
-            // construction, the same cast and the same reason as `parsePeerPreflight`'s above.
-            run: outcome?.ok === true ? parsePeerRun(outcome.value as JsonValue) : null,
-          };
-          // §19's field, banked with the rest of that member's own report. Assigned only when the
-          // member named a kind: absent is what "this member named no kind" has to look like, and
-          // absent counts as not packaged.
-          const kind = state.preflight?.installKind;
-          return kind === undefined ? turnMember : { ...turnMember, installKind: kind };
-        });
-        if (follow.turns.observe(members, this.now()).released) this.resweep();
+      // A DIFFERENT run now, or none: everything above was banked for the old one. The registry
+      // keeps what the peers said, which is true whatever run is live, and the fold is skipped —
+      // the immediate re-sweep below asks the new run's own question, with its own `due`.
+        if ((follow?.turns.current()?.runId ?? null) !== runAtStart) {
+        this.resweep();
+        return;
       }
+      this.foldTurns(follow, folded, outcomes);
 
       // ── TWO INDEPENDENT DISTRIBUTIONS, TWO INDEPENDENT GUARDS ─────────────
       // They used to share this try, and a live drill showed what that costs: the warrant half awaits
       // a store write (the hourly refresh), so any failure there took the pairing half down with it
       // for every sweep thereafter — silently, since the outer catch logs one line about "the sweep".
       // Neither is the other's precondition, so neither may be the other's single point of failure.
-      await this.guarded("warrant distribution", () => this.distributeWarrant(due, outcomes));
-      await this.guarded("pairing sync", async () => this.distributePairing(due, outcomes));
+      await this.guarded("warrant distribution", () => this.distributeWarrant(folded, outcomes));
+      await this.guarded("pairing sync", async () => this.distributePairing(folded, outcomes));
     } catch (err) {
       // Defensive: nothing above is supposed to reject. If something does, the pack degrades to
       // "stale" rather than taking the lead's poll loop down with it.
@@ -435,6 +594,43 @@ export class PackLead {
       this.pending = null;
       if (pending !== null) queueMicrotask(() => this.replay(pending));
     }
+  }
+
+  /**
+   * §20's fold, after every member's answer is banked: who is behind, who is moving, who fell back,
+   * and who has now missed three sweeps.
+   *
+   * Called on EVERY sweep tick, including one where nobody was due — the leg fold, the wall clock
+   * and the settle check are the run's only way to end, so a tick that skips them is a tick a frozen
+   * run survives. A turn RELEASED here earns an immediate re-sweep, the third of the three triggers,
+   * so the next member starts within one sweep of its turn rather than within the periodic cadence.
+   */
+  private foldTurns(
+    follow: PackLeadDeps["follow"],
+    due: readonly PackLink[],
+    outcomes: ReadonlyMap<string, PeerOutcome<unknown>>,
+  ): void {
+    if (follow === undefined) return;
+    const members = due.map((link): TurnMember => {
+      const outcome = outcomes.get(link.memberId);
+      const state = this.deps.registry.state(link.memberId);
+      const turnMember: TurnMember = {
+        memberId: link.memberId,
+        enrolledAt: follow.enrolledAt(link.memberId),
+        version: state.version,
+        verdict: state.preflight?.verdict ?? null,
+        answered: outcome?.ok === true,
+        // SAFETY: `value` is a peer's HTTP body after `res.json()` — a JsonValue by
+        // construction, the same cast and the same reason as `parsePeerPreflight`'s above.
+        run: outcome?.ok === true ? parsePeerRun(outcome.value as JsonValue) : null,
+      };
+      // §19's field, banked with the rest of that member's own report. Assigned only when the
+      // member named a kind: absent is what "this member named no kind" has to look like, and
+      // absent counts as not packaged.
+      const kind = state.preflight?.installKind;
+      return kind === undefined ? turnMember : { ...turnMember, installKind: kind };
+    });
+    if (follow.turns.observe(members, this.now()).released) this.resweep();
   }
 
   /**
@@ -657,10 +853,23 @@ export class PackLead {
     hello: NonNullable<PackLeadDeps["hello"]>,
     link: PackLink,
   ): Promise<void> {
+    // The probe is a DIAL, so it takes a generation like any other. It is also the reply most likely
+    // to be overtaken: it runs on the patient budget, off the tick and un-awaited, so the next sweep
+    // can easily answer first.
+    const dialGeneration = this.nextDialGeneration(link.memberId);
     try {
       const outcome = await hello(link);
+      if (this.staleDial(link.memberId, dialGeneration, "hello")) return;
       if (this.deps.registry.links().some((l) => l.memberId === link.memberId)) {
         this.deps.registry.recordProbe(link.memberId, outcome, { version: outcome.ok ? outcome.value.version : null });
+        // A probe that ANSWERED is the same evidence an inbound dial is: this machine is reachable,
+        // whatever the ladder says (M20/02). It goes through the same seam, so it obeys the same two
+        // floors, and it dials nothing of its own — the next sweep tick does.
+        if (outcome.ok) this.noteAdmittedContact(link.memberId);
+        // M22/03: ASSIGNED, never merged. Whatever this hello said about that member's multiplexer
+        // is now the whole answer for it, and a hello that said nothing drops the entry — which
+        // reads as "use the lead's", not as "every capability present". See {@link muxBlocks}.
+        if (outcome.ok) this.setCapabilities(link.memberId, outcome.value.mux ?? null);
       }
     } catch (err) {
       // Defensive, exactly as `sweep` is: failure is a value everywhere in the pack client, so a
@@ -670,6 +879,34 @@ export class PackLead {
     } finally {
       this.probing.delete(link.memberId);
     }
+  }
+
+  /**
+   * Ask a member what its multiplexer can do, at most once per link (M22/03). See {@link muxAsked}.
+   */
+  private learnCapabilities(link: PackLink): void {
+    if (this.muxAsked.has(link.memberId)) return;
+    this.probe(link);
+  }
+
+  /** Record one hello's whole answer about a member's multiplexer. See {@link muxBlocks}. */
+  private setCapabilities(memberId: string, block: MuxConfig | null): void {
+    this.muxAsked.add(memberId);
+    if (block === null) this.muxBlocks.delete(memberId);
+    else this.muxBlocks.set(memberId, block);
+  }
+
+  /**
+   * What one member said its multiplexer can do, or `null` when it has said nothing (M22/03).
+   *
+   * `null` is the answer for a member that publishes no block, for one this lead has not managed a
+   * hello with yet, and for a member id nobody holds. The `/api/config` route reads all three the
+   * same way and answers with the LEAD's own block, which is byte for byte the reading the phone
+   * gives every pane today. It dials nobody, for the reason {@link PackLead.updateRows} does not: a
+   * surface the phone polls must not be able to make the lead reach a machine.
+   */
+  muxFor(memberId: string): MuxConfig | null {
+    return this.muxBlocks.get(memberId) ?? null;
   }
 
   /**
@@ -734,6 +971,58 @@ export class PackLead {
     return this.deps.follow?.turns.peerLegs() ?? [];
   }
 
+  /** The run those legs describe, live or over, or null. The composer checks it before it attaches. */
+  updateLegsRun(): string | null {
+    return this.deps.follow?.turns.legsRun() ?? null;
+  }
+
+  /**
+   * When the run this lead drove last reached a terminal state on every leg, or null while one is
+   * still open (M20/01).
+   *
+   * The band and the Updates card both read this one value, so neither can claim the pack is moving
+   * after the other has gone quiet. It dials nobody.
+   */
+  updateSettledAt(): number | null {
+    return this.deps.follow?.turns.settledAt() ?? null;
+  }
+
+  /**
+   * An admitted peer reached this lead, so the backoff this lead is holding against it is stale
+   * (M20/02). Mark it due now and return.
+   *
+   * **This never dials.** It writes `probeAfter = 0` and the next sweep tick, 1.5 s away, does the
+   * dial — which keeps one dialler in this process and keeps `this.probing` meaningful. A handler
+   * that dialled would let an inbound request make this lead reach a machine, which is the thing
+   * `updateRows` and `updatePeers` are careful never to allow either.
+   *
+   * **Admitted is the caller's word and it is granted by POSITION**, exactly as the peer-check
+   * exemption is (`bridge/server.ts`): the one caller sits in `bridge/pack/router.ts` after
+   * `admitPackRequest` has passed both factors, the pin and the secret, and after the deputy is
+   * refused. No browser route can reach it, because no browser route is on that side of the check.
+   *
+   * Two floors bound it, {@link CONTACT_RESET_FLOOR_MS} and {@link MAX_CONTACT_RESETS}.
+   */
+  noteAdmittedContact(memberId: string): void {
+    // A caller this lead does not lead is not a member whose schedule this owns.
+    if (!this.deps.registry.links().some((l) => l.memberId === memberId)) return;
+    const memory = this.memory.get(memberId);
+    // No entry is already due, and a zero `probeAfter` is already due. Neither spends a reset: the
+    // counter must count resets that actually changed something, or an ordinary healthy peer's
+    // traffic would exhaust its own allowance and take the shortcut away when it finally needed it.
+    if (memory === undefined || memory.probeAfter === 0) return;
+    const now = this.now();
+    const seen = this.contactResets.get(memberId);
+    if (seen !== undefined) {
+      if (now - seen.at < CONTACT_RESET_FLOOR_MS) return;
+      if (seen.count >= MAX_CONTACT_RESETS) return;
+    }
+    const cleared = clearPeerBackoff(memory);
+    if (cleared === undefined) return;
+    this.memory.set(memberId, cleared);
+    this.contactResets.set(memberId, { at: now, count: (seen?.count ?? 0) + 1 });
+  }
+
   /**
    * One immediate sweep, off this tick.
    *
@@ -793,11 +1082,20 @@ export class PackLead {
     );
   }
 
-  /** Fold the lead's own body into the merged one. The only re-serialisation on a pack link (§9.2). */
-  merge(local: SnapshotResponse): SnapshotResponse {
+  /**
+   * Fold the lead's own body into the merged one. The only re-serialisation on a pack link (§9.2).
+   *
+   * `plan` is the request's own "how much of which machine" (M22/06), and it is REQUIRED rather than
+   * defaulted: every cached body here is a widened one, so a caller that could forget the plan would
+   * be a caller that hands the phone every session of every member. The narrowing is one function,
+   * `narrowPeerBody`, and this is its only call site — the merge narrows, nothing else does.
+   */
+  merge(local: SnapshotResponse, plan: SnapshotPlan): SnapshotResponse {
     return mergeSnapshot(local, {
       self: this.deps.self,
-      peers: this.contributions(),
+      peers: this.contributions().map((c) =>
+        Object.assign({}, c, { body: narrowPeerBody(c.body, plan.peer(c.state.memberId)) }),
+      ),
       now: this.now(),
     });
   }

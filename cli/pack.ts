@@ -58,7 +58,9 @@ import {
 } from "../bridge/pack/standby-devices.ts";
 import { packRuntimePath, parseMarker, rosterDrift } from "../bridge/pack/staleness.ts";
 import { TrustStore, type TrustedMember, type TrustStoreData } from "../bridge/pack/trust-store.ts";
-import { deriveConfigRoot, discoverSessionSockets, herdTagFor } from "../bridge/sessions.ts";
+import { deriveConfigRoot, discoverSessionSockets } from "../bridge/mux/herdr/sessions.ts";
+import { herdTagFor } from "../bridge/sessions.ts";
+import { compareRelease } from "../bridge/update.ts";
 import { collieVersionBare, DEFAULT_SERVE_PORT, type CliContext } from "./context.ts";
 import { EXIT, type Io } from "./io.ts";
 import { dropEnvAssignments } from "./push-keys.ts";
@@ -404,7 +406,7 @@ function publicFrontDoor(deps: PackDeps): string | null {
     return null;
   }
   if (url.pathname !== "" && url.pathname !== "/") {
-    deps.io.err(`warn: COLLIE_PUBLIC_URL's path ("${url.pathname}") is dropped — the pack link mounts at`);
+    deps.io.err(`warn: COLLIE_PUBLIC_URL's path ("${url.pathname}") is dropped — the crew link mounts at`);
     deps.io.err(`      /pack/v1/* off the origin, so ${url.origin} is what members are given.`);
   }
   return url.origin;
@@ -626,8 +628,8 @@ export async function cmdPackInvite(deps: PackDeps, args: readonly string[]): Pr
   // The short form first, because it is the one a person types: `join` asks for the token at a
   // prompt when none is given, so nothing else has to be remembered. The stdin form stays right
   // underneath it — it is what a script uses, and it is still the only form that takes no keystrokes.
-  deps.io.out(`    collie pack join ${host}`);
-  deps.io.out(`    collie pack join ${host} -   # paste the token on stdin`);
+  deps.io.out(`    collie crew join ${host}`);
+  deps.io.out(`    collie crew join ${host} -   # paste the token on stdin`);
   deps.io.out("  Passing it as an argument instead leaves it in `ps` output for every local uid.");
   await applyLocally(deps, "the freshly minted invite");
   return EXIT.OK;
@@ -635,10 +637,10 @@ export async function cmdPackInvite(deps: PackDeps, args: readonly string[]): Pr
 
 // ── join (on the joining machine) ────────────────────────────────────────────
 
-const JOIN_USAGE = "usage: collie pack join <lead-address> [<token>|-|@file] [--address <mine>] [--label <name>]";
+const JOIN_USAGE = "usage: collie crew join <lead-address> [<token>|-|@file] [--address <mine>] [--label <name>]";
 
 /** What the operator is asked when they gave no token and there is a terminal to ask at. */
-const TOKEN_PROMPT = "Paste the invite token from `collie pack invite` on the lead:";
+const TOKEN_PROMPT = "Paste the invite token from `collie crew invite` on the lead:";
 
 /**
  * The invite token, however it was supplied: an argument (`-`, `@file` or a literal), or — when
@@ -661,8 +663,8 @@ async function resolveToken(deps: PackDeps, address: string, given: string | und
   deps.io.err(JOIN_USAGE);
   deps.io.err("error: join needs the invite token as its second argument.");
   deps.io.err("       Pass `-` and paste the token on stdin, or `@<file>` to read it from a file:");
-  deps.io.err(`         collie pack join ${address} -`);
-  deps.io.err("       Mint the token on the lead with `collie pack invite`; it is single-use and lasts 10 minutes.");
+  deps.io.err(`         collie crew join ${address} -`);
+  deps.io.err("       Mint the token on the lead with `collie crew invite`; it is single-use and lasts 10 minutes.");
   return null;
 }
 
@@ -767,9 +769,9 @@ async function consentToPlaintext(deps: PackDeps, plain: URL): Promise<boolean> 
  * token-thief racing the spend with its own certificate.
  */
 function refusePlaintext(deps: PackDeps): void {
-  deps.io.err("error: refusing to enroll over http:// — the invite token and the pack secret would cross the");
+  deps.io.err("error: refusing to enroll over http:// — the invite token and the crew secret would cross the");
   deps.io.err("       wire in the clear. An on-path attacker who reads the token can enroll THEIR OWN certificate");
-  deps.io.err("       as a member before you do (the lead admits on the token alone), then holds the pack secret");
+  deps.io.err("       as a member before you do (the lead admits on the token alone), then holds the crew secret");
   deps.io.err("       and a pinned link. Use an encrypted address (https:// via tailscale serve, or your own TLS");
   deps.io.err("       front door). If this hop is genuinely trusted and you accept that risk, re-run with");
   deps.io.err("       --insecure to own that assumption explicitly.");
@@ -787,15 +789,15 @@ export async function cmdJoin(deps: PackDeps, args: readonly string[]): Promise<
   const [address, tokenArg] = positional;
   if (address === undefined) {
     deps.io.err(JOIN_USAGE);
-    deps.io.err("       Mint the token on the lead with `collie pack invite`; it is single-use and lasts 10 minutes.");
+    deps.io.err("       Mint the token on the lead with `collie crew invite`; it is single-use and lasts 10 minutes.");
     return EXIT.USAGE;
   }
 
   const existing = await deps.store.load();
   if (existing !== null && existing.pack !== null) {
     const role = existing.lead === null ? `lead of ${existing.peers.length} peer(s)` : `peer of "${existing.lead.memberId}"`;
-    deps.io.err(`error: already in pack "${existing.pack.name}" as ${role} (member "${existing.self.memberId}").`);
-    deps.io.err("       Run `collie pack leave` here first — joining a second pack is not a thing (§3).");
+    deps.io.err(`error: already in crew "${existing.pack.name}" as ${role} (member "${existing.self.memberId}").`);
+    deps.io.err("       Run `collie crew leave` here first — joining a second crew is not a thing (§3).");
     return EXIT.STATE;
   }
 
@@ -811,14 +813,14 @@ export async function cmdJoin(deps: PackDeps, args: readonly string[]): Promise<
   if (dot <= 0 || dot === raw.length - 1) {
     deps.io.err("error: this invite has no lead fingerprint — mint a fresh one on an updated lead.");
     deps.io.err("       A token that names no lead cannot pin one, so Collie refuses to enroll on it:");
-    deps.io.err("       run `collie pack invite` on the lead and paste the whole `<token>.<fingerprint>`.");
+    deps.io.err("       run `collie crew invite` on the lead and paste the whole `<token>.<fingerprint>`.");
     return EXIT.REFUSED;
   }
   const token = raw.slice(0, dot);
   const invitedFp = normalizeFingerprint(raw.slice(dot + 1));
   if (invitedFp === null) {
     deps.io.err("error: the invite's lead fingerprint is malformed — a fingerprint is 64 hex characters.");
-    deps.io.err("       The token was likely truncated or mistyped. Mint a fresh one: `collie pack invite`.");
+    deps.io.err("       The token was likely truncated or mistyped. Mint a fresh one: `collie crew invite`.");
     return EXIT.REFUSED;
   }
 
@@ -830,7 +832,7 @@ export async function cmdJoin(deps: PackDeps, args: readonly string[]): Promise<
   const mine = selfAddress(deps, flags.address, "pack-listener");
   if (mine === null) {
     deps.io.err("error: cannot work out an address the lead can dial this machine at.");
-    deps.io.err("       Pass one: `collie pack join <lead-address> - --address <host-the-lead-can-reach>`.");
+    deps.io.err("       Pass one: `collie crew join <lead-address> - --address <host-the-lead-can-reach>`.");
     return EXIT.FAIL;
   }
 
@@ -892,7 +894,7 @@ export async function cmdJoin(deps: PackDeps, args: readonly string[]): Promise<
     deps.io.err("       The lead owns nothing about reachability: check the address, the tunnel, the port.");
     if (!typedScheme && origin.protocol === "https:") {
       deps.io.err("       No scheme was given, so https:// was assumed. If the lead really is plaintext http://, say");
-      deps.io.err("       so explicitly AND pass --insecure — but the token and pack secret then cross the wire in the");
+      deps.io.err("       so explicitly AND pass --insecure — but the token and crew secret then cross the wire in the");
       deps.io.err("       clear (see the http:// refusal).");
     }
     return EXIT.UNREACHABLE;
@@ -900,7 +902,7 @@ export async function cmdJoin(deps: PackDeps, args: readonly string[]): Promise<
 
   if (res.status === 401) {
     deps.io.err("error: the lead refused the token — spent, expired (10 minutes), or this is not its address.");
-    deps.io.err("       Mint a fresh one on the lead: `collie pack invite`.");
+    deps.io.err("       Mint a fresh one on the lead: `collie crew invite`.");
     return EXIT.REFUSED;
   }
   if (res.status === 409) {
@@ -931,7 +933,7 @@ export async function cmdJoin(deps: PackDeps, args: readonly string[]): Promise<
     deps.io.err("error: the lead's certificate does not match the invite — this is not the machine the");
     deps.io.err("       invite was minted on. Possible man-in-the-middle on the enrollment path, or the");
     deps.io.err("       wrong <lead-address>. Nothing was pinned or persisted. Check the address; if it is");
-    deps.io.err("       right, mint a fresh invite on the lead: `collie pack invite`.");
+    deps.io.err("       right, mint a fresh invite on the lead: `collie crew invite`.");
     return EXIT.REFUSED;
   }
 
@@ -940,11 +942,11 @@ export async function cmdJoin(deps: PackDeps, args: readonly string[]): Promise<
   );
   if (accepted === null) return EXIT.FAIL;
 
-  deps.io.out(`✓ joined pack "${parsed.packName}" as "${accepted.memberId}"`);
+  deps.io.out(`✓ joined crew "${parsed.packName}" as "${accepted.memberId}"`);
   deps.io.out(`  lead      ${parsed.leadMemberId} at ${dialed}`);
   deps.io.out(`  pinned    ${parsed.leadFingerprint.slice(0, 16)}… (its certificate, not its name)`);
   deps.io.out("  This machine now publishes no front door and sends no notifications of its own —");
-  deps.io.out("  the phone talks to the lead, which speaks for the whole pack.");
+  deps.io.out("  the phone talks to the lead, which speaks for the whole crew.");
   deps.io.out("");
   // The lead persisted this enrollment through its OWN running bridge, which read its roster at boot
   // and does not re-read it (§8.2's note). This side restarts itself two lines below; the lead cannot
@@ -1012,12 +1014,12 @@ export function enrollUrl(address: string): string | null {
 export async function cmdLeave(deps: PackDeps): Promise<number> {
   const data = await deps.store.load();
   if (data === null || data.pack === null) {
-    deps.io.err("error: this collie is not in a pack — nothing to leave.");
+    deps.io.err("error: this collie is not in a crew — nothing to leave.");
     return EXIT.STATE;
   }
   if (isLeading(data)) {
     deps.io.err(`error: this collie LEADS ${data.peers.length} peer(s); leaving would strand them.`);
-    deps.io.err("       Drop them one at a time with `collie pack remove <member>`, or hand the pack over");
+    deps.io.err("       Drop them one at a time with `collie crew remove <member>`, or hand the crew over");
     deps.io.err("       with `collie promote` on the machine that should lead it.");
     return EXIT.STATE;
   }
@@ -1048,18 +1050,18 @@ export async function cmdLeave(deps: PackDeps): Promise<number> {
   // a credential store on disk that nothing in the new pack ever wrote or can revoke.
   deps.files.remove(standbyDevicesPath(deps.ctx.stateDir));
 
-  deps.io.out(`✓ left pack "${data.pack.name}" — the pack secret and every pin are gone from this machine.`);
+  deps.io.out(`✓ left crew "${data.pack.name}" — the crew secret and every pin are gone from this machine.`);
   deps.io.out("  This collie's own identity survives, so re-joining needs no new certificate anywhere.");
   if (deputyState !== null) {
-    deps.io.out(`  Its deputy state went too (${deputyState}). A warrant belongs to the pack that`);
-    deps.io.out("  signed it: carried into another pack it reads as a takeover nobody performed, and the");
+    deps.io.out(`  Its deputy state went too (${deputyState}). A warrant belongs to the crew that`);
+    deps.io.out("  signed it: carried into another crew it reads as a takeover nobody performed, and the");
     deps.io.out("  new lead parks itself over it.");
   }
   if (revoked) {
     deps.io.out(`  The lead removed this machine from its roster too.`);
   } else if (data.lead !== null) {
     deps.io.out(`  The lead was NOT reached: "${data.lead.memberId}" still lists this machine. Run there:`);
-    deps.io.out(`    collie pack remove ${data.self.memberId}`);
+    deps.io.out(`    collie crew remove ${data.self.memberId}`);
     deps.io.out("  Until then it will keep dialling this address and being refused — which is harmless,");
     deps.io.out("  because the pins and the secret it would need are already gone from here.");
   }
@@ -1128,7 +1130,7 @@ function retirePackBind(deps: PackDeps): string[] {
     // systemd `Environment=`, an exported shell variable, a wrapper. Say what will happen, name the
     // variable, and hand over the two ways out. Silence here is what made this finding a blocker.
     return [
-      `  ⚠ This machine binds COLLIE_HOST=${host}, which \`pack add\` needed and solo mode refuses:`,
+      `  ⚠ This machine binds COLLIE_HOST=${host}, which \`crew add\` needed and solo mode refuses:`,
       "    the bridge will exit at startup and systemd will restart it every five seconds, forever.",
       `    Collie could not fix it here — that value does not come from ${envPath}.`,
       "    Unset COLLIE_HOST wherever it is set (a systemd Environment=, your shell), or set",
@@ -1147,7 +1149,7 @@ function retirePackBind(deps: PackDeps): string[] {
   delete deps.ctx.env.COLLIE_HOST;
   return [
     `  COLLIE_HOST=${host} removed from ${envPath} — it was the address the LEAD dialled, and a`,
-    "  wide bind is admitted only by the pack's two factors (ADR 0013), which this machine no longer",
+    "  wide bind is admitted only by the crew's two factors (ADR 0013), which this machine no longer",
     "  has. Solo refuses to start on it, so leaving it would have crash-looped the service.",
     "  This collie is back on loopback, where a solo collie belongs; put your own ingress in front",
     "  of it, or set COLLIE_ALLOW_NON_LOOPBACK_BIND=1 if you mean to bind wide with a control there.",
@@ -1169,8 +1171,8 @@ export async function cmdPackStatus(deps: PackDeps, args: readonly string[]): Pr
   const { bare } = parsePackArgs(args, ["force", "no-probe"]);
   const data = await deps.store.load();
   if (data === null || data.pack === null) {
-    deps.io.out("mode: solo — this collie is not in a pack (no trust store, or an empty one).");
-    deps.io.out("  `collie pack invite` here makes it a lead; `collie join …` makes it a peer.");
+    deps.io.out("mode: solo — this collie is not in a crew (no trust store, or an empty one).");
+    deps.io.out("  `collie crew invite` here makes it a lead; `collie join …` makes it a peer.");
     return EXIT.OK;
   }
 
@@ -1178,7 +1180,7 @@ export async function cmdPackStatus(deps: PackDeps, args: readonly string[]): Pr
     peers: data.peers.filter((p) => p.status === "enrolled"),
     lead: data.lead !== null && data.lead.status === "enrolled" ? data.lead : null,
   });
-  deps.io.out(`pack   ${data.pack.name}  (${data.pack.packId})`);
+  deps.io.out(`crew   ${data.pack.name}  (${data.pack.packId})`);
   deps.io.out(`mode   ${mode}`);
   deps.io.out(`self   ${data.self.memberId}  ${data.self.fingerprint.slice(0, 16)}…`);
   // What interface this collie's own pack listener answers on — COLLIE_HOST, resolved the same way
@@ -1186,7 +1188,7 @@ export async function cmdPackStatus(deps: PackDeps, args: readonly string[]): Pr
   // it; the bind never gates (pinned mTLS + the pack secret do, §3), it only bounds who can attempt.
   const bind = deps.ctx.env.COLLIE_HOST ?? "127.0.0.1";
   const bindShown = bind.trim() === "" ? "0.0.0.0/:: (COLLIE_HOST empty)" : bind;
-  const bindNote = bindIsWildcard(bind) ? " — ALL interfaces, gated only by pinned mTLS + the pack secret" : "";
+  const bindNote = bindIsWildcard(bind) ? " — ALL interfaces, gated only by pinned mTLS + the crew secret" : "";
   deps.io.out(`bind   ${bindShown}${bindNote}`);
   deps.io.out(`secret generation ${data.pack.secretGeneration}, rotated ${new Date(data.pack.rotatedAt).toISOString()}`);
   if (conflict !== null) deps.io.out(`⚠ ${conflict}`);
@@ -1274,7 +1276,7 @@ export async function cmdPackStatus(deps: PackDeps, args: readonly string[]): Pr
     if (data.lead === null) for (const l of memberRePinLines(m)) emit(l.text, l.tone);
     if (m.status === "unenrolled") {
       emit("    status  unenrolled — dropped by a rotation it was offline for (§8.4).", "warn");
-      emit(`            Recovery is deliberate: \`collie pack invite\` here, \`collie join\` there.`, "dim");
+      emit(`            Recovery is deliberate: \`collie crew invite\` here, \`collie join\` there.`, "dim");
       continue;
     }
     const reach = reaches.get(m.memberId);
@@ -1286,7 +1288,7 @@ export async function cmdPackStatus(deps: PackDeps, args: readonly string[]): Pr
     if (m.contactedAt === null && outcome?.ok !== true) {
       emit("    status  provisional — enrolled but never once reachable; a half-finished join looks exactly", "warn");
       emit(`            like this (§8.2). If you did not complete a join for "${m.memberId}", clear it:`, "dim");
-      emit(`            \`collie pack remove ${m.memberId}\`.`, "dim");
+      emit(`            \`collie crew remove ${m.memberId}\`.`, "dim");
     }
     if (outcome === undefined) {
       emit("    link    not probed (--no-probe)", "dim");
@@ -1333,7 +1335,7 @@ export async function cmdPackStatus(deps: PackDeps, args: readonly string[]): Pr
       emit(`    link    INCOMPATIBLE · ${outcome.reason}`, "bad");
       emit(
         `            Not retried on the poll cadence. If this machine is the newer one:` +
-          ` \`collie pack update ${m.memberId}\`.`,
+          ` \`collie crew update ${m.memberId}\`.`,
         "dim",
       );
       continue;
@@ -1423,11 +1425,31 @@ function versionLines(reported: string | null, ours: string, memberId: string): 
   // there is no older machine to name. Report theirs and stay quiet rather than warn about a skew
   // whose other half we cannot state.
   if (ours === "unknown") return [`    version ${reported}`];
-  return [
-    `    version ${reported} — warn: this machine runs ${ours}`,
-    `            Build skew refuses nothing (§7.1) — the link keeps working. Level it from here:`,
-    `            \`collie pack update ${memberId}\` (over your own ssh, ADR 0016).`,
-  ];
+  const head = `    version ${reported} — warn: this machine runs ${ours}`;
+  const preamble = `            Build skew refuses nothing (§7.1) — the link keeps working.`;
+  // WHICH SIDE IS BEHIND DECIDES THE REMEDY, and printing the wrong one is worse than printing
+  // none: `pack update` pushes THIS lead's build onto that member, so on a lead that is itself the
+  // older machine the old unconditional line told the operator to level a newer member DOWN.
+  // Measured on 2026-09-08 with a real 1.6.0 lead over two members built from main
+  // (PACK_PROTOCOL.md §16, the version-skew leg). §7.1 names both remedies; this picks the one that
+  // matches the direction. A comparison that comes back equal has no direction to state — two
+  // different strings for one semver (a build stamp, `unknown`) is not a skew anybody levels — so
+  // it keeps the neutral sentence and names no command. `compareRelease`, not `compareSemver`:
+  // inside this fork's `+ys` family the counter orders (`1.7.0+ys.2` is newer than `1.7.0+ys.1`),
+  // and a pure SemVer compare would call that pair equal and name no remedy for a skew that has one.
+  const direction = compareRelease(reported, ours);
+  if (direction > 0) {
+    return [
+      head,
+      `${preamble} THIS machine is the older one, so`,
+      `            level it first: \`collie update\` here. \`collie crew update ${memberId}\` from here`,
+      `            would push this build onto that member and take it BACKWARDS.`,
+    ];
+  }
+  if (direction < 0) {
+    return [head, `${preamble} Level it from here:`, `            \`collie crew update ${memberId}\` (over your own ssh, ADR 0016).`];
+  }
+  return [head, `${preamble} Neither build is the older one.`];
 }
 
 /**
@@ -1581,7 +1603,7 @@ export async function probeMemberReach(
 export async function cmdPackRotate(deps: PackDeps): Promise<number> {
   const data = await deps.store.load();
   if (data === null || data.pack === null) {
-    deps.io.err("error: this collie is not in a pack.");
+    deps.io.err("error: this collie is not in a crew.");
     return EXIT.STATE;
   }
   if (data.lead !== null) {
@@ -1629,9 +1651,107 @@ export async function cmdPackRotate(deps: PackDeps): Promise<number> {
     deps.io.out("");
     deps.io.out(`dropped to unenrolled: ${dropped.dropped.join(", ")}`);
     deps.io.out("  They were offline for the rotation, so they hold a secret that is no longer accepted.");
-    deps.io.out("  Recovery is deliberate: `collie pack invite` here, then `collie join` on each of them.");
+    deps.io.out("  Recovery is deliberate: `collie crew invite` here, then `collie join` on each of them.");
   }
   await applyLocally(deps, "the new secret");
+  return EXIT.OK;
+}
+
+// ── pack rename (on the lead) ────────────────────────────────────────────────
+
+/** The longest crew name this verb accepts, in code points. Long enough for a sentence, short
+ * enough to sit on one line of the phone's crew page beside the pack id. */
+const CREW_NAME_MAX = 64;
+
+/**
+ * Why this string cannot be a crew name, or `null` when it can be.
+ *
+ * The name is the one field in the trust store a person chooses the words of, and it is rendered
+ * on the phone, in `crew status` and in the standby page. So the rules are about rendering and
+ * nothing else: something is there, it fits, and it carries no control character that could move a
+ * cursor or split a line in any of those three surfaces.
+ */
+function crewNameRefusal(name: string): string | null {
+  if (name === "") return "a crew name cannot be empty";
+  const length = [...name].length;
+  if (length > CREW_NAME_MAX) return `a crew name is at most ${CREW_NAME_MAX} characters, and this one is ${length}`;
+  // Matched on the code point, not the byte: a control character inside a multi-byte sequence is
+  // not a thing, and a regex class over the string would be the same test written less plainly.
+  for (const ch of name) {
+    const code = ch.codePointAt(0)!;
+    if (code < 0x20 || code === 0x7f) return "a crew name cannot contain control characters";
+  }
+  return null;
+}
+
+/**
+ * `collie crew rename <name>` — give the crew a new name (on the lead).
+ *
+ * **Nothing crosses the wire, and nothing needs to.** A crew's name is display data keyed by the
+ * pack id: it travels once, in the lead's enrollment answer (bridge/pack/enrollment.ts §8.2), and a
+ * member stores it and never shows it. Admission, signing and every gate read the pack id and the
+ * secret, never the name — so there is no member to tell, no generation to bump and no version to
+ * negotiate. A machine that enrols after this run receives the new name; one that enrolled before it
+ * keeps the old string in a field nobody reads.
+ *
+ * Lead-only for the same reason: the lead is the machine that hands the name out. A peer's copy is
+ * a leaf, and renaming it there would change one machine's opinion of a name it never displays.
+ */
+export async function cmdPackRename(deps: PackDeps, args: readonly string[]): Promise<number> {
+  const { positional } = parsePackArgs(args);
+  if (positional.length !== 1) {
+    deps.io.err("usage: collie crew rename <name>");
+    if (positional.length > 1) {
+      deps.io.err('       A name with a space needs quotes: collie crew rename "the shed".');
+    }
+    return EXIT.USAGE;
+  }
+  const name = positional[0]!.trim();
+  const data = await deps.store.load();
+  if (data === null || data.pack === null) {
+    deps.io.err("error: this collie is not in a crew — there is no crew to rename.");
+    return EXIT.STATE;
+  }
+  if (data.lead !== null) {
+    deps.io.err(`error: this collie is a peer of "${data.lead.memberId}" — a crew is renamed on the lead,`);
+    deps.io.err("       which is the machine that hands the name out at enrollment. Run it there.");
+    return EXIT.STATE;
+  }
+  const refusal = crewNameRefusal(name);
+  if (refusal !== null) {
+    deps.io.err(`error: ${refusal}.`);
+    deps.io.err("       usage: collie crew rename <name>");
+    return EXIT.USAGE;
+  }
+  if (data.pack.name === name) {
+    deps.io.out(`this crew is already called "${name}" — nothing to change.`);
+    return EXIT.OK;
+  }
+
+  // The transition is written here rather than in `bridge/pack/enrollment.ts` on purpose: that file
+  // is on the wire-shape guard's list (scripts/check-pack-wire.sh) because a change there can move
+  // bytes between machines, and this change moves none. The shape is the same `PackChange` every
+  // other verb commits, so the store's one write path is unchanged.
+  const renamed = await commitPackChange(deps.store, deps.audit, (current) => {
+    if (current === null || current.pack === null || current.lead !== null) return null;
+    if (current.pack.name === name) return null;
+    return {
+      next: { ...current, pack: { ...current.pack, name } },
+      result: { from: current.pack.name },
+      audit: { action: "pack.rename", detail: { from: current.pack.name, to: name } },
+    };
+  });
+  if (renamed === null) {
+    deps.io.err("error: the trust store changed under this verb — nothing was renamed. Re-run it.");
+    return EXIT.STATE;
+  }
+  deps.io.out(`✓ this crew is now called "${name}".`);
+  deps.io.out(`    from  ${renamed.from}`);
+  deps.io.out(`    to    ${name}`);
+  deps.io.out("  Nothing was sent to a member: the name travels once, in this lead's enrollment answer,");
+  deps.io.out("  and a member stores it without ever showing it. A machine that joins from now on gets");
+  deps.io.out("  this name; the ones already here keep the old string in a field nobody reads.");
+  await applyLocally(deps, "the new name");
   return EXIT.OK;
 }
 
@@ -1642,7 +1762,7 @@ export async function cmdPackRemove(deps: PackDeps, args: readonly string[]): Pr
   const { positional } = parsePackArgs(args);
   const memberId = positional[0];
   if (memberId === undefined) {
-    deps.io.err("usage: collie pack remove <member-id>");
+    deps.io.err("usage: collie crew remove <member-id>");
     return EXIT.USAGE;
   }
   // Read before the roster changes, so the line printed below is composed from the same run's facts.
@@ -1651,17 +1771,17 @@ export async function cmdPackRemove(deps: PackDeps, args: readonly string[]): Pr
     current === null ? null : removeMember(current, memberId),
   );
   if (removed === null) {
-    deps.io.err(`error: no member "${memberId}" in this roster — \`collie pack status\` lists them.`);
+    deps.io.err(`error: no member "${memberId}" in this roster — \`collie crew status\` lists them.`);
     return EXIT.STATE;
   }
   deps.io.out(`✓ removed "${memberId}" — its pin is gone, so its certificate is now simply not a member.`);
   if (removed.deputy) {
-    deps.io.out(`  It was this pack's DEPUTY, so the designation went with it: no peer may take over`);
-    deps.io.out("  now. Name another with `collie pack deputy <member>`. The warrant on disk stays:");
-    deps.io.out("  it carries the generation counter, which must never walk backwards inside a pack.");
+    deps.io.out(`  It was this crew's DEPUTY, so the designation went with it: no peer may take over`);
+    deps.io.out("  now. Name another with `collie crew deputy <member>`. The warrant on disk stays:");
+    deps.io.out("  it carries the generation counter, which must never walk backwards inside a crew.");
   }
   deps.io.out("  Nothing was sent to it: revocation is local by design, and the removed machine keeps its");
-  deps.io.out("  own copy of the pack until its operator runs `collie leave` there. Either side alone ends");
+  deps.io.out("  own copy of the crew until its operator runs `collie leave` there. Either side alone ends");
   deps.io.out("  the link (§8.4) — this side is now ended.");
   for (const line of leaveTheOtherSideLines(deps, record)) deps.io.out(line);
   await applyLocally(deps, "the shortened roster");
@@ -1702,8 +1822,8 @@ function leaveTheOtherSideLines(deps: PackDeps, record: OpsRecord | null): strin
     "  It is still in peer mode over there, so it answers no phone — and this lead no longer has a",
     "  pin for it. Finish the tear-down on that machine:",
     `    ssh ${record.sshHost} ${binary} leave`,
-    `  That line is rebuilt from ${where}, which this verb KEEPS: it is how \`pack add\` reached the`,
-    "  machine, it is not trust and never a wire field (ADR 0016), and `pack update` targets the",
+    `  That line is rebuilt from ${where}, which this verb KEEPS: it is how \`crew add\` reached the`,
+    "  machine, it is not trust and never a wire field (ADR 0016), and `crew update` targets the",
     "  roster — so a row for a machine that is no longer a member can never be dialled by it.",
   ];
 }
@@ -1729,9 +1849,9 @@ function leaveTheOtherSideLines(deps: PackDeps, record: OpsRecord | null): strin
 export function packAddressRefusal(address: string): string | null {
   if (address.trim() !== address || address === "") return "it is empty or padded with whitespace";
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(address)) {
-    return "an address with a scheme is a front door's, not a pack listener's — the pack dials pinned TLS itself, so it wants a bare host:port";
+    return "an address with a scheme is a front door's, not a crew listener's — the crew dials pinned TLS itself, so it wants a bare host:port";
   }
-  if (address.includes("/")) return "a pack address is a host and a port, never a path";
+  if (address.includes("/")) return "a crew address is a host and a port, never a path";
   // `[::1]:8787` as well as `host:8787` — the port is the last colon-separated field either way.
   const port = /:(\d+)$/.exec(address);
   if (port === null) {
@@ -1790,8 +1910,8 @@ export function schemedAddressLines(memberId: string, address: string, role: Tru
   if (role === "lead") return [];
   if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(address)) return [];
   return [
-    { text: "            an address with a scheme is a front door's, not a pack listener's —", tone: "dim" },
-    { text: `            \`collie pack set-address ${memberId} <host:port>\``, tone: "dim" },
+    { text: "            an address with a scheme is a front door's, not a crew listener's —", tone: "dim" },
+    { text: `            \`collie crew set-address ${memberId} <host:port>\``, tone: "dim" },
   ];
 }
 
@@ -1813,12 +1933,12 @@ export async function cmdPackSetAddress(deps: PackDeps, args: readonly string[])
   const { positional } = parsePackArgs(args);
   const [memberId, address] = positional;
   if (memberId === undefined || address === undefined) {
-    deps.io.err("usage: collie pack set-address <member-id> <host:port>");
+    deps.io.err("usage: collie crew set-address <member-id> <host:port>");
     return EXIT.USAGE;
   }
   const data = await deps.store.load();
   if (data === null || data.pack === null) {
-    deps.io.err("error: this collie is not in a pack — there is no roster to correct.");
+    deps.io.err("error: this collie is not in a crew — there is no roster to correct.");
     return EXIT.STATE;
   }
   if (data.lead !== null) {
@@ -1834,13 +1954,13 @@ export async function cmdPackSetAddress(deps: PackDeps, args: readonly string[])
   }
   const member = data.peers.find((p) => p.memberId === memberId);
   if (member === undefined) {
-    deps.io.err(`error: no member "${memberId}" in this roster — \`collie pack status\` lists them.`);
+    deps.io.err(`error: no member "${memberId}" in this roster — \`collie crew status\` lists them.`);
     return EXIT.STATE;
   }
   const refusal = packAddressRefusal(address);
   if (refusal !== null) {
-    deps.io.err(`error: "${address}" is not a pack address — ${refusal}.`);
-    deps.io.err("       usage: collie pack set-address <member-id> <host:port>");
+    deps.io.err(`error: "${address}" is not a crew address — ${refusal}.`);
+    deps.io.err("       usage: collie crew set-address <member-id> <host:port>");
     return EXIT.USAGE;
   }
   if (member.address === address) {
@@ -1859,7 +1979,7 @@ export async function cmdPackSetAddress(deps: PackDeps, args: readonly string[])
   deps.io.out(`    from  ${moved.from === "" ? "(none)" : moved.from}`);
   deps.io.out(`    to    ${address}`);
   await applyLocally(deps, "the new address");
-  deps.io.out("  `collie pack status` dials it there.");
+  deps.io.out("  `collie crew status` dials it there.");
   return EXIT.OK;
 }
 
@@ -1888,7 +2008,7 @@ export async function cmdPackApprovePromote(deps: PackDeps, args: readonly strin
   const cancelling = bare.has("cancel");
   const data = await deps.store.load();
   if (data === null || data.pack === null) {
-    deps.io.err("error: this collie is not in a pack — there is no handover to approve.");
+    deps.io.err("error: this collie is not in a crew — there is no handover to approve.");
     return EXIT.STATE;
   }
   if (data.lead !== null) {
@@ -1915,8 +2035,8 @@ export async function cmdPackApprovePromote(deps: PackDeps, args: readonly strin
 
   const memberId = positional[0];
   if (memberId === undefined) {
-    deps.io.err("usage: collie pack approve-promote <member-id>   # consent, on the lead, for 10 minutes");
-    deps.io.err("       collie pack approve-promote --cancel      # clear a live approval");
+    deps.io.err("usage: collie crew approve-promote <member-id>   # consent, on the lead, for 10 minutes");
+    deps.io.err("       collie crew approve-promote --cancel      # clear a live approval");
     return EXIT.USAGE;
   }
 
@@ -1925,7 +2045,7 @@ export async function cmdPackApprovePromote(deps: PackDeps, args: readonly strin
   );
   if (approved === null) {
     // An approval naming nobody this lead pins is a typo, not a consent (§14.1).
-    deps.io.err(`error: no enrolled member "${memberId}" in this roster — \`collie pack status\` lists them.`);
+    deps.io.err(`error: no enrolled member "${memberId}" in this roster — \`collie crew status\` lists them.`);
     return EXIT.STATE;
   }
 
@@ -1935,7 +2055,7 @@ export async function cmdPackApprovePromote(deps: PackDeps, args: readonly strin
   deps.io.out("  has changed here: this is consent, not a handover.");
   deps.io.out("  Nothing was sent to it and no secret is involved — the claim is already signed against a");
   deps.io.out(`  pinned certificate, so consent only has to name who may take over.`);
-  deps.io.out("  Changed your mind? `collie pack approve-promote --cancel`.");
+  deps.io.out("  Changed your mind? `collie crew approve-promote --cancel`.");
   await applyLocally(deps, "the approval");
   return EXIT.OK;
 }
@@ -1955,18 +2075,18 @@ export async function cmdPromote(deps: PackDeps, args: readonly string[]): Promi
   const force = bare.has("force");
   const data = await deps.store.load();
   if (data === null || data.pack === null) {
-    deps.io.err("error: this collie is not in a pack — there is no crown to take.");
+    deps.io.err("error: this collie is not in a crew — there is no crown to take.");
     return EXIT.STATE;
   }
   if (data.lead === null) {
-    deps.io.err("error: this collie is already the lead of this pack.");
+    deps.io.err("error: this collie is already the lead of this crew.");
     return EXIT.STATE;
   }
   // This machine is taking the crown, so what it advertises — to the pack AND to the phone below —
   // is the front door it publishes at the end of this verb.
   const mine = selfAddress(deps, flags.address, "front-door");
   if (mine === null) {
-    deps.io.err("error: cannot work out the address the pack should dial this machine at.");
+    deps.io.err("error: cannot work out the address the crew should dial this machine at.");
     deps.io.err("       Pass one: `collie promote --address <host-the-others-can-reach>`.");
     return EXIT.FAIL;
   }
@@ -2011,7 +2131,7 @@ export async function cmdPromote(deps: PackDeps, args: readonly string[]): Promi
     deps.io.err(`error: the current lead "${data.lead.memberId}" did not answer — ${failureLine(handover)}`);
     deps.io.err("       Promoting anyway would leave two leads, two front doors and two rosters. If that");
     deps.io.err("       machine is really gone, re-run with --force; it must then be `collie leave`-d or");
-    deps.io.err("       re-`join`-ed before it is ever powered back on into this pack.");
+    deps.io.err("       re-`join`-ed before it is ever powered back on into this crew.");
     return handover.state === "incompatible" ? EXIT.REFUSED : EXIT.UNREACHABLE;
   } else {
     deps.io.err(`warn: --force — "${data.lead.memberId}" was not demoted and may still believe it leads.`);
@@ -2035,13 +2155,13 @@ export async function cmdPromote(deps: PackDeps, args: readonly string[]): Promi
   await applyLocally(deps, "lead mode");
   const served = await deps.serve();
   if (served !== EXIT.OK) {
-    deps.io.err("warn: the front door did not come up here. The pack has a lead with no published URL —");
+    deps.io.err("warn: the front door did not come up here. The crew has a lead with no published URL —");
     deps.io.err("      fix it with `collie serve` before re-pointing the phone.");
   }
 
   deps.io.out("");
   deps.io.out("── the crown moved; these do not ──────────────────────────────");
-  deps.io.out("  The pack identity, the pack secret and every pinned certificate are REUSED — this was a");
+  deps.io.out("  The crew identity, the crew secret and every pinned certificate are REUSED — this was a");
   deps.io.out("  role change, not a re-enrollment. What stays on the old lead, permanently:");
   deps.io.out("    · push subscriptions   — the phone must re-subscribe here (Settings → notifications)");
   deps.io.out("    · the audit log        — host-local by rule; the old lead keeps its own history");
@@ -2058,7 +2178,7 @@ export async function cmdPromote(deps: PackDeps, args: readonly string[]): Promi
   deps.io.out("     front door (Collie removes only a mapping its own record matches); `restart` re-publishes on");
   deps.io.out("     the way up, which is why `unserve` comes after it.");
   deps.io.out(`  3. Here: \`collie reconnect ${data.lead.memberId} <host:port>\` — the roster records that machine at its`);
-  deps.io.out("     FRONT DOOR, which step 2 just retired. Until you re-point it, `collie pack status` and `collie");
+  deps.io.out("     FRONT DOOR, which step 2 just retired. Until you re-point it, `collie crew status` and `collie");
   deps.io.out("     doctor` here show it unreachable, and `doctor` there names the bind.");
   if (others.length > 0) {
     deps.io.out(`  4. Every other member — ${others.map((r) => r.memberId).join(", ")} — must \`collie join\` this machine with a`);
@@ -2082,7 +2202,7 @@ export async function cmdReconnect(deps: PackDeps, args: readonly string[]): Pro
   const { positional } = parsePackArgs(args);
   const data = await deps.store.load();
   if (data === null || data.pack === null) {
-    deps.io.err("error: this collie is not in a pack.");
+    deps.io.err("error: this collie is not in a crew.");
     return EXIT.STATE;
   }
   const [first, second] = positional;
@@ -2140,6 +2260,7 @@ export const PACK_SUBCOMMANDS = [
   "update",
   "status",
   "rotate",
+  "rename",
   "remove",
   "set-address",
   "deputy",
@@ -2147,7 +2268,7 @@ export const PACK_SUBCOMMANDS = [
 ] as const;
 
 export function packUsage(): string {
-  return `usage: collie pack {${PACK_SUBCOMMANDS.join("|")}}`;
+  return `usage: collie crew {${PACK_SUBCOMMANDS.join("|")}}`;
 }
 
 /**
@@ -2194,6 +2315,8 @@ export async function cmdPack(deps: PackAddDeps, args: readonly string[]): Promi
       return cmdPackStatus(deps, rest);
     case "rotate":
       return cmdPackRotate(deps);
+    case "rename":
+      return cmdPackRename(deps, rest);
     case "remove":
       return cmdPackRemove(deps, rest);
     case "set-address":
@@ -2202,19 +2325,20 @@ export async function cmdPack(deps: PackAddDeps, args: readonly string[]): Promi
       return cmdPackApprovePromote(deps, rest);
     default:
       if (sub !== undefined && sub !== "" && !PACK_HELP_SPELLINGS.has(sub)) {
-        deps.io.err(`error: unknown pack subcommand \`${sub}\``);
+        deps.io.err(`error: unknown crew subcommand \`${sub}\``);
       }
       deps.io.err(packUsage());
       deps.io.err("  invite   mint a single-use, 10-minute enrollment token (on the lead)");
-      deps.io.err("  join     join a pack: `pack join <lead-address>` (on the joining machine)");
-      deps.io.err("  leave    leave the pack — drops the pack secret and every pin on this machine");
-      deps.io.err("  add      install and enroll a peer over SSH: `pack add <ssh-host>` (on the lead)");
-      deps.io.err("  update   level peers to this lead's build over SSH: `pack update <member>… | --all`");
+      deps.io.err("  join     join a crew: `crew join <lead-address>` (on the joining machine)");
+      deps.io.err("  leave    leave the crew — drops the crew secret and every pin on this machine");
+      deps.io.err("  add      install and enroll a peer over SSH: `crew add <ssh-host>` (on the lead)");
+      deps.io.err("  update   level peers to this lead's build over SSH: `crew update <member>… | --all`");
       deps.io.err("  status   mode, members, reachability, secret pickup and why a link is refused");
-      deps.io.err("  rotate   reissue the pack secret and hand it to every reachable peer");
+      deps.io.err("  rotate   reissue the crew secret and hand it to every reachable peer");
+      deps.io.err("  rename   give the crew a new name: `crew rename <name>` (on the lead)");
       deps.io.err("  remove   unpin and forget a member (on the lead)");
-      deps.io.err("  set-address  correct where this lead dials a member: `pack set-address <member> <host:port>`");
-      deps.io.err("  deputy   name the ONE peer that may take over, and arm it: `pack deputy <member>`");
+      deps.io.err("  set-address  correct where this lead dials a member: `crew set-address <member> <host:port>`");
+      deps.io.err("  deputy   name the ONE peer that may take over, and arm it: `crew deputy <member>`");
       deps.io.err("           (on the lead); `--revoke` names nobody");
       deps.io.err("  approve-promote  consent, on the lead, for one member to take over (10 minutes,");
       deps.io.err("                   single-use); `--cancel` clears it");

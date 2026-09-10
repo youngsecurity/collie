@@ -1,11 +1,20 @@
 import type { JsonObject, JsonValue } from "../json.ts";
 import { PACK_PROTOCOL_VERSION } from "./enrollment.ts";
 import { DEVICE_HEADER, MEMBER_HEADER, PROTOCOL_HEADER, parseProtocolHeader } from "./admission.ts";
-import { LEAD_CONFLICT, PACK_PREFIX, PAIRING_LABEL_COLLISION, PREFLIGHT_FRESH, PREFLIGHT_HEADER } from "./router.ts";
+import {
+  LEAD_CONFLICT,
+  PACK_MUX_FIELD,
+  PACK_PREFIX,
+  PAIRING_LABEL_COLLISION,
+  PREFLIGHT_FRESH,
+  PREFLIGHT_HEADER,
+} from "./router.ts";
 import { LEAD_RELEASE_HEADER, UPDATE_TURN_HEADER } from "./follow.ts";
 import { DIAL_HEADER, SIGNATURE_HEADER, TIMESTAMP_HEADER, type DialParts } from "./signing.ts";
 import type { PackRequestInit, PackTlsOptions } from "./transport.ts";
 import type { Warrant } from "./trust-store.ts";
+import { NARROW_VIEW, SESSIONS_ALL, SESSIONS_PARAM, SESSION_PARAM, type SnapshotView } from "../sessions.ts";
+import type { MuxConfig } from "../types.ts";
 import { parseCollisionReport, parsePairingReport, type PairingSync } from "./standby-devices.ts";
 import type { TakeoverBody } from "./takeover.ts";
 import { parseWarrant, parseWarrantActiveReport, type WarrantPush } from "./warrant.ts";
@@ -103,6 +112,33 @@ export function packTimeoutClampWarning(
   );
 }
 
+/**
+ * How long a **forwarded write** may take before the lead gives up on it (§10.1, §10.3).
+ *
+ * ── WHY A WRITE IS NOT A POLL (measured, 2026-09-08, VM lab) ─────────────────
+ * A write forwarded to a member (`bridge/pack/forward.ts`) used to ride the poll budget of
+ * {@link packTimeoutBudget} — 1200 ms under a 1500 ms poll. That number is sized for a peer that
+ * serialises a snapshot it already holds. A write does work: a launch onto a **zellij** member spawns
+ * a process and asks the multiplexer to build a tab, which straddled 1200 ms in about two tries out
+ * of three. The phone then read `write_outcome_unknown` over a tab that had in fact been created —
+ * the one outcome §10.3 exists to keep rare, produced by arithmetic rather than by a fault.
+ *
+ * So a forwarded write gets its own budget and the sweep keeps the strict one. This is sound for the
+ * same reason {@link packHelloBudget} is: **the poll fraction bounds the SWEEP**, because a slow peer
+ * there stalls the lead's own snapshot for every phone. A forwarded write is one operator's one
+ * request, awaited on that request's own path, and it spends no bootstrap credit and no sweep
+ * accounting — it is passed to `dial` as an explicit budget, which is the branch that bypasses
+ * {@link takeDataBudget} entirely.
+ *
+ * 5000 ms: what a process-spawning multiplexer answers in comfortably, and well inside the phone's
+ * own 20 s mutation budget (`web/src/lib/api.ts` `MUTATION_TIMEOUT_MS`), so the deadline that fires
+ * first is still the lead's and the phone still gets §10.3's legible refusal rather than a dead
+ * socket. A read is untouched: it keeps the poll budget exactly, bootstrap credit and all.
+ *
+ * Lead-local, never on the wire, so moving it needs no protocol bump.
+ */
+export const WRITE_BUDGET_MS = 5000;
+
 /** How long a `hello` PROBE may take before the lead calls a member gone (§10.4), by default. */
 export const DEFAULT_PACK_HELLO_TIMEOUT_MS = 5000;
 /** Operator override for the probe budget. A pack key, so it lives here and not on `Config`. */
@@ -187,6 +223,27 @@ export interface LinkWarmth {
 /** A link nothing is known about yet: cold, and owed its one patient attempt. */
 export const COLD_LINK: LinkWarmth = { warm: false, bootstrapSpent: false };
 
+/**
+ * How long a member may answer with NO `X-Pack-Protocol` header before the lead stops calling it
+ * merely unreachable and puts it on the incompatible ladder (§7, §10.2).
+ *
+ * A DURATION, and not a count of answers, on counsel of 2026-09-08. A count was written first and it
+ * measures the wrong thing. The lead's cadence moves between 1500 ms and 12 000 ms, and this same
+ * client also carries `hello`, the phone's proxied reads, warrant push and pairing push, so an
+ * operator with the phone open spends five answers in seven seconds while an idle lead takes a
+ * minute. The bound would then be tightest exactly when the operator is watching, which is the
+ * shape of the incident this milestone exists for. A restart takes the seconds it takes whatever
+ * anybody is polling at, so the bound is in seconds too.
+ *
+ * Sixty of them: enough for a service restart and a proxy reload, which is the case the patience is
+ * for. A peer being levelled is covered for longer than this by spec 01 anyway, since a member in a
+ * live run is dialled every sweep whatever ladder it is on. A stranger that never sends the header
+ * costs 240 tiny dials at the fastest legal cadence before it lands on the ladder.
+ *
+ * Lead-local. It is never on the wire, so moving it needs no protocol bump.
+ */
+export const HEADERLESS_PATIENCE_MS = 60_000;
+
 /** The budget for one data dial, and the warmth to remember while it is in flight. */
 export interface TakenBudget {
   readonly budgetMs: number;
@@ -253,6 +310,18 @@ export type PeerFailure =
        * `PackLead` reads it to decide which failures deserve a patient re-probe.
        */
       readonly timedOut?: boolean;
+      /**
+       * `true` when the peer ANSWERED and the answer was a bare `401` (§8.5) — a rotated secret or a
+       * dropped pin, not a machine that is away.
+       *
+       * It rides here rather than becoming a fifth state because §10.2's word does not change: this
+       * is still `unreachable` on the wire, and every released phone reads it as one. What it buys is
+       * the presentation split (§10.2's Reconnecting / Attention note): retrying cannot fix a wrong
+       * secret, so the lead may say so instead of implying the operator should wait.
+       *
+       * Absent means "not that", exactly as `timedOut`'s absence does.
+       */
+      readonly authRefused?: boolean;
     }
   /** `X-Pack-Protocol` skew (§7) — NOT retried on the cadence; probed on a slow backoff. */
   | {
@@ -372,6 +441,18 @@ export interface HelloResult {
    * that machine's standby door.
    */
   readonly pairingCollision: readonly string[] | null;
+  /**
+   * That member's own multiplexer block, or `null` (M22/03).
+   *
+   * **Absent means "use the lead's answer" — never "every capability present".** That is the reading
+   * the phone already gives every pane on every host: it reads the lead's `/api/config` once and
+   * applies it everywhere. So a peer that publishes nothing keeps producing exactly today's answer,
+   * and no old peer regresses.
+   *
+   * Parsed, never trusted: {@link parseMuxReport} re-checks every field, and anything half-formed
+   * reads as `null`, which is the same "said nothing" the absent field carries.
+   */
+  readonly mux: MuxConfig | null;
 }
 
 export interface PeerClientDeps {
@@ -473,7 +554,8 @@ export function packUrl(address: string, route: string, params?: Record<string, 
  * lead believes about peer X" lives in the registry (bridge/pack/registry.ts) and there is exactly one
  * place to look for it.
  *
- * The one thing it does remember is {@link LinkWarmth} — whether a dial to an address has ever
+ * It remembers two things, both small and both about the wire rather than the member. First,
+ * {@link LinkWarmth} — whether a dial to an address has ever
  * succeeded — because the budget for the NEXT request depends on whether a handshake has already been
  * paid for, and nothing outside this class knows that. It is transport bookkeeping, not state about a
  * member: it decides a timeout and never a verdict, it is never persisted, and losing it costs one
@@ -481,12 +563,27 @@ export function packUrl(address: string, route: string, params?: Record<string, 
  * (`collie reconnect`) is a different connection and correctly starts cold again. Bounded by the
  * roster, since an address only ever comes from the trust store.
  *
+ * Second, when a member's current run of answers carrying NO protocol header began, keyed by member
+ * id. That one does reach a verdict, which is why it is documented on the field itself, bounded by
+ * {@link HEADERLESS_PATIENCE_MS}, and dropped by {@link PeerClient.forget} when a member leaves.
+ *
  * Zero tax otherwise — constructing one arms nothing, and a solo lead never constructs one because it
  * has no peers to hand it.
  */
 export class PeerClient {
   private readonly now: () => number;
   private readonly warmth = new Map<string, LinkWarmth>();
+  /**
+   * When a member's current run of headerless answers STARTED, keyed by member id.
+   *
+   * This is the ONE memory here that reaches a verdict, and it is here rather than in the registry
+   * because it is a fact about the ANSWERS this client has read, not a belief about the member:
+   * nothing outside this class ever sees a header. It is never persisted, and losing it on a restart
+   * costs at most one more patient minute, which is the safe direction to fail in. Bounded by the
+   * roster, cleared by {@link PeerClient.forget} when a member leaves, and cleared by any answer that
+   * names a version. See {@link HEADERLESS_PATIENCE_MS}.
+   */
+  private readonly headerless = new Map<string, number>();
 
   constructor(private readonly deps: PeerClientDeps) {
     this.now = deps.now ?? Date.now;
@@ -533,6 +630,10 @@ export class PeerClient {
     // §18.14's finding, read the same way: absent or empty is "no finding", which is the closed
     // reading — a lead that invented one would send the operator chasing a device that is not there.
     const pairingCollision = parseCollisionReport(outcome.value);
+    // M22/03's optional block, read the same absent-means-the-lead's way. It rides `hello` rather
+    // than `snapshot` because it changes only when the far side's bridge restarts, and the snapshot
+    // is polled every 1500 ms (§10.1).
+    const mux = parseMuxReport(outcome.value);
     return {
       ...outcome,
       value: {
@@ -543,6 +644,7 @@ export class PeerClient {
         warrantActiveGeneration,
         pairingDigest,
         pairingCollision,
+        mux,
       },
     };
   }
@@ -605,6 +707,12 @@ export class PeerClient {
   /**
    * `GET /pack/v1/snapshot` — the one merged route (§5). Shape is spec M4/04's business.
    *
+   * `view` is how much of that machine to ask for (M22/06): `session=` as always, plus
+   * `sessions=all` when the caller wants every session the peer runs. Both are additive and optional
+   * — a peer too old to read either answers with its primary session and PACK_PROTOCOL_VERSION does
+   * not move (§7.1). It defaults to {@link NARROW_VIEW}, the ask this method made before the
+   * parameter existed.
+   *
    * `freshPreflight` adds §19's one header and, with it, the PATIENT budget — the only data dial
    * that ever takes one by name. It is not a widening of the poll: the sweep that carries it is the
    * one the phone's own on-demand read fires (`GET /api/update/check`), which is bounded at the
@@ -613,11 +721,18 @@ export class PeerClient {
    */
   snapshot(
     link: PackLink,
-    session?: string,
+    view: SnapshotView = NARROW_VIEW,
     freshPreflight = false,
     follow: FollowHeaders = {},
   ): Promise<PeerOutcome<JsonValue>> {
-    const params = session === undefined || session === "" ? undefined : { session };
+    const query: Record<string, string> = {};
+    if (view.session !== undefined && view.session !== "") query[SESSION_PARAM] = view.session;
+    // The widening switch, and only in its one exact spelling — the peer reads it the same way
+    // `/api/snapshot` does (`bridge/sessions.ts`).
+    if (view.widen) query[SESSIONS_PARAM] = SESSIONS_ALL;
+    // No params at all is `undefined`, not an empty object: a narrow ask must put the same bytes on
+    // the wire it has always put.
+    const params = Object.keys(query).length === 0 ? undefined : query;
     const headers: Record<string, string> = {};
     if (freshPreflight) headers[PREFLIGHT_HEADER] = PREFLIGHT_FRESH;
     // §20's two, both additive-optional and both absent-means-closed. They are set on the sweep the
@@ -676,14 +791,20 @@ export class PeerClient {
    * through, because that refusal is the peer's write-level check doing its job (§12).
    *
    * The body is never read here, so an ETag and a byte-for-byte mirror survive the hop.
+   *
+   * `budgetMs` is how a forwarded WRITE takes {@link WRITE_BUDGET_MS} instead of the poll budget
+   * (§10.1). Absent — every forwarded read — is the poll budget plus a cold link's bootstrap credit,
+   * exactly as before. `forward.ts` is the only caller that passes it, and it passes it on the same
+   * read/write split §5 and §10.3 are already written in terms of.
    */
   async proxy(
     link: PackLink,
     route: string,
     params?: Record<string, string>,
     init: PackRequestInit = {},
+    budgetMs?: number,
   ): Promise<PeerOutcome<Response>> {
-    return this.dial(link, route, params, init, "passthrough", undefined, false);
+    return this.dial(link, route, params, init, "passthrough", budgetMs, false);
   }
 
   /**
@@ -713,11 +834,14 @@ export class PeerClient {
     params: Record<string, string> | undefined,
     init: PackRequestInit,
     mode: "consumed" | "passthrough",
-    // The one knob a caller may widen, and only `hello` does: the verdict probe's patient budget
-    // (§10.4). Everything else runs on the strict per-poll one — except for the single bootstrap
+    // The one knob a caller may widen, and three callers do: the verdict probe's patient budget
+    // (§10.4), §19's fresh preflight, and a forwarded WRITE on WRITE_BUDGET_MS (§10.1's 2026-09-08
+    // amendment). Everything else runs on the strict per-poll one — except for the single bootstrap
     // attempt a cold link is owed, which is chosen below and can never repeat while the link stays
-    // down. A caller must never widen a data request by hand; that rule is what keeps a slow peer
-    // from stalling the lead's snapshot every poll.
+    // down. An explicit budget bypasses `takeDataBudget` outright, so a widened call spends no
+    // bootstrap credit and never shows up in the sweep's budget accounting. Nothing on the SWEEP may
+    // widen itself by hand; that rule is what keeps a slow peer from stalling the lead's snapshot
+    // every poll.
     budgetMs?: number,
     // Whether a §8.6 REQUEST signature may ride this call, when this client holds a key. Two callers
     // say no, and for two different reasons: `proxy` streams its body (a signature over a stream
@@ -809,17 +933,67 @@ export class PeerClient {
     // cannot read is a mismatch, not a parse error." Reading the body first would turn a v2 peer's
     // perfectly well-formed answer into a parse failure and hide the real cause.
     const received = parseProtocolHeader(res.headers.get(PROTOCOL_HEADER));
+    // An answer that NAMES a version tells us the peer is speaking, whatever it said. That ends any
+    // headerless run, so a peer that restarts behind a proxy starts from zero the next time.
+    if (received !== null) this.headerless.delete(link.memberId);
     if (received === null && res.status === 401) {
       // An unadmitted caller gets a bare 401 with NO version banner (§8.5, `unauthorizedResponse`).
       // That is the shape of a rotated secret or a dropped pin, and §10.2 files an auth failure under
       // `unreachable` — not `incompatible`, which would put it on the slow backoff and leave the
       // operator waiting ten minutes after fixing the very thing `pack status` told them to fix.
-      return this.fail({ state: "unreachable", reason: `${route}: refused by the peer (unauthorized)` });
+      //
+      // It does NOT count as a headerless run. This branch already names the cause the operator can
+      // act on, and a run counted here would put a wrong secret on the ten minute ladder, which is
+      // the exact cost the branch above was written to avoid.
+      // `authRefused` is what lets the operator-facing split call this Attention rather than
+      // Reconnecting (§10.2): the peer answered, so there is nothing to wait for.
+      return this.fail({
+        state: "unreachable",
+        reason: `${route}: refused by the peer (unauthorized)`,
+        authRefused: true,
+      });
     }
-    if (received !== PACK_PROTOCOL_VERSION) {
+    if (received === null) {
+      // MISSING is not FOREIGN (§7). A missing header says we learned NOTHING about this peer's
+      // version: a proxy in front of a peer that is restarting, a 502 from a reverse proxy, a 404
+      // from a wrong path, a solo collie that answers no pack route at all (§11). None of them is a
+      // skew, and filing them as `incompatible` puts a peer that will be back in seconds on the
+      // 30/120/600 s ladder.
+      //
+      // The MECHANISM is proved on the dev pack, 2026-09-08: a peer's port fronted by a plain 200
+      // that carries no header made a 1.6.0 lead log `incompatible (snapshot: peer answered protocol
+      // none, this build speaks 1), next dial in 30s`, then `in 120s`. That reproduction is induced.
+      // It says what this branch does; it does NOT say this is what happened on 2026-09-07, and the
+      // spec keeps the competing story open. See `.tracker/M20-pack-keeps-sight/03-*.md` → Evidence.
+      //
+      // The rule is BOUNDED by {@link HEADERLESS_PATIENCE_MS}, in seconds and not in answers: past
+      // that the member falls onto the incompatible ladder, so a peer that is truly foreign is not
+      // dialled at the poll rate for ever.
+      const since = this.headerless.get(link.memberId) ?? this.now();
+      this.headerless.set(link.memberId, since);
+      const waited = this.now() - since;
+      if (waited < HEADERLESS_PATIENCE_MS) {
+        // The STATUS rides the reason: a 502 and a 503 are the same verdict and not the same story,
+        // and the operator is the one who can tell a proxy from a peer. So does the time already
+        // spent, once there is any, so the move onto the ladder is not a surprise when it comes.
+        const seconds = Math.floor(waited / 1000);
+        const plain = `${route}: peer answered ${res.status} with no pack protocol header`;
+        return this.fail({
+          state: "unreachable",
+          reason: seconds < 1 ? plain : `${plain}, ${seconds}s so far`,
+        });
+      }
       return this.fail({
         state: "incompatible",
-        reason: `${route}: peer answered protocol ${received ?? "none"}, this build speaks ${PACK_PROTOCOL_VERSION}`,
+        reason: `${route}: peer answered ${res.status} with no pack protocol header for over ${Math.round(HEADERLESS_PATIENCE_MS / 1000)}s, this build speaks ${PACK_PROTOCOL_VERSION}`,
+        expected: PACK_PROTOCOL_VERSION,
+        received: null,
+      });
+    }
+    if (received !== null && received !== PACK_PROTOCOL_VERSION) {
+      return this.fail({
+        state: "incompatible",
+        reason: `${route}: peer answered protocol ${received}, this build speaks ${PACK_PROTOCOL_VERSION}`,
         expected: PACK_PROTOCOL_VERSION,
         received,
       });
@@ -902,6 +1076,20 @@ export class PeerClient {
     const taken = takeDataBudget(this.warmth.get(link.address) ?? COLD_LINK, this.deps.timeoutMs, patient);
     this.warmth.set(link.address, taken.next);
     return taken.budgetMs;
+  }
+
+  /**
+   * A member has left the roster: drop what this client remembers about it.
+   *
+   * Both maps are bounded by the ids and addresses this process has seen, so leaving them would be
+   * untidy rather than a leak. It is the VERDICT that makes this worth a call: a member pruned while
+   * its headerless run was nearly spent, then enrolled again under the same id, would inherit that
+   * run and land on the ladder on its first headerless answer. The lead calls this where it prunes
+   * its other per-member memory, so there is one place that forgets a member.
+   */
+  forget(memberId: string, address?: string): void {
+    this.headerless.delete(memberId);
+    if (address !== undefined) this.warmth.delete(address);
   }
 
   /** Remember whether this link's transport reached the far side. See {@link foldWarmth}. */
@@ -1020,6 +1208,77 @@ async function readRefusal(res: Response): Promise<{ error: string; code: string
   } catch {
     return null;
   }
+}
+
+/** The longest registry name this reader will republish. Every shipped adapter name is far shorter. */
+const MUX_NAME_MAX = 64;
+
+/** The most capability answers, refused key spellings and notes one member's block may carry. */
+const MUX_ROWS_MAX = 256;
+
+/** The longest single string inside a block: one refused key spelling, or one adapter note. */
+const MUX_TEXT_MAX = 1024;
+
+/**
+ * One member's own multiplexer block off a `hello` answer, or `null` when that answer said nothing
+ * about it (M22/03).
+ *
+ * `null` for every shape this build cannot read as a block, and `null` means **"use the lead's
+ * answer"** — never "every capability present". A peer older than this amendment omits the field, a
+ * peer whose bridge holds no adapter omits it too, and both keep producing exactly the reading the
+ * phone gives them today.
+ *
+ * **Bounded, and re-checked field by field, because the lead REPUBLISHES this** to a phone on
+ * `/api/config?host=<member>`. Every string is length-capped and every collection is row-capped, so
+ * a member cannot make the lead serve an unbounded body on a route the phone polls on every page
+ * load.
+ *
+ * **Unknown capability keys are KEPT, deliberately.** `capabilities` is total for the version of the
+ * bridge that built it, not for every version a client may know (`bridge/types.ts`), so a key this
+ * lead has never heard of is a NEWER member answering honestly. Filtering it out would erase an
+ * answer for a phone that does know the key, and the whole module is built on an absent key reading
+ * as capable. `logoUrl` is the one field dropped, and the peer already omits it: a path only answers
+ * on the machine that serves it.
+ */
+export function parseMuxReport(value: JsonValue): MuxConfig | null {
+  const rec = asRecord(value);
+  if (rec === null) return null;
+  const block = asRecord(rec[PACK_MUX_FIELD]);
+  if (block === null) return null;
+  const name = typeof block.name === "string" ? block.name.trim() : "";
+  if (name === "" || name.length > MUX_NAME_MAX) return null;
+  const declared = asRecord(block.capabilities);
+  if (declared === null) return null;
+  const capabilities: Record<string, boolean> = {};
+  for (const [key, answer] of Object.entries(declared).slice(0, MUX_ROWS_MAX)) {
+    if (typeof answer === "boolean") capabilities[key] = answer;
+  }
+  const notes: Record<string, string> = {};
+  for (const [key, note] of Object.entries(asRecord(block.notes) ?? {}).slice(0, MUX_ROWS_MAX)) {
+    if (typeof note === "string" && note.length <= MUX_TEXT_MAX) notes[key] = note;
+  }
+  const unsupportedKeys = (Array.isArray(block.unsupportedKeys) ? block.unsupportedKeys : [])
+    .filter((k): k is string => typeof k === "string" && k.length <= MUX_TEXT_MAX)
+    .slice(0, MUX_ROWS_MAX);
+  // SAFETY: both records are string-keyed collections of the value type the wire field declares,
+  // checked entry by entry above. The nominal key type is a union of the capability names THIS build
+  // knows, and the cast is what lets a newer member's extra key survive — see the note above.
+  const wire: MuxConfig = {
+    name,
+    capabilities: capabilities as MuxConfig["capabilities"],
+    unsupportedKeys,
+    notes: notes as MuxConfig["notes"],
+  };
+  // Assigned, never conditionally spread: an unreadable value must leave NO key, so the phone's own
+  // absent-means rule answers it rather than a null this reader invented.
+  const spaces = block.spaces;
+  if (spaces === "one" || spaces === "many") wire.spaces = spaces;
+  const latency = asRecord(block.topologyLatency);
+  if (latency?.kind === "push") wire.topologyLatency = { kind: "push" };
+  if (latency?.kind === "bounded" && typeof latency.ms === "number" && Number.isFinite(latency.ms)) {
+    wire.topologyLatency = { kind: "bounded", ms: latency.ms };
+  }
+  return wire;
 }
 
 /**

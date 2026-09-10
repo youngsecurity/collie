@@ -3,6 +3,9 @@ import { describe, expect, test } from "bun:test";
 import { updateStartVerdict, type PackUpdateRow } from "./update-action.ts";
 
 import {
+  blobRoute,
+  BLOB_MAX_BYTES,
+  sniffBlobType,
   bridgeConfigBody,
   canonicalizeHost,
   muxConfigBody,
@@ -38,7 +41,8 @@ import {
   type ReplySender,
 } from "./server.ts";
 import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { mkdir, mkdtemp, rm, truncate, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { AuditLog, type AuditEntry } from "./audit.ts";
@@ -62,9 +66,11 @@ import {
   type MuxSpaceRequest,
   type MuxTabRequest,
 } from "./mux/types.ts";
-import { neverProxy } from "./pack/fixtures.ts";
+import { muxCaps, neverProxy } from "./pack/fixtures.ts";
 import { PackLead } from "./pack/lead.ts";
-import { PackRegistry } from "./pack/registry.ts";
+import { NARROW_PLAN, snapshotPlan } from "./pack/merge.ts";
+import { PackRegistry, selectHostFrom } from "./pack/registry.ts";
+import { selectView } from "./sessions.ts";
 import { DEFAULT_MAX_UPLOAD_BYTES } from "./uploads.ts";
 import { MAX_STT_AUDIO_BYTES } from "./stt/http.ts";
 import { computeEtag } from "./http-cache.ts";
@@ -73,6 +79,7 @@ import {
   type AgentView,
   type Launcher,
   type LaunchersResponse,
+  type MuxConfig,
   type SnapshotResponse,
 } from "./types.ts";
 import type { StateEngine } from "./state-engine.ts";
@@ -738,7 +745,8 @@ describe("sendReplySteps — two-step send & partial-failure clarity", () => {
 function asMux(fake: Partial<HerdrClient>): MuxAdapter {
   // SAFETY: the pane-write handlers under test reach exactly readPane / sendPaneText / sendPaneKeys,
   // all of which FakePaneClient implements; no other member is reachable from these code paths.
-  return new HerdrMux(fake as HerdrClient);
+  // A pane write never asks for the session list, so an empty one is unobservable here.
+  return new HerdrMux(fake as HerdrClient, () => []);
 }
 
 describe("pane write prompt binding", () => {
@@ -1890,6 +1898,34 @@ describe("bridgeConfigBody — the mux block is appended, never reordering what 
     expect(body.mux?.capabilities.paneGrid).toBe(true);
     expect(body.mux?.capabilities.createSpace).toBe(false);
   });
+
+  // ── M22/03: `?host=<member>` answers that member's block, in the same position ──────────────
+  //
+  // The lead holds one block per member, learned from that member's `hello` (bridge/pack/lead.ts).
+  // The route hands it here, and this is the whole difference between the two answers: the block's
+  // contents change and nothing else does.
+
+  test("a member's own block replaces the lead's, in the same position and with no other key moved", () => {
+    const member: MuxConfig = {
+      name: "member-reference",
+      // The point of the feature: a capability this lead's own adapter does not have.
+      capabilities: muxCaps({ createWorktree: true }),
+      unsupportedKeys: [],
+      notes: {},
+    };
+    const answered = bridgeConfigBody({ ...base, mux, muxWire: member });
+    expect(Object.keys(answered)).toEqual(["push", "vapidPublicKey", "build", "mux"]);
+    expect(answered.mux).toEqual(member);
+    // And the lead's own answer, from the same call with no member named, is untouched.
+    expect(bridgeConfigBody({ ...base, mux }).mux?.name).toBe("reference");
+    expect(bridgeConfigBody({ ...base, mux }).mux?.capabilities.createWorktree).toBe(false);
+  });
+
+  test("no member named: the body is what it always was, byte for byte", () => {
+    // §11's zero-tax contract. A solo install cannot even emit `host=`, so this is the only body
+    // it can ever get, and `muxWire` must not be able to change it by being absent.
+    expect(bridgeConfigBody({ ...base, mux, muxWire: undefined })).toEqual(bridgeConfigBody({ ...base, mux }));
+  });
 });
 
 // ── The merged snapshot route (M4/04) ────────────────────────────────────────
@@ -1955,11 +1991,21 @@ describe("the merged snapshot — an unreachable peer degrades its entry, never 
     const lead = leadOverDeadPeer();
     await lead.sweep();
     // The route has no try/catch around this call and needs none — that is the contract.
-    const merged = lead.merge(snapshotSource());
+    const merged = lead.merge(snapshotSource(), NARROW_PLAN);
     expect(merged.bridge).toBe("connected");
     expect(merged.servers).toEqual([
       { id: "desk", name: "the herd", isLead: true, reachable: true, protocol: "ok", lastSeenAt: expect.any(Number) },
-      { id: "laptop", name: "laptop", isLead: false, reachable: false, protocol: "unknown", lastSeenAt: 0 },
+      // One refused connection is well inside the retry budget, so the lead says it is reconnecting
+      // rather than asking the operator for anything (§10.2's presentation split, M22/05).
+      {
+        id: "laptop",
+        name: "laptop",
+        isLead: false,
+        reachable: false,
+        protocol: "unknown",
+        lastSeenAt: 0,
+        linkState: "reconnecting",
+      },
     ]);
     // The lead's own herd is untouched by its peer being down.
     expect(merged.agents.map((p) => p.paneId)).toEqual(["w1:p1"]);
@@ -1969,10 +2015,117 @@ describe("the merged snapshot — an unreachable peer degrades its entry, never 
   test("with no lead runtime the body is passed through by identity — solo's zero tax at the seam", () => {
     const body = snapshotSource();
     // Character-for-character the route's own expression, with the route's own optional dep.
-    const route = (packLead: PackLead | undefined, b: SnapshotResponse) => (packLead ? packLead.merge(b) : b);
+    const route = (packLead: PackLead | undefined, b: SnapshotResponse) =>
+      packLead ? packLead.merge(b, NARROW_PLAN) : b;
     const out = route(undefined, body);
     expect(out).toBe(body);
     expect(JSON.stringify(out)).not.toMatch(/"servers"|"host"/);
+  });
+});
+
+// ── M22/06: `?all=1` composes with `?host=` ──────────────────────────────────
+// The route is `packLead ? packLead.merge(body, plan) : body` inside `Bun.serve`, so the two halves
+// are asserted where they live: the PLAN is built here by the route's own expression, character for
+// character, and the source assertions below pin that the route builds it the same way.
+
+describe("the widened snapshot composes with the host scope (M22/06)", () => {
+  const src = readFileSync(join(import.meta.dir, "server.ts"), "utf8");
+
+  /** The route's own two lines, over a browser URL. Nothing here is a literal view. */
+  const planFor = (query: string) => {
+    const url = new URL(`http://collie.invalid/api/snapshot${query}`);
+    const host = selectHostFrom(url);
+    return snapshotPlan(host.kind === "member" ? host.id : null, selectView(url));
+  };
+
+  /** A member running two sessions, answering the sweep's widened ask: every pane is tagged. */
+  const widenedPeerBody = {
+    sessions: [
+      { name: "default", isPrimary: true, reachable: true, agents: 1, working: 0, blocked: 0 },
+      { name: "work", isPrimary: false, reachable: true, agents: 1, working: 0, blocked: 0 },
+    ],
+    agents: [
+      { ...snapshotSource().agents[0]!, paneId: "l1:p1", session: "default" },
+      { ...snapshotSource().agents[0]!, paneId: "l1:p2", session: "work" },
+    ],
+    shellPanes: [],
+  };
+
+  async function leadOverTwoSessionPeer(): Promise<PackLead> {
+    const registry = new PackRegistry({
+      sessions: { get: () => undefined },
+      self: "desk",
+      members: () => [
+        {
+          memberId: "laptop",
+          fingerprint: "a".repeat(64),
+          certPem: "-----BEGIN CERTIFICATE-----\nunused-in-this-test\n-----END CERTIFICATE-----\n",
+          address: "laptop.example:8787",
+          role: "peer",
+          status: "enrolled",
+          enrolledAt: 0,
+          secretGeneration: 1,
+          signedAt: 0,
+        },
+      ],
+    });
+    const lead = new PackLead({
+      log: () => {},
+      registry,
+      snapshot: async () => ({ ok: true, value: widenedPeerBody, status: 200, member: null, receivedAt: 1, date: null }),
+      proxy: neverProxy,
+      self: { id: "desk", name: "the herd" },
+      maxUploadBytes: DEFAULT_MAX_UPLOAD_BYTES,
+    });
+    await lead.sweep();
+    return lead;
+  }
+
+  test("`?all=1&host=<member>` returns that member's other sessions", async () => {
+    const lead = await leadOverTwoSessionPeer();
+    const merged = lead.merge(snapshotSource(), planFor("?host=laptop&sessions=all"));
+    expect(merged.agents.filter((p) => p.host === "laptop").map((p) => [p.paneId, p.session])).toEqual([
+      ["l1:p1", "default"],
+      ["l1:p2", "work"],
+    ]);
+    // And the LEAD is not widened by a request that is about another machine: its own body was built
+    // from `plan.local`, which is the narrow view here.
+    expect(planFor("?host=laptop&sessions=all").local).toEqual({ session: undefined, widen: false });
+  });
+
+  test("`?all=1` with no host is the lead's own sessions, exactly as today", async () => {
+    const lead = await leadOverTwoSessionPeer();
+    // The lead's half: the view reaches `localSnapshot` unchanged, which is what widens it.
+    expect(planFor("?sessions=all").local).toEqual({ session: undefined, widen: true });
+    expect(planFor("?sessions=all&session=work").local).toEqual({ session: "work", widen: true });
+    // The member's half: still narrow, so its second session does not appear uninvited.
+    const merged = lead.merge(snapshotSource(), planFor("?sessions=all"));
+    expect(merged.agents.map((p) => p.paneId)).toEqual(["w1:p1", "l1:p1"]);
+    expect(JSON.stringify(merged.agents)).not.toContain('"session"');
+  });
+
+  test("no param at all: every machine narrow, which is the only body a solo install can get", () => {
+    expect(planFor("").local).toEqual(NARROW_PLAN.local);
+    expect(planFor("").peer("laptop")).toEqual(NARROW_PLAN.peer("laptop"));
+    expect(planFor("?s=work").local).toEqual({ session: undefined, widen: false });
+  });
+
+  test("the route reads the resolved host together with the view, and hands both to the merge", () => {
+    const handler = src.slice(src.indexOf('if (pathname === "/api/snapshot")'));
+    const route = handler.slice(0, handler.indexOf("// ── Session-scoped routes"));
+    // The two params compose in ONE expression, from the host the request already resolved.
+    expect(route).toContain('const plan = snapshotPlan(host.kind === "member" ? host.id : null, selectView(url));');
+    expect(route).toContain("localSnapshot(plan.local.session, device.enforced ? device : null, plan.local.widen)");
+    expect(route).toContain("packLead ? packLead.merge(body, plan) : body");
+    // No literal view survives on this route: the switch is read once, by name.
+    expect(route).not.toContain('url.searchParams.get("sessions")');
+  });
+
+  test("the peer surface answers the view the LEAD asked for, never a hard-coded one", () => {
+    // The blocker M22/06 removed: `snapshot: (session) => localSnapshot(session, null, false)` made a
+    // widened peer answer impossible, whatever the lead sent.
+    expect(src).toContain("snapshot: (view) => localSnapshot(view.session, null, view.widen),");
+    expect(src).not.toContain("localSnapshot(session, null, false)");
   });
 });
 
@@ -1989,19 +2142,21 @@ describe("the host gate — `?host=` selects among enrolled members and nothing 
     // The load-bearing claim: `?h=laptop` + `w1:p1` must never be served the DESK's `w1:p1`, and
     // pane ids collide across machines, so a fall-through here is a cross-host write.
     //
-    // All NINE session-scoped routes (tab create, workspace create, launch, this host's launcher
-    // rows, tab action, the pane family, "look now", the worktree listing and the worktree actions)
-    // reach their runtime through the caller's resolver and nothing else.
-    expect([...src.matchAll(/await caller\.resolve\(\);/g)]).toHaveLength(9);
-    // Exactly five `registry.get(` calls remain, and each is a sanctioned one, named here rather
+    // All TEN session-scoped routes (tab create, workspace create, launch, this host's launcher
+    // rows, one journal blob, tab action, the pane family, "look now", the worktree listing and the
+    // worktree actions) reach their runtime through the caller's resolver and nothing else.
+    expect([...src.matchAll(/await caller\.resolve\(\);/g)]).toHaveLength(10);
+    // Exactly six `registry.get(` calls remain, and each is a sanctioned one, named here rather
     // than exempted: assembling THIS collie's own snapshot body; `localRuntime`, the single
     // "(session) → runtime, or 404" helper both callers share; `/api/config`, which reports THIS
     // collie's own multiplexer (M10/06) and is not session-scoped at all; `/api/mux/logo.svg`,
     // which serves that same local multiplexer's mark and is session-scoped no more than the config
-    // that publishes its URL; and the attention stamp on `/api/snapshot`, which is a fact about
+    // that publishes its URL; the attention stamp on `/api/snapshot`, which is a fact about
     // THIS collie's own engine on a route that is already local-body-then-merge and has no `?h=`
-    // branch to fall through. A sixth would be a route reaching past the gate.
-    expect([...src.matchAll(/registry\.get\(/g)]).toHaveLength(5);
+    // branch to fall through; and the pack surface's own `mux` source, which answers an admitted
+    // LEAD with this machine's block on `hello` and is the same local read `/api/config` makes
+    // (M22/03). A seventh would be a route reaching past the gate.
+    expect([...src.matchAll(/registry\.get\(/g)]).toHaveLength(6);
     // The mux read is a read of the LOCAL primary — never `?host=`, because a peer's capabilities
     // are its own business and reach the lead over the pack API, never out of this registry.
     expect(src).toContain("const activeMux = registry.get();");
@@ -2741,6 +2896,114 @@ describe("GET /api/launchers — this host's own rows, home included", () => {
   });
 });
 
+// ── GET /api/blobs/<hash> ────────────────────────────────────────────────────
+// The route in full, against a real blob store on disk: every branch a phone can reach. It takes
+// its roots as an argument for exactly this reason — `Bun.serve` cannot be stood up under
+// `bun test` (CLAUDE.md), so the handler is what is exercised rather than a re-implementation.
+
+const PNG_HEAD = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const JPEG_HEAD = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46]);
+
+/** A pi-shaped `sessions/` root with a sibling `blobs/`, which is where a blob is looked for. */
+async function blobStore(): Promise<{ sessions: string; blobs: string; base: string }> {
+  const base = await mkdtemp(join(tmpdir(), "collie-blob-route-"));
+  const sessions = join(base, "sessions");
+  const blobs = join(base, "blobs");
+  await mkdir(sessions, { recursive: true });
+  await mkdir(blobs, { recursive: true });
+  return { sessions, blobs, base };
+}
+
+describe("GET /api/blobs/<hash> — one content-addressed image, off the disk that holds it", () => {
+  const hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+  test("a name that is not a 64-hex digest is refused before any path exists", async () => {
+    const { sessions, base } = await blobStore();
+    for (const bad of ["not-a-hash", "1234", "../../etc/passwd", `${hash}x`]) {
+      const res = await blobRoute(bad, [sessions], null);
+      expect(res.status).toBe(400);
+    }
+    await rm(base, { recursive: true, force: true });
+  });
+
+  test("a well-formed hash nothing holds is a 404 — the same answer containment failure gives", async () => {
+    const { sessions, base } = await blobStore();
+    const res = await blobRoute(hash, [sessions], null);
+    expect(res.status).toBe(404);
+    await rm(base, { recursive: true, force: true });
+  });
+
+  test("a blob over BLOB_MAX_BYTES is a 413, not a stalled download", async () => {
+    const { sessions, blobs, base } = await blobStore();
+    const path = join(blobs, hash);
+    await writeFile(path, "");
+    // Sparse, so the test costs no 16 MiB of bytes to prove the cap is on the SIZE.
+    await truncate(path, BLOB_MAX_BYTES + 1);
+    const res = await blobRoute(hash, [sessions], null);
+    expect(res.status).toBe(413);
+    expect(await res.text()).toContain("too large");
+    await rm(base, { recursive: true, force: true });
+  });
+
+  test("a png answers 200 with its sniffed type, an immutable cache header, and the hash as ETag", async () => {
+    const { sessions, blobs, base } = await blobStore();
+    await Bun.write(join(blobs, hash), PNG_HEAD);
+    const res = await blobRoute(hash, [sessions], null);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("image/png");
+    expect(res.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
+    // The ETag IS the hash: the store is content-addressed, so nothing is re-hashed to learn it.
+    expect(res.headers.get("etag")).toBe(`"${hash}"`);
+    expect(new Uint8Array(await res.arrayBuffer())).toEqual(PNG_HEAD);
+    await rm(base, { recursive: true, force: true });
+  });
+
+  test("a jpeg is sniffed from its own bytes — the file has no extension to guess from", async () => {
+    const { sessions, blobs, base } = await blobStore();
+    await Bun.write(join(blobs, hash), JPEG_HEAD);
+    const res = await blobRoute(hash, [sessions], null);
+    expect(res.headers.get("content-type")).toBe("image/jpeg");
+    await rm(base, { recursive: true, force: true });
+  });
+
+  test("if-none-match on the hash is a 304 with no body", async () => {
+    const { sessions, blobs, base } = await blobStore();
+    await Bun.write(join(blobs, hash), PNG_HEAD);
+    const res = await blobRoute(hash, [sessions], `"${hash}"`);
+    expect(res.status).toBe(304);
+    expect(res.headers.get("etag")).toBe(`"${hash}"`);
+    expect(await res.text()).toBe("");
+    await rm(base, { recursive: true, force: true });
+  });
+
+  test("the magic table names what it knows and guesses at nothing else", () => {
+    expect(sniffBlobType(PNG_HEAD)).toBe("image/png");
+    expect(sniffBlobType(JPEG_HEAD)).toBe("image/jpeg");
+    expect(sniffBlobType(new Uint8Array([0x47, 0x49, 0x46, 0x38]))).toBe("image/gif");
+    const webp = new Uint8Array([0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50]);
+    expect(sniffBlobType(webp)).toBe("image/webp");
+    // RIFF without WEBP at offset 8 is some other RIFF container, not a picture.
+    const riff = new Uint8Array([0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x41, 0x56, 0x49, 0x20]);
+    expect(sniffBlobType(riff)).toBe("application/octet-stream");
+    expect(sniffBlobType(new Uint8Array([1, 2, 3, 4]))).toBe("application/octet-stream");
+  });
+
+  // THE GATE, pinned at the registration site. A blob is a picture the pane text already refers to,
+  // so it is a READ: a read-only device and a paired one both pass, exactly as they do for the pane
+  // read and for `history`. `guard`'s own read/write behaviour is asserted above; what this pins is
+  // that the route asks for the read tier and resolves through the host gate, so a `?host=` blob is
+  // fetched from the member whose journal named it rather than off the lead's own disk.
+  test("the route is gated as a READ and resolves through the host gate", () => {
+    const src = readFileSync(join(import.meta.dir, "server.ts"), "utf8");
+    const start = src.indexOf("const blobMatch = pathname.match(BLOB_ROUTE);");
+    expect(start).toBeGreaterThan(0);
+    const block = src.slice(start, src.indexOf("\n    }", start));
+    expect(block).toContain('caller.gate("read")');
+    expect(block).not.toContain('caller.gate("write")');
+    expect(block).toContain("await caller.resolve()");
+  });
+});
+
 // ── THE PACK'S RUN (M16/04) ─────────────────────────────────────────────────
 // The peer legs and the peers-only retry, both decided by the pure verdict and both read off what
 // the sweep banked. This route dials nobody, and a peers-only start spawns nothing here.
@@ -2756,10 +3019,25 @@ describe("update status peers — the legs of a pack-wide run", () => {
     // From the queue the sweep folds, never from a dial: `updatePeers()` is a read of banked state,
     // exactly as `updateRows()` is.
     const at = src.indexOf("function updateStatusWithPeers()");
-    const composer = src.slice(at, at + 600);
+    const composer = src.slice(at, at + 3400);
     expect(composer).toContain("opts.packLead?.updatePeers() ?? []");
-    expect(composer).toContain("run: { ...status.run, peers: legs }");
+    expect(composer).toContain("return { ...status, run: { ...status.run, ...packState } };");
+    // §20's one clock (M20/01), on the same composer and never a second one.
+    expect(composer).toContain("opts.packLead?.updateSettledAt() ?? null");
+    // M20/09: a peers-only run has no local record, so the legs ride the STATUS instead of being
+    // dropped. The guard that dropped them is gone, and nothing has taken its place.
+    expect(composer).toContain("return { ...status, ...packState };");
+    expect(composer).not.toContain("status.run === null || legs.length === 0");
     expect(composer).not.toContain("sweep(");
+    // M20/01, after review: the legs outlive their run, so the composer names the run they describe
+    // before it attaches them to the run on screen.
+    expect(composer).toContain("opts.packLead?.updateLegsRun() !== status.run.runId");
+    // And after counsel: legs from another run FALL to the top level, they are not discarded. A local
+    // update leaves a `done` record behind, so the commonest peers-only run there is — "Retry pack
+    // update" after an update — has a different run id and would otherwise be invisible for its whole
+    // life, which is spec 09's bug wearing spec 01's guard.
+    expect(composer).toContain("!== status.run.runId) return { ...status, ...packState };");
+    expect(composer).not.toContain("!== status.run.runId) return status;");
     // And there is still no fourth endpoint with a fifth shape.
     expect(src).not.toContain('"/api/update/status"');
   });

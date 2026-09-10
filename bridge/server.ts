@@ -23,10 +23,11 @@ import {
 } from "./prompt-binding.ts";
 import type { Push, PushSubscription } from "./push.ts";
 import { RefreshCoalescer } from "./refresh.ts";
-import { herdTagFor, type SessionRegistry, type SessionRuntime, widenedPanes } from "./sessions.ts";
+import { herdTagFor, selectView, type SessionRegistry, type SessionRuntime, widenedPanes } from "./sessions.ts";
 import type { Snooze } from "./snooze.ts";
 import { IMAGE_EXTS, TEXT_EXTS, TEXT_SNIFF_BYTES, uploadExt } from "./uploads.ts";
 import type { UpdateMonitor } from "./update.ts";
+import { readStagingLog } from "./staging-log.ts";
 import {
   parseUpdateStartRequest,
   UpdateConfirmGate,
@@ -37,6 +38,8 @@ import type { StateEngine } from "./state-engine.ts";
 import { adapterFor, buildJournalRegistry } from "./journal/registry.ts";
 import { TranscriptStore } from "./journal/store.ts";
 import type { JournalAdapter } from "./journal/types.ts";
+import { isBlobHash, resolveBlobPath } from "./journal/pi.ts";
+import { statFile } from "./journal/files.ts";
 import {
   bearerToken,
   normalizeLabel,
@@ -48,6 +51,7 @@ import { modeForWire } from "./pack/mode.ts";
 import type { PackRuntime } from "./pack/config.ts";
 import type { PackLead } from "./pack/lead.ts";
 import { packDeviceOf, packGate } from "./pack/peer-gate.ts";
+import { snapshotPlan } from "./pack/merge.ts";
 import { selectHostFrom, type HostSelector } from "./pack/registry.ts";
 import type { PackHandler, PackSurface } from "./pack/router.ts";
 import type { PackTlsOptions } from "./pack/transport.ts";
@@ -76,6 +80,7 @@ import type {
   PaneWire,
   SnapshotResponse,
   SttCapability,
+  UpdateStatus,
   UploadCapability,
   UploadResponse,
 } from "./types.ts";
@@ -261,6 +266,17 @@ const MAX_HISTORY_LIMIT = 5000;
 // A tab supports rename + close — an action group like the pane route. The `/api/tab` POST above
 // (create) is an exact match on `/api/tab`, so it never collides with this `/api/tab/<id>/<action>`.
 const TAB_ACTION_ROUTE = /^\/api\/tab\/([^/]+)\/(rename|close)$/;
+
+/**
+ * `GET /api/blobs/<hash>` — one content-addressed image out of a pi/omp journal's blob store.
+ *
+ * The hash is matched as an opaque segment here and validated by {@link isBlobHash} in the handler,
+ * exactly as `PANE_ROUTE` matches a pane id and `decodeURIComponent` interprets it: a route grammar
+ * says where a request goes, never whether its argument is well formed. `bridge/pack/forward.ts`
+ * mirrors this shape one-for-one (`forward.test.ts` pins the correspondence), because a blob lives
+ * on the machine whose journal named it and is therefore a forwarded READ.
+ */
+const BLOB_ROUTE = /^\/api\/blobs\/([^/]+)$/;
 
 /**
  * Worktree routes, all hung off the SPACE that asked (ADR 0032).
@@ -449,6 +465,87 @@ export function operatorFontResponse(
   return secure(new Response(bytes, { headers }));
 }
 
+/**
+ * The ceiling on one blob the bridge will serve: 16 MiB.
+ *
+ * A blob is a screenshot an agent took, and a phone on a cellular link is the reader — so the number
+ * is the point at which sending it costs more than it is worth, not a disk limit. It is also a bound
+ * on what a single request can pull off this machine: the store is content-addressed, so a caller
+ * who has a hash can ask for those bytes, and nothing else caps the size of a file an agent wrote
+ * there. Above it the answer is a 413, which says "too big" rather than timing out mid-stream.
+ */
+export const BLOB_MAX_BYTES = 16 * 1024 * 1024;
+
+/**
+ * Magic bytes → content type, as a table.
+ *
+ * **`Bun.file(path).type` is useless here and that is not a Bun fault:** a blob's name IS its
+ * sha-256 digest, so the file has no extension, and every extension-driven guess lands on
+ * `application/octet-stream`. The bytes are the only evidence there is, so they are what is read.
+ *
+ * `offset` exists for the one format whose marker is not at the start: WebP writes `RIFF` at 0 and
+ * `WEBP` at 8. An unmatched header stays `application/octet-stream` — the browser then declines to
+ * render it, which is the right answer for a file that is not a picture.
+ */
+const BLOB_MAGIC: readonly { readonly type: string; readonly offset: number; readonly bytes: readonly number[] }[] = [
+  { type: "image/png", offset: 0, bytes: [0x89, 0x50, 0x4e, 0x47] },
+  { type: "image/jpeg", offset: 0, bytes: [0xff, 0xd8, 0xff] },
+  { type: "image/gif", offset: 0, bytes: [0x47, 0x49, 0x46] },
+  { type: "image/webp", offset: 0, bytes: [0x52, 0x49, 0x46, 0x46] },
+  { type: "image/webp", offset: 8, bytes: [0x57, 0x45, 0x42, 0x50] },
+];
+
+/** How many leading bytes {@link sniffBlobType} needs — the longest marker's end. */
+const BLOB_SNIFF_BYTES = 12;
+
+/** The content type of a blob, read off its leading bytes. Pure + exported so the table is tested. */
+export function sniffBlobType(head: Uint8Array): string {
+  const matches = (m: { offset: number; bytes: readonly number[] }): boolean =>
+    m.bytes.every((b, i) => head[m.offset + i] === b);
+  // WebP needs BOTH of its rows, so it is asked for as a pair rather than by the first row alone.
+  if (BLOB_MAGIC.filter((m) => m.type === "image/webp").every(matches)) return "image/webp";
+  const hit = BLOB_MAGIC.find((m) => m.type !== "image/webp" && matches(m));
+  return hit?.type ?? "application/octet-stream";
+}
+
+/**
+ * `GET /api/blobs/<hash>` — the bytes a pi/omp journal named, served back to the phone.
+ *
+ * Exported and taking its roots as an argument so every branch below is exercised under `bun test`
+ * without standing up Bun.serve (CLAUDE.md): a refused hash, a hash nothing holds, a file over the
+ * cap, and the content type of a png and a jpeg.
+ *
+ * **The ETag IS the hash.** The store is content-addressed, so the name of the file already is a
+ * strong validator of its bytes; re-hashing them with `computeEtag` would read the whole file to
+ * learn something the URL said. That is also why the body is `Bun.file(real)` rather than
+ * `await file.bytes()` — the runtime streams it, and a 16 MiB screenshot is never held whole in this
+ * process.
+ */
+export async function blobRoute(
+  hash: string,
+  sessionRoots: readonly string[],
+  ifNoneMatch: string | null,
+): Promise<Response> {
+  if (!isBlobHash(hash)) return text("invalid blob hash", 400);
+  const real = await resolveBlobPath(hash, sessionRoots);
+  if (real === null) return text("blob not found", 404);
+  const meta = await statFile(real);
+  if (meta === null) return text("blob not found", 404); // vanished between resolve and stat
+  if (meta.size > BLOB_MAX_BYTES) {
+    return text(`blob too large (max ${String(Math.round(BLOB_MAX_BYTES / (1024 * 1024)))} MB)`, 413);
+  }
+  const etag = `"${hash}"`;
+  const headers = {
+    "content-type": "application/octet-stream",
+    "cache-control": "public, max-age=31536000, immutable",
+    etag,
+  };
+  if (notModified(ifNoneMatch, etag)) return secure(new Response(null, { status: 304, headers }));
+  const file = Bun.file(real);
+  headers["content-type"] = sniffBlobType(new Uint8Array(await file.slice(0, BLOB_SNIFF_BYTES).arrayBuffer()));
+  return secure(new Response(file, { headers }));
+}
+
 export function bridgeConfigBody(opts: {
   push: boolean;
   vapidPublicKey: string;
@@ -460,6 +557,14 @@ export function bridgeConfigBody(opts: {
    * always passes it.
    */
   mux?: MuxPublication;
+  /**
+   * A MEMBER's own block, already in wire shape, for `/api/config?host=<member>` (M22/03).
+   *
+   * When present it REPLACES what `mux` would have produced, in the same position, so a member's
+   * answer differs from the lead's in the block's contents and in nothing else. Absent means "answer
+   * for this host", which is both the solo body and the lead's own answer with no `host=` on it.
+   */
+  muxWire?: MuxConfig;
   /**
    * The operator's own palette rows. Omitted entirely when there are none, so an operator who never
    * wrote a `commands.toml` ships the same payload as before — the same reasoning `mode` follows.
@@ -508,7 +613,8 @@ export function bridgeConfigBody(opts: {
   // omit-when-default. There is no default to omit — "no mux key" already means something on the
   // phone (an older bridge, read as fully capable), so a Herdr bridge staying silent here would be
   // indistinguishable from one that cannot answer.
-  if (opts.mux !== undefined) wire.mux = muxConfigBody(opts.mux);
+  if (opts.muxWire !== undefined) wire.mux = opts.muxWire;
+  else if (opts.mux !== undefined) wire.mux = muxConfigBody(opts.mux);
   // Appended after the mux block, and omit-when-absent for the reason `mode` is: no key means no
   // microphone, which is precisely true of a collie with no provider configured.
   if (opts.stt !== undefined) wire.stt = opts.stt;
@@ -883,6 +989,26 @@ export function startServer(opts: {
       if (rt instanceof Response) return rt;
       return launchersRoute(operatorLaunchers, req.headers.get("accept-encoding"));
     }
+    // ── Blobs: the bytes a pi/omp journal named (`resolveImageUrl` in journal/pi.ts) ──
+    //
+    // A READ, and gated as one: it hands back a picture an agent already put in its own log, so a
+    // read-only or unpaired-but-permitted device may see it exactly as it may see the pane text
+    // that mentions it. It is session-scoped so `caller.resolve()` forwards a `?host=` call to the
+    // member whose disk holds the file — the lead has no copy of a peer's blob (§9.1).
+    const blobMatch = pathname.match(BLOB_ROUTE);
+    if (blobMatch && req.method === "GET") {
+      const denied = caller.gate("read");
+      if (denied) return denied;
+      const rt = await caller.resolve();
+      if (rt instanceof Response) return rt;
+      let hash: string;
+      try {
+        hash = decodeURIComponent(blobMatch[1]!);
+      } catch {
+        return text("malformed URL", 400);
+      }
+      return blobRoute(hash, cfg.journalRoots.pi, req.headers.get("if-none-match"));
+    }
 
     // ── Worktrees: list / create / open / remove, all scoped to a space (ADR 0032) ──
     const worktreeListMatch = pathname.match(WORKTREE_LIST_ROUTE);
@@ -984,12 +1110,21 @@ export function startServer(opts: {
   // the PEER's own log with `via:"pack"` and the originating member (§12). The lead's verdict is not
   // an input — it never crosses the wire.
   const packHandler = opts.packRouter?.({
-    // Never widened, and stated rather than defaulted: a peer answers its lead with the session the
-    // lead asked for, and no lead asks for more than one yet. Turning this on is a PACK_PROTOCOL
-    // change (§7.1, additive-optional) and belongs in the commit that also teaches the sweep to ask
-    // and `merge.ts` to carry the tag — not to a default argument that quietly widens a wire the
-    // spec has not been amended for.
-    snapshot: (session) => localSnapshot(session, null, false),
+    // The view comes off the LEAD's request (`bridge/pack/router.ts` reads it with the same
+    // `selectView` the browser route uses), never from a literal here: this line used to hard-code a
+    // narrow answer, which made a member's second session unreachable no matter what the phone asked
+    // (M22/06). `?sessions=all` is additive and optional under §7.1, so PACK_PROTOCOL_VERSION does
+    // not move, and a lead that does not send it still gets the primary session. A pack request may
+    // still not name a host — widening is a second dimension of ONE machine, and a peer has no
+    // peers (§4).
+    snapshot: (view) => localSnapshot(view.session, null, view.widen),
+    // M22/03: this collie's own capability declaration, for `hello`. The SAME expression the
+    // `/api/config` route below publishes to a browser — the primary session's adapter — so a peer
+    // cannot report capabilities that differ from the ones it serves its own operator.
+    mux: () => {
+      const active = registry.get();
+      return active === undefined ? null : muxConfigBody(active.herdr);
+    },
     dispatch: async (req, url, from) => {
       const session = url.searchParams.get("session") ?? undefined;
       const device = packDeviceOf(req);
@@ -1031,10 +1166,55 @@ export function startServer(opts: {
    * bridge with no run in flight send precisely today's object.
    */
   function updateStatusWithPeers() {
-    const status = updateMonitor.status();
+    const status = withStagingTail(updateMonitor.status());
     const legs = opts.packLead?.updatePeers() ?? [];
-    if (status.run === undefined || status.run === null || legs.length === 0) return status;
-    return { ...status, run: { ...status.run, peers: legs } };
+    if (legs.length === 0) return status;
+    // §20's one clock (M20/01). Omitted while the run is still moving, so "absent" keeps meaning
+    // "not settled" on a phone talking to a bridge that predates the field.
+    const settledAt = opts.packLead?.updateSettledAt() ?? null;
+    const packState = settledAt === null ? { peers: legs } : { peers: legs, settledAt };
+    // A PEERS-ONLY RUN IS STILL A RUN (M20/09). "Retry pack update" never calls the updater on this
+    // machine — it begins the turn queue and re-sweeps — so nothing is written to `update.json` and
+    // `status.run` is null for the whole run. The old guard dropped the live legs on exactly that
+    // path, and the phone then had no way to learn the run had started, let alone finished.
+    //
+    // The legs ride the RUN when there is one and the STATUS when there is not. Two positions, one
+    // reader: `peerLegsOf` in `web/src/lib/update-ribbon.ts` is where both surfaces ask. Sending
+    // them at the top level unconditionally would be a second copy of a field already shipped on
+    // `run`, and a phone older than this change would then have two places to disagree about.
+    if (status.run === undefined || status.run === null) return { ...status, ...packState };
+    // AND THEY RIDE THEIR OWN RUN, NEVER THE NEXT ONE. The legs outlive the run that made them, so
+    // the outcome stays on the screen the operator confirmed on — which means a later run would
+    // otherwise carry the previous run's peer rows, and its failures, as if they were its own.
+    //
+    // They are not DROPPED when they belong to a different run, they fall to the top level, which is
+    // the position for legs this machine's record does not own. Dropping them was the first shape of
+    // this guard and it re-opened spec 09 on the commonest path there is: a local update leaves a
+    // `done` record behind, the operator then taps "Retry pack update", and that peers-only run has
+    // a different run id and no record of its own. The legs would be discarded for the whole run and
+    // the phone would learn nothing, which is the very bug this composer exists to fix.
+    if (opts.packLead?.updateLegsRun() !== status.run.runId) return { ...status, ...packState };
+    return { ...status, run: { ...status.run, ...packState } };
+  }
+
+  /**
+   * The staging progress file, folded into the run record it belongs to (M20/10).
+   *
+   * ONE OBJECT ON THE WIRE. The client is given no second channel to poll and no route to tail: a
+   * second client-visible source about one run is a second thing that can disagree with the run
+   * record, which is the fault the composer above was written to avoid. So the tail rides `logTail`,
+   * the field the card already renders under "Log tail".
+   *
+   * Only while STAGING, and only when the run carries no tail of its own. A failure's tail is the
+   * service log, which is the more useful document at that point and must not be overwritten by the
+   * build output that preceded it.
+   */
+  function withStagingTail(status: UpdateStatus): UpdateStatus {
+    const run = status.run;
+    if (run === undefined || run.state !== "staging" || run.logTail !== undefined) return status;
+    if (run.runId === undefined) return status;
+    const tail = readStagingLog(cfg.stateDir, run.runId);
+    return tail === null ? status : { ...status, run: { ...run, logTail: tail } };
   }
 
   const server = Bun.serve({
@@ -1188,13 +1368,21 @@ export function startServer(opts: {
         // `/pack/v1/snapshot`, and a lead sweeps on its own clock whether or not anybody is reading
         // it — stamping there would pin every peer at `watched` for the life of the pack).
         registry.get(sessionName)?.engine.noteAttention();
-        // `?sessions=all` WIDENS the pane lists to every local session (see localSnapshot). One
-        // exact spelling and nothing else is accepted: the parameter is a switch, not a list, and a
-        // typo must read as "no" rather than as some third behaviour. It does NOT replace `?session=`
-        // — the ambient session still decides `bridge`, `workspaces`, `tabs` and the 404 below, so a
-        // widened view of an unknown session is still an unknown session.
-        const widen = url.searchParams.get("sessions") === "all";
-        const body = localSnapshot(sessionName, device.enforced ? device : null, widen);
+        // `?sessions=all` WIDENS the pane lists to every session on ONE machine (see localSnapshot).
+        // One exact spelling and nothing else is accepted: the parameter is a switch, not a list, and
+        // a typo must read as "no" rather than as some third behaviour. It does NOT replace
+        // `?session=` — the named session still decides `bridge`, `workspaces`, `tabs` and the 404
+        // below, so a widened view of an unknown session is still an unknown session.
+        //
+        // WHICH MACHINE is the other half, and the two compose (M22/06). `?host=` was resolved above
+        // for every session-scoped route; this route is the one that answers from the lead's own
+        // registry plus its CACHE of every member, so it never forwards and it reads the host here
+        // rather than through the gate. No host, or the lead, and the view lands on this collie's own
+        // registry exactly as it always has — which is the only body a solo install can get, because
+        // it cannot emit the parameter at all (§11). A member, and the view lands on that member's
+        // cached body at the merge instead, where `narrowPeerBody` applies it.
+        const plan = snapshotPlan(host.kind === "member" ? host.id : null, selectView(url));
+        const body = localSnapshot(plan.local.session, device.enforced ? device : null, plan.local.widen);
         if (!body) return unknownSession();
         // The ONE place the lead re-serialises (§9.2). With no pack this is the identity function's
         // absence: `body` goes out as assembled, same keys, same order, same bytes, same ETag.
@@ -1203,7 +1391,7 @@ export function startServer(opts: {
         // Tag every snapshot poll with the on-disk build id so an open client notices a live rebuild
         // between polls — the no-service-worker self-update path (web/src/lib/self-update.ts).
         return withBuildHeader(
-          json(packLead ? packLead.merge(body) : body, req.headers.get("accept-encoding")),
+          json(packLead ? packLead.merge(body, plan) : body, req.headers.get("accept-encoding")),
           await buildId(),
         );
       }
@@ -1255,6 +1443,29 @@ export function startServer(opts: {
         // is not a choice. `?.` only because `get()` is total over a Map — the primary is created
         // eagerly in the constructor and never disposed.
         const activeMux = registry.get();
+        // ── `?host=<member>`: THIS MEMBER's capability declaration (M22/03) ──────────────────
+        //
+        // Answered from what the lead already holds, and never forwarded: `config` is on
+        // `bridge/pack/forward.ts`'s not-forwarded list and must stay there, because a config read
+        // is the request every page load makes and it must not be able to make the lead dial a
+        // machine. The lead learned the block from that member's last `hello`.
+        //
+        // The host selector is the one `target()` above already resolved, so an unknown or
+        // ill-formed member id gets the same 404 every host-scoped route gives it. It is never
+        // silently rewritten to the lead: quietly answering for a different machine is the exact
+        // failure the host dimension exists to prevent.
+        const scoped = host.kind === "local" ? undefined : packLead?.resolve(host);
+        if (host.kind !== "local" && scoped === undefined) {
+          return jsonError(
+            apiError("host.unknown", { host: host.kind === "member" ? host.id : host.raw }),
+            404,
+            req.headers.get("accept-encoding"),
+          );
+        }
+        // A member that has published nothing answers with the LEAD's block, because absent means
+        // "use the lead's" — which is byte for byte the reading the phone gives every pane today.
+        // The lead's own entry resolves `local`, so it takes its own branch and its own adapter.
+        const memberMux = scoped?.kind === "peer" ? packLead?.muxFor(scoped.link.memberId) : null;
         // Re-resolved per request for the same reason `commands.toml` is: `collie stt setup` is
         // live, and this is where the phone learns whether to draw a microphone at all. `?? undefined`
         // because "no provider" must OMIT the key, never send a null one (PACK_PROTOCOL.md §11).
@@ -1270,6 +1481,9 @@ export function startServer(opts: {
             operatorQuickReplies: myReplies,
             operatorFonts: myFonts,
             mux: activeMux?.herdr,
+            // Assigned through `?? undefined` rather than conditionally, so the no-`host=` request
+            // builds the byte-identical body it always did (PACK_PROTOCOL.md §11).
+            muxWire: memberMux ?? undefined,
             stt: sttWire,
             // This host's own limits, read from cfg on every request like everything else here.
             // A pack member answers with ITS number, which is the number that will judge the bytes.

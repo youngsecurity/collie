@@ -74,11 +74,12 @@ function normaliseUploadTypes(raw: string[]): string[] {
  */
 function envRoots(
   name: string,
-  fallback: string,
+  fallback: string | string[],
   env: Record<string, string | undefined> = process.env,
 ): string[] {
   const list = envList(name, env);
-  return list.length > 0 ? list : [fallback];
+  const fallbacks = Array.isArray(fallback) ? fallback : [fallback];
+  return list.length > 0 ? list : fallbacks;
 }
 
 /**
@@ -462,9 +463,14 @@ export function resolveJournalRoots(
       join(env.CODEX_HOME ?? join(home, ".codex"), "sessions"),
       env,
     ),
+    // TWO defaults, one adapter: Oh My Pi ships as `omp` and writes pi's own format into
+    // `~/.omp/agent/sessions`, so a host that runs it has a second home for the same log format.
+    // `PI_CODING_AGENT_DIR`, when the operator set it, is the one answer and neither is added.
     pi: envRoots(
       "COLLIE_PI_ROOT",
-      join(env.PI_CODING_AGENT_DIR ?? join(home, ".pi", "agent"), "sessions"),
+      env.PI_CODING_AGENT_DIR
+        ? join(env.PI_CODING_AGENT_DIR, "sessions")
+        : [join(home, ".omp", "agent", "sessions"), join(home, ".pi", "agent", "sessions")],
       env,
     ),
     // OpenCode keeps one SQLite database at the top of its XDG data dir, not per-session files.

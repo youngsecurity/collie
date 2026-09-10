@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, readlinkSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readlinkSync, statSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { homedir, hostname } from "node:os";
 import { join } from "node:path";
@@ -27,6 +27,7 @@ import {
 } from "./front-door.ts";
 import { HERDR_DIAL_MODE_OPTION } from "./mux/herdr/adapter.ts";
 import { DEFAULT_TIMEOUT_MS } from "./mux/herdr/client.ts";
+import { deriveConfigRoot } from "./mux/herdr/sessions.ts";
 import {
   buildMuxRegistry,
   createMux,
@@ -61,7 +62,7 @@ import { packStatusBody } from "./pack/status-wire.ts";
 import { herdPushGate, PeerNotifier } from "./pack/notify.ts";
 import { packHelloBudget, packTimeoutBudget, packTimeoutClampWarning, PeerClient } from "./pack/peer-client.ts";
 import { PackRegistry } from "./pack/registry.ts";
-import { leadReleaseHeader, PackFollower, UpdateTurns } from "./pack/follow.ts";
+import { leadReleaseHeader, LEG_WALL_CLOCK_MS, PackFollower, UpdateTurns } from "./pack/follow.ts";
 import { createPackRouter, type PackRouterDeps } from "./pack/router.ts";
 import {
   checkpointMarker,
@@ -115,7 +116,6 @@ import { Push } from "./push.ts";
 import { pluginRoot } from "./root.ts";
 import { buildId, startServer } from "./server.ts";
 import {
-  deriveConfigRoot,
   herdTagFor,
   SessionRegistry,
   type SessionFactory,
@@ -341,7 +341,7 @@ async function applyDeposition(proof: Warrant | null, reason: string): Promise<D
     });
     console.warn(
       `[pack] DEPOSED — ${reason}. This machine could NOT rejoin by itself and has parked: ` +
-        `${heal.reason}. Recover it with \`collie pack add\` from the new lead, or \`collie join\`.`,
+        `${heal.reason}. Recover it with \`collie crew add\` from the new lead, or \`collie join\`.`,
     );
   }
   // Either outcome ends this machine's claim on the pack's front door, so the door comes down here
@@ -366,8 +366,8 @@ async function applyDeposition(proof: Warrant | null, reason: string): Promise<D
     );
     if (dropped !== null) {
       console.warn(
-        `[pack] discarded a stored warrant for pack "${dropped.packId}" (generation ${dropped.generation}): ` +
-          "this collie is in a different pack, so that warrant proves nothing here.",
+        `[pack] discarded a stored warrant for crew "${dropped.packId}" (generation ${dropped.generation}): ` +
+          "this collie is in a different crew, so that warrant proves nothing here.",
       );
     }
   }
@@ -433,7 +433,7 @@ if (pack.mode !== "solo") console.log(`[pack] mode: ${pack.mode}`);
     }
     console.warn(
       `[pack] this ${pack.mode} binds ${cfg.host.trim() === "" ? "every interface" : cfg.host}, not ` +
-        "loopback. Allowed because a pack member is dialled across a machine boundary and " +
+        "loopback. Allowed because a crew member is dialled across a machine boundary and " +
         "/pack/v1/* carries its own two factors — but the browser gates (Tailscale-User-Login, " +
         "COLLIE_DEVICE_HEADER, same-origin) are client-settable here and bound nothing. Whatever " +
         "fronts this port is the only control on /api/*.",
@@ -981,27 +981,16 @@ const makeSession: SessionFactory = (name, socketPath, isPrimary) => {
   return { herdr, engine, poker, notifications };
 };
 
-// List the session directory names under `<configRoot>/sessions` (empty if the dir doesn't exist).
-const listSessionDirs = (dir: string): string[] => {
-  try {
-    return readdirSync(dir, { withFileTypes: true })
-      .filter((e) => e.isDirectory())
-      .map((e) => e.name);
-  } catch {
-    return [];
-  }
-};
-
 const registry = new SessionRegistry({
   configRoot: deriveConfigRoot(cfg.socketPath),
   primarySocketPath: cfg.socketPath,
   factory: makeSession,
-  // Multi-session discovery walks HERDR's config root for herdr sockets — it is that adapter's own
-  // shape, not the port's, so it is off for any other multiplexer rather than scanning for sockets
-  // nothing there would answer. A tmux collie fronts one tmux server, which is what its endpoint names.
-  multiSession: cfg.multiSession && cfg.mux === DEFAULT_MUX,
-  listSessionDirs,
-  exists: (p) => existsSync(p),
+  // The OPERATOR's switch, and nothing else. Whether this multiplexer has other instances on this
+  // machine to front is the adapter's own `listSessions` declaration, asked by `registry.refresh()`.
+  // An adapter that keeps no such list refuses the call and the registry pins to the primary. This
+  // line used to compare `cfg.mux` with the default multiplexer's name, which decided a feature by
+  // a multiplexer's NAME rather than by anything the adapter said (ADR 0022, ADR 0036, M22/02).
+  multiSession: cfg.multiSession,
 });
 
 // Fail soft with a clear message if the PRIMARY multiplexer isn't reachable at startup. Other
@@ -1202,7 +1191,7 @@ if (transportPinned && pack.peerServesBrowser) {
   console.warn(
     `[pack] ${PEER_BROWSER_ENV} is set, but this peer's port now requires the lead's client certificate ` +
       "at the TLS handshake — a browser cannot present one, so the browser surface is unreachable here. " +
-      "Use the lead's front door, or leave the pack on this machine.",
+      "Use the lead's front door, or leave the crew on this machine.",
   );
 }
 // The peer's pack listener binds COLLIE_HOST (one address, PACK_PROTOCOL.md §3) — the operator owns
@@ -1256,7 +1245,9 @@ const packLead = (() => {
     registry: packRegistry,
     // §13's refuse-before-forward budget: this lead's own cap, not a constant (COLLIE_MAX_UPLOAD_MB).
     maxUploadBytes: cfg.maxUploadBytes,
-    snapshot: (link, freshPreflight, follow) => client.snapshot(link, undefined, freshPreflight, follow),
+    // The sweep's ask is the LEAD's decision, not this wiring's: `PackLead` passes the view (M22/06)
+    // and this hands it to the transport unchanged.
+    snapshot: (link, view, freshPreflight, follow) => client.snapshot(link, view, freshPreflight, follow),
     // §20's half of the sweep: what this lead may state about itself, and the queue that hands out
     // one turn at a time. Every member of it is read through, never captured — a lead settles
     // mid-life, and the roster changes under a running bridge.
@@ -1272,12 +1263,20 @@ const packLead = (() => {
     hello: (link) => client.hello(link),
     // The per-pane forward (§5, §9.1). `proxy`, not `raw`: the peer's own status codes — its 304
     // above all — are the answer, and flattening them would cost the conditional-GET win end to end.
-    proxy: (link, route, params, init) => client.proxy(link, route, params, init),
+    // The budget is passed THROUGH rather than chosen here: `forward.ts` owns the read/write split
+    // (§10.1's 2026-09-08 amendment), and a write's WRITE_BUDGET_MS must not be a wiring detail.
+    proxy: (link, route, params, init, budgetMs) => client.proxy(link, route, params, init, budgetMs),
     self: packSelfOf(data),
     // Notifications for a peer's panes, derived on the lead from the body this sweep just parsed and
     // pushed through the same coordinator machinery a local session uses (M4/06).
     onPeerSnapshot: (memberId, body) => peerNotifier?.observe(memberId, body),
-    onPeerGone: (memberId) => peerNotifier?.forget(memberId),
+    onPeerGone: (memberId) => {
+      peerNotifier?.forget(memberId);
+      // The client remembers one thing that reaches a verdict, how long this member has been
+      // answering without a protocol header (M20/03). A member pruned with that run nearly spent,
+      // then enrolled again under the same id, would inherit it and land on the ladder at once.
+      client.forget(memberId);
+    },
     // Warrant distribution (§18). Read through the store on every sweep for the reason the secret and
     // the roster are: `pack deputy` writes the designation in another process, and a captured copy
     // would keep pushing a warrant the operator has already superseded. A lead that has named nobody
@@ -1417,6 +1416,18 @@ function settleUpdateGate(): void {
   if (start === null) return;
   if (start.runId === settledRunId) return;
   settledRunId = start.runId;
+  // A RUN OLDER THAN THE WALL CLOCK IS OVER (M20/01). The record on disk survives a crash, a power
+  // cut and a week of downtime, and re-deriving the queue from it would start levelling peers
+  // against a confirm the operator gave long ago and has every right to consider finished. The leg
+  // wall clock is the same bound the live run uses, so a run cannot end one way in memory and
+  // another way across a restart.
+  const age = Date.now() - start.at;
+  if (start.at > 0 && age >= LEG_WALL_CLOCK_MS) {
+    console.log(
+      `[pack] update ${start.runId}: not levelling, that run finished ${Math.round(age / 60_000)} minutes ago`,
+    );
+    return;
+  }
   // The one line an operator can grep for in the BRIDGE's own journal, which is the journal they
   // are already tailing. The update that wrote this record ran under a transient `--collect` unit
   // whose name nobody knows and whose journal outlives it by nothing, so a trace left only there is
@@ -1533,7 +1544,7 @@ async function performTakeover(deviceLabel: string): Promise<{ ok: boolean; mess
   });
   if (outcome.kind !== "committed") return { ok: false, message };
   console.warn(
-    `[pack] TOOK OVER — this machine is the lead of pack "${data.pack?.name ?? "?"}" now (warrant ` +
+    `[pack] TOOK OVER — this machine is the lead of crew "${data.pack?.name ?? "?"}" now (warrant ` +
       `generation ${currentWarrant(trustStore.current())?.warrant.generation ?? 0}), confirmed by ` +
       `${outcome.repinned.length} peer(s). Exiting ${TAKEOVER_RESTART_EXIT} so the supervisor brings ` +
       "this machine back up in LEAD mode — that status is non-zero on purpose, because `Restart=" +
@@ -1693,6 +1704,10 @@ const server = startServer({
             onMembershipChange: packStoreChanged,
             // Gap A (§18.9), and its rotation-shaped sibling. Two receipts, one holder, in memory.
             onLeadDialled: (at) => leadContact.record(at),
+            // M20/02: a peer that speaks to us is due. It marks the member due now and dials nothing;
+            // the sweep 1.5 s later is what dials. A solo instance and a peer both pass a `packLead`
+            // of `undefined`, so this is a no-op there.
+            onMemberDialled: (memberId) => packLead?.noteAdmittedContact(memberId),
             onLeadRefused: (at) => leadContact.recordSecretRefusal(at),
             // §18.12's delivery path 1: the new lead tells this one, on first contact. The router has
             // already verified the proof against THIS collie's own certificate and written the healed
@@ -1727,7 +1742,7 @@ const server = startServer({
     if (health !== null) return health;
     if (url.pathname === STANDBY_PREFIX || url.pathname.startsWith(`${STANDBY_PREFIX}/`)) {
       return new Response(
-        "This machine is not standing by. The standby door is a separate port on the pack's deputy " +
+        "This machine is not standing by. The standby door is a separate port on the crew's deputy " +
           "(COLLIE_STANDBY_PORT), reachable through your failover proxy — see PACK_PROTOCOL.md \u00a718.15.\n",
         { status: 404, headers: { "content-type": "text/plain; charset=utf-8" } },
       );

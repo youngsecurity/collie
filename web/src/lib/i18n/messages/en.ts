@@ -530,6 +530,21 @@ export const en = {
   "connection.host.ariaSends": "Sends to host: {name}{unreachable}",
   "connection.host.ariaHost": "Host: {name}{unreachable}",
   "connection.host.ariaUnreachableSuffix": " (unreachable)",
+  // The parenthesis form is the LOCALE's, not this file's: a Chinese bundle writes full-width
+  // brackets and no leading space. So the punctuation is one key and the word inside it is the same
+  // word the eye reads, rather than a second translation of it that could drift.
+  "connection.host.ariaSuffix": " ({word})",
+  // ── §10.2's PRESENTATION SPLIT, IN WORDS (M22/05) ─────────────────────────
+  // Two situations used to share the word above. "reconnecting" is the lead still trying, inside its
+  // budget, and it asks nothing of the operator; "needs attention" is the lead unable to fix it by
+  // trying again. The pair only earns its keep if the two never read as the same thing, so the
+  // action sentences say the difference out loud rather than leaving it to a colour.
+  "connection.host.reconnecting": "reconnecting",
+  "connection.host.attention": "needs attention",
+  "connection.host.reconnectingSuffix": "reconnecting · {label}",
+  "connection.host.attentionSuffix": "needs attention · {label}",
+  "connection.host.reconnectingAction": "The lead is still trying. Nothing to do.",
+  "connection.host.attentionAction": "Trying again will not fix this. Check this machine.",
   "connection.stale.incompatible": "{name} is running an incompatible Collie",
   "connection.stale.unreachable": "{name} is unreachable · {label}",
   "connection.stale.nothingCached": "Nothing cached for this machine yet.",
@@ -548,13 +563,13 @@ export const en = {
   "connection.server.title": "Machines",
   "connection.server.aria": "Host: {name}. Switch host",
 
-  // --- pack (the read-only /pack census; role names stay English, ADR 0030) ---
-  "pack.title": "Pack",
+  // --- pack (the read-only /crew census; role names stay English, ADR 0030) ---
+  "pack.title": "Crew",
   "pack.nav.back": "Back",
-  "pack.entry.title": "Pack overview",
-  "pack.entry.description": "How every machine in the pack is doing.",
-  "pack.footer.label": "Pack · {machines} · {reachable}",
-  "pack.footer.aria": "Open the pack overview",
+  "pack.entry.title": "Crew overview",
+  "pack.entry.description": "How every machine in the crew is doing.",
+  "pack.footer.label": "Crew · {machines} · {reachable}",
+  "pack.footer.aria": "Open the crew overview",
   "pack.summary.counts": "{machines} · {reachable}",
   "pack.summary.machines.one": "{count} machine",
   "pack.summary.machines.other": "{count} machines",
@@ -581,12 +596,12 @@ export const en = {
   "pack.health.conflicted": "conflicted",
   "pack.role.deputy": "deputy",
   "pack.sheet.goTo": "Go to this machine",
-  "pack.formation.aria": "Pack formation: {machines}",
+  "pack.formation.aria": "Crew formation: {machines}",
   "pack.node.aria": "{name}, {role}, {health}",
   "pack.node.ariaPlain": "{name}, {health}",
-  "pack.solo.title": "This collie is not leading a pack",
-  "pack.solo.description": "A pack is created and changed from the command line.",
-  "pack.error.title": "Could not load pack status",
+  "pack.solo.title": "This collie is not leading a crew",
+  "pack.solo.description": "A crew is created and changed from the command line.",
+  "pack.error.title": "Could not load crew status",
   "pack.error.description": "The bridge did not answer. Collie tries again on the next poll.",
 
   // --- error (boot splash, route-level error recovery) ---
@@ -633,6 +648,13 @@ export const en = {
   "transcript.agentFallback": "agent",
   "transcript.outputTruncated": "… output truncated",
   "transcript.truncated": "… truncated",
+  "transcript.toolImageAlt": "Tool output",
+  "transcript.attachmentAlt": "Attachment",
+
+  // --- mirror (terminal graphics in the pane mirror) ---
+  "mirror.imageAlt": "Terminal graphics",
+  "mirror.imageBadge": "[Image]",
+  "mirror.imageMatchedByOrder": "matched by order, open History to check",
 
   // --- time (relative/clock formatting) ---
   "time.justNow": "just now",
@@ -769,8 +791,8 @@ export const en = {
   "apiError.pairing.duplicate_label": "A device is already using that name.",
   "apiError.device.unknown": "No paired device has that name.",
   "apiError.session.unknown": "There is no session called {session} on this collie.",
-  "apiError.host.unknown": "There is no collie called {host} in this pack.",
-  "apiError.pack.not_lead": "This collie doesn't lead a pack, so there is no pack to show.",
+  "apiError.host.unknown": "There is no collie called {host} in this crew.",
+  "apiError.pack.not_lead": "This collie doesn't lead a crew, so there is no crew to show.",
   // --- worktrees (ADR 0032) ---
   "apiError.worktree.list_failed": "The worktrees couldn't be listed: {reason}",
   "apiError.worktree.create_failed": "The worktree couldn't be created: {reason}",
@@ -820,6 +842,7 @@ export const en = {
   "settings.updateCard.majorNote": "{version} is a new major.",
   "settings.updateCard.dismiss": "Remind me next digest",
   "settings.updateCard.dismissed": "Dismissed until the next digest.",
+  "settings.updateCard.checking": "Checking this machine…",
   "settings.updateCard.details": "Details",
   "settings.updateCard.summary.checks.one": "{count} check",
   "settings.updateCard.summary.checks.other": "{count} checks",
@@ -827,6 +850,8 @@ export const en = {
   "settings.updateCard.summary.red.other": "{count} red",
   "settings.updateCard.summary.amber.one": "{count} amber",
   "settings.updateCard.summary.amber.other": "{count} amber",
+  "settings.updateCard.summary.peers.one": "{count} peer",
+  "settings.updateCard.summary.peers.other": "{count} peers",
   "settings.updateCard.preflightUnavailable": "The preflight couldn't be run on this machine.",
   "settings.updateCard.packageManaged": "Your package manager updates this install. Collie won't take it from here.",
   "settings.updateCard.remedy": "Fix: {command}",
@@ -842,6 +867,8 @@ export const en = {
   "settings.updateCard.state.preflight": "Checking this machine…",
   "settings.updateCard.state.staging": "Staging {version}…",
   "settings.updateCard.state.restarting": "Restarting. This is not an outage.",
+  "settings.updateCard.phaseOf": "Step {step} of {total}",
+  "settings.updateCard.state.restartingSlow": "This restart is taking longer than expected. Check the service on that machine.",
   "settings.updateCard.state.verifying": "Verifying the new build…",
   "settings.updateCard.state.done": "Updated to {version}.",
   "settings.updateCard.state.rolledBack": "Rolled back. This machine is still on {version}.",
@@ -853,18 +880,21 @@ export const en = {
   "settings.updateCard.versionUnknown": "an unknown version",
 
   // --- settings.updateCard, the pack half (M16/01) ---
-  "settings.updateCard.actionPack": "Update pack to {version}",
-  "settings.updateCard.retryPack": "Retry pack update",
-  "settings.updateCard.packConfirmTitle": "Update the pack to {version}?",
-  "settings.updateCard.packConfirmBody": "This machine goes first. Each peer then levels itself to the same release, checks its own health and rolls back on its own if it fails.",
-  "settings.updateCard.packConfirmAction": "Yes, update the pack",
-  "settings.updateCard.retryConfirmTitle": "Retry the pack update?",
+  "settings.updateCard.actionPack": "Update crew to {version}",
+  "settings.updateCard.retryPack": "Retry crew update",
+  "settings.updateCard.retryNow": "Retry now",
+  "settings.updateCard.packConfirmTitle": "Update the crew to {version}?",
+  "settings.updateCard.packConfirmBody": "This machine goes first. Each member then levels itself to the same release, checks its own health and rolls back on its own if it fails.",
+  "settings.updateCard.packConfirmAction": "Yes, update the crew",
+  "settings.updateCard.retryConfirmTitle": "Retry the crew update?",
   "settings.updateCard.retryConfirmBody": "This machine is already current, so only the peers run. Each one gets one more attempt.",
   "settings.updateCard.retryConfirmAction": "Yes, retry",
-  "settings.updateCard.peers.label": "Pack members",
+  "settings.updateCard.peers.label": "Crew members",
+  "settings.updateCard.packPatience": "No action needed, this finishes on its own.",
   "settings.updateCard.peer.versionUnknown": "version unknown",
   "settings.updateCard.peer.unknownReason": "we could not check this machine",
   "settings.updateCard.peer.asOf": "checked {ago}",
+  "settings.updateCard.peer.movingFor": "for {elapsed}",
   "settings.updateCard.peer.verdict.green": "ready",
   "settings.updateCard.peer.verdict.amber": "warnings",
   "settings.updateCard.peer.verdict.red": "red",
@@ -888,7 +918,7 @@ export const en = {
   "updates.title": "Updates",
   "updates.nav.back": "Back",
   "updates.entry.title": "Updates",
-  "updates.entry.description": "Update Collie, and the pack with it.",
+  "updates.entry.description": "Update Collie, and the crew with it.",
   "updates.entry.status.updating": "Updating…",
   "updates.entry.status.peersBehind.one": "{count} peer behind",
   "updates.entry.status.peersBehind.other": "{count} peers behind",
@@ -909,9 +939,14 @@ export const en = {
   "updateRibbon.updated": "Updated to {version}. Tap to reload.",
   "updateRibbon.peers.one": "Updating {count} peer: {names}",
   "updateRibbon.peers.other": "Updating {count} peers: {names}",
+  "updateRibbon.peersSlow.one": "Updating {count} peer: {names}, {elapsed}",
+  "updateRibbon.peersSlow.other": "Updating {count} peers: {names}, {elapsed}",
+  "updateRibbon.underAMinute": "less than a minute",
+  "updateRibbon.minutes.one": "{count} min",
+  "updateRibbon.minutes.other": "{count} min",
   "updateRibbon.packageManaged.one": "{names} waits for its package manager",
   "updateRibbon.packageManaged.other": "{names} wait for their package manager",
-  "updateRibbon.peerRolledBack": "{name} rolled back: {reason}.",
+  "updateRibbon.peerFailed": "Could not update {name}: {reason}.",
   "updateRibbon.seeUpdates": "See Updates.",
   "updateRibbon.available": "Collie {version} available. Tap to update.",
   // A packaged host cannot take the tap — its updates come from its package manager (ADR 0035) — so
@@ -922,7 +957,7 @@ export const en = {
   // states the version and points at the page that carries the boundary sentence.
   "updateRibbon.availablePackagedUnnamed": "Collie {version} available.",
   "updateRibbon.dismiss": "Dismiss this version",
-  // The close on the two QUIET pack states. Not "dismiss this version": what is put down there is a
+  // The close on the two QUIET crew states. Not "dismiss this version": what is put down there is a
   // notice about another machine, and this host's own offer is untouched by it.
   "updateRibbon.hideNotice": "Hide this notice",
 } as const;

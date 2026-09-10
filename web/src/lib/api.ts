@@ -179,6 +179,28 @@ function withScope(path: string, scope?: Scope): string {
   return out;
 }
 
+/**
+ * A journal image reference as a URL this phone may load, or `null` when it is not one.
+ *
+ * ── TWO SHAPES, AND NOTHING ELSE ─────────────────────────────────────────────
+ * A blob path served by the owning collie (`/api/blobs/<64 hex>`) and an inline `data:image/*`
+ * payload. The bridge already refuses everything else (`bridge/journal/pi.ts` § resolveImageUrl),
+ * and this is the second, independent check on the side that would do the fetching: a journal is an
+ * AGENT's output, so a remote URL in it would have the phone call an arbitrary host on the agent's
+ * word. Anything unrecognised answers null and renders as no image.
+ *
+ * ── AND THE BLOB CARRIES ITS HOST ────────────────────────────────────────────
+ * The bytes sit on the machine whose journal named them, so the path takes the scope every other
+ * per-pane request takes and the lead forwards it (PACK_PROTOCOL.md §9.1). A `data:` URL is already
+ * the bytes and is scoped to nothing.
+ */
+const BLOB_REF = /^\/api\/blobs\/[0-9a-f]{64}$/i;
+
+export function imageSrc(ref: string, scope?: Scope): string | null {
+  if (BLOB_REF.test(ref)) return withScope(ref, scope);
+  return ref.startsWith("data:image/") ? ref : null;
+}
+
 // Best-effort human-readable failure detail: the response body if present, else the status text.
 async function errorDetail(res: Response): Promise<string> {
   try {
@@ -649,9 +671,15 @@ export function openWorktree(
  * Read once per page load by lib/operator-config.ts, which is the only caller that should exist:
  * every field here is startup-resolved on the bridge, so a second channel would be a second answer
  * to the same question.
+ *
+ * `scope` names ONE MEMBER of the pack, and then the only field that differs is `mux`: the lead
+ * answers that member's own capability declaration, from what its last `hello` taught it, and every
+ * other field stays the lead's own (M22/03). It is NOT forwarded to the member, so this read cannot
+ * make the lead dial a machine. Absent, which is every solo install and every lead-scoped read, puts
+ * nothing on the wire and gets the byte-identical body it always did.
  */
-export function fetchConfig(): Promise<BridgeConfig> {
-  return req<BridgeConfig>("/api/config");
+export function fetchConfig(scope?: Scope): Promise<BridgeConfig> {
+  return req<BridgeConfig>(withScope("/api/config", scope));
 }
 
 /** Register push through the same timeout, authentication and error handling as the other APIs. */
@@ -731,7 +759,7 @@ export function startUpdate(a: {
   target: string;
   major: boolean;
   /**
-   * "Retry pack update": a new run whose only legs are the peers (M16/04). Sent only when true, so
+   * "Retry crew update": a new run whose only legs are the peers (M16/04). Sent only when true, so
    * the ordinary confirm's body is byte-identical to the one that shipped and a bridge that does
    * not know the field yet is never handed it.
    */
