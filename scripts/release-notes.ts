@@ -70,8 +70,10 @@ interface RawSection {
  */
 function sectionLines(changelog: string, version: string): RawSection {
 	const lines = toLines(changelog);
+	// Every regex metacharacter the version may carry is escaped, not only the dot: this fork's
+	// `1.7.0+ys.1` has a `+`, which unescaped reads as "one or more zeros" and matches no heading.
 	const headingPattern = new RegExp(
-		`^## \\[${version.replace(/\./g, "\\.")}\\] - (\\d{4}-\\d{2}-\\d{2})\\s*$`,
+		`^## \\[${version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\] - (\\d{4}-\\d{2}-\\d{2})\\s*$`,
 	);
 	for (let i = 0; i < lines.length; i++) {
 		const match = headingPattern.exec(lines[i] ?? "");
@@ -182,7 +184,9 @@ export function checkUnreleased(changelog: string): Group[] {
  *   curl -sL https://github.com/AltanS/collie/blob/v1.5.0/CHANGELOG.md | grep -o 'user-content-150---2026-09-04'
  */
 export function changelogAnchor(version: string, date: string): string {
-	return `${version.replace(/\./g, "")}---${date}`;
+	// The same slugger rule applied to a fork version: `[1.7.0+ys.1]` loses its dots AND its `+`,
+	// so only letters, digits and hyphens survive (`170ys1`).
+	return `${version.replace(/[^0-9A-Za-z-]/g, "")}---${date}`;
 }
 
 /**

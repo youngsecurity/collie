@@ -174,6 +174,37 @@ describe("changelogAnchor", () => {
 	test("a prerelease keeps its hyphen and loses its dots", () => {
 		expect(changelogAnchor("1.7.0-beta.1", "2026-10-01")).toBe("170-beta1---2026-10-01");
 	});
+
+	// The Young Security fork releases as `X.Y.Z+ys.N`. The `+` is not a letter, a digit, a space or
+	// a hyphen, so the slugger drops it exactly as it drops the dots.
+	test("a fork version loses its plus sign as well as its dots", () => {
+		expect(changelogAnchor("1.7.0+ys.1", "2026-09-10")).toBe("170ys1---2026-09-10");
+	});
+});
+
+// ── The fork's `+ys.N` headings ──────────────────────────────────────────────────────────────────
+// A `+` in a version is a regex quantifier when it reaches `new RegExp` unescaped: `1\.7\.0+ys\.1`
+// reads "one or more zeros" and matches no heading in the file. The section reader escapes every
+// metacharacter, so a fork release page is built from its own section like any other.
+
+describe("a `+ys.N` section", () => {
+	const FORK = FULL.replace("## [2.1.0] - 2026-10-01", "## [2.1.0+ys.1] - 2026-10-01");
+
+	test("parses by its exact heading, plus sign included", () => {
+		const section = parseSection(FORK, "2.1.0+ys.1");
+		expect(section.date).toBe("2026-10-01");
+		expect(section.groups.map((g) => g.name)).toEqual(["Added", "Changed", "Fixed", "Packaging", "Docs"]);
+	});
+
+	test("the bare base does not read the fork section, and the fork version does not read the base", () => {
+		expect(() => parseSection(FORK, "2.1.0")).toThrow(/no '## \[2\.1\.0\] - YYYY-MM-DD' heading/);
+		expect(() => parseSection(FULL, "2.1.0+ys.1")).toThrow(/no '## \[2\.1\.0\+ys\.1\] - YYYY-MM-DD' heading/);
+	});
+
+	test("the body links the fork section by its slug", () => {
+		const body = renderBody(FORK, "2.1.0+ys.1", "youngsecurity/collie", "v2.1.0+ys.1");
+		expect(body).toContain("https://github.com/youngsecurity/collie/blob/v2.1.0+ys.1/CHANGELOG.md#210ys1---2026-10-01");
+	});
 });
 
 describe("renderBody", () => {
