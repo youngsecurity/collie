@@ -22,8 +22,10 @@
 // (no bridge publishes it), and a speculative fetch to discover it would cost a request per pane to
 // answer a question about a sentence. Adding a journal adapter there means adding its name here.
 
-/** The Herdr `agent` strings this build can read a session log for. Mirrors `journalAgents()`. */
-const JOURNAL_AGENTS: ReadonlySet<string> = new Set(["claude", "codex", "grok", "opencode", "pi"]);
+/** The Herdr `agent` strings this build can read a session log for. Mirrors `journalAgents()` plus
+ *  every alias in the bridge's `AGENT_ALIASES` — `omp` is Oh My Pi, which writes pi's log in pi's
+ *  format, so it is a second NAME for the pi adapter and not a sixth adapter. */
+const JOURNAL_AGENTS: ReadonlySet<string> = new Set(["claude", "codex", "grok", "omp", "opencode", "pi"]);
 
 /**
  * Whether `agent` is one whose sessions Collie could read a transcript from.

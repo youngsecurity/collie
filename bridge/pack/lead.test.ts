@@ -1,17 +1,23 @@
 import { describe, expect, test } from "bun:test";
 
-import type { SnapshotResponse } from "../types.ts";
+import type { SnapshotView } from "../sessions.ts";
+import type { MuxConfig, SnapshotResponse } from "../types.ts";
 import type { PeerPreflight } from "../update-action.ts";
-import { member, neverProxy } from "./fixtures.ts";
+import { member, muxCaps, neverProxy } from "./fixtures.ts";
+import { NARROW_PLAN, snapshotPlan, SWEEP_VIEW, type PeerSnapshotWire } from "./merge.ts";
 import {
+  clearPeerBackoff,
+  CONTACT_RESET_FLOOR_MS,
   dueForProbe,
   foldPeerMemory,
   incompatibleBackoffMs,
   INCOMPATIBLE_BACKOFF_MS,
+  MAX_CONTACT_RESETS,
   PackLead,
   type PeerMemory,
 } from "./lead.ts";
 import type { PackLink, PeerOutcome } from "./peer-client.ts";
+import { TURN_MISSED_SWEEPS, UpdateTurns } from "./follow.ts";
 import { PackRegistry, type PeerState } from "./registry.ts";
 import type { TrustedMember, Warrant } from "./trust-store.ts";
 import { DEFAULT_MAX_UPLOAD_BYTES } from "../uploads.ts";
@@ -75,7 +81,12 @@ function localBody(): SnapshotResponse {
 function lead(
   members: TrustedMember[],
   script: (link: PackLink, call: number) => PeerOutcome<unknown>,
-  opts: { hello?: (link: PackLink) => Promise<PeerOutcome<{ readonly version: string | null }>> } = {},
+  opts: {
+    hello?: (
+      link: PackLink,
+    ) => Promise<PeerOutcome<{ readonly version: string | null; readonly mux?: MuxConfig | null }>>;
+    turns?: UpdateTurns;
+  } = {},
 ) {
   const roster = [...members];
   const calls: string[] = [];
@@ -91,7 +102,7 @@ function lead(
   const l = new PackLead({
     log: (line) => journal.push(line),
     registry,
-    snapshot: async (link, freshPreflight) => {
+    snapshot: async (link, _view, freshPreflight) => {
       calls.push(link.memberId);
       fresh.push(freshPreflight === true);
       return script(link, calls.filter((c) => c === link.memberId).length);
@@ -101,6 +112,14 @@ function lead(
     self: { id: "desk", name: "the herd" },
     maxUploadBytes: DEFAULT_MAX_UPLOAD_BYTES,
     now: () => clock,
+    follow:
+      opts.turns === undefined
+        ? undefined
+        : {
+            leadRelease: () => "1.4.1",
+            turns: opts.turns,
+            enrolledAt: (id) => roster.find((m) => m.memberId === id)?.enrolledAt ?? 0,
+          },
   });
   return {
     lead: l,
@@ -266,7 +285,7 @@ describe("PackLead — a peer's sessions never vanish (§10.2)", () => {
     expect(c.state.lastSeenAt).toBe(NOW);
     expect(c.body?.agents).toHaveLength(1);
 
-    const merged = h.lead.merge(localBody());
+    const merged = h.lead.merge(localBody(), NARROW_PLAN);
     expect(merged.agents.map((p) => p.host)).toEqual(["laptop"]);
     expect(merged.servers!.find((s) => s.id === "laptop")!.reachable).toBe(false);
   });
@@ -286,7 +305,7 @@ describe("PackLead — a peer's sessions never vanish (§10.2)", () => {
     h.roster.length = 0; // `collie leave`, a revocation, or a rotation that dropped it
     await h.lead.sweep();
     expect(h.lead.contributions()).toEqual([]);
-    expect(h.lead.merge(localBody()).servers).toEqual([
+    expect(h.lead.merge(localBody(), NARROW_PLAN).servers).toEqual([
       { id: "desk", name: "the herd", isLead: true, reachable: true, protocol: "ok", lastSeenAt: NOW },
     ]);
   });
@@ -612,7 +631,10 @@ describe("a sweep that died on its own clock earns a patient re-ask (§10.4)", (
     await h.lead.sweep(); // …then the timeout that produced the live "unreachable forever"
 
     await Bun.sleep(5); // the probe is never awaited by the sweep — that is the point of it
-    expect(probed).toEqual(["laptop"]);
+    // TWO hellos, and they are two different questions on one seam: the good poll earned the
+    // once-per-link capability ask (M22/03), then the timeout earned §10.4's verdict probe. The
+    // verdict is what this test is about, and it is the second one.
+    expect(probed).toEqual(["laptop", "laptop"]);
     const state = h.registry.state("laptop");
     expect(state.health).toBe("reachable");
     expect(state.version).toBe("1.0.0");
@@ -1064,7 +1086,7 @@ describe("PackLead — each member's update preflight (§19)", () => {
     const l = new PackLead({
       log: () => {},
       registry: new PackRegistry({ sessions: { get: () => undefined }, self: "desk", members: () => members }),
-      snapshot: async (_link, freshPreflight) => {
+      snapshot: async (_link, _view, freshPreflight) => {
         asked.push(freshPreflight === true);
         return ok(body);
       },
@@ -1191,5 +1213,520 @@ describe("PackLead — the journal names a verdict once per transition", () => {
     await h.lead.sweep();
     await h.lead.sweep();
     expect(h.journal).toEqual(["[pack] laptop: unreachable (timed out)", "[pack] laptop: reachable again"]);
+  });
+});
+
+// ── A live run keeps its members due (M20/01) ────────────────────────────────
+
+describe("the schedule reads the live run, and the fold runs on every tick", () => {
+  test("dueForProbe: urgent overrides the backoff, and never writes it", () => {
+    const backed: PeerMemory = { body: null, incompatibleRuns: 3, probeAfter: NOW + 600_000 };
+    expect(dueForProbe(backed, NOW)).toBe(false);
+    expect(dueForProbe(backed, NOW, true)).toBe(true);
+    // The record is untouched, so the ladder the peer earned is waiting the moment the run ends.
+    expect(backed.probeAfter).toBe(NOW + 600_000);
+  });
+
+  test("a peer on the incompatible ladder is dialled every sweep while a run holds its leg", async () => {
+    // The 2026-09-07 incident, as a test. The peer answered three dials as `incompatible`, which put
+    // it on the ten-minute step, and the run then waited out a backoff it had no business waiting on.
+    // Now the run's open leg overrides the ladder, so the three dials land on three consecutive
+    // sweeps rather than across twelve and a half minutes, and the run ends on the third.
+    const turns = new UpdateTurns(() => {});
+    const h = lead([member({ memberId: "minibuch" })], () => skewed, { turns });
+    turns.begin("r-live", "1.4.1");
+    for (let i = 0; i < TURN_MISSED_SWEEPS; i += 1) {
+      await h.lead.sweep();
+      h.advance(1500); // the ordinary sweep cadence, far under the shortest backoff step
+    }
+    expect(h.calls.length).toBe(TURN_MISSED_SWEEPS);
+    // Three misses is unreachable, unreachable is terminal, and a run with no open leg is over.
+    expect(turns.peerLegs()[0]?.state).toBe("unreachable");
+    expect(turns.settledAt()).not.toBeNull();
+
+    // The control, and the half that must NOT change: with the run over, the same peer on the same
+    // ladder is skipped again, and the backoff it earned is the one it kept.
+    const before = h.calls.length;
+    await h.lead.sweep();
+    expect(h.calls.length).toBe(before);
+  });
+
+  test("a run that BEGINS during a sweep is not settled on the roster that sweep asked about", async () => {
+    // The dials take seconds, and the operator's confirm lands in the middle of them. `due` was
+    // computed before the run existed, so a backed-off peer is not in it — and folding that list
+    // would settle the new run on a roster it has never looked at, leaving the one peer it was
+    // started for undialled and the phone with an empty, silent run.
+    const turns = new UpdateTurns(() => {});
+    const roster = [member({ memberId: "attic" }), member({ memberId: "basement", enrolledAt: 2 })];
+    let begun = false;
+    const h = lead(roster, (link) => {
+      // `basement` climbs the incompatible ladder first; `attic` always answers, already levelled.
+      if (link.memberId === "basement") return skewed;
+      // THE RACE: the confirm lands while this dial is in flight.
+      if (begun) turns.begin("r-live", "1.4.1");
+      // Already on the target, so `attic`'s own leg is terminal the moment it is folded. That is
+      // what makes the stale fold able to settle the run with `basement` never dialled.
+      return ok({ ...localBody(), version: "1.4.1" });
+    }, { turns });
+    for (let i = 0; i < INCOMPATIBLE_BACKOFF_MS.length; i += 1) {
+      if (i > 0) h.advance(incompatibleBackoffMs(i));
+      await h.lead.sweep();
+    }
+    const dials = h.calls.filter((c) => c === "basement").length;
+
+    begun = true;
+    await h.lead.sweep();
+    // The run is still open, and `basement` still has its leg to be dialled for.
+    expect(turns.current()?.runId).toBe("r-live");
+    expect(turns.settledAt()).toBeNull();
+    // The immediate re-sweep is the second half: it recomputes `due` under the new run, where
+    // `basement`'s open leg overrides the ladder it is sitting on.
+    await new Promise((r) => setTimeout(r, 5));
+    expect(h.calls.filter((c) => c === "basement").length).toBeGreaterThan(dials);
+  });
+
+  test("a lead with no peers due still folds, so its run settles instead of hanging", async () => {
+    // `due` is empty on every sweep here, which used to return before the fold. The run then had no
+    // way to end at all: `begin` was reachable and `end` was not.
+    const turns = new UpdateTurns(() => {});
+    const h = lead([], () => skewed, { turns });
+    turns.begin("r-live", "1.4.1");
+    expect(turns.settledAt()).toBeNull();
+    await h.lead.sweep();
+    expect(h.calls).toEqual([]);
+    expect(turns.settledAt()).toBe(NOW);
+    expect(turns.current()).toBeNull();
+  });
+});
+
+// ── Any admitted contact clears the backoff (M20/02) ─────────────────────────
+//
+// The backoff is a lead-side GUESS about a peer it cannot reach. A peer that speaks to us is direct
+// evidence that the guess is stale, and on 2026-09-07 that evidence was thrown away.
+
+describe("a peer that speaks to us is due", () => {
+  /** A lead whose one member has climbed to the top of the incompatible ladder. */
+  async function backedOff() {
+    const h = lead([member({ memberId: "minibuch" })], () => skewed);
+    for (let i = 0; i < INCOMPATIBLE_BACKOFF_MS.length; i += 1) {
+      if (i > 0) h.advance(incompatibleBackoffMs(i));
+      await h.lead.sweep();
+    }
+    const dials = h.calls.length;
+    // One more sweep straight away is skipped: the ladder is holding it.
+    await h.lead.sweep();
+    expect(h.calls.length).toBe(dials);
+    return { ...h, dials };
+  }
+
+  test("the fold helper zeroes both fields, carries the rest, and invents nothing", () => {
+    const memory: PeerMemory = { body: null, incompatibleRuns: 3, probeAfter: NOW + 600_000 };
+    expect(clearPeerBackoff(memory)).toEqual({ body: null, incompatibleRuns: 0, probeAfter: 0 });
+    // Pure: the input is untouched, so the only writer of `this.memory` is still the one that sets it.
+    expect(memory.probeAfter).toBe(NOW + 600_000);
+    // A member with no entry has no backoff to clear and is already due.
+    expect(clearPeerBackoff(undefined)).toBeUndefined();
+  });
+
+  test("the last good body survives a reset — a schedule change is never a knowledge change", async () => {
+    const h = lead([member({ memberId: "minibuch" })], (_l, call) => (call === 1 ? ok(body) : skewed));
+    await h.lead.sweep(); // banks the body
+    h.advance(incompatibleBackoffMs(1));
+    await h.lead.sweep(); // incompatible, so the ladder starts
+    const banked = h.lead.contributions()[0]?.body;
+    expect(banked?.sessions).toEqual(body.sessions);
+    h.lead.noteAdmittedContact("minibuch");
+    // §10.2: a peer's sessions never vanish. The reset moved the SCHEDULE and nothing else.
+    expect(h.lead.contributions()[0]?.body).toEqual(banked);
+  });
+
+  test("contact marks the member due, and the NEXT sweep does the dial — the seam dials nothing", async () => {
+    const h = await backedOff();
+    h.lead.noteAdmittedContact("minibuch");
+    // Nothing was dialled by the call itself. One dialler, and it is the sweep.
+    expect(h.calls.length).toBe(h.dials);
+    await h.lead.sweep();
+    expect(h.calls.length).toBe(h.dials + 1);
+  });
+
+  test("a caller this lead does not lead changes nothing", async () => {
+    const h = await backedOff();
+    h.lead.noteAdmittedContact("a-stranger");
+    await h.lead.sweep();
+    expect(h.calls.length).toBe(h.dials);
+  });
+
+  test("a second contact inside the floor is ignored", async () => {
+    const h = await backedOff();
+    h.lead.noteAdmittedContact("minibuch");
+    await h.lead.sweep(); // spends the reset: the answer is incompatible again, so the ladder returns
+    const dials = h.calls.length;
+    h.advance(CONTACT_RESET_FLOOR_MS - 1);
+    h.lead.noteAdmittedContact("minibuch");
+    await h.lead.sweep();
+    expect(h.calls.length).toBe(dials);
+    // One millisecond past the floor, the same contact is honoured.
+    h.advance(1);
+    h.lead.noteAdmittedContact("minibuch");
+    await h.lead.sweep();
+    expect(h.calls.length).toBe(dials + 1);
+  });
+
+  test("a peer that can reach us and cannot serve us runs out of resets, and the ladder stands", async () => {
+    const h = await backedOff();
+    for (let i = 0; i < MAX_CONTACT_RESETS + 2; i += 1) {
+      h.lead.noteAdmittedContact("minibuch");
+      await h.lead.sweep();
+      h.advance(CONTACT_RESET_FLOOR_MS);
+    }
+    // Five resets earned five dials. The sixth and seventh contacts earned nothing.
+    expect(h.calls.length).toBe(h.dials + MAX_CONTACT_RESETS);
+  });
+
+  test("one ok answer clears the counter, so a recovered peer starts from a full allowance", async () => {
+    let healthy = false;
+    const h = lead([member({ memberId: "minibuch" })], () => (healthy ? ok(body) : skewed));
+    await h.lead.sweep();
+    for (let i = 0; i < MAX_CONTACT_RESETS; i += 1) {
+      h.advance(CONTACT_RESET_FLOOR_MS);
+      h.lead.noteAdmittedContact("minibuch");
+      await h.lead.sweep();
+    }
+    const spent = h.calls.length;
+    h.advance(CONTACT_RESET_FLOOR_MS);
+    h.lead.noteAdmittedContact("minibuch");
+    await h.lead.sweep();
+    expect(h.calls.length).toBe(spent); // exhausted
+
+    // It answers once, which settles the question the counter was asking.
+    healthy = true;
+    h.advance(INCOMPATIBLE_BACKOFF_MS.at(-1)!);
+    await h.lead.sweep();
+    healthy = false;
+    h.advance(incompatibleBackoffMs(1));
+    await h.lead.sweep(); // back on the ladder, from step one
+    const after = h.calls.length;
+    h.advance(CONTACT_RESET_FLOOR_MS);
+    h.lead.noteAdmittedContact("minibuch");
+    await h.lead.sweep();
+    expect(h.calls.length).toBe(after + 1);
+  });
+
+  test("a genuine version skew returns to the ladder on the very next verdict", async () => {
+    const h = await backedOff();
+    h.lead.noteAdmittedContact("minibuch");
+    await h.lead.sweep();
+    const dials = h.calls.length;
+    // The peer answered with the same foreign version, so the ladder is right about it again.
+    h.advance(CONTACT_RESET_FLOOR_MS);
+    await h.lead.sweep();
+    expect(h.calls.length).toBe(dials);
+  });
+});
+
+// ── The dial generation, and the reply it drops (M22/05) ─────────────────────
+
+describe("a reply from an older dial is dropped, never merged (M22/05)", () => {
+  /** Our own budget fired, so the member earns the patient probe of §10.4. */
+  const budgetMissed: PeerOutcome<unknown> = {
+    ok: false,
+    state: "unreachable",
+    reason: "snapshot: timed out after 1200ms",
+    timedOut: true,
+    receivedAt: NOW,
+  };
+  /** The probe's answer, and the harmful one: a FAILURE landing after the member came back. */
+  const helloDown: PeerOutcome<{ version: string | null }> = {
+    ok: false,
+    state: "unreachable",
+    reason: "hello: connection refused",
+    receivedAt: NOW,
+  };
+
+  /**
+   * Sweep 1 times out and fires a probe that is left in flight. Sweep 2 answers, so the member is
+   * reachable and current. Then the probe's reply lands — from a dial two generations old.
+   */
+  async function overtaken() {
+    let land: (v: PeerOutcome<{ version: string | null }>) => void = () => {};
+    const h = lead([member({ memberId: "laptop" })], (_l, call) => (call === 1 ? budgetMissed : ok(body)), {
+      hello: () =>
+        new Promise((resolve) => {
+          land = resolve;
+        }),
+    });
+    await h.lead.sweep();
+    await Bun.sleep(5); // the probe is never awaited by the sweep — that is the point of it
+    await h.lead.sweep();
+    return { ...h, land: (v: PeerOutcome<{ version: string | null }>) => land(v) };
+  }
+
+  test("the newer answer stands: a stale hello cannot un-reach a member that came back", async () => {
+    const h = await overtaken();
+    expect(h.registry.state("laptop").health).toBe("reachable");
+
+    h.land(helloDown);
+    await Bun.sleep(5);
+
+    // Without the fence this is the bug: the probe of a dial made BEFORE the member answered would
+    // fold its own failure over the top and the lead would report an older world as the current one.
+    const state = h.registry.state("laptop");
+    expect(state.health).toBe("reachable");
+    expect(state.reason).toBeNull();
+    expect(state.lastSeenAt).toBe(NOW);
+  });
+
+  test("the drop is a value the lead logs and ignores — it names both dials", async () => {
+    const h = await overtaken();
+    h.land(helloDown);
+    await Bun.sleep(5);
+    // Sweep 1 claimed dial 1, its probe claimed 2, sweep 2 claimed 3. The reply carries 2.
+    expect(h.journal).toContain("[pack] laptop: dropped a stale hello reply, dial 2 of 3");
+  });
+
+  test("nothing about the dropped reply reaches the merge", async () => {
+    const h = await overtaken();
+    h.land(helloDown);
+    await Bun.sleep(5);
+    const merged = h.lead.merge(localBody(), NARROW_PLAN);
+    const peer = merged.servers?.find((s) => s.id === "laptop");
+    expect(peer?.reachable).toBe(true);
+    // §10.2 holds either way — the rows never vanish — but they are the rows of the dial that won.
+    expect(merged.agents.filter((a) => a.host === "laptop").length).toBe(1);
+  });
+
+  test("a reply from the CURRENT dial is folded exactly as before", async () => {
+    // The fence may only ever drop an overtaken reply. A probe whose dial is still the newest one is
+    // the §10.4 path, unchanged: the machine answered, so it is reachable with the slow-link note.
+    const h = lead([member({ memberId: "laptop" })], (_l, call) => (call === 1 ? ok(body) : budgetMissed), {
+      hello: () =>
+        Promise.resolve({
+          ok: true as const,
+          value: { version: "1.6.0" },
+          status: 200,
+          member: "laptop",
+          receivedAt: NOW,
+          date: null,
+        }),
+    });
+    await h.lead.sweep();
+    await h.lead.sweep();
+    await Bun.sleep(5);
+    expect(h.registry.state("laptop").health).toBe("reachable");
+    expect(h.registry.state("laptop").version).toBe("1.6.0");
+    expect(h.journal.some((l) => l.includes("dropped a stale"))).toBe(false);
+  });
+});
+
+// ── M22/03: the lead holds one capability block per member ───────────────────
+//
+// The map of machines is Collie's, and a mux reports one machine (ADR 0036). So a member's
+// capability declaration is a fact about THAT machine, learned over the pack link and answered per
+// host. Absent is the one reading that matters most: it means "use the lead's answer", which is
+// byte for byte what the phone does today with the lead's single `/api/config` read.
+
+describe("a member's capability block rides `hello` and is answered per host (M22/03)", () => {
+  /** A fabricated declaration. The name is deliberately not a real multiplexer's — nothing reads it. */
+  function block(over: Partial<MuxConfig> = {}): MuxConfig {
+    return {
+      name: "reference",
+      capabilities: muxCaps({ createSpace: true }),
+      unsupportedKeys: [],
+      notes: {},
+      ...over,
+    };
+  }
+
+  /** A hello answer carrying (or omitting) a block, shaped like the client's own. */
+  function hello(mux: MuxConfig | null): PeerOutcome<{ version: string | null; mux: MuxConfig | null }> {
+    return { ok: true, value: { version: "1.7.0", mux }, status: 200, member: "laptop", receivedAt: NOW, date: null };
+  }
+
+  test("one good sweep earns one hello, and the block lands under that member", async () => {
+    // The sweep dials `snapshot`, never `hello`, so the block has to be asked for. Once per link.
+    const answers = [hello(block()), hello(block({ name: "second" }))];
+    let asked = 0;
+    const h = lead([member({ memberId: "laptop" })], () => ok(body), {
+      hello: () => Promise.resolve(answers[Math.min(asked++, answers.length - 1)]!),
+    });
+    await h.lead.sweep();
+    await Bun.sleep(5);
+    expect(asked).toBe(1);
+    expect(h.lead.muxFor("laptop")?.name).toBe("reference");
+    // Three more polls, and no second question: the answer is as fresh as the link is.
+    await h.lead.sweep();
+    await h.lead.sweep();
+    await h.lead.sweep();
+    await Bun.sleep(5);
+    expect(asked).toBe(1);
+  });
+
+  test("a member that has said nothing answers `null`, which the route reads as the lead's", async () => {
+    // A peer older than this amendment, and a peer whose bridge holds no adapter, are the same
+    // value here — and that value is NOT "every capability present".
+    const h = lead([member({ memberId: "laptop" })], () => ok(body), { hello: () => Promise.resolve(hello(null)) });
+    await h.lead.sweep();
+    await Bun.sleep(5);
+    expect(h.lead.muxFor("laptop")).toBeNull();
+    // And a member id nobody holds is the same `null`, so the route never invents a machine.
+    expect(h.lead.muxFor("nobody")).toBeNull();
+  });
+
+  test("replaces the capability block", async () => {
+    // THE RULE, and the reason it is a rule: a restart or an adapter change is a WHOLE new
+    // declaration. Folding the new answer into the old one would leave a key alive that the member
+    // no longer answers for, and the lead would serve it to a phone as that member's own word.
+    const answers = [
+      hello(block({ capabilities: muxCaps({ createSpace: true, renamePane: true }) })),
+      hello(block({ name: "after-restart", capabilities: muxCaps({ createSpace: false }) })),
+      hello(null),
+    ];
+    let asked = 0;
+    // Every sweep fails, so the link drops each time and the next success re-asks.
+    const h = lead([member({ memberId: "laptop" })], (_l, call) => (call % 2 === 1 ? ok(body) : down), {
+      hello: () => Promise.resolve(answers[Math.min(asked++, answers.length - 1)]!),
+    });
+    await h.lead.sweep(); // ok → learns the first declaration
+    await Bun.sleep(5);
+    expect(h.lead.muxFor("laptop")?.capabilities).toEqual(muxCaps({ createSpace: true, renamePane: true }));
+
+    await h.lead.sweep(); // down → the link dropped, so the next return re-asks
+    await h.lead.sweep(); // ok → the SECOND declaration, whole
+    await Bun.sleep(5);
+    const replaced = h.lead.muxFor("laptop");
+    expect(replaced?.name).toBe("after-restart");
+    // `renamePane` is GONE rather than retained. A merge would have kept it at `true`.
+    expect(replaced?.capabilities).toEqual(muxCaps({ createSpace: false }));
+
+    await h.lead.sweep(); // down
+    await h.lead.sweep(); // ok, and this time the member publishes nothing at all
+    await Bun.sleep(5);
+    // Dropped, not retained: the member's current answer is "nothing", and nothing means the lead's.
+    expect(h.lead.muxFor("laptop")).toBeNull();
+  });
+
+  test("a capability the lead lacks belongs to the member that declared it, and to nobody else", async () => {
+    // Two members, one declaration. This is the whole per-host claim: the lead answers `?host=nas`
+    // with the NAS's own word and `?host=laptop` with `null`, which is the lead's own block.
+    const declared = block({ capabilities: muxCaps({ createWorktree: true }) });
+    const h = lead([member({ memberId: "nas" }), member({ memberId: "laptop" })], () => ok(body), {
+      hello: (link) => Promise.resolve(link.memberId === "nas" ? hello(declared) : hello(null)),
+    });
+    await h.lead.sweep();
+    await Bun.sleep(5);
+    expect(h.lead.muxFor("nas")?.capabilities).toEqual(muxCaps({ createWorktree: true }));
+    expect(h.lead.muxFor("laptop")).toBeNull();
+  });
+
+  test("a member that leaves takes its block with it", async () => {
+    const h = lead([member({ memberId: "laptop" })], () => ok(body), {
+      hello: () => Promise.resolve(hello(block())),
+    });
+    await h.lead.sweep();
+    await Bun.sleep(5);
+    expect(h.lead.muxFor("laptop")).not.toBeNull();
+
+    h.roster.length = 0; // a `leave`, a revocation or a rotation
+    await h.lead.sweep();
+    expect(h.lead.muxFor("laptop")).toBeNull();
+  });
+
+  test("a lead wired without a hello never asks, and answers `null` for every member", async () => {
+    // The pre-amendment wiring, and a solo-shaped lead in tests: no probe seam, so no question.
+    const h = lead([member({ memberId: "laptop" })], () => ok(body));
+    await h.lead.sweep();
+    await Bun.sleep(5);
+    expect(h.lead.muxFor("laptop")).toBeNull();
+  });
+});
+
+// ── M22/06: the sweep widens, the merge narrows ──────────────────────────────
+// The lead answers the phone from its cache (§10.1's 1200 ms budget under a 1500 ms poll), so a
+// member's second session is reachable only if the SWEEP already asked for it. The narrowing is then
+// the merge's job, and it happens per request.
+
+describe("PackLead — every dial asks for every session, and the merge narrows it back (M22/06)", () => {
+  /** A member running two sessions, answering the widened ask: every pane carries its session. */
+  const widened = {
+    sessions: [
+      { name: "default", isPrimary: true, reachable: true, agents: 1, working: 0, blocked: 0 },
+      { name: "work", isPrimary: false, reachable: true, agents: 1, working: 0, blocked: 0 },
+    ],
+    agents: [
+      { ...body.agents[0]!, paneId: "w1:p1", session: "default" },
+      { ...body.agents[0]!, paneId: "w1:p2", session: "work" },
+    ],
+    shellPanes: [],
+  };
+
+  function leadOver(answer: PeerSnapshotWire) {
+    const views: SnapshotView[] = [];
+    const members = [member({ memberId: "laptop" })];
+    const l = new PackLead({
+      log: () => {},
+      registry: new PackRegistry({ sessions: { get: () => undefined }, self: "desk", members: () => members }),
+      snapshot: async (_link, view) => {
+        views.push(view);
+        return ok(answer);
+      },
+      proxy: neverProxy,
+      self: { id: "desk", name: "the herd" },
+      maxUploadBytes: DEFAULT_MAX_UPLOAD_BYTES,
+      now: () => NOW,
+    });
+    return { lead: l, views };
+  }
+
+  test("the sweep's ask is the widened view, on every dial and with no session named", async () => {
+    const h = leadOver(widened);
+    await h.lead.sweep();
+    expect(h.views).toEqual([SWEEP_VIEW]);
+    expect(SWEEP_VIEW).toEqual({ session: undefined, widen: true });
+  });
+
+  test("with nothing asked, the merged body is the member's primary session and carries no tag", async () => {
+    const h = leadOver(widened);
+    await h.lead.sweep();
+    const merged = h.lead.merge(localBody(), NARROW_PLAN);
+    // One pane, the primary's — and `session` is GONE, which is what makes a one-session member's
+    // contribution byte-identical to the pre-widening one (bridge/sessions.ts's widenedPanes rule).
+    expect(merged.agents.map((p) => [p.paneId, p.session])).toEqual([["w1:p1", undefined]]);
+    expect(JSON.stringify(merged.agents)).not.toContain('"session"');
+  });
+
+  test("`?all=1&host=<member>` yields that member's other sessions, tagged", async () => {
+    const h = leadOver(widened);
+    await h.lead.sweep();
+    const merged = h.lead.merge(localBody(), snapshotPlan("laptop", { session: undefined, widen: true }));
+    expect(merged.agents.map((p) => [p.paneId, p.session])).toEqual([
+      ["w1:p1", "default"],
+      ["w1:p2", "work"],
+    ]);
+    expect(merged.agents.every((p) => p.host === "laptop")).toBe(true);
+  });
+
+  test("`?host=<member>&session=<other>` reaches a pane in the member's second session", async () => {
+    // The latent gap this spec closes: the sweep used to pin the cache to the member's primary, so
+    // this pane was invisible to the phone however it asked.
+    const h = leadOver(widened);
+    await h.lead.sweep();
+    const merged = h.lead.merge(localBody(), snapshotPlan("laptop", { session: "work", widen: false }));
+    expect(merged.agents.map((p) => p.paneId)).toEqual(["w1:p2"]);
+  });
+
+  test("a widened ask about ONE member leaves the others narrow", async () => {
+    const h = leadOver(widened);
+    await h.lead.sweep();
+    const merged = h.lead.merge(localBody(), snapshotPlan("desktop", { session: undefined, widen: true }));
+    expect(merged.agents.map((p) => p.paneId)).toEqual(["w1:p1"]);
+  });
+
+  test("a member too old to widen answers as it always did, and narrows to itself", async () => {
+    // It ignores the parameter, so its panes arrive untagged. Dropping them would lose a machine.
+    const h = leadOver(body);
+    await h.lead.sweep();
+    expect(h.lead.merge(localBody(), NARROW_PLAN).agents.map((p) => p.paneId)).toEqual(["w1:p1"]);
+    const wide = h.lead.merge(localBody(), snapshotPlan("laptop", { session: undefined, widen: true }));
+    expect(wide.agents.map((p) => p.paneId)).toEqual(["w1:p1"]);
   });
 });

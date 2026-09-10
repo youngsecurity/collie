@@ -283,6 +283,16 @@ export interface ServerSummary {
   protocol: "ok" | "incompatible" | "unknown";
   /** The peer's refusal reason, verbatim, when incompatible — rendered as text, never paraphrased. */
   protocolDetail?: string;
+  /**
+   * §10.2's presentation split for a member that is not answering. `reconnecting` means the lead is
+   * retrying inside its budget and nothing is asked of the operator; `attention` means re-dialling
+   * cannot fix it.
+   *
+   * **Absent means "no distinction offered"**: a reachable member, or a lead older than the field.
+   * Beside `reachable: false` an absent value therefore renders today's single word, which is what
+   * keeps a new phone honest in front of an old lead (§7.1).
+   */
+  linkState?: "reconnecting" | "attention";
   /** Epoch ms, stamped by the LEAD on receipt — never the peer's clock (§10.2). `0` = never answered. */
   lastSeenAt: number;
 }
@@ -359,6 +369,12 @@ export interface PackMemberStatus {
   provisional: boolean;
   /** Set only when `health` is `conflicted`: who this member thinks leads, and under what warrant. */
   conflict?: { leadMemberId: string; warrantGeneration: number | null };
+  /**
+   * §10.2's presentation split, the same field {@link ServerSummary.linkState} carries — and NOT a
+   * fifth value of `health`. Absent means the lead offered no distinction, and the page then prints
+   * the word it always printed.
+   */
+  linkState?: "reconnecting" | "attention";
 }
 
 /**
@@ -431,6 +447,23 @@ export interface UpdateInfo {
   newerVersions?: string[];
   /** The detached updater's run record. Absent when this install has never run one. */
   run?: UpdateRun;
+  /**
+   * The peer legs of a pack-wide run that this machine has NO run record for (M20/09).
+   *
+   * "Retry crew update" levels the peers without touching this machine, so nothing is written to
+   * `update.json` and `run` is absent for the whole run. The legs then ride here instead of being
+   * dropped. When `run` IS present they ride `run.peers`, exactly as they always have.
+   *
+   * Two positions, ONE reader: `peerLegsOf` in `lib/update-ribbon.ts`. Nothing else may read either
+   * field directly, or the band and the card go back to disagreeing about the same run.
+   */
+  peers?: UpdatePeerLeg[];
+  /**
+   * When every leg of that peers-only run reached a terminal state (M20/01), or absent while one is
+   * still open. `run.settledAt` carries it when there is a run record. Same two positions, same one
+   * reader, {@link packSettledAt}.
+   */
+  settledAt?: number;
 }
 
 /**
@@ -470,8 +503,10 @@ export interface UpdateRun {
   /** Why it is where it is, when that needs a sentence. Never from the standby door (below). */
   reason?: string;
   /**
-   * A bounded, credential-scrubbed tail of the service log, recorded on a failure. Never from the
-   * standby door: that port is ungated, and a log line is not a body a stranger may read.
+   * A bounded tail of what the run has to show for itself. On a failure it is the service log,
+   * credential-scrubbed; while staging it is the fetch-and-build progress (M20/10). Never both, and
+   * absent on a bridge older than either. Never from the standby door: that port is ungated, and a
+   * log line is not a body a stranger may read.
    */
   logTail?: string;
   /**
@@ -491,6 +526,12 @@ export interface UpdateRun {
    * facts on it rather than a broken one.
    */
   peers?: UpdatePeerLeg[];
+  /**
+   * When every peer leg of this run reached a terminal state (M20/01). Absent while one leg is still
+   * open, and absent on a bridge that predates the field — both read as "not settled", which is the
+   * reading that keeps a page polling rather than one that declares a moving pack finished.
+   */
+  settledAt?: number;
 }
 
 /**
@@ -650,11 +691,12 @@ export interface PaneReadResponse {
 export type TranscriptPart =
   | { kind: "text"; text: string; truncated?: boolean }
   | { kind: "thinking"; text: string; truncated?: boolean }
+  | { kind: "image"; url: string; mimeType?: string }
   | {
       kind: "tool";
       name: string;
       summary: string;
-      result?: { text: string; truncated?: boolean; isError?: boolean };
+      result?: { text: string; truncated?: boolean; isError?: boolean; imageUrl?: string };
     };
 
 /**
