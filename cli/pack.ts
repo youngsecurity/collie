@@ -60,7 +60,7 @@ import { packRuntimePath, parseMarker, rosterDrift } from "../bridge/pack/stalen
 import { TrustStore, type TrustedMember, type TrustStoreData } from "../bridge/pack/trust-store.ts";
 import { deriveConfigRoot, discoverSessionSockets } from "../bridge/mux/herdr/sessions.ts";
 import { herdTagFor } from "../bridge/sessions.ts";
-import { compareSemver } from "../bridge/update.ts";
+import { compareRelease } from "../bridge/update.ts";
 import { collieVersionBare, DEFAULT_SERVE_PORT, type CliContext } from "./context.ts";
 import { EXIT, type Io } from "./io.ts";
 import { dropEnvAssignments } from "./push-keys.ts";
@@ -1434,8 +1434,10 @@ function versionLines(reported: string | null, ours: string, memberId: string): 
   // (PACK_PROTOCOL.md §16, the version-skew leg). §7.1 names both remedies; this picks the one that
   // matches the direction. A comparison that comes back equal has no direction to state — two
   // different strings for one semver (a build stamp, `unknown`) is not a skew anybody levels — so
-  // it keeps the neutral sentence and names no command.
-  const direction = compareSemver(reported, ours);
+  // it keeps the neutral sentence and names no command. `compareRelease`, not `compareSemver`:
+  // inside this fork's `+ys` family the counter orders (`1.7.0+ys.2` is newer than `1.7.0+ys.1`),
+  // and a pure SemVer compare would call that pair equal and name no remedy for a skew that has one.
+  const direction = compareRelease(reported, ours);
   if (direction > 0) {
     return [
       head,

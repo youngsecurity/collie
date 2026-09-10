@@ -141,9 +141,11 @@ to, so an untagged version exists only as a CHANGELOG heading and nobody can ins
 that release lands and you push, **always push a matching annotated git tag with it** —
 `git tag -a 'vX.Y.Z+ys.N' -m 'Collie X.Y.Z+ys.N' && git push origin 'vX.Y.Z+ys.N'` (or
 `git push --follow-tags` so the tag ships *with* the release). One `vX.Y.Z+ys.N` tag per shipped
-version on the remote. **GitHub Actions do not run in this org**, so `release.yml` is a record of
-the notes format and nothing more: the GitHub Release is created by hand from the CHANGELOG block
-(`gh release create 'vX.Y.Z+ys.N' --notes-file …`), and the update banner links to it.
+version on the remote. **GitHub Actions do not run in this org**, so the fork's `release.yml` is
+inert: it is the pre-1.7.0 notes-only stub, kept unchanged so the next upstream merge stays small,
+and it is NOT the record of the notes format (the next paragraph is). The GitHub Release is
+created by hand (`gh release create 'vX.Y.Z+ys.N' --notes-file …`), and the update banner links
+to it.
 
 **The GitHub Release page is built from the CHANGELOG, not written from scratch.** Upstream's
 `release.yml` runs `scripts/release-notes.ts` over `CHANGELOG.md` on a tag push; here Actions do
@@ -157,11 +159,16 @@ bun scripts/release-notes.ts --version X.Y.Z+ys.N --repo youngsecurity/collie \
 
 The page's order is the reader's: **`## Update` first and unfolded**, then `## What changed`, the
 bold lead of every bullet in that version's section under its group's name, then the changelog
-and compare links, then the folded verify recipe. The fork's install note (a fork checkout is a
-source install; Herdr plugin actions are the update spelling) is added to that page by hand. The
-script refuses a section it cannot read (no heading, a bullet with no bold lead, a bullet above
-every group), `scripts/release-notes.test.ts` reads this repo's own `CHANGELOG.md`, and the
-pre-commit hook refuses a badly shaped `## [Unreleased]` bullet at commit time.
+and compare links. **Two edits by hand before publishing, every time.** The script is upstream's
+and writes for a binary release, which the fork does not ship: (1) replace its `## Update` block
+with the fork's (the Herdr plugin actions `update` and `restart`, the Herdr ≥ 0.8.0 floor, the
+`+ys`-family note, and the link to `docs/install.md#this-fork`; the previous release's page is the
+template), and (2) delete the folded `<details>` verify recipe, whose `curl` lines name a tarball
+that does not exist on this fork's releases and would 404. The script refuses a section it cannot
+read (no heading, a bullet with no bold lead, a bullet above every group),
+`scripts/release-notes.test.ts` reads this repo's own `CHANGELOG.md` (the newest numbered section
+and `## [Unreleased]`; sections cut before 1.7.0+ys.1 keep their flat shape and are not read), and
+the pre-commit hook refuses a badly shaped `## [Unreleased]` bullet at commit time.
 
 What does not apply here: upstream's CI gate (`release.yml`'s `gate` job waits for a green `ci.yml`
 run before publishing), its push-`main`-then-tag recipe, and its held-push rule during a release cut

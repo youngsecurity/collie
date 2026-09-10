@@ -2446,13 +2446,20 @@ function handOff(
     { kind: "stage" },
     now,
   );
-  // The lock is held from here to the launch. A write, a `which` or a launch that throws (ENOSPC,
-  // EACCES) must not leave it behind with no run to show for it: that is the same ten-minute refusal
-  // the runner's own finally exists to prevent (#21), one step earlier.
+  // The lock is held from here to the launch. A write or a `which` that throws (ENOSPC, EACCES) must
+  // not leave it behind with no run to show for it: that is the same ten-minute refusal the runner's
+  // own finally exists to prevent (#21), one step earlier. Everything inside this block happens
+  // BEFORE anything is started, so "nothing started" is true of every throw it catches.
+  function notStarted<TError>(err: TError): number {
+    releaseLock(deps.files, deps.ctx.stateDir);
+    deps.io.err(`error: staging failed before the updater could start — ${err instanceof Error ? err.message : String(err)}`);
+    deps.io.err("       Nothing was swapped, and the lock is released; fix the cause and run `collie update` again.");
+    return EXIT.FAIL;
+  }
+  let plan: ReturnType<typeof launchPlan>;
   try {
     writeRun(deps.files, deps.ctx.stateDir, staging);
-
-    const plan = launchPlan({
+    plan = launchPlan({
       platform: deps.platform,
       binary: runnerBinary(deps),
       args: applyArgv({ ...a, handoff: deps.pid }),
@@ -2461,74 +2468,87 @@ function handOff(
       hasSystemdRun: deps.exec.which("systemd-run") !== null && systemdUserReachable(deps.exec, deps.ctx.env),
       hasSetsid: deps.exec.which("setsid") !== null,
     });
-    const logPath = logFilePath(deps.ctx.configDir, deps.ctx.instance);
-    // A handoff that did not happen is a FAILURE, printed and recorded. Without this branch the record
-    // sits at `staging` until the staleness rule reads it as `interrupted` ten minutes later, the phone
-    // shows a live-looking run for that whole window, and a retry is refused for it.
-    // The complaint text ends up in the abort reason, which the phone displays, so a manager's own
-    // wall of stderr does not get to blow up that screen. 160 characters is a headline, not a log.
-    const COMPLAINT_MAX = 160;
-    const capComplaint = (line: string | undefined): string | undefined => {
-      if (line === undefined) return undefined;
-      if (line.length <= COMPLAINT_MAX) return line;
-      return `${line.slice(0, COMPLAINT_MAX)}…`;
-    };
-
-    const refused = (reason: string, said: string): number => {
-      releaseLock(deps.files, deps.ctx.stateDir);
-      writeRun(deps.files, deps.ctx.stateDir, reduce(staging, { kind: "abort", reason }, deps.now()));
-      deps.io.err(`error: ${said}`);
-      deps.io.err(`       Nothing was swapped. Apply it by hand: ${runnerBinary(deps)} ${applyArgv({ ...a, handoff: 0 }).join(" ")}`);
-      return EXIT.FAIL;
-    };
-
-    if (plan.confirms === "manager") {
-      // The client is a client: `systemd-run` without `--wait` returns as soon as the manager has
-      // accepted the job and started the unit, so waiting for it costs tens of milliseconds and buys
-      // the whole guarantee. The runner is then in a unit of its own, and this process may exit —
-      // which, as the main process of a service, is exactly what used to kill the client mid-flight
-      // (`Exec.spawnDetached`, and ADR 0037).
-      const client = deps.exec.runLogged(plan.command, {
-        cwd: layout.installRoot,
-        env: runnerEnv(deps.ctx.env),
-        logPath,
-        timeoutMs: HANDOFF_CONFIRM_MS,
-      });
-      if (client.code !== 0) {
-        // The manager's own complaint, because `exit 1` on its own tells an operator nothing. Capped:
-        // this text lands in the abort reason, which the phone displays, and a manager can be verbose.
-        const complaint = capComplaint(client.stderr.split("\n").map((l) => l.trim()).find((l) => l !== ""));
-        const why = client.timedOut ? `timeout after ${Math.round(HANDOFF_CONFIRM_MS / 1000)}s` : `exit ${client.code}`;
-        const reason = `the ${plan.kind} handoff was refused (${why})${complaint === undefined ? "" : `: ${complaint}`}`;
-        return refused(reason, `the update was staged, but ${reason}.`);
-      }
-    } else {
-      // This tier has no manager to ask, and its child is not a fast client — it IS the runner. So a
-      // launch from inside a service cgroup dies within milliseconds of this function returning: this
-      // process is the unit's main process, and its exit has systemd tear the cgroup down under the
-      // default `KillMode=control-group`, taking the runner with it long before the swap it was
-      // started for. That is worse than the stall this spec removes. Refusing is the honest answer.
-      const unit = serviceCgroup(deps.files);
-      if (unit !== null) {
-        const reason = `the ${plan.kind} handoff cannot run from inside ${unit}: a hand-off from inside a service needs the user manager`;
-        return refused(reason, `the update was staged, but ${reason}.`);
-      }
-      const pid = deps.exec.spawnDetached(plan.command, {
-        cwd: layout.installRoot,
-        env: runnerEnv(deps.ctx.env),
-        logPath,
-      });
-      if (pid === null) {
-        return refused(plan.note, "the update was staged, but the detached updater could not be started.");
-      }
-    }
-    deps.io.out(`✓ ${a.to} is staged — ${plan.note}.`);
   } catch (err) {
-    releaseLock(deps.files, deps.ctx.stateDir);
-    deps.io.err(`error: staging failed before the updater could start — ${err instanceof Error ? err.message : String(err)}`);
-    deps.io.err("       Nothing was swapped, and the lock is released; fix the cause and run `collie update` again.");
-    return EXIT.FAIL;
+    return notStarted(err);
   }
+  const logPath = logFilePath(deps.ctx.configDir, deps.ctx.instance);
+  // A handoff that did not happen is a FAILURE, printed and recorded. Without this branch the record
+  // sits at `staging` until the staleness rule reads it as `interrupted` ten minutes later, the phone
+  // shows a live-looking run for that whole window, and a retry is refused for it.
+  // The complaint text ends up in the abort reason, which the phone displays, so a manager's own
+  // wall of stderr does not get to blow up that screen. 160 characters is a headline, not a log.
+  const COMPLAINT_MAX = 160;
+  const capComplaint = (line: string | undefined): string | undefined => {
+    if (line === undefined) return undefined;
+    if (line.length <= COMPLAINT_MAX) return line;
+    return `${line.slice(0, COMPLAINT_MAX)}…`;
+  };
+
+  const refused = (reason: string, said: string): number => {
+    releaseLock(deps.files, deps.ctx.stateDir);
+    writeRun(deps.files, deps.ctx.stateDir, reduce(staging, { kind: "abort", reason }, deps.now()));
+    deps.io.err(`error: ${said}`);
+    deps.io.err(`       Nothing was swapped. Apply it by hand: ${runnerBinary(deps)} ${applyArgv({ ...a, handoff: 0 }).join(" ")}`);
+    return EXIT.FAIL;
+  };
+
+  if (plan.confirms === "manager") {
+    // The client is a client: `systemd-run` without `--wait` returns as soon as the manager has
+    // accepted the job and started the unit, so waiting for it costs tens of milliseconds and buys
+    // the whole guarantee. The runner is then in a unit of its own, and this process may exit —
+    // which, as the main process of a service, is exactly what used to kill the client mid-flight
+    // (`Exec.spawnDetached`, and ADR 0037).
+    //
+    // DELIBERATELY OUTSIDE the "nothing started" catch above. `runLogged` spawns the client FIRST and
+    // appends its output to the log AFTER, so a throw out of it (ENOSPC on that append) may come back
+    // with the runner already accepted by the manager. Releasing the lock and folding the record to
+    // `idle` there would tell the operator nothing happened while the swap proceeds, and a retry typed
+    // on that advice would race the live runner. A throw here propagates instead: the lock stays held
+    // under this pid for the runner to inherit, the record stays `staging`, and if no runner ever
+    // took it the staleness rule frees both, which is the ten-minute cost #21 accepts for the one
+    // throw it cannot tell apart from a launch.
+    const client = deps.exec.runLogged(plan.command, {
+      cwd: layout.installRoot,
+      env: runnerEnv(deps.ctx.env),
+      logPath,
+      timeoutMs: HANDOFF_CONFIRM_MS,
+    });
+    if (client.code !== 0) {
+      // The manager's own complaint, because `exit 1` on its own tells an operator nothing. Capped:
+      // this text lands in the abort reason, which the phone displays, and a manager can be verbose.
+      const complaint = capComplaint(client.stderr.split("\n").map((l) => l.trim()).find((l) => l !== ""));
+      const why = client.timedOut ? `timeout after ${Math.round(HANDOFF_CONFIRM_MS / 1000)}s` : `exit ${client.code}`;
+      const reason = `the ${plan.kind} handoff was refused (${why})${complaint === undefined ? "" : `: ${complaint}`}`;
+      return refused(reason, `the update was staged, but ${reason}.`);
+    }
+  } else {
+    // This tier has no manager to ask, and its child is not a fast client — it IS the runner. So a
+    // launch from inside a service cgroup dies within milliseconds of this function returning: this
+    // process is the unit's main process, and its exit has systemd tear the cgroup down under the
+    // default `KillMode=control-group`, taking the runner with it long before the swap it was
+    // started for. That is worse than the stall this spec removes. Refusing is the honest answer.
+    const unit = serviceCgroup(deps.files);
+    if (unit !== null) {
+      const reason = `the ${plan.kind} handoff cannot run from inside ${unit}: a hand-off from inside a service needs the user manager`;
+      return refused(reason, `the update was staged, but ${reason}.`);
+    }
+    // Back INSIDE a "nothing started" catch, and correctly so: `spawnDetached` opens the log before
+    // it spawns, so a throw out of it is a throw from before the runner existed (#21).
+    let pid: number | null;
+    try {
+      pid = deps.exec.spawnDetached(plan.command, {
+        cwd: layout.installRoot,
+        env: runnerEnv(deps.ctx.env),
+        logPath,
+      });
+    } catch (err) {
+      return notStarted(err);
+    }
+    if (pid === null) {
+      return refused(plan.note, "the update was staged, but the detached updater could not be started.");
+    }
+  }
+  deps.io.out(`✓ ${a.to} is staged — ${plan.note}.`);
   deps.io.out("  The swap, the restart and the health check run there, so this command is done.");
   deps.io.out("  Watch it with: collie update --status");
   return EXIT.OK;

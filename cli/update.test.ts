@@ -2251,7 +2251,10 @@ describe("the update state file and its lock", () => {
     h.files.createExclusive = () => false;
     expect(await cmdUpdate(h.deps)).toBe(EXIT.FAIL);
     expect(h.io.stderr.join("\n")).toContain("another update is in flight — it took the lock just now");
+    // Both launch seams, because the default harness is on the manager-confirmed tier, where the
+    // launch is `runLogged` (`exec.ran`) and `spawnDetached` is never the path.
     expect(h.exec.spawned).toEqual([]);
+    expect(h.exec.ran).toEqual([]);
     // Since 1.7.0 the staging window reports itself (M20/10): `beginStaging` writes a `staging` record
     // before the fetch, and `withStagingRecord` folds it back to `idle` when the arm fails. So the
     // file exists, but what it holds is a TERMINAL record: nothing on disk says a run is in flight.
@@ -2301,10 +2304,54 @@ describe("the update state file and its lock", () => {
     expect(h.io.stderr.join("\n")).toContain("staging failed before the updater could start — ENOSPC");
     expect(h.files.read(LOCK_FILE)).toBeNull();
     expect(h.exec.spawned).toEqual([]);
+    expect(h.exec.ran).toEqual([]);
     // And the very next update is not refused by a lock that outlived nothing.
     const again = binaryHarness();
     for (const [p, entry] of h.files.entries) again.files.entries.set(p, entry);
     expect(await cmdUpdate(again.deps)).toBe(EXIT.OK);
+  });
+
+  test("a `which` that throws in the handoff releases the lock and launches nothing", async () => {
+    // The plan reads two `which` answers under the lock; a resolver that throws (EACCES on a PATH
+    // entry) is a throw from before anything was started, on every tier.
+    const h = binaryHarness();
+    const which = h.exec.which;
+    h.exec.which = (tool) => {
+      if (tool === "systemd-run") throw new Error("EACCES: permission denied, scandir '/opt/bin'");
+      return which(tool);
+    };
+    expect(await cmdUpdate(h.deps)).toBe(EXIT.FAIL);
+    expect(h.io.stderr.join("\n")).toContain("staging failed before the updater could start — EACCES");
+    expect(h.files.read(LOCK_FILE)).toBeNull();
+    expect(h.exec.spawned).toEqual([]);
+    expect(h.exec.ran).toEqual([]);
+  });
+
+  test("a detached spawn that throws releases the lock: that tier opens the log before it spawns", async () => {
+    // No user manager, a session scope: the launch is `spawnDetached`, whose own log open comes
+    // first, so a throw out of it is a throw from before the runner existed.
+    const h = binaryHarness({ answers: [["systemctl --user show-environment", { code: 1 }]] });
+    h.exec.spawnDetached = () => {
+      throw new Error("ENOSPC: no space left on device, open '/log/collie.log'");
+    };
+    expect(await cmdUpdate(h.deps)).toBe(EXIT.FAIL);
+    expect(h.io.stderr.join("\n")).toContain("staging failed before the updater could start — ENOSPC");
+    expect(h.files.read(LOCK_FILE)).toBeNull();
+    expect(h.exec.ran).toEqual([]);
+  });
+
+  test("a throw out of the manager client is NOT read as nothing started: the lock and the record stay", async () => {
+    // `runLogged` spawns the client first and appends its output after, so a throw may come back with
+    // the runner already accepted by the manager. Releasing the lock here would tell the operator
+    // nothing happened while the swap proceeds; the throw propagates and the runner inherits the lock.
+    const h = binaryHarness();
+    h.exec.runLogged = () => {
+      throw new Error("ENOSPC: no space left on device, write");
+    };
+    await expect(cmdUpdate(h.deps)).rejects.toThrow("ENOSPC");
+    expect(h.files.read(LOCK_FILE)).not.toBeNull();
+    expect(parseUpdateRun(h.files.read(RUN_FILE))?.state).toBe("staging");
+    expect(h.io.stderr.join("\n")).not.toContain("the lock is released");
   });
 
   test("a throw before the drive's first write still records both versions on the interrupted record", async () => {
@@ -2641,6 +2688,7 @@ describe("collie update --to-tag", () => {
       expect(await cmdUpdate(h.deps, args)).toBe(EXIT.USAGE);
       expect(h.io.stderr.join("\n")).toContain("`--to-tag` names a release tag and was given none");
       expect(h.exec.spawned).toEqual([]);
+      expect(h.exec.ran).toEqual([]);
       expect(h.files.read(LOCK_FILE)).toBeNull();
       expect(h.files.read(RUN_FILE)).toBeNull();
     }

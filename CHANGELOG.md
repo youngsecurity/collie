@@ -1,10 +1,11 @@
 # Changelog
 
 This file tracks all notable changes to Collie, ordered newest version first. The project follows
-[Semantic Versioning](https://semver.org/). From 1.6.0 on, a version's changes are grouped under
-`### Added`, `### Changed`, `### Fixed`, `### Packaging` and `### Docs`, in that order and only
-where there is content, and every bullet opens with a short bold lead sentence, which is the line
-the GitHub Release page prints. Older versions carry a single flat list. Every entry links to its commit and credits the contributor where there is one. The
+[Semantic Versioning](https://semver.org/). From upstream 1.6.0 and this fork's 1.7.0+ys.1 on, a
+version's changes are grouped under `### Added`, `### Changed`, `### Fixed`, `### Packaging` and
+`### Docs`, in that order and only where there is content, and every bullet opens with a short
+bold lead sentence, which is the line the GitHub Release page prints. Older versions, the fork's
+`1.6.0+ys.1` and every `+ys` section below it included, carry a single flat list. Every entry links to its commit and credits the contributor where there is one. The
 `## [Unreleased]` section contains merged work waiting for release. The release
 commit renames this heading to `## [x.y.z] - YYYY-MM-DD`, adds the commit hashes, and adds a new
 empty `## [Unreleased]` section above it. The newest numbered `## [x.y.z]` heading (excluding the
@@ -33,6 +34,15 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 [`docs/install.md`](./docs/install.md#this-fork).
 
 ## [Unreleased]
+
+### Fixed
+
+- **A throw out of the manager-confirmed handoff no longer says nothing started.** `runLogged` spawns the `systemd-run` client before it appends to the log, so a throw there can come back with the runner already accepted; 1.7.0+ys.1 caught it, freed the lock, folded the record to `idle` and told the operator to retry against a live swap. The "nothing started" catch now covers only the staging write, the plan and the detached-spawn tier, whose log open precedes the spawn; a throw out of the manager client propagates and leaves the lock for the runner to inherit. Tests pin all three seams. (youngsecurity/collie#38 review)
+- **`crew status` names the remedy for a `+ys` counter skew.** The skew line compared by `compareSemver`, which reads `1.7.0+ys.2` and `1.7.0+ys.1` as equal and printed "Neither build is the older one"; it compares by `compareRelease` now, so a lead behind its member by one fork counter is told to level itself first. (youngsecurity/collie#38 review)
+
+### Docs
+
+- **The manifest carries the fork's Herdr floor note again.** The 1.7.0 merge took upstream's `herdr-plugin.toml` whole and dropped the comment tying `min_herdr_version = "0.8.0"` to `requireHerdrMinimum`, and re-added two paragraphs about Herdr <0.8.0 the fork does not support. (youngsecurity/collie#38 review)
 
 ## [1.7.0+ys.1] - 2026-09-10
 

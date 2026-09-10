@@ -1519,6 +1519,34 @@ describe("collie crew status", () => {
     expect(rendered).not.toContain("collie update` here");
   });
 
+  test("a `+ys` counter skew has a direction: the fork counter orders inside one base", async () => {
+    // Two fork builds on one upstream base are two releases, not two stamps of one: `+ys.2` is the
+    // newer artefact, so a lead on `+ys.1` is the older machine and must not be offered `crew update`.
+    const lead = withVersion(
+      harness(leadStore({ peers: [member({ memberId: "nas" })] }), [
+        jsonReply({ protocol: 1, member: "nas", version: "1.7.0+ys.2.aaaaaaa" }, 200, "nas"),
+      ]),
+      "1.7.0+ys.1.bbbbbbb",
+    );
+    await cmdPackStatus(lead.deps, []);
+    const behind = text(lead.io);
+    expect(behind).toContain("THIS machine is the older one");
+    expect(behind).toContain("BACKWARDS");
+    expect(behind).not.toContain("Neither build is the older one.");
+    expect(behind).not.toContain("Level it from here");
+
+    const ahead = withVersion(
+      harness(leadStore({ peers: [member({ memberId: "nas" })] }), [
+        jsonReply({ protocol: 1, member: "nas", version: "1.7.0+ys.1.aaaaaaa" }, 200, "nas"),
+      ]),
+      "1.7.0+ys.2.bbbbbbb",
+    );
+    await cmdPackStatus(ahead.deps, []);
+    const rendered = text(ahead.io);
+    expect(rendered).toContain("Level it from here");
+    expect(rendered).toContain("collie crew update nas");
+  });
+
   test("a member answering without the field renders as pre-amendment, never as `unknown`", async () => {
     const h = withVersion(
       harness(leadStore({ peers: [member({ memberId: "nas" })] }), [
