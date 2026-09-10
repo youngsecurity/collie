@@ -35,14 +35,16 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 ## [Unreleased]
 
+## [1.7.0+ys.2] - 2026-09-10
+
 ### Fixed
 
-- **A throw out of the manager-confirmed handoff no longer says nothing started.** `runLogged` spawns the `systemd-run` client before it appends to the log, so a throw there can come back with the runner already accepted; 1.7.0+ys.1 caught it, freed the lock, folded the record to `idle` and told the operator to retry against a live swap. The "nothing started" catch now covers only the staging write, the plan and the detached-spawn tier, whose log open precedes the spawn; a throw out of the manager client propagates and leaves the lock for the runner to inherit. Tests pin all three seams. (youngsecurity/collie#38 review)
-- **`crew status` names the remedy for a `+ys` counter skew.** The skew line compared by `compareSemver`, which reads `1.7.0+ys.2` and `1.7.0+ys.1` as equal and printed "Neither build is the older one"; it compares by `compareRelease` now, so a lead behind its member by one fork counter is told to level itself first. (youngsecurity/collie#38 review)
+- **A throw out of the manager-confirmed handoff no longer says nothing started.** `runLogged` spawns the `systemd-run` client before it appends to the log, so a throw there can come back with the runner already accepted; 1.7.0+ys.1 caught it, freed the lock, folded the record to `idle` and told the operator to retry against a live swap. The "nothing started" catch now covers only the staging write, the plan and the detached-spawn tier, whose log open precedes the spawn; a throw out of the manager client propagates and leaves the lock for the runner to inherit. Tests pin all three seams. (youngsecurity/collie#38 review) ([08bb68e](https://github.com/youngsecurity/collie/commit/08bb68e))
+- **`crew status` names the remedy for a `+ys` counter skew.** The skew line compared by `compareSemver`, which reads `1.7.0+ys.2` and `1.7.0+ys.1` as equal and printed "Neither build is the older one"; it compares by `compareRelease` now, so a lead behind its member by one fork counter is told to level itself first. (youngsecurity/collie#38 review) ([08bb68e](https://github.com/youngsecurity/collie/commit/08bb68e))
 
 ### Docs
 
-- **The manifest carries the fork's Herdr floor note again.** The 1.7.0 merge took upstream's `herdr-plugin.toml` whole and dropped the comment tying `min_herdr_version = "0.8.0"` to `requireHerdrMinimum`, and re-added two paragraphs about Herdr <0.8.0 the fork does not support. (youngsecurity/collie#38 review)
+- **The manifest carries the fork's Herdr floor note again.** The 1.7.0 merge took upstream's `herdr-plugin.toml` whole and dropped the comment tying `min_herdr_version = "0.8.0"` to `requireHerdrMinimum`, and re-added two paragraphs about Herdr <0.8.0 the fork does not support. (youngsecurity/collie#38 review) ([08bb68e](https://github.com/youngsecurity/collie/commit/08bb68e))
 
 ## [1.7.0+ys.1] - 2026-09-10
 
