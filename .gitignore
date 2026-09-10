@@ -10,6 +10,9 @@ out/
 target/
 # The compiled `collie` binary — built from the checkout, never committed.
 /bin/
+# Local staged-update pointer and release worktrees.
+/current
+/versions/
 
 # Logs
 *.log
