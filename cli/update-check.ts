@@ -1,9 +1,9 @@
 import { join } from "node:path";
 
 import type { JsonValue } from "../bridge/json.ts";
-import type { OpsRecord } from "../bridge/pack/ops-store.ts";
-import { PackOpsStore } from "../bridge/pack/ops-store.ts";
-import { TrustStore, type TrustedMember, type TrustStoreData } from "../bridge/pack/trust-store.ts";
+import type { OpsRecord } from "../bridge/crew/ops-store.ts";
+import { CrewOpsStore } from "../bridge/crew/ops-store.ts";
+import { TrustStore, type TrustedMember, type TrustStoreData } from "../bridge/crew/trust-store.ts";
 import { compareSemver, githubTagsUrl, parseTagsResponse } from "../bridge/update.ts";
 import { collieVersionBare, manifestVersionFrom } from "../bridge/version.ts";
 import { loadContext, type CliContext } from "./context.ts";
@@ -50,7 +50,7 @@ import {
 // ── IT ANSWERS ONE QUESTION AND CHANGES NOTHING ──────────────────────────────
 // "Can an update succeed here right now?" Nothing in this module writes a file, restarts a unit,
 // flips `current`, fetches into a checkout or touches config. Every probe is a read, which is what
-// makes it safe to poll from the phone (spec 05) and safe to ask before a pack flow acts (spec 06).
+// makes it safe to poll from the phone (spec 05) and safe to ask before a crew flow acts (spec 06).
 // The rule is structural, the same way `cli/doctor.ts` enforces it: the deps below name no
 // lifecycle verb, no writer and no mutating store method, so there is nothing here to call.
 //
@@ -72,7 +72,7 @@ export const PREFLIGHT_SCHEMA = 1;
 export type Verdict = "green" | "amber" | "red";
 
 /**
- * One check's answer. `id` is a **stable identifier** — it is what the PWA card and the pack flow
+ * One check's answer. `id` is a **stable identifier** — it is what the PWA card and the crew flow
  * branch on, so it does not move when the prose does — and `remedy` is the one command that clears
  * it, present wherever one exists.
  */
@@ -93,7 +93,7 @@ export interface PreflightCheck {
   readonly selfUpdateRemedy?: boolean;
 }
 
-/** One pack member's answer: how it was reached, and the checks that ran there. */
+/** One crew member's answer: how it was reached, and the checks that ran there. */
 export interface PreflightMember {
   readonly memberId: string;
   readonly host: string;
@@ -103,7 +103,7 @@ export interface PreflightMember {
    * How that member is installed, straight off its own report. Absent ⇒ unknown, which is what a
    * member older than this field answers and what a member we never reached answers.
    *
-   * The KIND is the wire fact the pack flow branches on — never a check id, which is prose's
+   * The KIND is the wire fact the crew flow branches on — never a check id, which is prose's
    * neighbour and would make a rename of a check silently un-skip a packaged peer.
    */
   readonly installKind?: InstallKind["kind"];
@@ -116,7 +116,7 @@ export interface PreflightReport {
   /** How THIS machine is installed. Optional and absent-means-unknown, so the schema does not move. */
   readonly installKind?: InstallKind["kind"];
   readonly checks: readonly PreflightCheck[];
-  readonly pack?: readonly PreflightMember[];
+  readonly crew?: readonly PreflightMember[];
 }
 
 /**
@@ -139,8 +139,8 @@ export interface UpdateCheckDeps {
    */
   readonly store: { load(): Promise<TrustStoreData | null> };
   /**
-   * How the operator reached each member (`pack-ops.json`, ADR 0016), narrowed the same way: read
-   * here, never written. A `PackOpsStore` is assignable.
+   * How the operator reached each member (`crew-ops.json`, ADR 0016), narrowed the same way: read
+   * here, never written. A `CrewOpsStore` is assignable.
    */
   readonly ops: { get(memberId: string): Promise<OpsRecord | null> };
   /** The ONE thing that spawns ssh, injected so no test ever does. */
@@ -149,7 +149,7 @@ export interface UpdateCheckDeps {
    * `collie doctor`'s findings, behind a seam.
    *
    * A seam rather than a call so a test can state a diagnosis in one line, and so this module never
-   * has to know how doctor reaches the world (a trust store, a pack fetch, a beacon sweep).
+   * has to know how doctor reaches the world (a trust store, a crew fetch, a beacon sweep).
    */
   doctor(): Promise<readonly Finding[]>;
   /** Whether the lines below may carry colour. False everywhere but a real terminal. */
@@ -166,8 +166,8 @@ const DISK_RED_KB = 500 * 1024;
 const DISK_AMBER_KB = 1024 * 1024;
 
 /**
- * The oldest Bun this tree's own code is known to run on — the version its pack transport was
- * measured against (`bridge/pack/transport.ts`). Below it is AMBER rather than red: nothing here has
+ * The oldest Bun this tree's own code is known to run on — the version its crew transport was
+ * measured against (`bridge/crew/transport.ts`). Below it is AMBER rather than red: nothing here has
  * observed a failure at an older Bun, and a preflight that refuses on a guess is one the operator
  * learns to override.
  */
@@ -224,11 +224,11 @@ export function worst(verdicts: readonly Verdict[]): Verdict {
  *
  * `ops-record` red means "this lead has never been told how to reach that peer" — a fact about the
  * lead's own records, not about whether the LEAD's own update can succeed. Updating the lead needs
- * no route to its peers (`cli/pack-update.ts` already treats an `ops-record` red the same way: it
+ * no route to its peers (`cli/crew-update.ts` already treats an `ops-record` red the same way: it
  * skips that member with its remedy, it does not abort the run). So when a member's ONLY red is
  * `ops-record`, it counts as amber here — a peer needing a route is a fact to show, not a reason to
  * refuse the lead's own update. Any OTHER red (unreachable, no Collie at the path, a red remote
- * preflight) still makes this member count red at the top, same as `cli/pack-update.ts`'s `blocks`.
+ * preflight) still makes this member count red at the top, same as `cli/crew-update.ts`'s `blocks`.
  */
 export function topLevelMemberVerdict(member: PreflightMember): Verdict {
   const reds = member.checks.filter((c) => c.verdict === "red");
@@ -249,7 +249,7 @@ const red = (id: string, reason: string, remedy?: string): PreflightCheck =>
 
 /**
  * The `PreflightCheck.id` of the packaged install's one line. LOCAL, and deliberately not exported:
- * the pack flow reads {@link PreflightMember.installKind}, the kind itself, never this id. A check
+ * the crew flow reads {@link PreflightMember.installKind}, the kind itself, never this id. A check
  * id is a label on a sentence; the kind is the fact.
  */
 const PACKAGE_CHECK_ID = "package";
@@ -376,7 +376,7 @@ export function bunCheck(deps: UpdateCheckDeps): PreflightCheck {
  * notes or editor droppings beside their checkout must not get a red for it: a preflight that
  * false-positives on a normal working install is one the operator learns to override, which is the
  * failure mode `cli/doctor.ts` already warns about twice. A tracked modification is still a red, and
- * it names the files — the same refusal `cli/pack-update.ts` makes on a member's dirty checkout.
+ * it names the files — the same refusal `cli/crew-update.ts` makes on a member's dirty checkout.
  */
 export function treeCheck(deps: UpdateCheckDeps): PreflightCheck {
   const root = deps.ctx.root;
@@ -644,7 +644,7 @@ export async function instanceChecks(
   return checks;
 }
 
-// ── Pack checks ──────────────────────────────────────────────────────────────
+// ── Crew checks ──────────────────────────────────────────────────────────────
 
 /** The script that asks a member's own Collie for its preflight. Exit 66 = no binary at that path. */
 export function remoteCheckScript(root: string): string {
@@ -692,10 +692,13 @@ export function parseReport(stdout: string): PreflightReport | null {
     kind === undefined
       ? { schema: PREFLIGHT_SCHEMA, verdict: claimed, checks }
       : { schema: PREFLIGHT_SCHEMA, verdict: claimed, installKind: kind, checks };
-  if (rec.pack === undefined) return report;
-  if (!Array.isArray(rec.pack)) return report;
-  const pack = rec.pack.map(asMember).filter((m): m is PreflightMember => m !== null);
-  return { ...report, pack };
+  // REMOVE_IN_1_9_0: `pack` is 1.7.0's name for `crew`. This document was printed by ANOTHER
+  // machine — a member the lead walked over ssh — which may still be on 1.7.0 during the roll, so
+  // both names are accepted on read. Only `crew` is ever written.
+  const members = rec.crew ?? rec.pack;
+  if (!Array.isArray(members)) return report;
+  const crew = members.map(asMember).filter((m): m is PreflightMember => m !== null);
+  return { ...report, crew };
 }
 
 /** A JSON object, or null for every other JSON value. */
@@ -746,16 +749,22 @@ const KNOWN_KINDS: readonly InstallKind["kind"][] = ["linked-clone", "detached-c
 /** ssh never started, or could not connect — the transport family, distinct from a remote failure. */
 const transportFailed = (r: RemoteResult): boolean => !r.spawned || r.code === 255;
 
-/** One member's turn: reach it, prove there is a Collie there, then ask it the same question. */
+/**
+ * One member's turn: reach it, prove there is a Collie there, then ask it the same question.
+ *
+ * The route is RESOLVED before this point ({@link memberRoute}), so this function never reads the
+ * ops record itself. That is what lets `collie crew update <member> --host/--path/--port` reach a
+ * machine whose remembered route is stale: the walk asks the route this run was given, and the
+ * remedy this function prints for a missing checkout is therefore one the operator can act on.
+ */
 async function memberChecks(
   deps: UpdateCheckDeps,
   member: TrustedMember,
-  record: OpsRecord | null,
+  route: ResolvedRoute,
   ourVersion: string,
-  port: number,
 ): Promise<PreflightMember> {
   const id = member.memberId;
-  const host = record?.sshHost ?? "";
+  const host = route.sshHost;
   const done = (checks: readonly PreflightCheck[], installKind?: InstallKind["kind"]): PreflightMember =>
     installKind === undefined
       ? { memberId: id, host, verdict: worst(checks.map((c) => c.verdict)), checks }
@@ -771,7 +780,7 @@ async function memberChecks(
   }
   const runner = deps.remote(host);
   try {
-    const { result, probe } = await runProbe(runner, { path: record?.path ?? null, port });
+    const { result, probe } = await runProbe(runner, { path: route.path, port: route.port });
     if (transportFailed(result)) {
       return done([
         red(
@@ -796,7 +805,7 @@ async function memberChecks(
         reached,
         red(
           "collie-present",
-          `no Collie checkout at ${host}${record?.path === null || record?.path === undefined ? "" : ` (${record.path})`}`,
+          `no Collie checkout at ${host}${route.path === null ? "" : ` (${route.path})`}`,
           `collie crew update ${id} --host ${host} --path <remote-checkout>`,
         ),
       ]);
@@ -810,7 +819,7 @@ async function memberChecks(
   }
 }
 
-/** PACK_PROTOCOL §7.1: skew inside a protocol version is tolerated by design, so it is never red. */
+/** CREW_PROTOCOL §7.1: skew inside a protocol version is tolerated by design, so it is never red. */
 export function skewCheck(theirs: string, ours: string): PreflightCheck {
   if (theirs === "") return amber("version", "that member did not report a version");
   if (theirs === ours) return green("version", `runs ${theirs}, the same build as this lead`);
@@ -854,15 +863,39 @@ async function remoteChecks(
 
 const firstLine = (text: string): string => text.split("\n").find((l) => l.trim() !== "")?.trim() ?? "";
 
+/** A route the walk will use: every field decided, nothing left to fall back on. */
+interface ResolvedRoute {
+  readonly sshHost: string;
+  readonly path: string | null;
+  readonly port: number;
+}
+
+/**
+ * One member's route: what THIS run says about it first, what the ops file remembers second.
+ *
+ * Pure, and the only place the two sources meet. An override field that is absent leaves the
+ * remembered value in place, so a caller may correct the host alone and keep the recorded path.
+ */
+function memberRoute(deps: UpdateCheckDeps, record: OpsRecord | null, over: MemberRoute | undefined): ResolvedRoute {
+  return {
+    sshHost: over?.sshHost ?? record?.sshHost ?? "",
+    path: over?.path ?? record?.path ?? null,
+    port: over?.port ?? record?.port ?? deps.ctx.port,
+  };
+}
+
 /** Every member's answer, or `undefined` when this collie is not a lead with peers. */
-export async function packChecks(deps: UpdateCheckDeps): Promise<PreflightMember[] | undefined> {
+export async function crewChecks(
+  deps: UpdateCheckDeps,
+  overrides: Readonly<Record<string, MemberRoute>> = {},
+): Promise<PreflightMember[] | undefined> {
   const data = await deps.store.load();
-  if (data === null || data.pack === null || data.lead !== null || data.peers.length === 0) return undefined;
+  if (data === null || data.crew === null || data.lead !== null || data.peers.length === 0) return undefined;
   const ours = collieVersionBare(deps.ctx.root, (p) => deps.files.read(p));
   const members: PreflightMember[] = [];
   for (const member of data.peers) {
     const record = await deps.ops.get(member.memberId);
-    members.push(await memberChecks(deps, member, record, ours, record?.port ?? deps.ctx.port));
+    members.push(await memberChecks(deps, member, memberRoute(deps, record, overrides[member.memberId]), ours));
   }
   return members;
 }
@@ -887,26 +920,41 @@ export interface PreflightOptions {
    * resolution and the health gate cost one subprocess between them rather than two.
    */
   readonly toTag?: string | null;
+  /**
+   * Route corrections for the member walk, keyed by member id.
+   *
+   * `collie crew update <member> --host/--path/--port` describes a machine the ops file may
+   * remember wrongly. Without this the walk would probe the stale route, go red, and print a
+   * remedy the operator had ALREADY followed. Absent fields fall back to the record.
+   */
+  readonly overrides?: Readonly<Record<string, MemberRoute>>;
+}
+
+/** One machine's route as a command line gave it. Every field optional: absent means "keep the record". */
+export interface MemberRoute {
+  readonly sshHost?: string;
+  readonly path?: string | null;
+  readonly port?: number;
 }
 
 /** The whole document, assembled. Pure of output — {@link cmdUpdateCheck} decides how to print it. */
 export async function preflight(deps: UpdateCheckDeps, opts: PreflightOptions = {}): Promise<PreflightReport> {
-  // Probed ONCE and threaded through: the report names the kind (it is what the pack flow branches
+  // Probed ONCE and threaded through: the report names the kind (it is what the crew flow branches
   // on) and the checks are chosen by it, and two probes could answer differently under a package
   // swap mid-run.
   const install = classifyInstall(probeInstall(deps, deps.ctx.root));
   const checks = await instanceChecks(deps, opts.toTag ?? null, install);
-  // Skipped ENTIRELY under `--local`: no trust store read, no ssh, and no `pack` key in the report.
-  const pack = opts.local === true ? undefined : await packChecks(deps);
+  // Skipped ENTIRELY under `--local`: no trust store read, no ssh, and no `crew` key in the report.
+  const crew = opts.local === true ? undefined : await crewChecks(deps, opts.overrides ?? {});
   // A member's contribution to the TOP verdict is `topLevelMemberVerdict`, not its own `.verdict` —
   // see that function's comment: an `ops-record`-only red on a peer must not disable the lead's own
   // update button.
   const verdict = worst([
     ...checks.map((c) => c.verdict),
-    ...(pack ?? []).map(topLevelMemberVerdict),
+    ...(crew ?? []).map(topLevelMemberVerdict),
   ]);
   const report: PreflightReport = { schema: PREFLIGHT_SCHEMA, verdict, installKind: install.kind, checks };
-  return pack === undefined ? report : { ...report, pack };
+  return crew === undefined ? report : { ...report, crew };
 }
 
 const COLOURS = { green: "[32m", amber: "[33m", red: "[31m" } satisfies Record<Verdict, string>;
@@ -928,10 +976,10 @@ function render(deps: UpdateCheckDeps, report: PreflightReport): void {
   deps.io.out("");
   deps.io.out("instance:");
   for (const c of report.checks) deps.io.out(checkLine(c, colour));
-  if (report.pack === undefined) return;
+  if (report.crew === undefined) return;
   deps.io.out("");
   deps.io.out("crew:");
-  for (const m of report.pack) {
+  for (const m of report.crew) {
     // The kind closes the row when that member named one. It tells the operator at a glance which
     // machines the phone will move and which a package manager owns — and a member that named none
     // (one older than the field, or one this run never reached) reads exactly as it always did.
@@ -977,7 +1025,7 @@ export function updateCheckDeps(io: Io): UpdateCheckDeps {
     net: realNet,
     platform: process.platform,
     store: new TrustStore(ctx.stateDir),
-    ops: new PackOpsStore(ctx.stateDir),
+    ops: new CrewOpsStore(ctx.stateDir),
     remote: (host) => sshRunner(host, ctx.env, ctx.home),
     // Doctor, asked through its OWN `--json` contract rather than through a second entry point:
     // this module never edits `cli/doctor.ts`, and the JSON is the shape that file already
@@ -1001,7 +1049,7 @@ export function wantsCheck(args: readonly string[]): boolean {
   return args.includes("--check");
 }
 
-/** `--local`: check this instance only, and skip the pack members. What the phone's card asks for. */
+/** `--local`: check this instance only, and skip the crew members. What the phone's card asks for. */
 export function wantsLocal(args: readonly string[]): boolean {
   return args.includes("--local");
 }

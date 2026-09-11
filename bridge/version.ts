@@ -6,7 +6,7 @@ import { join } from "node:path";
 //
 // It lives in `bridge/` rather than in `cli/` because the dependency direction is one-way — `cli/`
 // imports from `bridge/` (context.ts already does, for `config.ts` and `root.ts`) and nothing in
-// `bridge/` may import from `cli/`. `hello` has to answer with a version (PACK_PROTOCOL.md §7.1,
+// `bridge/` may import from `cli/`. `hello` has to answer with a version (CREW_PROTOCOL.md §7.1,
 // "Where the responder gets the string"), and the spec's requirement is that the bridge and the CLI
 // "never print different strings for one machine" — which is only guaranteed by one implementation,
 // not by two that agree today. `cli/context.ts` re-exports {@link collieVersion} from here.
@@ -80,7 +80,7 @@ export function bareVersionFrom(buildInfo: string | null, manifest: string | nul
  * A version with a build sha stamped onto it, as valid SemVer build metadata. `1.0.0-beta.46` and
  * `ab12cd3` join as `1.0.0-beta.46+ab12cd3`; a version that ALREADY carries metadata (this fork's
  * `1.1.0+ys.1`) takes the sha as a further dot-separated identifier, `1.1.0+ys.1.ab12cd3`, never as a
- * second `+`. Exported because `cli/pack-update.ts` has to predict the string a levelled member will
+ * second `+`. Exported because `cli/crew-update.ts` has to predict the string a levelled member will
  * answer with, and the one way to guarantee that prediction is to build it with the same function.
  */
 export function buildStamp(version: string, sha: string): string {
@@ -119,7 +119,7 @@ export function collieVersion(root: string, read: (p: string) => string | null =
   return collieVersionFrom(...versionFiles(root, read));
 }
 
-/** {@link bareVersionFrom} over the same two files — the spelling the pack wire takes. */
+/** {@link bareVersionFrom} over the same two files — the spelling the crew wire takes. */
 export function collieVersionBare(root: string, read: (p: string) => string | null = readIfPresent): string {
   return bareVersionFrom(...versionFiles(root, read));
 }
@@ -139,7 +139,7 @@ function readIfPresent(p: string): string | null {
 /**
  * Does `reported` name the build at `(version, commit)`?
  *
- * TWO CALLERS, ONE QUESTION. `cli/pack-update.ts` asks it of a peer that was just levelled to this
+ * TWO CALLERS, ONE QUESTION. `cli/crew-update.ts` asks it of a peer that was just levelled to this
  * lead's commit; `cli/update-run.ts`'s health gate asks it of the local service that just restarted
  * onto a staged version. Both are comparing a string a running Collie ANSWERS with against a version
  * and a commit, and both learned the same lesson: a built Collie reports `<semver>+<short sha>`, so

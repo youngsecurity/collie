@@ -12,7 +12,7 @@ import { pidIsAlive } from "./update-run.ts";
 // `deviceAuth`) trusts a header a proxy injects: the device is whoever the tailnet says it is. That
 // is only as good as the proxy's sanitisation and the identity provider's naming, and it cannot be
 // revoked from the phone that lost the device. This module adds the other kind of proof — a bearer
-// credential the device itself holds — on the same reasoning the pack link already runs on: network
+// credential the device itself holds — on the same reasoning the crew link already runs on: network
 // position is not identity (ADR 0013).
 //
 // The two gates are INDEPENDENT and compose by AND. Configuring one says nothing about the other,
@@ -797,7 +797,7 @@ export class PairingStore {
 
   /**
    * Adopt a lead's synced entries into this machine's own registry — **at takeover commit, and only
-   * then** (RFC §6.5, `bridge/pack/standby-devices.ts`).
+   * then** (RFC §6.5, `bridge/crew/standby-devices.ts`).
    *
    * After the commit this machine IS the lead, so the phone must keep working against the very
    * credential it already holds; before it, adopting would silently arm this machine's own write gate

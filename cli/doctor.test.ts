@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
 
-import { PACK_PROTOCOL_VERSION } from "../bridge/pack/enrollment.ts";
-import { leadStore, member, PACK, peerStore, T0 } from "../bridge/pack/fixtures.ts";
-import { markerFor } from "../bridge/pack/staleness.ts";
-import { serializeTrustStore, TrustStore, type TrustStoreData, type TrustStoreIo } from "../bridge/pack/trust-store.ts";
+import { CREW_PROTOCOL_VERSION } from "../bridge/crew/enrollment.ts";
+import { leadStore, member, CREW, peerStore, T0 } from "../bridge/crew/fixtures.ts";
+import { markerFor } from "../bridge/crew/staleness.ts";
+import { serializeTrustStore, TrustStore, type TrustStoreData, type TrustStoreIo } from "../bridge/crew/trust-store.ts";
 import { fakeBeaconReader, FAKE_BEACON_NOW, type FakeBeacon } from "../bridge/beacon/fake.ts";
 import { BEACON_SCHEMA_VERSION } from "../bridge/beacon/types.ts";
 import type { JsonObject } from "../bridge/json.ts";
@@ -27,7 +27,7 @@ import {
 } from "./fakes.ts";
 import { EXIT } from "./io.ts";
 
-// `collie doctor`, against fakes for every seam. Like cli/pack.test.ts, NOTHING here reaches a
+// `collie doctor`, against fakes for every seam. Like cli/crew.test.ts, NOTHING here reaches a
 // service manager, a tailnet, a real trust store or a network — and unlike it, there is nothing to
 // reach even in principle: `DoctorDeps` names no verb that could change something, so a test that
 // wanted to assert "doctor wrote nothing" is asserting a type, not a behaviour. It is asserted
@@ -145,7 +145,7 @@ function fakeUi(): FakeUi {
     ui: {
       doctor: async (view) => void views.push(view),
       status: async () => {},
-      packMembers: async () => {},
+      crewMembers: async () => {},
     },
   };
 }
@@ -180,10 +180,10 @@ function harness(
   let n = 0;
   return {
     deps: {
-      // As in cli/pack.test.ts: the peer client races the fake fetch against a REAL timer, so the
+      // As in cli/crew.test.ts: the peer client races the fake fetch against a REAL timer, so the
       // budget is set far above anything this process could stall for.
       ctx: context(
-        { COLLIE_PACK_TIMEOUT_MS: "60000", ...over.env },
+        { COLLIE_CREW_TIMEOUT_MS: "60000", ...over.env },
         over.root === undefined ? { socket: SOCKET } : { socket: SOCKET, root: over.root },
       ),
       io: out,
@@ -223,12 +223,12 @@ function hello(
 ): Response {
   const headers = new Headers({
     "content-type": "application/json",
-    "x-pack-protocol": String(PACK_PROTOCOL_VERSION),
-    "x-pack-member": over.memberId ?? "laptop",
+    "x-crew-protocol": String(CREW_PROTOCOL_VERSION),
+    "x-crew-member": over.memberId ?? "laptop",
   });
   if (over.date !== null) headers.set("date", new Date(over.date ?? T0).toUTCString());
   const version = over.version === undefined ? "1.0.0-alpha.12" : over.version;
-  const body: HelloBody = { protocol: PACK_PROTOCOL_VERSION, member: over.memberId ?? "laptop" };
+  const body: HelloBody = { protocol: CREW_PROTOCOL_VERSION, member: over.memberId ?? "laptop" };
   if (version !== null) body.version = version;
   return new Response(JSON.stringify(body), { status: 200, headers });
 }
@@ -254,7 +254,7 @@ const LEAD = leadStore({ peers: [member({ memberId: "laptop" })] });
 
 /** A boot marker that matches a store exactly — the "the running bridge holds this roster" case. */
 const markerFile = (data: TrustStoreData): SeededFiles => ({
-  [`${STATE}/pack-runtime.json`]: JSON.stringify(markerFor(data, T0, 42)),
+  [`${STATE}/crew-runtime.json`]: JSON.stringify(markerFor(data, T0, 42)),
 });
 
 /** A seed with one path taken out of it — the "that file is simply not there" cases. */
@@ -290,6 +290,7 @@ describe("collie doctor — the contract", () => {
       "integration-claude",
       "integration-codex",
       "integration-grok",
+      "integration-hermes",
       "integration-opencode",
       "integration-pi",
       "hook-python3",
@@ -520,7 +521,7 @@ describe("collie doctor — the local checks", () => {
     expect(code).toBe(EXIT.OK);
   });
 
-  // The gate main brought (#129) and the pack carve-out that keeps it honest: a wide bind stops a
+  // The gate main brought (#129) and the crew carve-out that keeps it honest: a wide bind stops a
   // SOLO collie from starting at all, so doctor says the same thing the bridge would — while a peer
   // binds wide by construction and hears only the wildcard warning (ADR 0013).
   test("bind: a wide bind is an ERROR on solo, cleared by the hatch, and never one on a peer", async () => {
@@ -841,7 +842,7 @@ describe("collie doctor — the clock (§8.6's ±5m window)", () => {
   });
 });
 
-// ── The pack checks ──────────────────────────────────────────────────────────
+// ── The crew checks ──────────────────────────────────────────────────────────
 
 describe("collie doctor — the crew checks", () => {
   test("store-drift: a roster the running bridge never wired is an error naming `collie restart`", async () => {
@@ -849,7 +850,7 @@ describe("collie doctor — the crew checks", () => {
     const stale = markerFor(leadStore(), T0, 42);
     const { code, byCheck } = await findings(
       harness(LEAD, [hello()], {
-        files: { ...healthyFiles(), [`${STATE}/pack-runtime.json`]: JSON.stringify(stale) },
+        files: { ...healthyFiles(), [`${STATE}/crew-runtime.json`]: JSON.stringify(stale) },
       }),
     );
     expect(byCheck.get("store-drift")?.status).toBe("error");
@@ -871,7 +872,7 @@ describe("collie doctor — the crew checks", () => {
     expect(byCheck.get("secret-generation")?.status).toBe("warn");
     expect(byCheck.get("secret-generation")?.remedy).toContain("collie crew rotate");
     expect(code).toBe(EXIT.OK);
-    expect(PACK.secretGeneration).toBe(1);
+    expect(CREW.secretGeneration).toBe(1);
   });
 
   test("member-reach: an unreachable member is an error naming `collie reconnect`", async () => {
@@ -897,15 +898,15 @@ describe("collie doctor — the crew checks", () => {
     const f = byCheck.get("member-reach");
     expect(f?.status).toBe("error");
     expect(f?.detail).toContain("served no data");
-    expect(f?.remedy).toContain("COLLIE_PACK_TIMEOUT_MS");
+    expect(f?.remedy).toContain("COLLIE_CREW_TIMEOUT_MS");
     expect(f?.remedy).toContain("COLLIE_POLL_MS");
     expect(f?.remedy).not.toContain("collie reconnect");
     expect(code).toBe(EXIT.FAIL);
   });
 
-  // F21: the peer's side of the same check. `/pack/v1/snapshot` is not on the closed peer → lead
+  // F21: the peer's side of the same check. `/crew/v1/snapshot` is not on the closed peer → lead
   // route set (§8.6), so the only answer the second question can get is §8.1's bare 401 — which this
-  // check reported as "answered but served no data", with the budget remedy, on a healthy pack.
+  // check reported as "answered but served no data", with the budget remedy, on a healthy crew.
   test("lead-reach: a peer asks its lead `hello` and nothing else", async () => {
     const peer = peerStore();
     const h = harness(peer, [hello({ memberId: "desk" })], {
@@ -913,7 +914,7 @@ describe("collie doctor — the crew checks", () => {
       files: without({ ...healthyFiles(), ...markerFile(peer) }, HANDLER),
     });
     const { byCheck } = await findings(h);
-    expect(h.requests).not.toContain("https://desk.example:8787/pack/v1/snapshot");
+    expect(h.requests).not.toContain("https://desk.example:8787/crew/v1/snapshot");
     const f = byCheck.get("lead-reach");
     expect(f?.status).toBe("ok");
     expect(f?.detail).toContain("answered `hello`");
@@ -926,8 +927,8 @@ describe("collie doctor — the crew checks", () => {
     expect(byCheck.get("member-reach")?.status).toBe("ok");
     expect(byCheck.get("member-reach")?.detail).toContain("served a snapshot");
     expect(h.requests).toEqual([
-      "https://laptop.example:8787/pack/v1/hello",
-      "https://laptop.example:8787/pack/v1/snapshot",
+      "https://laptop.example:8787/crew/v1/hello",
+      "https://laptop.example:8787/crew/v1/snapshot",
       // The history section's one GET of THIS bridge's own snapshot (issue #137), on the same seam.
       "http://127.0.0.1:8787/api/snapshot",
     ]);
@@ -1401,8 +1402,8 @@ describe("the terminal renderer", () => {
     expect(views).toHaveLength(1);
     // The same findings, not a re-derived summary of them.
     expect(views[0]!.local.map((f) => f.check)).toEqual((await plainFindings()).map((f) => f.check));
-    expect(views[0]!.pack).toEqual([]);
-    expect(views[0]!.packNote[0]).toContain("not in a crew");
+    expect(views[0]!.crew).toEqual([]);
+    expect(views[0]!.crewNote[0]).toContain("not in a crew");
   });
 
   test("`--json` outranks the renderer — a script's stdout is never a drawing", async () => {
