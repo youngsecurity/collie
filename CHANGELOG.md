@@ -37,6 +37,23 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 ## [Unreleased]
 
+## [1.8.0+ys.1] - 2026-09-11
+
+Adopts upstream Collie 1.8.0 in one merge against the fork's base v1.7.0, closing
+youngsecurity/collie#37. The upstream section below says what the release brought; this section is
+the fork's side of the reconciliation.
+
+### Changed
+
+- **The crew wire at protocol version 2 keeps the fork's release order.** Upstream's rename landed the fork's `compareRelease` in `bridge/crew/follow.ts` and `update-action.ts` under the crew names, so a member on `1.8.0+ys.1` still reads as behind a lead on `1.8.0+ys.2`, and the one-release version 1 overlap is taken as upstream shipped it. ([bca973a](https://github.com/youngsecurity/collie/commit/bca973a))
+- **The mid-sweep request queue rides the crew lead.** `CrewLead.request()` and its replay survive the rename, `/api/update/check` still awaits the fresh preflight it promised, and the confirm gate on `POST /api/update` encloses upstream's crew rows and `beginCrewRun`. ([bca973a](https://github.com/youngsecurity/collie/commit/bca973a))
+- **A member's preflight document is read strictly under either name.** The fork's element-by-element `parseReport` takes the rows under `crew` or, from a member still on 1.7.0, `pack`, and writes only `crew`; the overlap is removed in 1.9.0 with upstream's. ([bca973a](https://github.com/youngsecurity/collie/commit/bca973a))
+- **The standby door stays a wire file.** `scripts/check-crew-wire.sh` names `bridge/crew/standby.ts` beside upstream's `v1-overlap.ts`, so the guard still forces a protocol decision on it. ([bca973a](https://github.com/youngsecurity/collie/commit/bca973a))
+
+### Packaging
+
+- **The release attaches `collie-release.json` by hand.** Upstream's CI publishes the crew wire reading the update notice consults; `release.yml` stays the fork's inert stub, so the same asset is written from `CREW_PROTOCOL_VERSION` and uploaded with the release, and the phone can say that this release changes the crew link. ([bca973a](https://github.com/youngsecurity/collie/commit/bca973a))
+
 ## [1.8.0] - 2026-09-09
 
 ### Added
