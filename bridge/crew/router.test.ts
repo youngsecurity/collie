@@ -5,7 +5,7 @@ import type { SnapshotView } from "../sessions.ts";
 import { MUX_LOGO_PATH, type SnapshotResponse } from "../types.ts";
 import { CREW_PREFLIGHT_MAX_CHECKS, CREW_PREFLIGHT_TRUNCATED_ID, peerPreflightWire } from "../update-action.ts";
 import { MEMBER_HEADER } from "./admission.ts";
-import { HANDOVER_TTL_MS, mintInvite, type EnrollResponse } from "./enrollment.ts";
+import { HANDOVER_TTL_MS, mintInvite } from "./enrollment.ts";
 import { counterRandom, fp, leadStore, material, member, muxCaps, CREW, peerStore, T0 } from "./fixtures.ts";
 import {
   createCrewRouter,
@@ -692,13 +692,19 @@ describe("POST /crew/v1/enroll — admitted by the TOKEN, not by the two factors
       body: JSON.stringify(body({ token: h.token })),
     }))!;
     expect(res.status).toBe(200);
-    // SAFETY: a 200 on the enroll route is defined by §8.2 to carry the whole transfer — the router
-    // has no other 200 body for this path, and the assertions below check every field of it.
-    const payload = (await res.json()) as EnrollResponse;
-    expect(payload.memberId).toBe("laptop");
-    expect(payload.leadMemberId).toBe("desk");
-    expect(payload.leadFingerprint).toBe(fp("desk"));
-    expect(payload.crewSecret).toBeString();
+    expect(res.headers.get("x-crew-protocol")).toBe("2");
+    expect(res.headers.get("x-pack-protocol")).toBeNull();
+    expect(await res.json()).toEqual({
+      protocol: 2,
+      crewId: CREW.crewId,
+      crewName: CREW.name,
+      crewSecret: CREW.secret,
+      secretGeneration: CREW.secretGeneration,
+      memberId: "laptop",
+      leadMemberId: "desk",
+      leadFingerprint: fp("desk"),
+      leadCertPem: material("desk").certPem,
+    });
     // The peer is now pinned on the lead's roster, and the invite is gone.
     expect(h.data().peers.map((p) => [p.memberId, p.fingerprint])).toEqual([["laptop", fp("laptop")]]);
     expect(h.data().invites).toEqual([]);
@@ -2641,13 +2647,15 @@ describe("the version 1 overlap", () => {
     expect(res.headers.get("x-crew-member")).toBeNull();
   });
 
-  test("a version 1 member enrols, and the version arrives in the body as well as the header", async () => {
+  test.each([true, false])("a version 1 enrollment returns the historical client contract (header: %s)", async (withHeader) => {
     const minted = mintInvite(leadStore({ peers: [] }), { now: T0, label: "laptop", random: counterRandom("r") });
     const h = harness(minted.next);
     const handler = createCrewRouter({ store: h.store, audit: h.audit, now: () => T0 + 1 });
     const res = (await call(handler, v1(CREW_ENROLL_PATH), {
       method: "POST",
-      headers: { "content-type": "application/json", "x-pack-protocol": "1" },
+      headers: withHeader
+        ? { "content-type": "application/json", "x-pack-protocol": "1" }
+        : { "content-type": "application/json" },
       body: JSON.stringify({
         protocol: 1,
         token: minted.result.token,
@@ -2659,7 +2667,57 @@ describe("the version 1 overlap", () => {
     }))!;
     expect(res.status).toBe(200);
     expect(res.headers.get("x-pack-protocol")).toBe("1");
-    expect(h.data().peers.map((p) => p.memberId)).toEqual(["laptop"]);
+    expect(res.headers.get("x-crew-protocol")).toBeNull();
+    // The 1.7.0 parseEnrollResponse requires all three pack fields, not crew aliases.
+    // Assert its complete transfer contract without the current client's permissive parser.
+    expect(await res.json()).toEqual({
+      protocol: 1,
+      packId: CREW.crewId,
+      packName: CREW.name,
+      packSecret: CREW.secret,
+      secretGeneration: CREW.secretGeneration,
+      memberId: "laptop",
+      leadMemberId: "desk",
+      leadFingerprint: fp("desk"),
+      leadCertPem: material("desk").certPem,
+    });
+    expect(h.data().peers.map((p) => [p.memberId, p.fingerprint])).toEqual([["laptop", fp("laptop")]]);
+    expect(h.data().invites).toEqual([]);
+  });
+
+  test("version 1 enrollment refuses invalid and spent tokens without a transfer", async () => {
+    const minted = mintInvite(leadStore({ peers: [] }), { now: T0, label: "laptop", random: counterRandom("r") });
+    const h = harness(minted.next);
+    const handler = createCrewRouter({ store: h.store, audit: h.audit, now: () => T0 + 1 });
+    const send = (token: string) => call(handler, v1(CREW_ENROLL_PATH), {
+      method: "POST",
+      headers: { "x-pack-protocol": "1" },
+      body: JSON.stringify({
+        protocol: 1,
+        token,
+        fingerprint: fp("laptop"),
+        certPem: material("laptop").certPem,
+        address: "laptop.ts.net:8787",
+        label: "laptop",
+      }),
+    });
+    const before = h.contents();
+    const invalid = (await send("wrong"))!;
+    expect(invalid.status).toBe(401);
+    expect(await invalid.json()).toEqual({ error: "unauthorized" });
+    expect(h.contents()).toBe(before);
+    expect(h.writes()).toBe(0);
+
+    expect((await send(minted.result.token))!.status).toBe(200);
+    const enrolled = h.contents();
+    const writes = h.writes();
+    const duplicate = (await send(minted.result.token))!;
+    expect(duplicate.status).toBe(401);
+    expect(await duplicate.json()).toEqual({ error: "unauthorized" });
+    expect(headerList(duplicate)).toEqual(headerList(invalid));
+    expect(duplicate.headers.get("x-pack-protocol")).toBeNull();
+    expect(h.contents()).toBe(enrolled);
+    expect(h.writes()).toBe(writes);
   });
 
   // The roll's whole point: a 1.7.0 peer reads its lead's release off the snapshot dial and levels

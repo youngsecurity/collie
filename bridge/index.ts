@@ -827,6 +827,7 @@ const updateAction = canRunUpdate
   ? {
       preflight: (force?: boolean) => preflightCache.get(force),
       lockHeld: () => updateLockHeld(cfg.stateDir),
+      crewRunActive: () => crewLead?.updateRunActive() ?? false,
       newRunId,
       start: startDetachedUpdate,
       beginCrewRun: (a: { runId: string; to: string }) => {

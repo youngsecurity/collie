@@ -6,6 +6,7 @@ import { join } from "node:path";
 
 import {
   HermesTranscriptSource,
+  hermesJournal,
   isHermesSessionId,
   parseHermesTranscript,
 } from "./hermes.ts";
@@ -65,6 +66,79 @@ describe("parseHermesTranscript", () => {
 });
 
 describe("HermesTranscriptSource", () => {
+  test("reads every valid tool call in order despite malformed calls and preserves result rows", async () => {
+    const root = await mkdtemp(join(tmpdir(), "collie-hermes-multiple-tools-"));
+    try {
+      const db = new Database(join(root, "state.db"));
+      try {
+        db.run("create table sessions (id text primary key, parent_session_id text)");
+        db.run("create table messages (id integer primary key, session_id text, role text, content text, tool_call_id text, tool_calls text, tool_name text, timestamp real, reasoning text, reasoning_content text, active integer default 1, compacted integer default 0, display_kind text)");
+        db.run("insert into sessions (id) values (?)", [SID]);
+        db.run(
+          "insert into messages (id, session_id, role, content, reasoning, tool_calls, tool_name, timestamp) values (1, ?, 'assistant', 'Inspecting both paths.', 'Use read-only tools.', ?, 'fallback', 1)",
+          [SID, JSON.stringify([
+            null,
+            "not a call",
+            [],
+            {},
+            { id: "call-1", function: { name: "terminal", arguments: '{"command":"pwd"}' } },
+            { function: null },
+            { function: [] },
+            { function: "invalid" },
+            { id: "call-2", function: { name: "read_file", arguments: { path: "/tmp/notes.txt" } } },
+            { id: "call-3", function: { arguments: "{invalid json" } },
+            false,
+          ])],
+        );
+        db.run(
+          "insert into messages (id, session_id, role, tool_call_id, tool_name, content, timestamp) values (2, ?, 'tool', 'call-1', 'terminal', '/tmp', 2), (3, ?, 'tool', 'call-2', 'read_file', 'Saved notes.', 3), (4, ?, 'tool', 'call-3', 'fallback', 'Invalid arguments.', 4)",
+          [SID, SID, SID],
+        );
+      } finally {
+        db.close();
+      }
+
+      const journal = hermesJournal(root);
+      const key = await journal.source.resolve({ kind: "id", value: SID });
+      if (key === null) throw new Error("Temporary Hermes session did not resolve");
+      const loaded = await journal.source.load(key);
+      expect(journal.parse(loaded.text)).toEqual([
+        {
+          uuid: "1",
+          ts: "1970-01-01T00:00:01.000Z",
+          role: "assistant",
+          parts: [
+            { kind: "thinking", text: "Use read-only tools." },
+            { kind: "text", text: "Inspecting both paths." },
+            { kind: "tool", name: "terminal", summary: "pwd" },
+            { kind: "tool", name: "read_file", summary: "/tmp/notes.txt" },
+            { kind: "tool", name: "fallback", summary: "" },
+          ],
+        },
+        {
+          uuid: "2",
+          ts: "1970-01-01T00:00:02.000Z",
+          role: "note",
+          parts: [{ kind: "tool", name: "terminal", summary: "", result: { text: "/tmp" } }],
+        },
+        {
+          uuid: "3",
+          ts: "1970-01-01T00:00:03.000Z",
+          role: "note",
+          parts: [{ kind: "tool", name: "read_file", summary: "", result: { text: "Saved notes." } }],
+        },
+        {
+          uuid: "4",
+          ts: "1970-01-01T00:00:04.000Z",
+          role: "note",
+          parts: [{ kind: "tool", name: "fallback", summary: "", result: { text: "Invalid arguments." } }],
+        },
+      ]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test("resolves and reads one session from state.db read-only", async () => {
     const root = await mkdtemp(join(tmpdir(), "collie-hermes-"));
     const db = new Database(join(root, "state.db"));

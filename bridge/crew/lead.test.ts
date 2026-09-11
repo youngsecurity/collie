@@ -1219,6 +1219,23 @@ describe("CrewLead — the journal names a verdict once per transition", () => {
 // ── A live run keeps its members due (M20/01) ────────────────────────────────
 
 describe("the schedule reads the live run, and the fold runs on every tick", () => {
+  test("the update confirmation reads active turns before the first sweep, and tolerates no lead", async () => {
+    const turns = new UpdateTurns(() => {});
+    const h = lead([], () => skewed, { turns });
+    // This is the optional-lead read wired into UpdateActionDeps. Solo and peer installs have no lead.
+    const active = (owner: CrewLead | undefined) => owner?.updateRunActive() ?? false;
+    expect(active(h.lead)).toBe(false);
+    expect(active(lead([], () => skewed).lead)).toBe(false);
+    turns.begin("pending-run", "1.4.1");
+    expect(h.lead.updatePeers()).toEqual([]);
+    expect(active(h.lead)).toBe(true);
+    // A queue left by a failed local update cannot block an installation without a lead.
+    expect(active(undefined)).toBe(false);
+    await h.lead.sweep();
+    expect(active(h.lead)).toBe(false);
+    expect(active(undefined)).toBe(false);
+  });
+
   test("dueForProbe: urgent overrides the backoff, and never writes it", () => {
     const backed: PeerMemory = { body: null, incompatibleRuns: 3, probeAfter: NOW + 600_000 };
     expect(dueForProbe(backed, NOW)).toBe(false);

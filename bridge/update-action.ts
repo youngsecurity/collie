@@ -721,6 +721,8 @@ export interface UpdateStartState {
   readonly run: UpdateRun | null;
   /** Whether the updater's lock is held by a live process. */
   readonly lockHeld: boolean;
+  /** Whether the lead's in-memory member update queue is active, even before its first sweep. */
+  readonly crewRunActive: boolean;
   /** The freshly-run preflight, or null when it could not be run at all. */
   readonly preflight: PreflightReport | null;
   /**
@@ -765,6 +767,10 @@ export interface UpdateStartState {
  */
 export function updateStartVerdict(req: UpdateStartRequest, state: UpdateStartState): UpdateStartVerdict {
   if (!req.confirm) return refuse(400, "update.confirm_required");
+
+  // A member-only run has no local updater lock or disk record. Its queue is the authority,
+  // not its displayed legs, which are empty before the first sweep and retained after completion.
+  if (state.crewRunActive) return refuse(409, "update.in_progress", { state: "crew" });
 
   const running = state.run !== null && inFlight(state.run.state);
   if (running || state.lockHeld) {

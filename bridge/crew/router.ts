@@ -22,6 +22,7 @@ import { LEAD_RELEASE_HEADER, UPDATE_TURN_HEADER } from "./follow.ts";
 // REMOVE_IN_1_9_0 — the version 1 overlap (§0.1). One import, one mount, one module.
 import {
   isVersion1Path,
+  toVersion1EnrollResponse,
   toVersion1Response,
   translateVersion1EnrollBody,
   translateVersion1Request,
@@ -1574,7 +1575,7 @@ export function createCrewRouter(deps: CrewRouterDeps): CrewHandler {
     }
     // REMOVE_IN_1_9_0: `enroll` is the one route whose version may arrive in the BODY (the header
     // wins below, and a 1.7.0 joiner sends both), so the overlap maps that field 1 → 2 here. It is
-    // the only body this translation touches, and it is safe to touch because `enroll` is absent from
+    // the only request body this translation touches, and it is safe because `enroll` is absent from
     // `SIGNABLE_PATHS` — no signature covers these bytes.
     const parsed = parseEnrollRequest(wire === V1_PROTOCOL_VERSION ? translateVersion1EnrollBody(body) : body);
 
@@ -1620,7 +1621,9 @@ export function createCrewRouter(deps: CrewRouterDeps): CrewHandler {
     // The peer is in the roster on disk; this process still holds the one it booted with (§8.2's
     // note). The joiner is told to restart the lead too — this is the lead's own record of it.
     membershipChanged();
-    return new Response(JSON.stringify(response), {
+    // REMOVE_IN_1_9_0: the old joiner requires pack field names and protocol 1 in the transfer.
+    const payload = wire === V1_PROTOCOL_VERSION ? toVersion1EnrollResponse(response) : response;
+    return new Response(JSON.stringify(payload), {
       status: 200,
       headers: crewResponseHeaders(response.leadMemberId),
     });

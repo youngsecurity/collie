@@ -2343,6 +2343,21 @@ describe("the update write gate — POST api/update rides the pane path's own ga
     expect(src.indexOf("const updateConfirm = new UpdateConfirmGate();")).toBeLessThan(src.indexOf("async fetch(req)"));
   });
 
+  test("update confirms read the live member queue after preflight, including before its first sweep", () => {
+    const src = readFileSync(join(import.meta.dir, "server.ts"), "utf8");
+    const updateAt = src.indexOf('if (pathname === "/api/update" && req.method === "POST")');
+    const handler = src.slice(updateAt, src.indexOf("\n      }\n", updateAt));
+    const preflight = handler.indexOf("await action.preflight(true)");
+    const active = handler.indexOf("crewRunActive: action.crewRunActive()");
+    const begin = handler.indexOf("action.beginCrewRun");
+    expect(preflight).toBeGreaterThan(0);
+    expect(active).toBeGreaterThan(preflight);
+    expect(begin).toBeGreaterThan(active);
+    // Only a lead drives member turns. Solo installs and peers must not be blocked by an unused queue.
+    const index = readFileSync(join(import.meta.dir, "index.ts"), "utf8");
+    expect(index).toContain("crewRunActive: () => crewLead?.updateRunActive() ?? false");
+  });
+
   test("update check GET: an unknown latest triggers a bounded on-demand poll before answering", () => {
     const src = readFileSync(join(import.meta.dir, "server.ts"), "utf8");
     const checkAt = src.indexOf('if (pathname === "/api/update/check" && req.method === "GET")');
@@ -3057,6 +3072,7 @@ describe("update status peers — the legs of a crew-wide run", () => {
       majorAvailable: null,
       run: null,
       lockHeld: false,
+      crewRunActive: false,
       preflight: { schema: 1, verdict: "green" as const, checks: [] },
       crew: [behind],
     };
@@ -3094,6 +3110,7 @@ describe("update status peers — the legs of a crew-wide run", () => {
         majorAvailable: null,
         run: null,
         lockHeld: false,
+        crewRunActive: false,
         preflight: { schema: 1, verdict: "green", checks: [] },
         crew: [red],
       },
@@ -3108,6 +3125,7 @@ describe("update status peers — the legs of a crew-wide run", () => {
       majorAvailable: null,
       run: null,
       lockHeld: true,
+      crewRunActive: false,
       preflight: { schema: 1, verdict: "green" as const, checks: [] },
       crew: [],
     };

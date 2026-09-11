@@ -85,17 +85,18 @@ function textPart(raw: string | null): TranscriptPart | null {
   return text.trim() === "" ? null : { kind: "text", ...clamp(text, MAX_TEXT_CHARS) };
 }
 
-function toolCallPart(raw: JsonValue, fallbackName: string | null): TranscriptPart | null {
-  if (raw === null || typeof raw !== "object" || !Array.isArray(raw)) return null;
+function toolCallParts(raw: JsonValue, fallbackName: string | null): TranscriptPart[] {
+  if (raw === null || typeof raw !== "object" || !Array.isArray(raw)) return [];
+  const parts: TranscriptPart[] = [];
   for (const call of raw) {
     if (call === null || typeof call !== "object" || Array.isArray(call)) continue;
     const fn = call.function;
     if (fn === null || typeof fn !== "object" || Array.isArray(fn)) continue;
     const name = typeof fn.name === "string" ? fn.name : fallbackName ?? "tool";
     const args = typeof fn.arguments === "string" ? parseJson(fn.arguments) : fn.arguments;
-    return { kind: "tool", name, summary: summarizeToolInput(args) };
+    parts.push({ kind: "tool", name, summary: summarizeToolInput(args) });
   }
-  return null;
+  return parts;
 }
 
 function isoTimestamp(value: number): string {
@@ -124,8 +125,7 @@ function rowEntry(row: MessageRow): TranscriptEntry | null {
   }
   const content = textPart(row.content);
   if (content !== null) parts.push(content);
-  const toolCalls = toolCallPart(parseJson(row.tool_calls), row.tool_name);
-  if (toolCalls !== null) parts.push(toolCalls);
+  parts.push(...toolCallParts(parseJson(row.tool_calls), row.tool_name));
 
   if (row.role === "tool") {
     const result = textPart(row.content);

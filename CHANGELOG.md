@@ -37,6 +37,12 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 ## [Unreleased]
 
+### Fixed
+
+- **Older members receive enrollment responses they can read.** The compatibility enrollment endpoint returns version 1 field names and protocol, while the native version 2 response and one-time invitation checks stay unchanged. Thanks @chatgpt-codex-connector (youngsecurity/collie#39).
+- **Duplicate confirmations cannot replace an active member update.** The server checks the live member-update queue even before its first progress report and after the local start grace expires; another update is allowed once that queue finishes. Thanks @chatgpt-codex-connector (youngsecurity/collie#39).
+- **Hermes history preserves every tool call in a turn.** Valid calls stay in their original order, malformed entries are skipped, and tool-result rows remain unchanged. Thanks @chatgpt-codex-connector (youngsecurity/collie#39).
+
 ## [1.8.0+ys.1] - 2026-09-11
 
 Adopts upstream Collie 1.8.0 in one merge against the fork's base v1.7.0, closing

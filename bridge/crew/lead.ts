@@ -971,6 +971,11 @@ export class CrewLead {
     return this.deps.follow?.turns.peerLegs() ?? [];
   }
 
+  /** Whether a member update is active, including before its first sweep has produced legs. */
+  updateRunActive(): boolean {
+    return this.deps.follow?.turns.current() != null;
+  }
+
   /** The run those legs describe, live or over, or null. The composer checks it before it attaches. */
   updateLegsRun(): string | null {
     return this.deps.follow?.turns.legsRun() ?? null;

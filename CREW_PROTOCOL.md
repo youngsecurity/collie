@@ -87,14 +87,20 @@ named: a warrant a 1.8.0 lead mints is refused by a member that is still on 1.7.
 reporting the generation it holds, so the lead keeps pushing, and the push lands the moment the
 member has levelled.
 
-**A crew id in a body is written `crewId` and read either way.** 1.7.0 spelled it `packId` in the
-warrant, in the standby-device sync and in the enroll answer. Every 1.8.0 writer emits `crewId`; every 1.8.0 reader takes
-`crewId` and falls back to `packId`. That is what covers both skews without the overlap translating a
-body: a 1.8.0 lead's version 1 listener reads a 1.7.0 member's body at the same parser, and so does a
-1.8.0 member under a 1.7.0 lead. The direction 1.8.0 lead to 1.7.0 member needs nothing, because a
-warrant a 1.8.0 lead mints is already refused there on the signing context above, and the push lands
-after that member levels. **The canonical signed string does not move**: it is positional and
-LF-separated, so it hashes the crew id's VALUE at a fixed field and never the key.
+**A crew id in a body is normally written `crewId` and read either way.** 1.7.0 spelled it `packId`
+in the warrant, in the standby-device sync and in the enroll answer. Native version 2 writers emit
+`crewId`; the corresponding 1.8.0 readers accept either id spelling. A warrant a 1.8.0 lead mints is
+already refused by a 1.7.0 member on the signing context above, and the push lands after that member
+levels. **The canonical signed string does not move**: it is positional and LF-separated, so it
+hashes the crew id's VALUE at a fixed field and never the key.
+
+**Enrollment answers on the old prefix use the complete version 1 transfer.** A successful
+`POST /pack/v1/enroll` returns `protocol: 1`, `packId`, `packName` and `packSecret`, not their crew
+spellings. `secretGeneration`, `memberId`, `leadMemberId`, `leadFingerprint` and `leadCertPem` are
+unchanged. The router selects this shape before serialization; the general response translation
+still touches only headers and preserves streaming bodies. Invalid and spent tokens still receive
+the same bare 401. This restores the existing overlap contract, so no protocol bump is needed:
+`POST /crew/v1/enroll` retains `protocol: 2`, `crewId`, `crewName` and `crewSecret`.
 
 Both sides carry a `REMOVE_IN_1_9_0` marker in the code, and `bridge/removal-schedule.test.ts` fails
 at package minor 9 so the removal cannot be forgotten. From 1.9.0 a member older than 1.8.0 does not

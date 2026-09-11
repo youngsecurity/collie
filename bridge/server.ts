@@ -636,6 +636,8 @@ export interface UpdateActionDeps {
   preflight: (force?: boolean) => Promise<PreflightReport | null>;
   /** Whether the updater's lock is held by a process that is still alive (spec 04's lock). */
   lockHeld: () => boolean;
+  /** Whether the lead is driving a member update, which holds no local updater lock. */
+  crewRunActive: () => boolean;
   /** Start `collie update`, detached from this process. Never awaits the update itself. */
   start: (a: { major: boolean; runId: string }) => { ok: true } | { ok: false; reason: string };
   /**
@@ -1767,6 +1769,7 @@ export function startServer(opts: {
             majorAvailable: status.majorAvailable,
             run: status.run ?? null,
             lockHeld: action.lockHeld(),
+            crewRunActive: action.crewRunActive(),
             preflight: report,
             // The one gate a green preflight cannot express: a package manager owns this folder, so there is
             // nothing here Collie may replace (ADR 0035).

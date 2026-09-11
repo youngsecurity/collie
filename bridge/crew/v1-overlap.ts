@@ -20,8 +20,8 @@
 //     request signature and the dial attestation hash, so neither can be rewritten.
 //   • ON THE WAY OUT — {@link toVersion1Response} renames the crew response headers back and maps
 //     the protocol header's `2` to `1`. It touches **no body**: a proxied read (§5's 1:1 table) may
-//     be megabytes and must stay a stream, so the two bodies that name the version integer take it
-//     as an argument instead (`hello`'s `protocol`, the §7 mismatch's `expected`).
+//     be megabytes and must stay a stream. The handlers select the wire version for `hello` and
+//     the §7 mismatch, and translate the successful enrollment transfer before serialization.
 //
 // ── THE TWO SIGNING CONTEXTS ─────────────────────────────────────────────────
 // The request signature names no domain — its four fields are method, path, body digest and
@@ -38,6 +38,7 @@
 // it is still here, so the removal cannot be forgotten.
 
 import type { JsonValue } from "../json.ts";
+import type { EnrollResponse } from "./enrollment.ts";
 import type { Warrant } from "./trust-store.ts";
 import { CREW_PREFIX } from "./router.ts";
 
@@ -137,7 +138,7 @@ function renamed(from: Headers, was: string, becomes: string): Headers {
 /**
  * `POST /pack/v1/enroll`'s body, with its `protocol` field mapped 1 → 2.
  *
- * The one body this overlap rewrites, and the only one it may: `enroll` is the single route whose
+ * The one request body this overlap rewrites: `enroll` is the single route whose
  * version can arrive in the payload rather than the header (`router.ts` reads the header first and
  * falls back to the field), and it is deliberately absent from `SIGNABLE_PATHS` — at that instant the
  * joiner is pinned by nobody, so no signature covers these bytes and rewriting them breaks nothing.
@@ -148,6 +149,18 @@ export function translateVersion1EnrollBody(body: JsonValue): JsonValue {
   if (body === null || typeof body !== "object" || Array.isArray(body)) return body;
   if (body.protocol !== V1_PROTOCOL_VERSION) return body;
   return { ...body, protocol: V1_PROTOCOL_VERSION + 1 };
+}
+
+/** The successful enrollment transfer in the field names and version a 1.7.0 joiner requires. */
+export function toVersion1EnrollResponse(response: EnrollResponse) {
+  const { crewId, crewName, crewSecret, ...rest } = response;
+  return {
+    ...rest,
+    protocol: V1_PROTOCOL_VERSION,
+    packId: crewId,
+    packName: crewName,
+    packSecret: crewSecret,
+  };
 }
 
 /**

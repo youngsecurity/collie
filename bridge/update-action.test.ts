@@ -31,6 +31,7 @@ import {
   type UpdateStartState,
   worstVerdict,
 } from "./update-action.ts";
+import { UpdateTurns, type TurnMember } from "./crew/follow.ts";
 import type { JsonObject, JsonValue } from "./json.ts";
 import type { UpdateRun, UpdateRunState } from "./update-run.ts";
 
@@ -64,6 +65,7 @@ const state = (over: Partial<UpdateStartState> = {}): UpdateStartState => ({
   majorAvailable: null,
   run: null,
   lockHeld: false,
+  crewRunActive: false,
   preflight: GREEN,
   ...over,
 });
@@ -692,6 +694,62 @@ describe("the fresh-preflight request, across the link", () => {
 // ── The confirm reservation (#21) ─────────────────────────────────────────────
 // The handler awaits a forced preflight before it reads the lock and the run, so two confirms inside
 // that await both saw "nothing running" and both spawned an updater. The gate is the earlier refusal.
+describe("member-only update confirmations", () => {
+  const member: TurnMember = {
+    memberId: "attic", enrolledAt: 1, version: "1.2.0", verdict: "green", answered: true, run: null,
+  };
+  const row: CrewUpdateRow = {
+    name: "attic", version: "1.2.0", verdict: "green", reasons: [], asOf: 1_000,
+  };
+
+  for (const swept of [false, true]) {
+    test(`a duplicate confirm cannot replace an active member run, swept=${swept}`, () => {
+      const turns = new UpdateTurns(() => {});
+      let now = 1_000;
+      const gate = new UpdateConfirmGate(() => now);
+      const request = ask({ peersOnly: true });
+      const liveState = () => state({
+        latest: null, crew: [row], peers: turns.peerLegs(), crewRunActive: turns.current() !== null,
+      });
+      expect(gate.take(() => false)).toBe(true);
+      expect(updateStartVerdict(request, liveState())).toEqual({ kind: "peers", to: "1.3.0" });
+      turns.begin("original-run", "1.3.0");
+      gate.release(false); // No local updater was spawned and no updater lock will appear.
+      if (swept) turns.observe([member], now);
+      const turn = turns.turnFor("attic");
+      const legs = turns.peerLegs();
+      now += START_GRACE_MS + 1;
+      expect(gate.take(() => false)).toBe(true);
+      const duplicate = updateStartVerdict(request, liveState());
+      if (duplicate.kind === "peers") turns.begin("duplicate-run", duplicate.to);
+      gate.release(false);
+      expect(duplicate).toMatchObject({ kind: "refuse", status: 409, body: { code: "update.in_progress" } });
+      expect(turns.current()?.runId).toBe("original-run");
+      expect(turns.turnFor("attic")).toBe(turn);
+      expect(turns.peerLegs()).toEqual(legs);
+      // A request to update the lead must not replace the member run either.
+      expect(updateStartVerdict(ask(), { ...liveState(), latest: "1.4.0" })).toMatchObject({
+        kind: "refuse", status: 409, body: { code: "update.in_progress" },
+      });
+    });
+  }
+
+  test("a failed member may be retried after the queue settles, while its old result stays visible", () => {
+    const turns = new UpdateTurns(() => {});
+    turns.begin("finished-run", "1.3.0");
+    turns.observe([member], 1_000);
+    turns.observe([{
+      ...member,
+      run: { state: "rolled-back", runId: "finished-run", to: "1.3.0", reason: "health check failed", updatedAt: 2_000 },
+    }], 2_000);
+    expect(turns.current()).toBeNull();
+    expect(turns.peerLegs()[0]?.state).toBe("rolled-back");
+    expect(updateStartVerdict(ask({ peersOnly: true }), state({
+      latest: null, crew: [row], peers: turns.peerLegs(), crewRunActive: turns.current() !== null,
+    }))).toEqual({ kind: "peers", to: "1.3.0" });
+  });
+});
+
 describe("UpdateConfirmGate", () => {
   test("one confirm at a time: the second is refused while the first is inside the path", () => {
     const gate = new UpdateConfirmGate(() => 0);
