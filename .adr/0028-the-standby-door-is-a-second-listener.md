@@ -134,7 +134,7 @@ whole `UpdateRun` record, which carries `recovery` (an absolute path built from 
 the home directory), `logTail` (a tail of the service log) and `reason`. This door is ungated by
 design, and `/standby/health`'s own rule, *never a body a stranger can learn a member id from*,
 applies to paths, unit names and log lines just as well. The route now answers a projection
-(`bridge/pack/standby.ts` `standbyUpdateWire`): shape and progress only, spelled field by field so a
+(`bridge/crew/standby.ts` `standbyUpdateWire`): shape and progress only, spelled field by field so a
 field added to the record never rides out by default. The three fields it withholds are read from the
 front door's authenticated `GET /api/update/check`, which the card is back on by the time a failed
 run needs explaining. The count in the Decision above is therefore four, with the same rule attached:

@@ -157,7 +157,9 @@ describe("environment, state and the API", () => {
   test("no preflight document is read under `pack` in 1.9.0", () => {
     if (beforeRemoval(9)) return;
     expect(source("./update-action.ts")).not.toContain("rec.pack");
-    expect(source("../cli/update-check.ts")).not.toContain("doc.pack");
+    // The fork's `parseReport` reads the document as `rec`, not `doc`, and takes the rows through
+    // `asMember` rather than a typed cast, so the needle is the read itself.
+    expect(source("../cli/update-check.ts")).not.toContain("rec.pack");
     expect(source("../cli/update-check.ts")).not.toContain("pack?: readonly PreflightMember[]");
   });
 

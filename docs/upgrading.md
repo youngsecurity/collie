@@ -329,6 +329,11 @@ are in [Updating from 1.7.0](crew.md#updating-from-170). The `collie-release.jso
 release publishes only feeds the wording of that notice on the band, on the Updates card and in the
 daily push; it never gates an update and never changes what one does.
 
+> **Warning.** After 1.8.0 first starts, an automatic or manual rollback to 1.7.0 can
+> leave that machine running alone, disconnected from its group, until you restore the
+> old state-file names and, if rewritten, the trust-store keys as described under
+> [Where the versions live](#where-the-versions-live).
+
 Two requirements decide whether a peer can follow at all:
 
 - **A peer needs outbound HTTPS to `github.com`.** That is where its code comes from. Without that
@@ -637,6 +642,25 @@ git tag -a 'vX.Y.Z+ys.1' -m 'Collie X.Y.Z+ys.1'
 git push --follow-tags
 gh release create 'vX.Y.Z+ys.1' --title 'Collie X.Y.Z+ys.1' --notes-file <notes-from-the-CHANGELOG-block>
 ```
+
+```bash
+asset_dir=$(mktemp -d)
+bun -e '
+import { CREW_PROTOCOL_VERSION } from "./bridge/crew/enrollment.ts";
+import { version } from "./package.json";
+console.log(JSON.stringify({ version, crewProtocol: CREW_PROTOCOL_VERSION }, null, 2));
+' > "$asset_dir/collie-release.json"
+jq -e '.version == "X.Y.Z+ys.1" and (.crewProtocol | type == "number")' \
+  "$asset_dir/collie-release.json"
+gh release upload 'vX.Y.Z+ys.1' "$asset_dir/collie-release.json" \
+  --repo youngsecurity/collie
+```
+
+Run this from the release checkout, replacing `X.Y.Z+ys.1` with the version you cut.
+Every release must attach `collie-release.json`, with the version and protocol number read
+from that checkout, so the update notice can warn when machines need a coordinated update.
+A missing asset means no warning, even when the protocol changes; publishing the release
+alone does not upload it because Actions do not run on this fork.
 
 If you run your **own** fork of this fork, set `COLLIE_UPDATE_REPO=you/collie` and tag your releases
 so they parse (`vX.Y.Z`, or `vX.Y.Z+ys.N` if you keep the family); anything else is invisible to
