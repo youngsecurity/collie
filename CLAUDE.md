@@ -170,6 +170,19 @@ read (no heading, a bullet with no bold lead, a bullet above every group),
 and `## [Unreleased]`; sections cut before 1.7.0+ys.1 keep their flat shape and are not read), and
 the pre-commit hook refuses a badly shaped `## [Unreleased]` bullet at commit time.
 
+**One asset is attached by hand: `collie-release.json`.** Since 1.8.0 the update check reads
+`releases/download/vX.Y.Z+ys.N/collie-release.json` (`releaseReadingUrl` in `bridge/update.ts`)
+to tell an install in a crew, before it confirms, that the release ahead changes the crew wire
+version. Upstream's `release.yml` writes it from `CREW_PROTOCOL_VERSION`; here it is written the
+same way and uploaded with the release. A release without it reads as "no change", which is the
+wrong answer on the release that moves the wire:
+
+```
+protocol=$(bun -e 'import { CREW_PROTOCOL_VERSION } from "./bridge/crew/enrollment.ts"; process.stdout.write(String(CREW_PROTOCOL_VERSION))')
+printf '{\n  "version": "%s",\n  "crewProtocol": %s\n}\n' X.Y.Z+ys.N "$protocol" > collie-release.json
+gh release upload vX.Y.Z+ys.N collie-release.json
+```
+
 What does not apply here: upstream's CI gate (`release.yml`'s `gate` job waits for a green `ci.yml`
 run before publishing), its push-`main`-then-tag recipe, and its held-push rule during a release cut
 all assume Actions run. On this fork the same care is by hand: run both typechecks and both test
