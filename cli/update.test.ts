@@ -17,7 +17,7 @@ import {
   type SeededFiles,
 } from "./fakes.ts";
 import type { Net } from "./sys.ts";
-import { packTurnStart, parseUpdateRun, STALE_AFTER_MS, UPDATE_RUN_SCHEMA } from "../bridge/update-run.ts";
+import { crewTurnStart, parseUpdateRun, STALE_AFTER_MS, UPDATE_RUN_SCHEMA } from "../bridge/update-run.ts";
 import {
   boundTail,
   HANDOFF_CONFIRM_MS,
@@ -1030,7 +1030,7 @@ describe("update", () => {
   test("records the run it just finished, so a restarted lead can find its crew turns", async () => {
     // The bug this pins: the in-place path wrote nothing, so `settleUpdateGate` in bridge/index.ts
     // re-read a file that was not there, `updateTurns.begin` never ran, and no peer was ever handed
-    // its turn. The lead updated itself and the pack sat still until the operator retried by hand.
+    // its turn. The lead updated itself and the crew sat still until the operator retried by hand.
     const h = harness({
       installed: "0.31.1",
       answers: [
@@ -1056,7 +1056,7 @@ describe("update", () => {
     // own parser and the BRIDGE's own predicate, and the pair it hands the turn queue is asserted
     // here. Either side moving alone fails this test, which is what the old arrangement could not do.
     // `at` is the record's own `updatedAt`, which is what ages the run on a restart (M20/01).
-    expect(packTurnStart(parseUpdateRun(written))).toEqual({ runId: "r-99", to: STAGED_TARGET, at: run.updatedAt });
+    expect(crewTurnStart(parseUpdateRun(written))).toEqual({ runId: "r-99", to: STAGED_TARGET, at: run.updatedAt });
   });
 
   test("a run started from a terminal is recorded with no id, never a blank one", async () => {
@@ -1074,8 +1074,8 @@ describe("update", () => {
     const run = JSON.parse(written ?? "{}");
     expect(run.state).toBe("done");
     expect(run.runId ?? null).toBeNull();
-    // And the gate correctly starts NOTHING from it: a run with no id was nobody's pack confirm.
-    expect(packTurnStart(parseUpdateRun(written))).toBeNull();
+    // And the gate correctly starts NOTHING from it: a run with no id was nobody's crew confirm.
+    expect(crewTurnStart(parseUpdateRun(written))).toBeNull();
   });
 
   test("a build that fails records nothing — the lead did not move, so no peer may", async () => {
@@ -1997,7 +1997,7 @@ describe("the staged checkout path", () => {
   });
 
   // ── `--to-tag` naming the version already installed (#24) ─────────────────
-  // The lead's leg of `pack update` pins its own updater to the release it pushes. On a linked
+  // The lead's leg of `crew update` pins its own updater to the release it pushes. On a linked
   // clone that advanced (the manifest names the release) without being built (the bundle answers
   // the old one), that tag EQUALS the installed version; it used to be refused as "not higher", so
   // the one case the leg exists for could not be taken through the updater at all.

@@ -80,7 +80,7 @@ export function UpdateRibbon() {
   // OPTIMISTIC ONLY. The dismissal itself lives on the bridge (M17/08) and arrives on the snapshot;
   // this holds what the operator just closed so the band drops on the tap rather than on the next
   // poll. Keyed by version AND scope like the stored one, so a newer version still raises the band
-  // and closing a pack notice does not hide this host's own offer.
+  // and closing a crew notice does not hide this host's own offer.
   const [justDismissed, setJustDismissed] = useState<Dismissal | null>(null);
 
   const update = data?.update;
@@ -97,7 +97,7 @@ export function UpdateRibbon() {
     startedAt,
     bundleStale,
     dismissedVersion: dismissedIn("offer", justDismissed, update?.dismissedVersion),
-    dismissedPackVersion: dismissedIn("pack", justDismissed, update?.dismissedPackVersion),
+    dismissedCrewVersion: dismissedIn("crew", justDismissed, update?.dismissedCrewVersion),
     now: Date.now(),
   });
   if (view.kind === "silent") return null;
@@ -127,12 +127,12 @@ export function UpdateRibbon() {
         className="flex min-w-0 flex-1 items-center gap-2 text-left"
       >
         <skin.Icon className={cn("size-3.5 shrink-0", skin.icon, skin.spin && "animate-spin")} />
-        <span className="min-w-0 flex-1 truncate">{ribbonText(view)}</span>
+        <span className="min-w-0 flex-1 truncate">{ribbonText(view, update?.linkChange ?? null)}</span>
       </button>
       {target !== null && (
         <button
           type="button"
-          aria-label={t(target.scope === "pack" ? "updateRibbon.hideNotice" : "updateRibbon.dismiss")}
+          aria-label={t(target.scope === "crew" ? "updateRibbon.hideNotice" : "updateRibbon.dismiss")}
           className="shrink-0 text-muted-foreground"
           onClick={() => {
             setJustDismissed(target);

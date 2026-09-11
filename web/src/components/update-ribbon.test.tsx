@@ -234,7 +234,7 @@ describe("a reload prompt does not look like an offer (M20/05)", () => {
 
   it("an UPDATED run asks for a reload too, and wears the same mark", async () => {
     // The 2026-09-07 reading: the up-arrow here says "another new version", so the operator taps
-    // expecting an update to start and sees nothing start. The pack has already updated; what is
+    // expecting an update to start and sees nothing start. The crew has already updated; what is
     // left is this screen.
     holdReload("an-open-composer-draft");
     confirmStaleBundle();
@@ -405,7 +405,7 @@ describe("a packaged host on the band", () => {
   });
 });
 
-describe("hiding the quiet pack notice", () => {
+describe("hiding the quiet crew notice", () => {
   const managed: UpdatePeerLeg[] = [{ name: "minibuch", state: "package-managed" }];
   const quiet = () => info({ releaseAvailable: false, run: run("done", { peers: managed }) });
 
@@ -415,16 +415,16 @@ describe("hiding the quiet pack notice", () => {
     expect(screen.queryByRole("button", { name: "Dismiss this version" })).toBeNull();
   });
 
-  it("hides on the tap and tells the bridge, in the pack scope", async () => {
+  it("hides on the tap and tells the bridge, in the crew scope", async () => {
     const user = userEvent.setup();
     const { container } = await renderBand(quiet());
     await user.click(screen.getByRole("button", { name: "Hide this notice" }));
     expect(band(container)).toBeNull();
-    expect(dismissUpdate).toHaveBeenCalledWith("1.5.0", "pack");
+    expect(dismissUpdate).toHaveBeenCalledWith("1.5.0", "crew");
   });
 
   it("stays down for the next screen, off the snapshot's own field", async () => {
-    const { container } = await renderBand(info({ ...quiet(), dismissedPackVersion: "1.5.0" }));
+    const { container } = await renderBand(info({ ...quiet(), dismissedCrewVersion: "1.5.0" }));
     expect(band(container)).toBeNull();
   });
 });

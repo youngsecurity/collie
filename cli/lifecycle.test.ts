@@ -14,8 +14,8 @@ import {
   STATE,
   type Scripted,
 } from "./fakes.ts";
-import { leadStore, member, peerStore } from "../bridge/pack/fixtures.ts";
-import { serializeTrustStore } from "../bridge/pack/trust-store.ts";
+import { leadStore, member, peerStore } from "../bridge/crew/fixtures.ts";
+import { serializeTrustStore } from "../bridge/crew/trust-store.ts";
 import { EXIT, type Io } from "./io.ts";
 
 /** The `Io` a nested `serve` was handed — `null` until it has been called. */
@@ -563,13 +563,13 @@ describe("the status banner", () => {
 
   // F24: the banner's other half of the same finding. A peer publishes no front door (ADR 0013), so
   // a `tailnet` row was a row about a door that is not there — and the URL it offered was loopback,
-  // which on a peer is not the bind either. The pack row answers the question the tailnet row was
+  // which on a peer is not the bind either. The crew row answers the question the tailnet row was
   // asked: where DO I point my phone.
   test("a peer's banner names the crew, not a tailnet door it does not serve", async () => {
     const h = harness({
       ready: true,
       env: { COLLIE_HOST: "192.168.77.2" },
-      files: { [`${STATE}/pack-trust.json`]: serializeTrustStore(peerStore()) },
+      files: { [`${STATE}/crew-trust.json`]: serializeTrustStore(peerStore()) },
     });
     const lines = (await statusBanner(h.deps)).join("\n");
     expect(lines).toContain("local     http://192.168.77.2:8787");
@@ -580,7 +580,7 @@ describe("the status banner", () => {
   test("a LEAD, and a solo collie, keep the tailnet row exactly as it was", async () => {
     const lead = harness({
       ready: true,
-      files: { [`${STATE}/pack-trust.json`]: serializeTrustStore(leadStore({ peers: [member({ memberId: "nas" })] })) },
+      files: { [`${STATE}/crew-trust.json`]: serializeTrustStore(leadStore({ peers: [member({ memberId: "nas" })] })) },
     });
     expect((await statusBanner(lead.deps)).join("\n")).toContain("tailnet");
     expect((await statusBanner(harness({ ready: true }).deps)).join("\n")).toContain("tailnet");
