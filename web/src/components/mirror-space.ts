@@ -78,3 +78,15 @@ export function mirrorColorStyle(colors: TerminalColors): MirrorColorStyle {
   }
   return style;
 }
+
+/** Honor `mobileTransparentBg`: keep the fill in a custom property so phone CSS can drop it.
+ *  Uncoloured rule glyphs still use the operator's foreground on both mirror surfaces. */
+export function segmentStyle(s: AnsiSegment, foreground = ""): CSSProperties {
+  const style = styleFor(s, foreground);
+  if (!s.mobileTransparentBg) return style;
+  const { backgroundColor, ...rest } = style;
+  // SAFETY: a CSS custom property is a valid style key at runtime; React passes any `--*` key
+  // straight to the CSSOM. CSSProperties has no index signature for it, so the cast is the only
+  // spelling. The value is the backgroundColor just removed from the same object.
+  return { ...rest, "--terminal-seg-bg": backgroundColor } as CSSProperties;
+}

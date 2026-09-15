@@ -314,6 +314,24 @@ export class HerdrMux implements MuxAdapter {
     }
   }
 
+  /**
+   * The same scrollback with soft wraps undone (`recent_unwrapped`), for URL repair.
+   *
+   * Read in the same escape-carrying form as `readGrid` on purpose: `ansi` is the format whose read
+   * was never observed to harvest an alt-screen pane, which is the property that keeps the mirror
+   * from scrolling somebody's terminal (HERDR_API.md → `pane.read`). Callers strip the styling;
+   * this read exists only for the URLs in it. On an agent pane the unwrapped rows equal the wrapped
+   * ones — the bridge asks for this only when a URL is actually split.
+   */
+  async readLogicalText(paneId: string, lines: number): Promise<MuxOutcome<string>> {
+    try {
+      const read = await this.client.readPane(paneId, "recent_unwrapped", lines, "ansi");
+      return muxOk(read.text);
+    } catch (err) {
+      return transportRefusal(err);
+    }
+  }
+
   async typeText(paneId: string, text: string): Promise<MuxAck> {
     return this.attempt(() => this.client.sendPaneText(paneId, text));
   }
@@ -530,7 +548,7 @@ function toMuxPane(
   // A user-set pane label (herdr pane.rename); omitted when unset.
   if (raw.label !== null && raw.label !== undefined && raw.label.length > 0) pane.paneLabel = raw.label;
   // The tab's label, dropped when it's Herdr's positional default in a single-tab space.
-  const tabLabel = meaningfulTabLabel(tabById.get(raw.tab_id)?.label, space?.tab_count ?? 0);
+  const tabLabel = meaningfulTabLabel(tabById.get(raw.tab_id)?.label);
   if (tabLabel) pane.tabLabel = tabLabel;
   // What the pane says it is doing, dropped when it only repeats the agent name or the space label.
   const terminalTitle = meaningfulTerminalTitle(
