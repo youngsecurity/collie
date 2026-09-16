@@ -178,6 +178,24 @@ function checkUrgentReason(reason: string): string {
 	if (reason.includes("`")) fail("holds a backtick, and neither the push nor the card renders code");
 	if (/\[[^\]]*\]\([^)]*\)/.test(reason)) fail("holds a markdown link, which no surface renders");
 	if (!reason.endsWith(".")) fail("does not end with a period");
+	// Check prose boundaries, not punctuation in quoted names, dotted initials, or common
+	// abbreviations. Keep quote contents and endings before capitalized prose so quoting a
+	// sentence cannot hide its boundary. Apostrophes within words are not quote openers.
+	// Return the original reason unchanged.
+	const prose = reason
+		.replace(
+			/"[^"]*"|\u201c[^\u201d]*\u201d|(?<![\p{L}\p{N}])'.*?'(?![\p{L}\p{N}])|\u2018.*?\u2019(?![\p{L}\p{N}])/gu,
+			(quoted: string, offset: number) => {
+				const continuation = reason.slice(offset + quoted.length).trimStart();
+				if (/^\p{Lu}/u.test(continuation)) return quoted;
+				return quoted.replace(/[.!?]+(?=["'\u2019\u201d]$)/u, "");
+			},
+		)
+		.replace(/\b(?:[a-z]\.){2,}|\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|St|vs|etc)\./giu, "abbreviation");
+	// Dots within filenames and decimal values are not followed by a boundary.
+	if (/[.!?]["')\]\u2019\u201d]*(?:\s|$)/u.test(prose.slice(0, -1))) {
+		fail("contains a sentence delimiter before its final period");
+	}
 	return reason;
 }
 

@@ -63,6 +63,22 @@ describe("buildReleaseReading", () => {
 		expect(() => buildReleaseReading(changelog, "1.9.1", 2)).toThrow(/CHANGELOG/);
 	});
 
+	test.each([
+		"Restart now. Purge later.",
+		'The screen says "Restart now." Updates fail.',
+	])("refuses to publish a multi-sentence urgent reason: %s", (reason) => {
+		const changelog = URGENT.replace("The cache reaper deletes live entries, take this today.", reason);
+		expect(() => buildReleaseReading(changelog, "1.9.1", 2)).toThrow(/sentence delimiter/);
+	});
+
+	test.each([
+		"Updating deletes files, e.g. saved credentials.",
+		'A pane named "Stop!" cannot be closed.',
+	])("preserves single-sentence punctuation in the sidecar: %s", (reason) => {
+		const changelog = URGENT.replace("The cache reaper deletes live entries, take this today.", reason);
+		expect(buildReleaseReading(changelog, "1.9.1", 2).urgent).toEqual({ reason });
+	});
+
 	test("the sentence survives JSON, quotes and all", () => {
 		const quoted = URGENT.replace(
 			"The cache reaper deletes live entries, take this today.",

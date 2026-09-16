@@ -390,6 +390,45 @@ describe("parseUrgent", () => {
 		);
 	});
 
+	test.each([
+		"Restart now. Purge later.",
+		"Restart now! Purge later.",
+		"Restart now? Purge later.",
+		"Restart now. purge later.",
+		'Restart now." Purge later.',
+		"Restart now.\u201d Purge later.",
+		"The device's settings are lost. It isn't safe to update.",
+		'A pane named "Stop!" cannot be closed. Updates fail.',
+		"Updating deletes files, e.g. credentials. Restart now.",
+		'A pane named "Stop now. Restart later." cannot be closed.',
+		'The screen says "Restart now." Updates fail.',
+		'The screen says "Restart now!" Updates fail.',
+		"The screen says \u201cRestart now.\u201d Updates fail.",
+	])("rejects an internal sentence delimiter: %s", (reason) => {
+		const changelog = URGENT.replace("The cache reaper deletes live entries, take this today.", reason);
+		expect(() => parseUrgent(changelog, "1.9.1")).toThrow(/sentence delimiter/);
+		expect(() => renderBody(changelog, "1.9.1", REPO, "v1.9.1")).toThrow(/sentence delimiter/);
+	});
+
+	test.each([
+		"Updating deletes .env files.",
+		"A timeout below 0.5 seconds stops updates.",
+		"Updating deletes config.backup files.",
+		"Updating deletes files, e.g. saved credentials.",
+		"Updates fail, i.e. the service stays stopped.",
+		"Updates fail on U.S. hosts.",
+		"Dr. Smith cannot update the service.",
+		'A pane named "Stop!" cannot be closed.',
+		"A pane named 'Stop?' cannot be closed.",
+		"A pane named \u201cStop!\u201d cannot be closed.",
+		"A pane named 'Can't stop!' cannot be closed.",
+		"A pane named \u2018Can\u2019t stop!\u2019 cannot be closed.",
+	])("preserves punctuation within one sentence: %s", (reason) => {
+		const changelog = URGENT.replace("The cache reaper deletes live entries, take this today.", reason);
+		expect(parseUrgent(changelog, "1.9.1")).toEqual({ reason });
+		expect(renderBody(changelog, "1.9.1", REPO, "v1.9.1")).toContain(reason);
+	});
+
 	test("the release page keeps the line as it was written, at the top of the body", () => {
 		const body = renderBody(URGENT, "1.9.1", REPO, "v1.9.1");
 		expect(body.startsWith("**Urgent.** The cache reaper deletes live entries, take this today.\n")).toBe(true);
