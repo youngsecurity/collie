@@ -1,8 +1,8 @@
 import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties, ReactNode } from "react";
+import type { ReactNode } from "react";
 
 import { cn } from "@/lib/utils";
-import { parseAnsi, type AnsiSegment } from "@/lib/ansi";
+import { parseAnsi } from "@/lib/ansi";
 import { buildBlocks } from "@/lib/harness";
 import {
   dropLeadingLines,
@@ -30,7 +30,7 @@ import {
   MIRROR_SPACE,
   MIRROR_INVERT,
   mirrorColorStyle,
-  styleFor,
+  segmentStyle,
   type MirrorColorStyle,
 } from "@/components/mirror-space";
 import type { TerminalColors } from "@/hooks/use-display-prefs";
@@ -62,6 +62,10 @@ type AutoBlock = Extract<Block, { kind: "autocomplete" }>;
 
 export interface AnsiOutputProps {
   text: string;
+  /** The same rows with soft wraps undone, when the bridge sent them: the autolinker uses it to give
+   * the fragments of one wrapped URL the href of the whole URL. Absent for every pane that needs no
+   * repair, and then links behave exactly as they did. */
+  logicalText?: string;
   className?: string;
   /** true = wrap; the block breaks at the viewport width instead of scrolling horizontally. Default
    *  false on this fork: the mirror pans, column-faithful, so full-screen TUIs and box drawing keep
@@ -170,23 +174,6 @@ const NO_BLOCK_RUNS: readonly (readonly TableRun[])[] = Object.freeze([]);
 // Don't convert it to a px value, and don't "fix" it to fit the line box — that would undo (1).
 const LINK_CLASS =
   "underline decoration-1 underline-offset-2 break-all cursor-pointer py-[0.35em]";
-
-// A segment marked `mobileTransparentBg` hands its ANSI fill to a custom property instead of the
-// inline `background-color`, and `.terminal-mobile-transparent-bg` in index.css paints it: on a
-// desktop from the property, on a phone not at all. Inline styles beat a class, so the alternative
-// spelling is `!important` in the stylesheet. Every other segment takes the plain inline style, and
-// the other mirror surface (the statusline strip) calls styleFor directly and is unaffected.
-// `foreground` is the operator's own mirror colour (this fork), the fallback a muted rule glyph
-// takes instead of the shipped grey; "" means the shipped grey.
-function segmentStyle(s: AnsiSegment, foreground: string): CSSProperties {
-  const style = styleFor(s, foreground);
-  if (!s.mobileTransparentBg) return style;
-  const { backgroundColor, ...rest } = style;
-  // SAFETY: a CSS custom property is a valid style key at runtime; React passes any `--*` key
-  // straight to the CSSOM. CSSProperties has no index signature for it, so the cast is the only
-  // spelling. The value is the backgroundColor just removed from the same object.
-  return { ...rest, "--terminal-seg-bg": backgroundColor } as CSSProperties;
-}
 
 function preClass(wrap: boolean, invert: boolean, className?: string): string {
   return cn(
@@ -316,6 +303,7 @@ const renderImageCluster = (
 
 export const AnsiOutput = memo(function AnsiOutput({
   text,
+  logicalText,
   className,
   wrap = false,
   fontSize = 11,
@@ -422,8 +410,9 @@ export const AnsiOutput = memo(function AnsiOutput({
   }, [haystack, query]);
 
   // Autolinked URLs, in the SAME offset space as find matches — both are ranges over `haystack`, so
-  // one running offset serves both splits. Recomputed only when the mirror text changes.
-  const links = useMemo(() => findLinks(haystack), [haystack]);
+  // one running offset serves both splits. Recomputed only when the mirror text changes. `logicalText`
+  // (when the bridge sent it) lets a URL the pane wrapped be linked as the single URL it was.
+  const links = useMemo(() => findLinks(haystack, logicalText), [haystack, logicalText]);
 
   useEffect(() => {
     onMatchCount?.(matches.length);
