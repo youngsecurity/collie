@@ -37,9 +37,11 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 ## [Unreleased]
 
+## [1.9.0+ys.1] - 2026-09-16
+
 ### Changed
 
-- **Collie adopts upstream 1.9.0 while retaining the fork's safeguards.** Includes prompt-cache readings and watches, the configuration CLI, compact pane controls, and the unified update screen. The scheduled 1.7 crew compatibility removal follows upstream; fork release ordering, terminal appearance, access checks, and update concurrency protections remain. Thanks @AltanS (youngsecurity/collie#41).
+- **Collie adopts upstream 1.9.0 while retaining the fork's safeguards.** Includes upstream 1.8.1 and 1.8.2, prompt-cache readings and watches, the configuration CLI, compact pane controls, and the unified update screen. The scheduled 1.7 crew compatibility removal follows upstream, with the protocol floor checked against real build-stamped versions; fork release ordering, terminal appearance, access checks, and update concurrency protections remain. Thanks @AltanS (youngsecurity/collie#40, youngsecurity/collie#41). ([338838a0](https://github.com/youngsecurity/collie/commit/338838a0))
 
 ## [1.8.0+ys.2] - 2026-09-11
 
