@@ -37,21 +37,10 @@ import type { Scope } from "@/lib/scope";
 interface HeaderClaim {
   /** Show the stacked identity beside the mark: the "Collie" brand line over the "on <mux>" line. */
   wordmark: boolean;
-  /** `column` = the header is as wide as the route's own `max-w-screen-sm` content column (640px),
-   *  which is what the dashboard, space, Settings, Crew and Updates screens have always been;
-   *  `wide` = a LADDER rather than one number: 768px from `md`, then 1024, 1280 and 1400px at `lg`,
-   *  `xl` and `2xl`, which is what the pane and history screens claim — they were `full` until
-   *  landscape on a tablet showed what that costs, then flat at 768px until a desktop showed what
-   *  THAT costs (#166); `full` = edge to edge, the default, which the unclaimed shell and any route
-   *  that names no width get. Invisible on a portrait phone, where the viewport is narrower than
-   *  either column; on a desktop it is the difference between a 640px rule under the header and a
-   *  1400px one, so it is a real property of the route and not a default.
-   *
-   *  The pane pair grow and the other five do not, because what sits under the pane pair is a
-   *  terminal mirror with a column count of its own: a 640px column minus its 16px gutters clips an
-   *  80-column mirror, and a 768px one clips a 120-column mirror. A dashboard row has no such
-   *  number. AgentChat's wrapper carries the measurement and the same four classes; the two must
-   *  not drift, or the header and the mirror stop sharing a right edge. */
+  /** Match the route's content width: `column` caps it at 640px for Settings, Crew and Updates;
+   *  `wide` retains the optional 768/1024/1280/1400px responsive ladder; `full` is edge to edge.
+   *  Dashboard, spaces, live panes and history use `full` so their headers follow the browser
+   *  width alongside the content. A route's wrapper and its claim must agree. */
   width: "column" | "wide" | "full";
   /** The route has taken the whole row (Settings, Crew, and either find bar). The shell then draws
    *  no mark, no caption and no slots — see `RouteHeader`. */
@@ -436,8 +425,8 @@ interface RouteHeaderProps {
    *  inside a pane: the breadcrumb in `children` carries the context there, and the mark stands alone
    *  to save width. */
   wordmark?: boolean;
-  /** Whether this route's header is as wide as its `max-w-screen-sm` content column (`column`), as
-   *  the pane pair's growing 768-to-1400px one (`wide`), or edge to edge (`full`). See
+  /** Whether this route's header follows a 640px column (`column`), a responsive 768-to-1400px
+   *  column (`wide`), or the full viewport (`full`). See
    *  `HeaderClaim.width`. Defaults to `full`, which is the plainest of the three. */
   width?: "column" | "wide" | "full";
 

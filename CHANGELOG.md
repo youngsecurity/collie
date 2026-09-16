@@ -37,6 +37,10 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 ## [Unreleased]
 
+### Changed
+
+- **Dashboard, spaces, agent views and history fill the browser width.** Matching headers use the same full-width layout while mobile viewport bounds, terminal overflow containment, existing gutters, and agent-list grouping remain unchanged.
+
 ## [1.9.1+ys.1] - 2026-09-16
 
 ### Changed

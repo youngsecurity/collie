@@ -84,6 +84,16 @@ async function openFind(user: User) {
   await user.click(screen.getByRole("button", { name: "Find in output" }));
 }
 
+describe("AgentChat layout", () => {
+  it("uses the full viewport width while preserving terminal overflow containment", () => {
+    const { container } = renderChat({ text: "unbroken".repeat(1000) });
+    const route = container.querySelector('[class*="max-w-[100dvw]"]');
+    expect(route).toHaveClass("w-full", "min-w-0", "overflow-x-hidden");
+    expect(route?.className).not.toMatch(/max-w-screen|\w+:max-w/);
+    expect(screen.getByRole("banner").className).not.toContain("max-w-");
+  });
+});
+
 describe("AgentChat — reply flow", () => {
   it("sends a typed reply and clears the composer on success", async () => {
     const user = userEvent.setup();

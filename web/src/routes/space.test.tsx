@@ -112,6 +112,15 @@ function renderSpace(spaceId: string, host?: string) {
 }
 
 describe("SpaceRoute on a crew", () => {
+  it("uses the full viewport width with an uncapped matching header", async () => {
+    renderSpace("wA", PEER);
+    await screen.findByText("peer pane");
+    const route = screen.getByRole("main").parentElement?.parentElement;
+    expect(route).toHaveClass("w-full", "min-w-0", "max-w-[100dvw]");
+    expect(route?.className).not.toMatch(/max-w-screen|\w+:max-w/);
+    expect(screen.getByRole("banner").className).not.toContain("max-w-");
+  });
+
   it("lists a peer space's own panes instead of drawing every tab empty", async () => {
     renderSpace("wA", PEER);
 
