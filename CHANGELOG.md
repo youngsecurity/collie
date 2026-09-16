@@ -37,9 +37,11 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 ## [Unreleased]
 
+## [1.9.1+ys.2] - 2026-09-16
+
 ### Changed
 
-- **Dashboard, spaces, agent views and history fill the browser width.** Matching headers use the same full-width layout while mobile viewport bounds, terminal overflow containment, existing gutters, and agent-list grouping remain unchanged.
+- **Dashboard, spaces, agent views and history fill the browser width.** Matching headers use the same full-width layout while mobile viewport bounds, terminal overflow containment, existing gutters, and agent-list grouping remain unchanged. ([91f7e430](https://github.com/youngsecurity/collie/commit/91f7e430))
 
 ## [1.9.1+ys.1] - 2026-09-16
 
