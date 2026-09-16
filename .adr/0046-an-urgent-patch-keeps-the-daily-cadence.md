@@ -2,6 +2,10 @@
 
 Status: **Accepted** (2026-09-15)
 
+**Current fork caching policy:** the [fork publication amendment](#fork-publication-amendment-2026-09-16)
+supersedes the absence-caching paragraph under Consequences. Only successful readings stay cached;
+absent and failed reads are retried on the next check. The original policy is preserved as history.
+
 Related: [ADR 0020](./0020-a-major-upgrade-is-consented-by-flag.md) (the crossing the update check never folds in) ·
 [ADR 0035](./0035-a-packaged-install-is-not-ours-to-update.md) (the host that cannot take the tap) ·
 `bridge/update.ts` (`shouldNotify`, the window) · `docs/upgrading.md` → *How often you are told*

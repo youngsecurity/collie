@@ -315,6 +315,32 @@ describe("parseUrgent", () => {
 		expect(parseUrgent(SMALL, "1.0.0")).toBeNull();
 	});
 
+	test.each([
+		["preamble before the marker", "Release preamble.\n\n**Urgent.** Updating can leave the service stopped."],
+		["two valid markers", "**Urgent.** Updating can leave the service stopped.\n\n**Urgent.** Paired devices lose access."],
+		["a malformed second marker", "**Urgent.** Updating can leave the service stopped.\n\nUrgent: Paired devices lose access."],
+		["a second marker after prose", "**Urgent.** Updating can leave the service stopped.\n\nMore context.\n\n**Urgent.** Paired devices lose access."],
+	])("rejects %s in both the parser and release page", (_name, header) => {
+		const changelog = URGENT.replace(
+			"**Urgent.** The cache reaper deletes live entries, take this today.",
+			header,
+		);
+		expect(() => parseUrgent(changelog, "1.9.1")).toThrow(/CHANGELOG/);
+		expect(() => renderBody(changelog, "1.9.1", REPO, "v1.9.1")).toThrow(/CHANGELOG/);
+	});
+
+	test("allows blank lines and CRLF around the first content line", () => {
+		const changelog = URGENT.replace("\n\n**Urgent.**", "\n\n \t\n**Urgent.**").replaceAll("\n", "\r\n");
+		expect(parseUrgent(changelog, "1.9.1")).toEqual(parseUrgent(URGENT, "1.9.1"));
+	});
+
+	test("preserves ordinary release preambles and context after a valid marker", () => {
+		const marker = "**Urgent.** The cache reaper deletes live entries, take this today.";
+		expect(parseUrgent(URGENT.replace(marker, "Release preamble."), "1.9.1")).toBeNull();
+		expect(parseUrgent(URGENT.replace(marker, `${marker}\n\nRelease context.`), "1.9.1"))
+			.toEqual(parseUrgent(URGENT, "1.9.1"));
+	});
+
 	test("ONLY that position counts — a line inside a group is prose", () => {
 		const inside = URGENT.replace(
 			"**Urgent.** The cache reaper deletes live entries, take this today.\n\n",

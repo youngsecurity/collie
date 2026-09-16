@@ -17,7 +17,9 @@ your column and keep it for the rest of the docs.
 | **Config `.env`** | `~/.config/herdr/plugins/config/herdr.collie/.env` (`herdr plugin config-dir herdr.collie` prints it) | `~/.config/collie/.env`, or the Herdr path on a host that runs Herdr |
 | **State** | `~/.local/state/collie/` | `~/.local/state/collie/` |
 
-`collie doctor` names the config files this install actually reads, under its `config-file` line.
+For a standalone install, `collie doctor` names the config files it actually reads under its
+`config-file` line. For a Herdr plugin, run `bin/collie doctor` from the plugin's directory;
+there is no `doctor` plugin action.
 
 A Herdr plugin is still the same `collie` binary; the actions forward to it
 ([Herdr actions](commands.md#herdr-actions)). A plugin install has no `collie` on your PATH, so

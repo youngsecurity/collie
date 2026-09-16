@@ -19,10 +19,23 @@ function luma(r: number, g: number, b: number): number {
   return 0.2126 * r + 0.7152 * g + 0.0722 * b;
 }
 
-/** Whether a parsed segment background is at or above `floor` — light enough to invert into a bar. */
+// index.css owns the fixed mirror palette. Keep a DOM-free luminance projection for indexed
+// backgrounds; light-fill.test.ts pins all sixteen slots to the rendered CSS, including boundaries.
+const INDEXED_LUMA: readonly number[] = [
+  0x000000, 0xcd3131, 0x0dbc79, 0xe5e510,
+  0x2472c8, 0xbc3fbc, 0x11a8cd, 0xe5e5e5,
+  0x666666, 0xf14c4c, 0x23d18b, 0xf5f543,
+  0x3b8eea, 0xd670d6, 0x29b8db, 0xffffff,
+].map((n) => luma((n >> 16) & 255, (n >> 8) & 255, n & 255));
+
+/** Whether a parsed segment background is at or above `floor`, light enough to invert into a bar. */
 export function isLightFill(bg: string | undefined, floor: number): boolean {
   if (!bg) return false;
-  if (bg === "var(--ansi-15)" || bg === "var(--ansi-7)") return true;
+  const indexed = /^var\(--ansi-([0-9]|1[0-5])\)$/.exec(bg);
+  if (indexed) {
+    const value = INDEXED_LUMA[Number(indexed[1])];
+    return value !== undefined && value >= floor;
+  }
   const rgb = /^rgb\((\d+),(\d+),(\d+)\)$/.exec(bg);
   if (rgb) return luma(+rgb[1]!, +rgb[2]!, +rgb[3]!) >= floor;
   const hex = /^#([0-9a-fA-F]{6})$/.exec(bg);

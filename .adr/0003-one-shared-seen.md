@@ -2,6 +2,10 @@
 
 Status: **Accepted** (2026-07-28)
 
+**Current status scope:** the [Herdr 0.9 compatibility amendment](#herdr-09-compatibility)
+extends the original `done`-only formula below to `idle` or `done`, excluding bare shells and
+still requiring `activeAt > seenAt`. The original decision is preserved as history.
+
 ## Context
 
 The dashboard sorts the herd by attention and then by recency, and it surfaces a **Ready · unseen**

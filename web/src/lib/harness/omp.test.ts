@@ -387,6 +387,22 @@ function footerText(name: string, row: number): string {
 }
 
 describe("omp mobile display cleanup", () => {
+  it.each([
+    ["43", 3],
+    ["48;5;3", 3],
+    ["103", 11],
+    ["48;5;11", 11],
+  ])("marks indexed fill %s at the omp floor without changing its ANSI style", (sgr, slot) => {
+    const esc = String.fromCharCode(27);
+    const lines = splitLines(parseAnsi(`${esc}[${sgr}mindexed card${esc}[0m`));
+    const decorated = decorateOmpDisplay(lines);
+    const segment = decorated[0]!.segments[0]!;
+    expect(segment.bg).toBe(`var(--ansi-${slot})`);
+    expect(segment.style).toBe(lines[0]!.segments[0]!.style);
+    expect(segment.mobileTransparentBg).toBe(true);
+    expect(decorated.map(lineText)).toEqual(lines.map(lineText));
+  });
+
   it("marks light fills and leaves dark diffs alone", () => {
     const esc = String.fromCharCode(27);
     const light = `${esc}[48;2;250;250;250mlight card${esc}[0m`;

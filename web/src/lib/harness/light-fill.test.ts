@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import { isLightFill, LIGHT_FILL_LUMA, NEAR_WHITE_FILL_LUMA } from "./light-fill";
@@ -35,6 +38,42 @@ describe("omp's floor is untouched", () => {
     ["a semantic diff", "rgb(33,58,43)", false],
   ])("%s", (_name, bg, expected) => {
     expect(isLightFill(bg, LIGHT_FILL_LUMA)).toBe(expected);
+  });
+});
+
+describe("indexed fills use the rendered palette and the adapter's floor", () => {
+  // CSS owns the mirror's fixed indexed palette. Pin every slot against it so changing a rendered
+  // color cannot silently leave the DOM-free classifier with an obsolete luminance.
+  const css = readFileSync(join(import.meta.dirname, "..", "..", "index.css"), "utf8");
+  const palette = Array.from(css.matchAll(/--ansi-(\d+):\s*(#[0-9a-fA-F]{6})/g), (match) => ({
+    slot: Number(match[1]),
+    hex: match[2]!,
+  }));
+
+  it("checks every indexed slot exactly once", () => {
+    expect(palette.map(({ slot }) => slot)).toEqual(Array.from({ length: 16 }, (_, slot) => slot));
+  });
+
+  it.each([LIGHT_FILL_LUMA, NEAR_WHITE_FILL_LUMA])("matches literal colors at floor %s", (floor) => {
+    for (const { slot, hex } of palette) {
+      expect(isLightFill(`var(--ansi-${slot})`, floor), `slot ${slot} at floor ${floor}`)
+        .toBe(isLightFill(hex, floor));
+    }
+  });
+
+  it("honors each palette color's exact luminance boundary", () => {
+    for (const { slot, hex } of palette) {
+      const n = parseInt(hex.slice(1), 16);
+      const floor = 0.2126 * ((n >> 16) & 255) + 0.7152 * ((n >> 8) & 255) + 0.0722 * (n & 255);
+      expect(isLightFill(`var(--ansi-${slot})`, floor)).toBe(true);
+      expect(isLightFill(`var(--ansi-${slot})`, floor + 0.01)).toBe(false);
+    }
+  });
+
+  it("does not resolve nonexistent or noncanonical indexed variables", () => {
+    for (const bg of ["var(--ansi-16)", "var(--ansi--1)", "var(--ansi-03)"]) {
+      expect(isLightFill(bg, LIGHT_FILL_LUMA)).toBe(false);
+    }
   });
 });
 

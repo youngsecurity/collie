@@ -51,6 +51,18 @@ describe("buildReleaseReading", () => {
 		});
 	});
 
+	test.each([
+		"Release preamble.\n\n**Urgent.** Updating can leave the service stopped.",
+		"**Urgent.** Updating can leave the service stopped.\n\n**Urgent.** Paired devices lose access.",
+		"**Urgent.** Updating can leave the service stopped.\n\nUrgent: Paired devices lose access.",
+	])("refuses to publish malformed urgency: %s", (header) => {
+		const changelog = URGENT.replace(
+			"**Urgent.** The cache reaper deletes live entries, take this today.",
+			header,
+		);
+		expect(() => buildReleaseReading(changelog, "1.9.1", 2)).toThrow(/CHANGELOG/);
+	});
+
 	test("the sentence survives JSON, quotes and all", () => {
 		const quoted = URGENT.replace(
 			"The cache reaper deletes live entries, take this today.",

@@ -187,7 +187,7 @@ function checkUrgentReason(reason: string): string {
  * The person cutting the release may put ONE line directly under the release heading, above the
  * first `###` group, in the same bold-lead style as a bullet:
  *
- *   **Urgent.** The 1.9.1 cache reaper deletes live entries, take this today.
+ *   **Urgent.** The cache reaper deletes live entries, take this today.
  *
  * That position and no other. A line further down the section is part of a group and is read as
  * prose, exactly as it was before this existed. An absent line is the ordinary release.
@@ -202,10 +202,21 @@ function checkUrgentReason(reason: string): string {
  */
 export function parseUrgent(changelog: string, version: string): { reason: string } | null {
 	const { lines } = sectionLines(changelog, version);
+	let urgent: { reason: string } | null = null;
+	let hasContent = false;
 	for (const raw of lines) {
-		if (raw.startsWith("### ")) return null; // the groups have started; nothing above them said it
+		if (raw.startsWith("### ")) break; // markers inside groups remain ordinary prose
 		const line = raw.trim();
+		if (line === "") continue;
+		const firstContent = !hasContent;
+		hasContent = true;
 		if (!URGENT_NEAR_MISS.test(line)) continue;
+		if (urgent !== null) {
+			throw new Error(`CHANGELOG [${version}]: at most one urgent marker is allowed before the first group.`);
+		}
+		if (!firstContent) {
+			throw new Error(`CHANGELOG [${version}]: the urgent marker must be the first nonblank line below the release heading.`);
+		}
 		const match = URGENT_EXACT.exec(line);
 		if (!match) {
 			throw new Error(
@@ -213,9 +224,9 @@ export function parseUrgent(changelog: string, version: string): { reason: strin
 					`  ${URGENT_EXPECTED_LINE}`,
 			);
 		}
-		return { reason: checkUrgentReason((match[1] ?? "").trim()) };
+		urgent = { reason: checkUrgentReason((match[1] ?? "").trim()) };
 	}
-	return null;
+	return urgent;
 }
 
 /** Reads one version's section into its groups. Throws with the reason when the shape is wrong. */

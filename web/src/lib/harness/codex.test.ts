@@ -629,6 +629,23 @@ describe("Codex mobile display cleanup", () => {
     expect(decoratedRule!.segments).toBe(rule.segments);
   });
 
+  it.each([
+    ["43", 3, false],
+    ["48;5;3", 3, false],
+    ["103", 11, true],
+    ["48;5;11", 11, true],
+  ])("classifies indexed fill %s at the Codex floor without changing its ANSI style", (sgr, slot, marked) => {
+    const esc = String.fromCharCode(27);
+    const lines = splitLines(parseAnsi(`${esc}[${sgr}mindexed message${esc}[0m`));
+    const decorated = decorateCodexDisplay(lines);
+    const segment = decorated[0]!.segments[0]!;
+    expect(segment.bg).toBe(`var(--ansi-${slot})`);
+    expect(segment.style).toBe(lines[0]!.segments[0]!.style);
+    expect(segment.mobileTransparentBg).toBe(marked ? true : undefined);
+    expect(decorated.map(lineText)).toEqual(lines.map(lineText));
+    if (!marked) expect(decorated).toBe(lines);
+  });
+
   it("returns the same array when a screen carries neither row", () => {
     const lines = fixtureLines("codex--fresh-idle.txt");
     expect(decorateCodexDisplay(lines)).toBe(lines);

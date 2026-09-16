@@ -83,7 +83,7 @@ write it as the sentence an operator reads there. Do not touch the three version
 
      - `**Urgent.** A pane closed from the phone can delete the wrong pane.`
      - `**Urgent.** A paired device stays paired after you revoke it.`
-     - `**Urgent.** Updating from 1.9.0 leaves the service stopped.`
+     - `**Urgent.** Updating can leave the service stopped.`
 
    - **MINOR** (`0.2.0 → 0.3.0`): something to learn, or worth hearing about today. A new verb,
      a new page, a new crew capability, a changed default, anything that earns its own section
