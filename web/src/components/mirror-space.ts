@@ -27,13 +27,15 @@
 // NEVER add a `dark:` variant inside one: it tracks the ROOT theme, which is backwards in an element
 // that is dark under every theme and inverts in light.
 //
-// THE ONE EXCEPTION TO "DARK GROUND, INVERTED IN LIGHT" (Young Security fork): a surface the
+// An exception to "dark ground, inverted in light" (Young Security fork): a surface the
 // operator has coloured by hand. Settings lets a device pick the mirror's default foreground and
 // background, and those are ABSOLUTE: the operator chose green on black and gets green on black
 // under both themes. So a painted surface carries `mirrorColorStyle()` inline (which outranks the
 // MIRROR_SPACE classes) and does NOT carry MIRROR_INVERT. The agent's own explicit colours still win
 // over the default foreground, exactly as they win over #fafafa, so this re-grounds the mirror
 // without re-theming anything the agent said. See the fork amendment appended to ADR 0002.
+// Unpainted Muse uses MUSE_MIRROR instead (ADR 0047). Custom paint takes precedence and omits
+// terminal-muse, keeping the native light-theme overrides out of the absolute colour surface.
 import type { CSSProperties } from "react";
 
 import type { TerminalColors } from "@/hooks/use-display-prefs";
@@ -42,14 +44,14 @@ import type { AnsiSegment } from "@/lib/ansi";
 export const MIRROR_SPACE = "[color-scheme:dark] bg-[#0a0a0a] text-[#fafafa]";
 export const MIRROR_INVERT = "[filter:invert(1)_hue-rotate(180deg)] dark:[filter:none]";
 
-/** --muted-foreground's dark half, written literally to match MIRROR_SPACE. */
-const MIRROR_MUTED = "#a1a1a1";
+/** Dark-space grey by default; only a native light mirror defines the override. */
+const MIRROR_MUTED = "var(--terminal-muted-fg, #a1a1a1)";
 
 /** A segment's inline style. `muted` is the parser's own "this is TUI chrome" mark rather than an
  *  ANSI colour: drop the ANSI dim opacity so box-drawing and rule glyphs stay visible (var(--border)
  *  + dim was nearly invisible on mobile). A rule the agent coloured explicitly keeps that colour; one
  *  it did not resolves to the operator's default foreground where the surface has one (fork), else
- *  to #a1a1a1, since everything on these surfaces is dark-space. */
+ *  to the native light override or its dark-space #a1a1a1 fallback. */
 export function styleFor(s: AnsiSegment, foreground = ""): CSSProperties {
   if (!s.muted) return s.style;
   const fallback = foreground === "" ? MIRROR_MUTED : foreground;
@@ -79,14 +81,48 @@ export function mirrorColorStyle(colors: TerminalColors): MirrorColorStyle {
   return style;
 }
 
-/** Honor `mobileTransparentBg`: keep the fill in a custom property so phone CSS can drop it.
- *  Uncoloured rule glyphs still use the operator's foreground on both mirror surfaces. */
+/** The native mirror's ground: the page colour in light (no slab — ADR 0002 rejected a dark one
+ *  for the same reason), MIRROR_SPACE's halves in dark. Literals matching --background /
+ *  --foreground's halves, one spelling per the convention above (#f5f5f5 is oklch(0.97), #0a0a0a
+ *  is oklch(0.145); use-theme.ts re-measures if those move).
+ *
+ *  The `dark:` variants here are CORRECT, which deserves a sentence because the NEVER rule above
+ *  forbids them inside inverted mirrors: this surface is not inverted, so it follows the root
+ *  theme like any other element instead of backwards. `color-scheme` is inherited (light dark),
+ *  so native UI inside (scrollbar, selection) follows too. */
+export const MUSE_MIRROR =
+  "terminal-muse bg-[#f5f5f5] text-[#0a0a0a] dark:bg-[#0a0a0a] dark:text-[#fafafa]";
+
+/** Marker classes for the light-gated custom properties above. Plain string building, not cn():
+ *  these custom classes can never conflict, so twMerge buys nothing on this per-segment hot path. */
+export function segmentClassName(s: AnsiSegment): string | undefined {
+  let out = "";
+  if (s.mobileTransparentBg) out += "terminal-mobile-transparent-bg ";
+  if (s.lightDarkFg) out += "terminal-light-dark-fg ";
+  if (s.muted) out += "terminal-muted ";
+  return out === "" ? undefined : out.trimEnd();
+}
+
+/** Honor the adapter-owned hints: `mobileTransparentBg` keeps its fill in a custom property
+ *  so phone CSS can drop it, and `lightDarkFg` keeps its colour behind a var() the light theme
+ *  overrides (.adr/0047). */
 export function segmentStyle(s: AnsiSegment, foreground = ""): CSSProperties {
-  const style = styleFor(s, foreground);
-  if (!s.mobileTransparentBg) return style;
-  const { backgroundColor, ...rest } = style;
-  // SAFETY: a CSS custom property is a valid style key at runtime; React passes any `--*` key
-  // straight to the CSSOM. CSSProperties has no index signature for it, so the cast is the only
-  // spelling. The value is the backgroundColor just removed from the same object.
-  return { ...rest, "--terminal-seg-bg": backgroundColor } as CSSProperties;
+  let style = styleFor(s, foreground);
+  if (s.mobileTransparentBg) {
+    const { backgroundColor, ...rest } = style;
+    // SAFETY: a CSS custom property is a valid style key at runtime; React passes any `--*` key
+    // straight to the CSSOM. CSSProperties has no index signature for it, so the cast is the only
+    // spelling. The value is the backgroundColor just removed from the same object.
+    style = { ...rest, "--terminal-seg-bg": backgroundColor } as CSSProperties;
+  }
+  // The decorator marks explicit-fg spans only, so s.fg IS the emitted colour here — branch
+  // on that domain value rather than re-inspecting the style object. It stays the var()
+  // FALLBACK, so dark rendering is untouched: only the light theme defines
+  // --terminal-light-dark-fg (index.css, scoped to pre.terminal-muse). A stylesheet rule cannot
+  // override an inline `color`, which is why the indirection exists at all — the same reason the
+  // fill above lives in a custom property.
+  if (s.lightDarkFg && s.fg !== undefined) {
+    return { ...style, color: `var(--terminal-light-dark-fg, ${s.fg})` };
+  }
+  return style;
 }

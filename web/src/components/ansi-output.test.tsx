@@ -5,7 +5,7 @@ import type { ComponentProps } from "react";
 import { AnsiOutput } from "./ansi-output";
 
 const ESC = "\x1b";
-const MUTED_RULE_COLOUR = "rgb(161, 161, 161)"; // #a1a1a1, --muted-foreground's dark half
+const MUTED_RULE_COLOUR = "var(--terminal-muted-fg, #a1a1a1)"; // dark half as the fallback
 
 // The device's own mirror colours (Young Security fork). A DEFAULT foreground and ground, not a
 // palette: the agent's explicit colours win over them exactly as they win over #fafafa, and a
@@ -71,7 +71,7 @@ describe("AnsiOutput: terminal colours", () => {
     expect(pre.style.getPropertyValue("--terminal-foreground")).toBe("");
     // Untouched means untouched: the inversion is back and rule glyphs are on the dark-space grey.
     expect(pre.className).toContain("[filter:invert(1)_hue-rotate(180deg)]");
-    expect(screen.getByText("────").style.color).toBe("rgb(161, 161, 161)");
+    expect(screen.getByText("────").style.color).toBe(MUTED_RULE_COLOUR);
   });
 
   it("paints one side alone and leaves the other on the mirror's own value", () => {
@@ -145,6 +145,161 @@ describe("terminal mirror colour space", () => {
     const span = [...pre.querySelectorAll("span")].find((s) => s.textContent === "red");
     expect(span!.style.color).toBe("var(--ansi-1)");
   });
+});
+
+// Native mirrors (Muse, .adr/0047) skip the light-theme inversion: their mid-tone palette reads
+// raw on either ground, while inversion drops body text to ~2:1 on white. The <pre> carries the
+// page ground in light and dark-space halves under `dark:`, and only bright foregrounds —
+// unreadable on white — resolve dark through a light-gated custom property.
+describe("native mirror (muse)", () => {
+  function musePre(text: string, agent?: string) {
+    const { container } = render(<AnsiOutput text={text} agent={agent} />);
+    return container.querySelector("pre")!;
+  }
+
+  it("renders on the page ground with no inversion filter", () => {
+    const pre = musePre("hello", "muse");
+    expect(pre.className).toContain("terminal-muse");
+    expect(pre.className).toContain("bg-[#f5f5f5]");
+    expect(pre.className).toContain("text-[#0a0a0a]");
+    expect(pre.className).toContain("dark:bg-[#0a0a0a]");
+    expect(pre.className).toContain("dark:text-[#fafafa]");
+    expect(pre.className).not.toContain("invert(1)");
+  });
+
+  it("keeps inverting every other agent", () => {
+    // "Muse" and "muse-code" pin the exactness: near-miss strings must not engage (#99).
+    for (const agent of [undefined, "shell", "codex", "Muse", "muse-code"]) {
+      const pre = musePre("hello", agent);
+      expect(pre.className).not.toContain("terminal-muse");
+      expect(pre.className).toContain("[filter:invert(1)_hue-rotate(180deg)]");
+    }
+  });
+
+  it("marks muted spans for the light-gated chrome rule", () => {
+    const pre = musePre("─".repeat(12), "muse");
+    const span = [...pre.querySelectorAll("span")].find((s) => s.textContent!.includes("─"));
+    expect(span!.className).toContain("terminal-muted");
+    expect(span!.style.color).toBe(MUTED_RULE_COLOUR);
+  });
+
+  it("resolves bright foregrounds through the light-gated property, dark untouched", () => {
+    const pre = musePre(`${ESC}[38;2;250;250;249mbright${ESC}[0m`, "muse");
+    const span = [...pre.querySelectorAll("span")].find((s) => s.textContent === "bright");
+    expect(span!.className).toContain("terminal-light-dark-fg");
+    // Emitted colour stays the fallback: dark defines nothing, so it stands. (jsdom keeps
+    // the parser's spaceless rgb() inside var(); browsers parse either spelling.)
+    expect(span!.style.color).toBe("var(--terminal-light-dark-fg, rgb(250,250,249))");
+  });
+
+  it("leaves Muse's dark body tones raw", () => {
+    const pre = musePre(`${ESC}[38;2;111;114;122mbody${ESC}[0m`, "muse");
+    const span = [...pre.querySelectorAll("span")].find((s) => s.textContent === "body");
+    expect(span!.className).not.toContain("terminal-light-dark-fg");
+    expect(span!.style.color).toBe("rgb(111, 114, 122)");
+  });
+
+  it("paints the current find match without the cancelling filter", () => {
+    const text = `${ESC}[38;2;111;114;122mfind the needle${ESC}[0m`;
+    const { container } = render(
+      <AnsiOutput text={text} query="needle" currentMatch={0} agent="muse" />,
+    );
+    const match = container.querySelector('[data-find-match="current"]')!;
+    expect(match.className).toContain("bg-yellow-400");
+    expect(match.className).toContain("text-black");
+    expect(match.className).not.toContain("invert(1)");
+  });
+
+  it("keeps the cancelling filter on current matches elsewhere", () => {
+    const { container } = render(<AnsiOutput text="find the needle" query="needle" currentMatch={0} />);
+    const match = container.querySelector('[data-find-match="current"]')!;
+    expect(match.className).toContain("[filter:invert(1)_hue-rotate(180deg)]");
+  });
+});
+
+// Surface selection and segment styling are independent of wrapping. The native CSS rules are
+// scoped to pre.terminal-muse, so omitting that marker is what keeps custom Muse paint absolute
+// in pinned light and system light alike. mirror-space.test.ts pins the stylesheet half.
+describe.each([undefined, "muse", "omp", "codex"])("mirror reconciliation: agent=%s", (agent) => {
+  describe.each([undefined, false, true])("wrap=%s", (wrap) => {
+    it.each([
+      { name: "absent", colors: undefined },
+      { name: "empty", colors: { foreground: "", background: "" } },
+      { name: "foreground only", colors: { foreground: "#00ff00", background: "" } },
+      { name: "background only", colors: { foreground: "", background: "#000000" } },
+      { name: "both", colors: { foreground: "#00ff00", background: "#000000" } },
+    ])("composes $name paint with native, ANSI, find and mobile styles", ({ colors }) => {
+      const text = [
+        "plain needle needle",
+        `${ESC}[38;2;250;250;249mbright${ESC}[0m`,
+        `${ESC}[97mindexed${ESC}[0m`,
+        `${ESC}[38;2;111;114;122mbody${ESC}[0m`,
+        `${ESC}[38;2;250;250;249;48;2;30;30;30mpair${ESC}[0m`,
+        `${ESC}[38;2;255;165;216m────${ESC}[0m`,
+        "────",
+        `${ESC}[48;2;240;240;240mfill${ESC}[0m`,
+        `${ESC}[7minverse${ESC}[0m`,
+      ].join("\n");
+      const { container } = render(
+        <AnsiOutput text={text} agent={agent} colors={colors} wrap={wrap} query="needle" currentMatch={0} />,
+      );
+      const pre = container.querySelector("pre")!;
+      const painted = Boolean(colors?.foreground || colors?.background);
+      const native = agent === "muse" && !painted;
+      const inverted = !painted && agent !== "muse";
+      expect(pre.classList.contains("terminal-muse")).toBe(native);
+      expect(pre.className.includes("[filter:invert(1)_hue-rotate(180deg)]")).toBe(inverted);
+      expect(pre.className.includes("dark:bg-[#0a0a0a]")).toBe(native);
+      expect(pre.className.includes("whitespace-pre-wrap")).toBe(wrap === true);
+      expect(pre.className.includes("overflow-x-auto")).toBe(wrap !== true);
+      expect(pre.style.getPropertyValue("--terminal-foreground")).toBe(colors?.foreground ?? "");
+      expect(pre.style.getPropertyValue("--terminal-background")).toBe(colors?.background ?? "");
+      expect(pre.style.color).toBe(colors?.foreground ? "rgb(0, 255, 0)" : "");
+      expect(pre.style.backgroundColor).toBe(colors?.background ? "rgb(0, 0, 0)" : "");
+
+      const current = pre.querySelector('[data-find-match="current"]')!;
+      expect(current.className.includes("invert(1)")).toBe(inverted);
+      expect(current).toHaveClass("bg-yellow-400", "text-black");
+      expect(pre.querySelector('[data-find-match="other"]')!.className).not.toContain("invert(1)");
+      expect(screen.getByText("body")).toHaveStyle({ color: "rgb(111, 114, 122)" });
+      expect(screen.getByText("bright").style.color).toBe(
+        agent === "muse" ? "var(--terminal-light-dark-fg, rgb(250,250,249))" : "rgb(250, 250, 249)",
+      );
+      expect(screen.getByText("indexed").style.color).toBe(
+        agent === "muse" ? "var(--terminal-light-dark-fg, var(--ansi-15))" : "var(--ansi-15)",
+      );
+      expect(screen.getByText("pair")).toHaveStyle({ color: "rgb(250, 250, 249)", backgroundColor: "rgb(30, 30, 30)" });
+      const rules = screen.getAllByText("────");
+      expect(rules[0]).toHaveStyle({ color: "rgb(255, 165, 216)" });
+      expect(rules[1].style.color).toBe(colors?.foreground ? "rgb(0, 255, 0)" : MUTED_RULE_COLOUR);
+      expect(rules[1]).toHaveClass("terminal-muted");
+
+      const fill = screen.getByText("fill");
+      const mobileTransparent = agent === "omp" || agent === "codex";
+      expect(fill.classList.contains("terminal-mobile-transparent-bg")).toBe(mobileTransparent);
+      expect(fill.style.backgroundColor).toBe(mobileTransparent ? "" : "rgb(240, 240, 240)");
+      expect(fill.style.getPropertyValue("--terminal-seg-bg")).toBe(mobileTransparent ? "rgb(240,240,240)" : "");
+      expect(screen.getByText("inverse").style.color).toBe("var(--terminal-background, #0a0a0a)");
+      expect(screen.getByText("inverse").style.backgroundColor).toBe("var(--terminal-foreground, #fafafa)");
+    });
+  });
+});
+
+it("restores Muse's native scope after clearing custom paint on the same mirror", () => {
+  const { container, rerender } = render(
+    <AnsiOutput text="plain" agent="muse" colors={{ foreground: "#00ff00", background: "#000000" }} />,
+  );
+  const pre = container.querySelector("pre")!;
+  expect(pre).not.toHaveClass("terminal-muse");
+  rerender(<AnsiOutput text="plain" agent="muse" colors={{ foreground: "", background: "" }} />);
+  expect(pre).toHaveClass("terminal-muse");
+  expect(pre.style.color).toBe("");
+  expect(pre.style.backgroundColor).toBe("");
+  expect(pre.style.getPropertyValue("--terminal-foreground")).toBe("");
+  expect(pre.style.getPropertyValue("--terminal-background")).toBe("");
+  rerender(<AnsiOutput text="plain" agent="muse" colors={{ foreground: "", background: "#000000" }} />);
+  expect(pre).not.toHaveClass("terminal-muse");
+  expect(pre.className).not.toContain("invert(1)");
 });
 
 // Wrap defaults OFF on this fork (upstream flipped it on in #53 for prose). Column-faithful output

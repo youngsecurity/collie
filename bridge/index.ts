@@ -8,6 +8,7 @@ import { realLinkFs } from "../cli/link.ts";
 import { packageCommand } from "../cli/package-command.ts";
 import { realExec, realFiles } from "../cli/sys.ts";
 import { ActivityLedger } from "./activity.ts";
+import { trackActivity } from "./activity-tracking.ts";
 import { CacheTracker } from "./cache/tracker.ts";
 import { CacheWarden } from "./cache/warden.ts";
 import { CacheWatchStore } from "./cache/watch.ts";
@@ -741,14 +742,16 @@ const updateMonitor = new UpdateMonitor({
   // saying nothing happened.
   runState: () => readUpdateRun(cfg.stateDir),
   // One push a DAY, naming every release folded into it — the digest decides that; this only renders it.
-  notify: (versions, linkChange) =>
+  notify: (versions, linkChange, urgent) =>
     void push.send({
       type: "update",
       tag: "collie:update",
       // No command in the body — the tap opens Settings (target below), and the update banner / linked
       // release page carry the location-independent Herdr actions. Keeps this off the cwd-dependent path.
+      // The TITLE never moves, not even for an urgent release (ADR 0046): the notification is the same
+      // kind of thing it always was, and what makes it urgent is the first sentence of the body.
       title: "Collie update available",
-      body: updateDigestBody(currentVersion, versions, linkChange),
+      body: updateDigestBody(currentVersion, versions, linkChange, urgent),
       target: "settings",
     }),
 });
@@ -1017,10 +1020,7 @@ const makeSession: SessionFactory = (name, socketPath, isPrimary) => {
   // read as unseen); every successful poll reconciles the ledger against the panes that exist, which
   // seeds first sightings as already-seen and reaps closed ones. Reconciling covers bare shells too,
   // which the engine's agent-derived removal event never reports.
-  engine.onTransition((agent) => activity.noteActive(name, agent.paneId));
-  engine.onUpdate((s) =>
-    activity.reconcile(name, [...s.agents, ...s.shellPanes].map((p) => p.paneId)),
-  );
+  trackActivity(engine, activity, name);
 
   // The prompt-cache probe rides the same poll, and for the reason the tracker's header gives:
   // `localSnapshot` is synchronous, so the disk read cannot happen at serialise time. It is fired and

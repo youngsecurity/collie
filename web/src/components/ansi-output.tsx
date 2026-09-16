@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 
 import { cn } from "@/lib/utils";
 import { parseAnsi } from "@/lib/ansi";
-import { buildBlocks } from "@/lib/harness";
+import { buildBlocks, rendersNativeMirror } from "@/lib/harness";
 import {
   dropLeadingLines,
   lineText,
@@ -29,7 +29,9 @@ import { useLocale } from "@/hooks/use-locale";
 import {
   MIRROR_SPACE,
   MIRROR_INVERT,
+  MUSE_MIRROR,
   mirrorColorStyle,
+  segmentClassName,
   segmentStyle,
   type MirrorColorStyle,
 } from "@/components/mirror-space";
@@ -175,13 +177,15 @@ const NO_BLOCK_RUNS: readonly (readonly TableRun[])[] = Object.freeze([]);
 const LINK_CLASS =
   "underline decoration-1 underline-offset-2 break-all cursor-pointer py-[0.35em]";
 
-function preClass(wrap: boolean, invert: boolean, className?: string): string {
+function preClass(
+  wrap: boolean,
+  surface: "painted" | "native" | "inverted",
+  className?: string,
+): string {
   return cn(
     "m-0 font-mono leading-[1.25] tracking-normal text-foreground [font-variant-ligatures:none]",
-    MIRROR_SPACE,
-    // Off only for a surface the operator coloured by hand: those colours are absolute, so the
-    // light theme leaves them alone (mirror-space.ts header, ADR 0002 fork amendment).
-    invert && MIRROR_INVERT,
+    surface === "native" ? MUSE_MIRROR : MIRROR_SPACE,
+    surface === "inverted" && MIRROR_INVERT,
     wrap
       ? "whitespace-pre-wrap break-words"
       : // Horizontal pan for wide TUI tables. `overflow-x-auto` forces `overflow-y` to compute to
@@ -428,13 +432,14 @@ export const AnsiOutput = memo(function AnsiOutput({
     currentRef.current?.scrollIntoView({ block: "center", behavior: "auto" });
   }, [currentMatch, matches]);
 
-  // The operator's colours, normalised to "none" when both sides are "" so an untouched install
-  // renders byte for byte as before: same classes, same inversion, same #a1a1a1 rule glyphs.
+  // Empty preferences retain the agent's default surface. Either painted side makes the surface
+  // absolute, including Muse: omit its native marker so light CSS cannot override custom paint.
   const paint =
     colors !== undefined && (colors.foreground !== "" || colors.background !== "")
       ? colors
       : undefined;
-  const invert = paint === undefined;
+  const surface = paint !== undefined ? "painted" : rendersNativeMirror(agent) ? "native" : "inverted";
+  const invert = surface === "inverted";
   // Muted = box-drawing / rule glyphs. Drop ANSI dim opacity so table borders stay visible —
   // var(--border) + dim made them nearly invisible on mobile. See styleFor in mirror-space.ts.
   const mutedForeground = paint?.foreground ?? "";
@@ -518,8 +523,8 @@ export const AnsiOutput = memo(function AnsiOutput({
             // See .adr/0002 — "cancel the filter only on an element that fully specifies both its
             // foreground and its background".
             //
-            // On a surface the operator coloured there is no outer filter to cancel, so the current
-            // match takes no inner one either: plain yellow, black text, exactly what it says.
+            // Native Muse and custom-painted surfaces have no outer filter to cancel, so the
+            // current match takes no inner one either: plain yellow with black text.
             isCurrent ? cn(invert && MIRROR_INVERT, "bg-yellow-400 text-black") : "bg-yellow-400/30",
           )}
         >
@@ -569,7 +574,7 @@ export const AnsiOutput = memo(function AnsiOutput({
         <span
           key={si}
           style={segmentStyle(s, mutedForeground)}
-          className={s.mobileTransparentBg ? "terminal-mobile-transparent-bg" : undefined}
+          className={segmentClassName(s)}
         >
           {renderSegment(s.text, segStart)}
         </span>
@@ -658,7 +663,7 @@ export const AnsiOutput = memo(function AnsiOutput({
   return (
     <>
       {rawBlocks.length > 0 && (
-        <pre className={preClass(wrap, invert, className)} style={preStyle}>
+        <pre className={preClass(wrap, surface, className)} style={preStyle}>
           {rawBlocks.map(renderBlock)}
         </pre>
       )}
