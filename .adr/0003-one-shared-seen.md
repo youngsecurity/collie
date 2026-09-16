@@ -70,7 +70,9 @@ exits to a shell, `bridge/activity-tracking.ts` forgets its activity before rese
 a new idle agent in the same terminal must not inherit unread work from the previous one. For a
 settled pane only a turn that ends counts as new activity (`working` or `blocked` → `idle` or
 `done`), so Herdr's own acknowledgement (`done` → `idle`) and detection flicker (`unknown` → `idle`)
-leave `activeAt` where it was.
+leave `activeAt` where it was. Entering `unknown` also leaves it untouched: neither edge of a
+settled-to-unknown-to-settled round trip supplies evidence of work. The same rule applies when
+recovery reports `done` instead of `idle`.
 
 ### What would justify revisiting
 

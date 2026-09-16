@@ -1368,9 +1368,9 @@ describe("UpdateMonitor — the urgent marker (ADR 0046)", () => {
 });
 
 describe("UpdateMonitor — reading a sidecar, and remembering the answer", () => {
-  it("asks about a 404 once, and asks again after a failure", async () => {
+  it("deduplicates missing sidecars within a check and retries on the next check", async () => {
     const asked: string[] = [];
-    // 1.9.1 published no sidecar (a 404, definite); 1.9.2's read fails (a timeout, this minute only).
+    // A tag can precede its sidecar; neither a 404 nor a timeout proves permanent absence.
     const { monitor } = makeMonitor({
       current: "1.9.0",
       fetchTags: async () => apiTags("v1.9.1", "v1.9.2"),
@@ -1384,8 +1384,40 @@ describe("UpdateMonitor — reading a sidecar, and remembering the answer", () =
 
     asked.length = 0;
     await monitor.checkRelease();
-    // The absence was a fact about a published release and is remembered; the failure was not.
-    expect(asked).toEqual(["1.9.2"]);
+    expect(asked.toSorted()).toEqual(["1.9.1", "1.9.2"]);
+  });
+
+  it("recovers fork urgency and crew warnings when the sidecar follows the tag", async () => {
+    let published = false;
+    let reads = 0;
+    const reason = "Updating leaves the service stopped.";
+    const version = "1.9.1+ys.2";
+    const { monitor, pushes, store } = makeMonitor({
+      current: "1.9.1+ys.1",
+      fetchTags: async () => apiTags(`v${version}`),
+      fetchReleaseReading: async () => {
+        reads++;
+        return published ? { version, crewProtocol: 3, urgent: { reason } } : "absent";
+      },
+    });
+    await store.setLastNotified("1.9.1+ys.1", new Date(2026, 0, 15, 9, 0, 0).toISOString());
+    await monitor.checkRelease();
+    expect(reads).toBe(1);
+    expect(monitor.status().urgent).toBeUndefined();
+    expect(monitor.status().linkChange).toBeUndefined();
+    expect(pushes).toEqual([]);
+
+    published = true;
+    await monitor.checkRelease();
+    expect(reads).toBe(2);
+    expect(monitor.status().urgent).toEqual({ version, reason });
+    expect(monitor.status().linkChange).toEqual({ from: 2, to: 3 });
+    expect(pushes).toEqual([{
+      versions: [version], linkChange: { from: 2, to: 3 }, urgent: { version, reason },
+    }]);
+    await monitor.checkRelease();
+    expect(reads).toBe(2);
+    expect(pushes).toHaveLength(1);
   });
 
   it("survives every read failing — the delta still reports, and nothing is urgent", async () => {

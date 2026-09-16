@@ -260,11 +260,16 @@ describe("StateEngine — activity ledger binding", () => {
       await step(450, "idle");
       expect(activity.get("default", "w1:p1")).toEqual({ activeAt: 200, seenAt: 300 });
 
-      // (b) idle → unknown bumps (a Working-side change), unknown → idle does not.
+      // (b) Detection flicker is not work on either edge. The settled pane stays read.
       await step(500, "unknown");
-      expect(activity.get("default", "w1:p1")).toEqual({ activeAt: 500, seenAt: 300 });
+      expect(activity.get("default", "w1:p1")).toEqual({ activeAt: 200, seenAt: 300 });
+      await step(550, "done");
+      expect(activity.get("default", "w1:p1")).toEqual({ activeAt: 200, seenAt: 300 });
+      await step(575, "unknown");
       await step(600, "idle");
-      expect(activity.get("default", "w1:p1")).toEqual({ activeAt: 500, seenAt: 300 });
+      expect(activity.get("default", "w1:p1")).toEqual({ activeAt: 200, seenAt: 300 });
+      const settled = activity.get("default", "w1:p1")!;
+      expect(settled.activeAt).toBeLessThanOrEqual(settled.seenAt);
 
       // (c) working → idle is a turn ending, so it still bumps.
       await step(700, "working");

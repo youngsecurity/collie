@@ -5,16 +5,18 @@ import type { AgentStatus } from "./types.ts";
 /**
  * Does this status change mean the pane did new work?
  *
- * A pane that settles into `idle` only counts when a turn actually ended, so the change must come
+ * A pane that settles into `idle` or `done` only counts when a turn ended, so the change must come
  * from `working` or `blocked`. Herdr 0.9's TUI flips a pane from `done` to `idle` when the operator
  * acknowledges it there, and detection flicker gives `unknown → idle`. Neither is new work, and
  * both would put a pane Collie already showed as seen back under "Ready · unseen".
  *
- * Every other change still counts. A Working row counts its "since" from `lastActiveAt`, so going
- * into `working`, `blocked`, `done` or `unknown` must keep bumping the clock.
+ * Entering `unknown` supplies no evidence of work either. Bumping that edge would leave an idle
+ * pane unread after detection recovers, even if the return edge is ignored. Entering `working`
+ * or `blocked`, and settling from either, still advances the activity clock.
  */
 export function isNewWork(from: AgentStatus, to: AgentStatus): boolean {
-  if (to !== "idle") return true;
+  if (to === "unknown") return false;
+  if (to !== "idle" && to !== "done") return true;
   return from === "working" || from === "blocked";
 }
 

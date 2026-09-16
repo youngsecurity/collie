@@ -194,7 +194,8 @@ the pre-commit hook refuses a badly shaped `## [Unreleased]` bullet at commit ti
 to tell an install in a crew, before it confirms, that the release ahead changes the crew wire
 version. Since 1.9.1 it also carries the changelog's urgent marker when present. Generate it with
 upstream's `scripts/release-reading.ts`, which imports `CREW_PROTOCOL_VERSION` and reads the
-release's changelog section. Upload it with the release so readers never cache a missing asset.
+release's changelog section. Attach it when creating the release rather than uploading it later;
+readers retry missing assets on subsequent checks because tags may precede publication.
 A release without it cannot announce a wire change or urgency:
 
 ```

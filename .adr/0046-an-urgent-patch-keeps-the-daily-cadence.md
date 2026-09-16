@@ -78,6 +78,13 @@ the delta puts the whole delta on the DAILY digest window. The version is untouc
   unbounded length and the row is forty characters. The reason is a QUOTATION and is never translated;
   only the label is.
 
+## Fork publication amendment (2026-09-16)
+
+The fork publishes tags before creating its GitHub Release by hand. A sidecar's 404 therefore
+cannot establish permanent absence. Successful readings remain cached for the process lifetime;
+missing assets and failed reads are deduplicated within one check and retried on the next one.
+This replaces the absence-caching policy below without changing urgency or digest timing.
+
 ## Consequences
 
 - **One line in the changelog is the whole cost.** No new tag rule, no fourth digit, no prerelease

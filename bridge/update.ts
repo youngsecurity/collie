@@ -664,11 +664,9 @@ export function newestUrgent(
 /**
  * What one read of a release's sidecar came back with.
  *
- * THREE ANSWERS, NOT TWO, and the third is the one that can be remembered: a reading, a definite
- * ABSENCE (the release published no such asset — GitHub says 404, which is every release before
- * 1.8.0), and a failure (a timeout, a 5xx, a body that is not the document). An absence is a fact
- * about a published release and never changes; a failure is a fact about this minute. The monitor
- * caches the first two for its lifetime and asks again after the third.
+ * Three transport answers: a reading, an absent asset (404), or a failure such as a timeout,
+ * 5xx, or malformed document. Only a reading can be cached across checks. Tags can become visible
+ * before their release assets, so an absence must be retried just like a failure.
  */
 export type ReleaseReadingResult = ReleaseReading | "absent" | null;
 
@@ -683,8 +681,8 @@ export function releaseReadingFetcher(
         headers: { accept: "application/json", "user-agent": "collie-update-check" },
         signal: AbortSignal.timeout(RELEASE_READING_TIMEOUT_MS),
       });
-      // 404 is the ordinary answer for every release before 1.8.0, and it is DEFINITE: that release
-      // is published and will never grow the asset. Every other bad status is this minute's problem.
+      // 404 can mean an older release with no sidecar or a new tag awaiting publication.
+      // The monitor retries both cases next check; the tag alone cannot distinguish them.
       if (res.status === 404) return "absent";
       if (!res.ok) return null;
       // SAFETY: `Response.json()` output IS a JsonValue by construction; the parser checks it.
@@ -1019,8 +1017,8 @@ export interface UpdateMonitorDeps {
    * none (every release before 1.8.0), and null for a read that failed.
    *
    * Called for the newest release, and for each of the newest few in the delta when the monitor asks
-   * whether any of them is urgent (ADR 0046). The monitor remembers a reading and an absence for its
-   * lifetime, so a published release is asked about once; a failure is asked again next check.
+   * whether any of them is urgent (ADR 0046). Successful readings are kept for the monitor's
+   * lifetime; an absence or failure is asked again next check.
    */
   fetchReleaseReading: (version: string) => Promise<ReleaseReadingResult>;
   /**
@@ -1050,7 +1048,7 @@ export class UpdateMonitor {
   // changes, so a second read of the same version would spend a request to learn what we know. Only
   // an ANSWER is kept: a failed or absent read stays out, so tomorrow's check asks again rather than
   // remembering a timeout forever.
-  private readonly readings = new Map<string, ReleaseReading | "absent">();
+  private readonly readings = new Map<string, ReleaseReading>();
   // The answers of THIS check, failures included, cleared when the next one starts. The link-change
   // read and the urgency sweep both ask about the newest release, and a failed read is not kept in
   // the map above — without this, one check would spend two requests on one version to learn the
@@ -1148,20 +1146,19 @@ export class UpdateMonitor {
   }
 
   /**
-   * One release's `collie-release.json`, memoised. Never throws. A reading and a definite absence are
-   * both kept; a FAILED read is kept out of the map, so a network blip is never remembered as "this
-   * release says nothing" and the next check asks again.
+   * One release's `collie-release.json`, memoised. Successful readings persist across checks.
+   * Missing assets and failures are deduplicated only within this check, allowing the next check
+   * to recover from tag-before-asset publication and network failures alike.
    */
   private async reading(version: string): Promise<ReleaseReading | null> {
     const held = this.readings.get(version);
-    if (held !== undefined) return held === "absent" ? null : held;
+    if (held !== undefined) return held;
     const thisCheck = this.checkReadings.get(version);
     if (thisCheck !== undefined) return thisCheck;
     const fetched = await this.deps.fetchReleaseReading(version);
     this.checkReadings.set(version, fetched === "absent" ? null : fetched);
-    // A reading and an ABSENCE are both facts about a published release, and a published release does
-    // not change. A failure is a fact about this minute, so it is not remembered.
-    if (fetched !== null) this.readings.set(version, fetched);
+    // Cache documents, not missing assets: a pushed tag can precede its release publication.
+    if (fetched !== null && fetched !== "absent") this.readings.set(version, fetched);
     return fetched === "absent" ? null : fetched;
   }
 
