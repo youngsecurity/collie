@@ -37,14 +37,16 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 ## [Unreleased]
 
+## [1.9.1+ys.1] - 2026-09-16
+
 ### Changed
 
-- **Collie adopts upstream 1.9.1 while preserving the fork's safeguards.** Adds urgent-patch notifications, unread idle completions, native Muse light rendering, luminance-based Codex fill detection, and roomier composer controls. Custom terminal colors, wrap-off defaults, fork release ordering, and the Herdr 0.8.0 minimum remain. Thanks @AltanS (youngsecurity/collie#42).
+- **Collie adopts upstream 1.9.1 while preserving the fork's safeguards.** Adds urgent-patch notifications, unread idle completions, native Muse light rendering, luminance-based Codex fill detection, and roomier composer controls. Custom terminal colors, wrap-off defaults, fork release ordering, and the Herdr 0.8.0 minimum remain. Thanks @AltanS (youngsecurity/collie#42). ([c787376c](https://github.com/youngsecurity/collie/commit/c787376c))
 
 ### Fixed
 
-- **Release warnings recover when assets appear after their tags.** Retry missing sidecars on subsequent checks while caching successful readings, so manual publication cannot permanently hide urgent notices or crew-protocol warnings (youngsecurity/collie#42).
-- **Detection flicker leaves already-read idle panes marked as read.** Unknown status is not evidence of new work, so an idle-to-unknown-to-idle sequence no longer resurrects the unread indicator (youngsecurity/collie#42).
+- **Release warnings recover when assets appear after their tags.** Retry missing sidecars on subsequent checks while caching successful readings, so manual publication cannot permanently hide urgent notices or crew-protocol warnings (youngsecurity/collie#42). ([c558145d](https://github.com/youngsecurity/collie/commit/c558145d))
+- **Detection flicker leaves already-read idle panes marked as read.** Unknown status is not evidence of new work, so an idle-to-unknown-to-idle sequence no longer resurrects the unread indicator (youngsecurity/collie#42). ([c558145d](https://github.com/youngsecurity/collie/commit/c558145d))
 
 ## [1.9.0+ys.1] - 2026-09-16
 
