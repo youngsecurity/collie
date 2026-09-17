@@ -28,7 +28,19 @@
 // Pure and host-aware, so a crew's two `w1`s are two workspaces (lib/hosts.ts § spaceKey).
 import { hostKey } from "./hosts";
 import { panePlaceParts } from "./pane-name";
-import type { AgentView } from "./types";
+import type { AgentView, TabView } from "./types";
+
+/**
+ * How the rows inside a group run.
+ *   "bridge"  the order the lists arrived in (the bridge's: status first), as shipped;
+ *   "fixed"   the multiplexer's own: tabs by their number, panes by id inside a tab, so a status
+ *             change never moves a row (the dashboard trial's variant 5, agent-list.tsx).
+ */
+export interface GroupOptions {
+  order?: "bridge" | "fixed";
+  /** The raw tab list, for the tab numbers "fixed" runs by. A tab not in it sorts after the known ones. */
+  tabs?: readonly TabView[];
+}
 
 /** The same separator `lib/hosts.ts` composes its keys with: a byte no label may contain. */
 const KEY_SEP = "\u0000";
@@ -69,6 +81,14 @@ interface Bucket {
  * `w1` and only the full address tells them apart. `hostKey` supplies the untagged-is-ambient half
  * of the rule, so a solo un-widened list keys as a pure prefix extension of the bare ids.
  */
+/**
+ * A pane's place inside its tab: the multiplexer's own position (`tabPosition`, from the bridge), with
+ * the pane id only as a tiebreak for an older peer that sends no position. Neither changes with status.
+ */
+const byId = (a: AgentView, b: AgentView) =>
+  (a.tabPosition ?? Number.MAX_SAFE_INTEGER) - (b.tabPosition ?? Number.MAX_SAFE_INTEGER) ||
+  a.paneId.localeCompare(b.paneId);
+
 export function workspaceGroupKey(pane: AgentView): string {
   return `${hostKey(pane)}${KEY_SEP}${pane.session ?? ""}${KEY_SEP}${pane.workspaceId}`;
 }
@@ -84,7 +104,13 @@ export function workspaceGroupKey(pane: AgentView): string {
 export function groupPanesByWorkspace(
   agents: readonly AgentView[],
   shellPanes: readonly AgentView[] = [],
+  { order = "bridge", tabs }: GroupOptions = {},
 ): WorkspaceGroup[] {
+  // A tab's own number, host-qualified the way panePlaceParts matches (an id is unique per machine).
+  const tabNumber = (pane: AgentView): number => {
+    const known = tabs?.find((tv) => tv.tabId === pane.tabId && (tv.host === undefined || tv.host === pane.host));
+    return known?.number ?? Number.MAX_SAFE_INTEGER;
+  };
   const byKey = new Map<string, Bucket>();
   const hostSeqs = new Map<string, number>();
   let workspaceSeq = 0;
@@ -114,7 +140,7 @@ export function groupPanesByWorkspace(
     }
     let tab = bucket.tabs.get(pane.tabId);
     if (tab === undefined) {
-      tab = { seq: tabSeq++, agents: [], shells: [] };
+      tab = { seq: order === "fixed" ? tabNumber(pane) * 1e6 + tabSeq++ : tabSeq++, agents: [], shells: [] };
       bucket.tabs.set(pane.tabId, tab);
     }
     return tab;
@@ -133,6 +159,10 @@ export function groupPanesByWorkspace(
       label: g.label,
       panes: [...g.tabs.values()]
         .toSorted((a, b) => a.seq - b.seq)
-        .flatMap((tab) => tab.agents.concat(tab.shells)),
+        .flatMap((tab) =>
+          order === "fixed"
+            ? tab.agents.toSorted(byId).concat(tab.shells.toSorted(byId))
+            : tab.agents.concat(tab.shells),
+        ),
     }));
 }
