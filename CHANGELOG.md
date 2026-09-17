@@ -46,6 +46,7 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 - **Release publication rejects misplaced or repeated urgency markers.** Validate the complete pre-group header before producing release notes or sidecars, while preserving normal Markdown whitespace and non-urgent release preambles (youngsecurity/collie#44).
 - **Indexed terminal fills honor each agent's luminance threshold.** Match the rendered ANSI palette rather than treating only white slots as light, preserving Codex's higher threshold, original ANSI styles, and terminal text (youngsecurity/collie#44).
 - **Urgent release reasons reject additional sentence delimiters.** Refuse multi-sentence reasons before generating release notes or sidecars, while preserving periods inside filenames and decimal values (youngsecurity/collie#44).
+- **Dashboard counts and mixed-pane ordering reflect every agent state.** Count unknown agents in status summaries and interleave shells with agents by their multiplexer positions in fixed-order workspace lists. Thanks @coderabbitai (youngsecurity/collie#46).
 
 ## [1.9.1+ys.2] - 2026-09-16
 

@@ -14,6 +14,7 @@ const ORDER: readonly Counted[] = [
   { kind: "status", status: "working" },
   { kind: "status", status: "done" },
   { kind: "status", status: "idle" },
+  { kind: "status", status: "unknown" },
 ];
 
 /** The per-state tallies; `unseen` panes are counted there and not under their done/idle status. */
@@ -23,20 +24,19 @@ export interface StateCounts {
   working: number;
   done: number;
   idle: number;
+  unknown: number;
 }
 
 const keyOf = (c: Counted): keyof StateCounts =>
-  c.kind === "unseen" ? "unseen" : c.status === "blocked" || c.status === "working" || c.status === "done" ? c.status : "idle";
+  c.kind === "unseen" ? "unseen" : c.status;
 
 export function countStates(panes: readonly AgentView[]): StateCounts {
-  const n: StateCounts = { blocked: 0, unseen: 0, working: 0, done: 0, idle: 0 };
+  const n: StateCounts = { blocked: 0, unseen: 0, working: 0, done: 0, idle: 0, unknown: 0 };
   for (const p of panes) {
     if (p.kind === "shell") continue;
     if (p.status === "blocked") n.blocked++;
     else if (isUnseen(p)) n.unseen++;
-    else if (p.status === "working") n.working++;
-    else if (p.status === "done") n.done++;
-    else if (p.status === "idle") n.idle++;
+    else n[p.status]++;
   }
   return n;
 }

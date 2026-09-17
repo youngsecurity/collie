@@ -21,9 +21,8 @@
 // changes GROUP, never because a clock ticked.
 //
 // ── SHELLS SIT WITH THEIR TAB ────────────────────────────────────────────────
-// A bare shell is a pane of the tab it is in, so it lands after that tab's agents rather than in a
-// trailing pen at the end of the workspace. That is the one place the given order is not preserved
-// verbatim, and it is deliberate.
+// A bare shell stays with its tab. Bridge ordering places it after that tab's agents; fixed ordering
+// interleaves both kinds by their shared position in the tab.
 //
 // Pure and host-aware, so a crew's two `w1`s are two workspaces (lib/hosts.ts § spaceKey).
 import { hostKey } from "./hosts";
@@ -33,7 +32,7 @@ import type { AgentView, TabView } from "./types";
 /**
  * How the rows inside a group run.
  *   "bridge"  the order the lists arrived in (the bridge's: status first), as shipped;
- *   "fixed"   the multiplexer's own: tabs by their number, panes by id inside a tab, so a status
+ *   "fixed"   the multiplexer's own: tabs by number, panes by position (then id) inside a tab, so a status
  *             change never moves a row (the dashboard trial's variant 5, agent-list.tsx).
  */
 export interface GroupOptions {
@@ -51,7 +50,7 @@ export interface WorkspaceGroup {
   key: string;
   /** The heading's text: the workspace's own name. */
   label: string;
-  /** Tab by tab in the order they were met, each tab's agents then that tab's bare shells. */
+  /** Tab by tab in the requested order, with shells kept inside their own tab. */
   panes: AgentView[];
 }
 
@@ -161,7 +160,7 @@ export function groupPanesByWorkspace(
         .toSorted((a, b) => a.seq - b.seq)
         .flatMap((tab) =>
           order === "fixed"
-            ? tab.agents.toSorted(byId).concat(tab.shells.toSorted(byId))
+            ? tab.agents.concat(tab.shells).toSorted(byId)
             : tab.agents.concat(tab.shells),
         ),
     }));

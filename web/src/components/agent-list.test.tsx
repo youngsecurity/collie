@@ -339,11 +339,11 @@ describe("AgentList — shells sit with their tab", () => {
   const shell = (paneId: string, over = {}) =>
     agent(paneId, "unknown", { kind: "shell", agent: "shell", ...over });
 
-  it("puts a shell under its own tab's heading, after that tab's agents", () => {
+  it("keeps shells in their workspace at the multiplexer's pane positions", () => {
     render(
       <AgentList
-        agents={[agent("work", "idle", { ...UI_WORK, sessionName: "work" })]}
-        shellPanes={[shell("logs", { ...UI_WORK, paneLabel: "logs" })]}
+        agents={[agent("work", "idle", { ...UI_WORK, sessionName: "work", tabPosition: 1 })]}
+        shellPanes={[shell("logs", { ...UI_WORK, paneLabel: "logs", tabPosition: 0 })]}
         onOpen={vi.fn()}
       />,
     );
@@ -353,8 +353,8 @@ describe("AgentList — shells sit with their tab", () => {
     // Scoped away from the Spaces strip: its "collie-workspace" chip contains the substring "work".
     const rows = rowButtons();
     expect(rows.map((r) => r.textContent)).toEqual([
-      expect.stringContaining("work"),
       expect.stringContaining("logs"),
+      expect.stringContaining("work"),
     ]);
   });
 

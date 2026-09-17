@@ -27,6 +27,7 @@ describe("countStates", () => {
       working: 0,
       done: 0,
       idle: 0,
+      unknown: 0,
     });
   });
 
@@ -39,6 +40,7 @@ describe("countStates", () => {
       working: 0,
       done: 0,
       idle: 0,
+      unknown: 0,
     });
   });
 
@@ -51,11 +53,25 @@ describe("countStates", () => {
       working: 0,
       done: 1,
       idle: 1,
+      unknown: 0,
     });
   });
 
   it("counts a working pane under working", () => {
     expect(countStates([pane("working")]).working).toBe(1);
+  });
+
+  it("counts unknown agents without treating them as unseen or counting shells", () => {
+    const unknown = pane("unknown", { lastActiveAt: 200, lastSeenAt: 100 });
+    const shell = pane("unknown", { kind: "shell" });
+    expect(countStates([unknown, pane("unknown"), shell])).toEqual({
+      blocked: 0,
+      unseen: 0,
+      working: 0,
+      done: 0,
+      idle: 0,
+      unknown: 2,
+    });
   });
 
   it("skips a shell pane entirely, whatever its status or timestamps", () => {
@@ -67,6 +83,7 @@ describe("countStates", () => {
       working: 0,
       done: 0,
       idle: 0,
+      unknown: 0,
     });
   });
 });
@@ -91,11 +108,12 @@ describe("StatusCounts — numbers only (the default, for a workspace heading)",
           pane("idle", { lastActiveAt: 1, lastSeenAt: 200 }), // idle, already seen
           pane("blocked"),
           pane("working"),
+          pane("unknown"),
         ]}
       />,
     );
     const shown = screen.getAllByLabelText(/^\d+ /).map((el) => el.getAttribute("aria-label"));
-    expect(shown).toEqual(["1 needs you", "1 working", "1 idle"]);
+    expect(shown).toEqual(["1 needs you", "1 working", "1 idle", "1 unknown"]);
     expect(screen.queryByLabelText(/unseen|done/)).not.toBeInTheDocument();
   });
 
@@ -127,6 +145,11 @@ describe("StatusCounts — labelled (the dashboard's one summary line)", () => {
     render(<StatusCounts panes={[pane("blocked")]} labelled />);
     const item = screen.getByText("1 needs you");
     expect(item).not.toHaveAttribute("aria-label");
+  });
+
+  it("shows unknown agents in the labelled summary", () => {
+    render(<StatusCounts panes={[pane("unknown"), pane("unknown")]} labelled />);
+    expect(screen.getByText("2 unknown")).toBeInTheDocument();
   });
 
   it("spells every non-zero state, each on its own", () => {

@@ -128,6 +128,40 @@ describe("groupPanesByWorkspace — shells", () => {
   });
 });
 
+describe("groupPanesByWorkspace fixed pane order", () => {
+  it("interleaves shells and agents by their shared tab positions", () => {
+    const agents = [pane("agent", { tabPosition: 1 })];
+    const shells = [
+      pane("shell-last", { kind: "shell", tabPosition: 2 }),
+      pane("shell-first", { kind: "shell", tabPosition: 0 }),
+    ];
+    expect(ids(groupPanesByWorkspace(agents, shells, { order: "fixed" }))).toEqual([
+      ["shell-first", "agent", "shell-last"],
+    ]);
+    expect(ids(groupPanesByWorkspace(agents, shells.toReversed(), { order: "fixed" }))).toEqual([
+      ["shell-first", "agent", "shell-last"],
+    ]);
+  });
+
+  it("uses pane ids across both kinds when older peers omit positions", () => {
+    const groups = groupPanesByWorkspace(
+      [pane("b-agent")],
+      [pane("c-shell", { kind: "shell" }), pane("a-shell", { kind: "shell" })],
+      { order: "fixed" },
+    );
+    expect(ids(groups)).toEqual([["a-shell", "b-agent", "c-shell"]]);
+  });
+
+  it("keeps each tab together while interleaving kinds within it", () => {
+    const groups = groupPanesByWorkspace(
+      [pane("agent-1", { tabPosition: 1 }), pane("agent-2", { tabId: "w1:t2", tabPosition: 0 })],
+      [pane("shell-1", { kind: "shell", tabPosition: 0 }), pane("shell-2", { kind: "shell", tabId: "w1:t2", tabPosition: 1 })],
+      { order: "fixed" },
+    );
+    expect(ids(groups)).toEqual([["shell-1", "agent-1", "agent-2", "shell-2"]]);
+  });
+});
+
 describe("workspaceGroupKey — a workspace id is not an address on its own", () => {
   it("tells two machines' identically numbered workspaces apart", () => {
     expect(workspaceGroupKey(pane("p", { host: "lodge" }))).not.toBe(
