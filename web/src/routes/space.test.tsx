@@ -114,7 +114,7 @@ function renderSpace(spaceId: string, host?: string) {
 describe("SpaceRoute on a crew", () => {
   it("uses the full viewport width with an uncapped matching header", async () => {
     renderSpace("wA", PEER);
-    await screen.findByText("peer pane");
+    await screen.findAllByText("peer pane");
     const route = screen.getByRole("main").parentElement?.parentElement;
     expect(route).toHaveClass("w-full", "min-w-0", "max-w-[100dvw]");
     expect(route?.className).not.toMatch(/max-w-screen|\w+:max-w/);
@@ -124,7 +124,8 @@ describe("SpaceRoute on a crew", () => {
   it("lists a peer space's own panes instead of drawing every tab empty", async () => {
     renderSpace("wA", PEER);
 
-    expect(await screen.findByText("peer pane")).toBeInTheDocument();
+    // Twice: the pane's own row, and the belt cell of its one-pane tab, which names the pane too.
+    expect(await screen.findAllByText("peer pane")).toHaveLength(2);
     expect(screen.queryByText("(empty tab)")).not.toBeInTheDocument();
   });
 

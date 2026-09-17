@@ -13,6 +13,8 @@ target/
 # Local staged-update pointer and release worktrees.
 /current
 /versions/
+# Bun's macOS compiler fallback can spill this exact root-level scratch executable.
+/.[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f].bun-build
 
 # Logs
 *.log

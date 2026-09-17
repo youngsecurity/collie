@@ -29,7 +29,7 @@ until explicitly configured.
 **Features**
 
 - **React Router + Vite** with TypeScript, Tailwind, shadcn, and a Bun bridge
-- **Status dashboard** led by what needs your input; every other pane sits under its own workspace, tab on the row
+- **Status dashboard** with panes kept in their workspaces, attention marked in place, and a tab label on each row
 - **Push notifications** when an agent blocks on user input
 - **Quick actions and slash commands** configured per agent
 - **Keypad for terminal control keys**: `Esc`, `Ctrl+C`, arrows, and modifier combinations
@@ -43,17 +43,17 @@ until explicitly configured.
 
 ## Demo
 
-Using Collie from a phone: the dashboard places agents that need input at the top. You can inspect
-spaces, tabs, and panes. Long-press a pane pill or tab chip to rename or close it; Claude panes
-reflect names set via `/rename`. Tap to answer an `AskUserQuestion` prompt, switch between herds,
-and receive push notifications when an agent blocks on input.
+Using Collie from a phone: the dashboard keeps panes in their workspaces and marks agents that need
+input in place. You can inspect spaces, tabs, and panes. Long-press a pane pill or tab chip to rename
+or close it; Claude panes reflect names set via `/rename`. Tap to answer an `AskUserQuestion` prompt,
+switch between herds, and receive push notifications when an agent blocks on input.
 
 The [interactive demo](https://colliepwa.dev/demo) runs the web client in your browser against mock
 data without installation.
 
 <table>
   <tr>
-    <td align="center" width="50%"><img src="assets/dashboard.png" alt="Collie dashboard — Needs you, then panes grouped by workspace, then Spaces" width="250"><br><sub><b>Dashboard</b> — agents needing you float to the top</sub></td>
+    <td align="center" width="50%"><img src="assets/dashboard.png" alt="Collie dashboard: a workspace filter, a status summary, then panes grouped by workspace" width="250"><br><sub><b>Dashboard</b> — every pane stays in its workspace, what needs you is marked in place</sub></td>
     <td align="center" width="50%"><img src="assets/ask-question.png" alt="A Claude permission prompt up-leveled into tappable buttons" width="250"><br><sub><b>Ask</b> — the agent's own prompts become tappable buttons</sub></td>
   </tr>
   <tr>
