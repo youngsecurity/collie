@@ -37,16 +37,18 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 ## [Unreleased]
 
+## [1.10.0+ys.1] - 2026-09-17
+
 ### Changed
 
-- **Collie adopts upstream 1.10.0 while preserving the fork's safeguards.** Adds stable dashboard ordering, workspace filters, status counts, operator-chosen pane names, attention indicators, native Muse rendering fixes, and safer Bun checks and build isolation. Fork release selection, update locking, terminal colors, full-width views, and the Herdr 0.8.0 minimum remain. Thanks @AltanS (youngsecurity/collie#45).
+- **Collie adopts upstream 1.10.0 while preserving the fork's safeguards.** Adds stable dashboard ordering, workspace filters, status counts, operator-chosen pane names, attention indicators, native Muse rendering fixes, and safer Bun checks and build isolation. Fork release selection, update locking, terminal colors, full-width views, and the Herdr 0.8.0 minimum remain. Thanks @AltanS (youngsecurity/collie#45). ([e06383a3](https://github.com/youngsecurity/collie/commit/e06383a3))
 
 ### Fixed
 
-- **Release publication rejects misplaced or repeated urgency markers.** Validate the complete pre-group header before producing release notes or sidecars, while preserving normal Markdown whitespace and non-urgent release preambles (youngsecurity/collie#44).
-- **Indexed terminal fills honor each agent's luminance threshold.** Match the rendered ANSI palette rather than treating only white slots as light, preserving Codex's higher threshold, original ANSI styles, and terminal text (youngsecurity/collie#44).
-- **Urgent release reasons reject additional sentence delimiters.** Refuse multi-sentence reasons before generating release notes or sidecars, while preserving periods inside filenames and decimal values (youngsecurity/collie#44).
-- **Dashboard counts and mixed-pane ordering reflect every agent state.** Count unknown agents in status summaries and interleave shells with agents by their multiplexer positions in fixed-order workspace lists. Thanks @coderabbitai (youngsecurity/collie#46).
+- **Release publication rejects misplaced or repeated urgency markers.** Validate the complete pre-group header before producing release notes or sidecars, while preserving normal Markdown whitespace and non-urgent release preambles (youngsecurity/collie#44). ([5660da75](https://github.com/youngsecurity/collie/commit/5660da75))
+- **Indexed terminal fills honor each agent's luminance threshold.** Match the rendered ANSI palette rather than treating only white slots as light, preserving Codex's higher threshold, original ANSI styles, and terminal text (youngsecurity/collie#44). ([5660da75](https://github.com/youngsecurity/collie/commit/5660da75))
+- **Urgent release reasons reject additional sentence delimiters.** Refuse multi-sentence reasons before generating release notes or sidecars, while preserving periods inside filenames and decimal values (youngsecurity/collie#44). ([7d50bb8f](https://github.com/youngsecurity/collie/commit/7d50bb8f))
+- **Dashboard counts and mixed-pane ordering reflect every agent state.** Count unknown agents in status summaries and interleave shells with agents by their multiplexer positions in fixed-order workspace lists. Thanks @coderabbitai (youngsecurity/collie#46). ([f93d2221](https://github.com/youngsecurity/collie/commit/f93d2221))
 
 ## [1.9.1+ys.2] - 2026-09-16
 
