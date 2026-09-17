@@ -38,7 +38,7 @@ import { MIRROR_SPACE, MIRROR_INVERT, segmentStyle } from "@/components/mirror-s
 import { cn } from "@/lib/utils";
 import { parseAnsi } from "@/lib/ansi";
 import { splitLines } from "@/lib/blocks";
-import { adapterFor } from "@/lib/harness";
+import { adapterFor, rendersNativeMirror } from "@/lib/harness";
 import { blockOwnsKeyboard } from "@/lib/harness/dialog-contract";
 import { FindBar } from "@/components/find-bar";
 import { LatestReply } from "@/components/latest-reply";
@@ -1130,45 +1130,21 @@ export function AgentChat({
     // cannot land outside it and end up 16px taller than its neighbours. That is the fault the old
     // per-strip `hideLabel` prop could not prevent, which is why this is a context and not a prop.
     <CompactStripLabels>
-      {/* `max-w-[100dvw]` is the phone bound and it stays: a mirror line wider than the screen used
-          to blow the viewport out sideways and let the whole page pan (85f777b, "viewport blowout").
-          Each cap above it is by definition no more than 100dvw at the breakpoint that turns it on,
-          so the bounds never contradict each other; `mx-auto` then centres what is left.
-          `overflow-x-hidden`, `min-w-0` and `w-full` are all still doing the phone's job underneath.
-
-          The column GROWS in four steps rather than stopping at 768px, and this route is the reason
-          the dashboard's does not (#166). What sits under it is a terminal mirror with a column
-          count of its own. Every pixel the cap withholds is a mirror line the browser has to wrap,
-          clip or pan, which is the work blocks.ts and ansi-output.tsx keep doing on the phone and
-          should not have to do on a desktop: an 80-column mirror wants ~640px of text, a 120-column
-          one ~960px, and neither fits in 768. A list row on the dashboard has no such number, so
-          widening THAT column buys nothing and costs line length. 1400px at 2xl is the last step,
-          because past it a mirror runs out of columns and the row grows margins instead.
-          The phone is untouched, in portrait and in landscape: 390px and 844px both still land on
-          the 768px step, the width the pane was given on 2026-09-04. A portrait iPad at 1024px now
-          reaches its own cap exactly, so it runs edge to edge, which is a wider mirror and still one
-          right edge. app-header.tsx's `wide` claim carries the identical ladder, or the header and
-          the mirror stop sharing that edge. */}
-      <div className="mx-auto flex min-h-0 w-full min-w-0 max-w-[100dvw] flex-1 flex-col overflow-x-hidden md:max-w-screen-md lg:max-w-screen-lg xl:max-w-screen-xl 2xl:max-w-[1400px]">
+      {/* Use the available browser width, not a desktop column cap. Keep the viewport bound,
+          flex shrink guard and horizontal containment: a long terminal line must pan inside its
+          mirror rather than widen the page. This does not resize the underlying terminal. */}
+      <div className="mx-auto flex min-h-0 w-full min-w-0 max-w-[100dvw] flex-1 flex-col overflow-x-hidden">
         {/* Header — this route's contribution to the ONE header shell, which is mounted above the
             outlet in RootLayout and is the same element on every screen (so the Collie mark is not
             only identical, it is literally the same drawing, still turning). The pane's own bits are
             portalled into it: the `space › tab` breadcrumb as the center, the ⋮ as the right-cluster
             lead, and the find bar as the full-row takeover while searching.
 
-            `width="wide"`: the pane is edge to edge below 768px, and from 768px up it is a centred
-            column — which a phone in landscape reaches too, at 844px, giving it 38px each side, the
-            same look the dashboard already has on a portrait iPad. It stops growing because the
-            mirror can never be wider than the mux pane it mirrors.
-            Measured on a 1366px landscape iPad: an 80-column pane renders a ~620px block of text
-            starting at x≈20 and ending near 640px, while the header, both strips, the bottom toolbar
-            and the composer each ran the whole 1366px. One route with two right edges, which is what
-            DESIGN.md §4 forbids — every top-level block "begins and ends on the same x". 768px and
-            not the 640px every other route uses: a 640px column minus its 16px gutters clips an
-            80-column mirror, so the pane pair get their own claim. */}
+            `width="full"` keeps the header aligned with the mirror, strips and composer on every
+            viewport. The history route uses the same width when navigating to the transcript. */}
         <RouteHeader
           onHome={onBack}
-          width="wide"
+          width="full"
           // Zen takes the whole row off the screen — the one shell owns the <header> element, so
           // only the shell can stop drawing it, and this is how a route asks. See HeaderClaim.hidden
           // for what survives (the element, its safe-area inset, its reserved rule) and why.
@@ -1841,7 +1817,13 @@ export function AgentChat({
                     query={findOpen ? findQuery : ""}
                     currentMatch={findOpen ? currentMatch : -1}
                     onMatchCount={findOpen ? handleMatchCount : undefined}
-                    agent={grammarsOn ? agent?.agent : undefined}
+                    // Native-mirror agents keep their identity with raw-terminal on: the pref
+                    // bypasses block GRAMMARS, and native rendering is display faithfulness, not
+                    // a grammar — muse has no adapter, so dropping the agent here would only
+                    // re-invert the pane (.adr/0047) while bypassing nothing.
+                    agent={
+                      grammarsOn || rendersNativeMirror(agent?.agent) ? agent?.agent : undefined
+                    }
                     onPromptAction={handlePromptAction}
                     onWizardAction={handleWizardAction}
                     onPreviewAction={handlePreviewAction}

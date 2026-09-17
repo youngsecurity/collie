@@ -1,0 +1,119 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { describe, expect, it } from "vitest";
+
+import type { AnsiSegment } from "@/lib/ansi";
+import { segmentClassName, segmentStyle, styleFor } from "./mirror-space";
+
+function seg(over: Partial<AnsiSegment>): AnsiSegment {
+  return { text: "x", style: {}, muted: false, ...over };
+}
+
+describe("segmentStyle", () => {
+  it("keeps bright marks behind a var() the light theme overrides, raw as fallback", () => {
+    const style = segmentStyle(
+      seg({ fg: "rgb(250,250,249)", style: { color: "rgb(250,250,249)" }, lightDarkFg: true }),
+    );
+    expect(style.color).toBe("var(--terminal-light-dark-fg, rgb(250,250,249))");
+  });
+
+  it("passes unmarked spans through untouched", () => {
+    const s = seg({ fg: "rgb(111,114,122)", style: { color: "rgb(111,114,122)" } });
+    expect(segmentStyle(s).color).toBe("rgb(111,114,122)");
+  });
+
+  it("resolves muted chrome behind its own var(), dark-space grey as fallback", () => {
+    const style = styleFor(seg({ muted: true }));
+    expect(style.color).toBe("var(--terminal-muted-fg, #a1a1a1)");
+    expect(style).toMatchObject({ fontWeight: 400, opacity: 1 });
+  });
+
+  it.each(["", "#00ff00"])("preserves explicit muted ANSI over foreground %s", (foreground) => {
+    const style = segmentStyle(seg({
+      muted: true,
+      fg: "rgb(255,165,216)",
+      style: { color: "rgb(255,165,216)", fontWeight: 700, opacity: 0.5 },
+    }), foreground);
+    expect(style).toMatchObject({ color: "rgb(255,165,216)", fontWeight: 400, opacity: 1 });
+  });
+
+  it("composes custom muted foreground with mobile transparency", () => {
+    const style = segmentStyle(seg({
+      muted: true,
+      mobileTransparentBg: true,
+      style: { backgroundColor: "rgb(240,240,240)" },
+    }), "#00ff00");
+    expect(style).toEqual({
+      color: "#00ff00", fontWeight: 400, opacity: 1,
+      "--terminal-seg-bg": "rgb(240,240,240)",
+    });
+  });
+
+  it("composes both adapter hints without dropping the emitted foreground or fill", () => {
+    const style = segmentStyle(seg({
+      fg: "rgb(250,250,249)",
+      lightDarkFg: true,
+      mobileTransparentBg: true,
+      style: { color: "rgb(250,250,249)", backgroundColor: "rgb(240,240,240)" },
+    }), "#00ff00");
+    expect(style).toEqual({
+      color: "var(--terminal-light-dark-fg, rgb(250,250,249))",
+      "--terminal-seg-bg": "rgb(240,240,240)",
+    });
+  });
+
+  it("passes non-muted spans through styleFor by reference", () => {
+    const s = seg({ style: { color: "rgb(1,2,3)" } });
+    expect(styleFor(s)).toBe(s.style);
+  });
+});
+
+describe("segmentClassName", () => {
+  it("emits nothing without a mark", () => {
+    expect(segmentClassName(seg({}))).toBeUndefined();
+  });
+
+  it.each([
+    [{ mobileTransparentBg: true as const }, "terminal-mobile-transparent-bg"],
+    [{ lightDarkFg: true as const }, "terminal-light-dark-fg"],
+    [{ muted: true }, "terminal-muted"],
+  ])("emits one marker alone", (over, cls) => {
+    expect(segmentClassName(seg(over))).toBe(cls);
+  });
+
+  it("joins combined marks with single spaces", () => {
+    expect(
+      segmentClassName(seg({ mobileTransparentBg: true, lightDarkFg: true, muted: true })),
+    ).toBe("terminal-mobile-transparent-bg terminal-light-dark-fg terminal-muted");
+  });
+});
+
+// The light half of the native-mirror mechanism lives in the stylesheet, where no render test can
+// see it: deleting either rule block below keeps every suite green while brights (or muted chrome)
+// render raw on white. Pin the selectors, the scope, and the values. [\s\S], not newlines:
+// Prettier is free to wrap these declarations.
+describe("native-mirror stylesheet rules", () => {
+  const css = readFileSync(join(import.meta.dirname, "..", "index.css"), "utf8");
+
+  it.each([
+    ["bright foregrounds", "terminal-light-dark-fg", "terminal-light-dark-fg", "#0a0a0a"],
+    ["muted chrome", "terminal-muted", "terminal-muted-fg", "#5d5d5d"],
+  ])("defines %s for pinned light, scoped to muse mirrors", (_label, cls, prop, value) => {
+    expect(css).toMatch(
+      new RegExp(
+        `:root\\.light\\s+pre\\.terminal-muse\\s+\\.${cls}\\s*\\{[\\s\\S]*?--${prop}:\\s*${value};`,
+      ),
+    );
+  });
+
+  it.each([
+    ["bright foregrounds", "terminal-light-dark-fg", "terminal-light-dark-fg", "#0a0a0a"],
+    ["muted chrome", "terminal-muted", "terminal-muted-fg", "#5d5d5d"],
+  ])("defines %s for system-follows-OS light, scoped to muse mirrors", (_label, cls, prop, value) => {
+    expect(css).toMatch(
+      new RegExp(
+        `@media\\s*\\(prefers-color-scheme:\\s*light\\)\\s*\\{[\\s\\S]*?:root:not\\(\\.dark\\)\\s+pre\\.terminal-muse\\s+\\.${cls}\\s*\\{[\\s\\S]*?--${prop}:\\s*${value};`,
+      ),
+    );
+  });
+});

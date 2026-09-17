@@ -66,6 +66,25 @@ write it as the sentence an operator reads there. Do not touch the three version
      use Collie: a QR printed beside the pairing code, an extra column in `devices list`, a new
      flag with a safe default. The phone folds a patch-only delta into its weekly update digest
      (`DIGEST_PATCH_WINDOW_MS` in `bridge/update.ts`); the in-app band shows it at once.
+
+     **An urgent patch keeps the daily cadence.** A patch the operator must take today, data loss, a
+     security fix, a broken update path, may carry ONE line directly under the release heading in
+     `CHANGELOG.md`, above the first `###` group, in the same bold-lead style as a bullet:
+     `**Urgent.** <one sentence, present tense, why this must reach operators today.>` The release
+     job copies that line into the `collie-release.json` sidecar and onto the release page, and the
+     phone then keeps the daily digest window for that release instead of folding it into the weekly
+     patch one. **The axis stays patch**: urgency changes the delivery, never the number. Use it
+     rarely, at most one release in a quarter in normal operation, and a release that is merely good
+     is not urgent ([ADR 0046](./.adr/0046-an-urgent-patch-keeps-the-daily-cadence.md)).
+
+     **Write the sentence for the operator, not for the diff.** Name the impact, never the code path.
+     No version numbers, no links, no backticks, under 140 characters, ending in a period. The
+     release fails if the line is nearly right, so copy the shape of one of these:
+
+     - `**Urgent.** A pane closed from the phone can delete the wrong pane.`
+     - `**Urgent.** A paired device stays paired after you revoke it.`
+     - `**Urgent.** Updating can leave the service stopped.`
+
    - **MINOR** (`0.2.0 → 0.3.0`): something to learn, or worth hearing about today. A new verb,
      a new page, a new crew capability, a changed default, anything that earns its own section
      in `docs/`. The phone nudges within a day.
@@ -173,14 +192,15 @@ the pre-commit hook refuses a badly shaped `## [Unreleased]` bullet at commit ti
 **One asset is attached by hand: `collie-release.json`.** Since 1.8.0 the update check reads
 `releases/download/vX.Y.Z+ys.N/collie-release.json` (`releaseReadingUrl` in `bridge/update.ts`)
 to tell an install in a crew, before it confirms, that the release ahead changes the crew wire
-version. Upstream's `release.yml` writes it from `CREW_PROTOCOL_VERSION`; here it is written the
-same way and uploaded with the release. A release without it reads as "no change", which is the
-wrong answer on the release that moves the wire:
+version. Since 1.9.1 it also carries the changelog's urgent marker when present. Generate it with
+upstream's `scripts/release-reading.ts`, which imports `CREW_PROTOCOL_VERSION` and reads the
+release's changelog section. Attach it when creating the release rather than uploading it later;
+readers retry missing assets on subsequent checks because tags may precede publication.
+A release without it cannot announce a wire change or urgency:
 
 ```
-protocol=$(bun -e 'import { CREW_PROTOCOL_VERSION } from "./bridge/crew/enrollment.ts"; process.stdout.write(String(CREW_PROTOCOL_VERSION))')
-printf '{\n  "version": "%s",\n  "crewProtocol": %s\n}\n' X.Y.Z+ys.N "$protocol" > collie-release.json
-gh release upload vX.Y.Z+ys.N collie-release.json
+bun scripts/release-reading.ts --version X.Y.Z+ys.N > collie-release.json
+gh release create vX.Y.Z+ys.N --notes-file notes.md collie-release.json
 ```
 
 What does not apply here: upstream's CI gate (`release.yml`'s `gate` job waits for a green `ci.yml`
@@ -326,7 +346,12 @@ tests nothing Vitest already covers.
 
 - **Tier 1** runs in CI, on every push. `cd web && bun run e2e` builds the web bundle, serves it,
   and drives Chromium at `phone` (390x844) and `tablet` (820x1180), declared as four projects in
-  `web/playwright.config.ts`: `app-phone`, `app-tablet`, `states-phone`, `states-tablet`. The `app`
+  `web/playwright.config.ts`: `app-phone`, `app-tablet`, `states-phone`, `states-tablet`, plus a
+  fifth, `app-phone-webkit`, the same `app` specs under WebKit, Safari's engine. That one is always
+  on in CI and opt-in elsewhere (`COLLIE_E2E_WEBKIT=1`), because Playwright's WebKit build cannot
+  launch on Fedora; `make e2e-webkit` at the workspace root runs it inside an Ubuntu distrobox
+  there. It exists because Safari disagrees with Chromium on geometry a unit test never sees
+  (`web/e2e/belt.spec.ts` holds the first such case, 2026-09-14). The `app`
   target serves `web/dist` and answers every `/api/*` request from `web/e2e/fixtures/api.ts`; it
   never touches a live bridge. The `states` target runs the playground on port 5199, the way `make
   playground` runs it, and answers no API at all. Cases live under `web/e2e/`: today
@@ -540,10 +565,11 @@ lint guard, the crew-wire guard or the `flake.lock` guard.
   a `+---+` rule, a frame row carrying a **cross** — and then grows by agreement, so a menu, a
   chrome box or a rule beside a table is never claimed. `table-run.test.ts` gates it against every
   capture in `fixtures/panes`; the argument sits in `table-run.ts`'s header.
-- **Never use a `dark:` variant inside the mirror `<pre>`** — it tracks the root theme, which is
-  backwards in a surface that renders dark under every theme and inverts in light
-  ([ADR 0002](./.adr/0002-invert-the-light-terminal-mirror.md)). Fails silently;
-  `ansi-output.test.tsx` guards it.
+- **Never use a `dark:` variant inside an inverted mirror `<pre>`.** It tracks the root theme,
+  which is backwards in a surface that renders dark under every theme and inverts in light
+  ([ADR 0002](./.adr/0002-invert-the-light-terminal-mirror.md)). Muse's native surface is the
+  exception ([ADR 0047](./.adr/0047-muse-panes-render-natively.md)); custom terminal colors stay
+  absolute on every agent. `ansi-output.test.tsx` guards both paths.
 - **The plan dialog's last row is a text input, and it is never a button** — its label is only a
   placeholder while the box is empty, and its digit merely focuses the field. While `❯` sits on it the
   terminal swallows every digit as a character, so no button on that dialog may be pressable; while it

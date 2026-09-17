@@ -101,6 +101,15 @@ const packed = () =>
   });
 
 describe("the dashboard on ONE machine is untouched", () => {
+  it("uses the full viewport width with an uncapped matching header", async () => {
+    renderHome(solo());
+    await settled();
+    const route = screen.getByRole("main").parentElement?.parentElement;
+    expect(route).toHaveClass("w-full", "min-w-0", "max-w-[100dvw]");
+    expect(route?.className).not.toMatch(/max-w-screen|\w+:max-w/);
+    expect(screen.getByRole("banner").className).not.toContain("max-w-");
+  });
+
   it("renders no host switcher and no host chip anywhere", async () => {
     renderHome(solo());
     await settled();

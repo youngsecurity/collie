@@ -2,6 +2,10 @@
 
 Status: **Accepted** (2026-07-28)
 
+**Current status scope:** the [Herdr 0.9 compatibility amendment](#herdr-09-compatibility)
+extends the original `done`-only formula below to `idle` or `done`, excluding bare shells and
+still requiring `activeAt > seenAt`. The original decision is preserved as history.
+
 ## Context
 
 The dashboard sorts the herd by attention and then by recency, and it surfaces a **Ready · unseen**
@@ -58,6 +62,21 @@ doesn't notify for agents that were already blocked.
   precision — imperceptible in a feature whose finest unit is "just now".
 - **The state can be thrown away.** Delete `activity.json` and the next poll re-seeds every pane as
   seen. Nothing else depends on it.
+
+### Herdr 0.9 compatibility
+
+Herdr 0.9's API reports settled agents as `idle`; its terminal client projects `done` using
+client-local acknowledgements (`EndpointAgentPresentation::projected_status`). Collie's classifier
+therefore accepts **`idle` or `done`**, still gated by `activeAt > seenAt` and excluding bare shells.
+The ownership decision is unchanged: Collie's ledger supplies the read receipt, first sightings
+remain seen, and opening the pane in Herdr does not clear its Collie alert. When an observed agent
+exits to a shell, `bridge/activity-tracking.ts` forgets its activity before reseeding that shell;
+a new idle agent in the same terminal must not inherit unread work from the previous one. For a
+settled pane only a turn that ends counts as new activity (`working` or `blocked` → `idle` or
+`done`), so Herdr's own acknowledgement (`done` → `idle`) and detection flicker (`unknown` → `idle`)
+leave `activeAt` where it was. Entering `unknown` also leaves it untouched: neither edge of a
+settled-to-unknown-to-settled round trip supplies evidence of work. The same rule applies when
+recovery reports `done` instead of `idle`.
 
 ### What would justify revisiting
 

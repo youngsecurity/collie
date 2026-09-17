@@ -67,6 +67,17 @@ function mirrorWrapper(container: HTMLElement): HTMLElement {
   return scrollDiv.parentElement.parentElement;
 }
 
+describe("HistoryRoute layout", () => {
+  it("uses the full viewport width without desktop caps and keeps its header aligned", async () => {
+    const { container } = render(<RouterProvider router={makeRouter()} />);
+    await screen.findByText(/No transcript file was found/);
+    const route = container.querySelector('[class*="max-w-[100dvw]"]');
+    expect(route).toHaveClass("w-full", "min-w-0");
+    expect(route?.className).not.toMatch(/max-w-screen|\w+:max-w/);
+    expect(screen.getByRole("banner").className).not.toContain("max-w-");
+  });
+});
+
 describe("HistoryRoute — terminal font", () => {
   afterEach(() => localStorage.clear());
 

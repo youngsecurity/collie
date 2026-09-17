@@ -263,6 +263,12 @@ Every top-level block on a route — section label, group frame, notice, footer 
 ends on the same x. The page gutter is **16px** (`px-4`). Nothing in the content column is
 full-bleed; only viewport chrome above the header is — the two-placement rule in §1.
 
+**Young Security fork:** dashboard, spaces, live agent views and history use the full available
+browser width, keeping their existing gutters and matching full-width headers. Viewport bounds,
+flex shrink guards and terminal overflow containment remain in place on mobile. Settings, Crew,
+Updates and floating sheets keep their compact widths. This changes neither agent grouping nor
+the dimensions of the underlying terminal.
+
 ---
 
 ## 5. Type

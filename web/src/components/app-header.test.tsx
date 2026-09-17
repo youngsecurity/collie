@@ -462,7 +462,7 @@ function HoistedRoute({ name, ...header }: { name: string } & ComponentProps<typ
 // remounts on every hop. Verified: with one shared type these cases pass even with the header put
 // back inside the routes. With these three they do not.
 const DashRoute = () => (
-  <HoistedRoute name="dash" wordmark width="column" rightTrail={<SettingsGear />} />
+  <HoistedRoute name="dash" wordmark width="full" rightTrail={<SettingsGear />} />
 );
 const PaneRoute = () => (
   <HoistedRoute name="pane" onHome={() => {}}>
@@ -472,7 +472,7 @@ const PaneRoute = () => (
 const SettingsLikeRoute = () => (
   <HoistedRoute name="settings" width="column" override={<button type="button">Back</button>} />
 );
-// The pane's shape, as a fourth type: `width="wide"` rather than the dashboard's `column`.
+// Exercise the optional responsive column independently of the full-width dashboard and pane.
 const WideRoute = () => <HoistedRoute name="wide" width="wide" onHome={() => {}} />;
 
 function renderHoisted(initialEntry = "/") {
@@ -617,45 +617,33 @@ describe("the ONE header — hoisted above the outlet", () => {
     expect(screen.getByText("Collie")).toBeInTheDocument();
   });
 
-  it("carries the route's own width claim, so a hoisted header is not silently full-bleed", async () => {
-    // The header used to live INSIDE each route's content column and inherited its width for free:
-    // 640px on the dashboard, Settings and Crew, edge-to-edge in a pane and in history. Measured in
-    // a 1280px viewport before this change: `/` gave x=320 w=640, `/pane/…` gave x=0 w=1280. Hoisted,
-    // that width has to be STATED or the dashboard's rule silently becomes the viewport's.
+  it("removes the settings width cap when returning to a full-width route", async () => {
     const { container, go } = renderHoisted();
     const header = container.querySelector("header");
-    expect(header?.className).toContain("max-w-screen-sm");
-    await go("/pane");
-    expect(header?.className).not.toContain("max-w-screen-sm");
+    expect(header?.className).not.toContain("max-w-");
     await go("/settings");
     expect(header?.className).toContain("max-w-screen-sm");
+    await go("/pane");
+    expect(header?.className).not.toContain("max-w-");
+    await go("/");
+    expect(header?.className).not.toContain("max-w-");
   });
 
   it("gives the wide claim the md column, not the sm one the other routes take", async () => {
-    // The third value, added when the PWA stopped locking to portrait. The pane and history screens
-    // were `full`, which on a 1366px landscape iPad spread a header, two strips, a toolbar and a
-    // composer across the whole width above a ~620px mirror. They claim `wide` now: 768px, one
-    // breakpoint out from the 640px the dashboard uses, because a 640px column minus its gutters
-    // clips an 80-column mirror. The two must not collapse into one class.
+    // Keep the optional responsive claim distinct from Settings' compact column.
     const { container, go } = renderHoisted();
     const header = container.querySelector("header");
     await go("/wide");
     expect(header?.className).toContain("max-w-screen-md");
     expect(header?.className).not.toContain("max-w-screen-sm");
-    // …and it is still a centred column rather than the full-bleed `full` the pane used to claim.
+    // The optional wide mode stays centered; the pane's full mode has no column cap.
     expect(header?.className).toContain("mx-auto");
     await go("/pane");
     expect(header?.className).not.toContain("max-w-screen-md");
   });
 
   it("grows the wide claim past md on a desktop, and leaves the sm column flat", async () => {
-    // #166: flat at 768px, a 1920px desktop left 576px of dead margin on each side of a terminal
-    // mirror that had columns to spare. `wide` is a ladder now. The dashboard's `column` is NOT —
-    // a list row has no column count, so widening it only lengthens the line. That asymmetry is the
-    // whole fix, so both halves are asserted here.
-    //
-    // AgentChat's wrapper and history's carry this identical ladder. Nothing can check across the
-    // three files, so the string is pinned in one place: change it here and grep the other two.
+    // The optional wide claim still grows at each breakpoint. Compact utility screens do not.
     const LADDER = ["max-w-screen-md", "lg:max-w-screen-lg", "xl:max-w-screen-xl", "2xl:max-w-[1400px]"];
     const { container, go } = renderHoisted();
     const header = container.querySelector("header");

@@ -145,6 +145,108 @@ function groupsOf(lines: string[], where: string): Group[] {
 	return groups;
 }
 
+/** The longest an urgent sentence may be. A push notification and a phone card both read it, and a
+ *  reason nobody finishes reading is a reason nobody acts on. */
+export const URGENT_REASON_MAX = 140;
+
+/** A line that was TRYING to be the urgent marker. Anything matching this must match the exact form
+ *  below or the release stops: a near miss that is silently read as prose ships a release nobody is
+ *  told about, which is the one failure this whole mechanism exists to prevent. */
+const URGENT_NEAR_MISS = /^(\*\*\s*urgent|urgent[.:])/i;
+
+/** The exact form. One bold lead, a space, then the sentence. */
+const URGENT_EXACT = /^\*\*Urgent\.\*\* (\S.*)$/;
+
+const URGENT_EXPECTED_LINE =
+	"Expected exactly: **Urgent.** One sentence, present tense, why this must reach operators today.";
+
+/**
+ * The sentence, checked. Throws with the reason when it is one an operator should not be sent.
+ *
+ * The rules are the ones a push body and a phone card impose, and nothing more: it is one plain
+ * sentence, short enough to be read at a glance, and it carries no markup, because neither surface
+ * renders any. A backtick or a link in a push body is printed as the characters themselves.
+ */
+function checkUrgentReason(reason: string): string {
+	const fail = (why: string): never => {
+		throw new Error(`CHANGELOG: the **Urgent.** sentence ${why}.\n  ${reason}\n  ${URGENT_EXPECTED_LINE}`);
+	};
+	if (reason.length === 0) fail("is empty");
+	if (reason.length > URGENT_REASON_MAX) {
+		fail(`is ${reason.length} characters, and the limit is ${URGENT_REASON_MAX}`);
+	}
+	if (reason.includes("`")) fail("holds a backtick, and neither the push nor the card renders code");
+	if (/\[[^\]]*\]\([^)]*\)/.test(reason)) fail("holds a markdown link, which no surface renders");
+	if (!reason.endsWith(".")) fail("does not end with a period");
+	// Check prose boundaries, not punctuation in quoted names, dotted initials, or common
+	// abbreviations. Keep quote contents and endings before capitalized prose so quoting a
+	// sentence cannot hide its boundary. Apostrophes within words are not quote openers.
+	// Return the original reason unchanged.
+	const prose = reason
+		.replace(
+			/"[^"]*"|\u201c[^\u201d]*\u201d|(?<![\p{L}\p{N}])'.*?'(?![\p{L}\p{N}])|\u2018.*?\u2019(?![\p{L}\p{N}])/gu,
+			(quoted: string, offset: number) => {
+				const continuation = reason.slice(offset + quoted.length).trimStart();
+				if (/^\p{Lu}/u.test(continuation)) return quoted;
+				return quoted.replace(/[.!?]+(?=["'\u2019\u201d]$)/u, "");
+			},
+		)
+		.replace(/\b(?:[a-z]\.){2,}|\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|St|vs|etc)\./giu, "abbreviation");
+	// Dots within filenames and decimal values are not followed by a boundary.
+	if (/[.!?]["')\]\u2019\u201d]*(?:\s|$)/u.test(prose.slice(0, -1))) {
+		fail("contains a sentence delimiter before its final period");
+	}
+	return reason;
+}
+
+/**
+ * THE URGENT MARKER, or null (ADR 0046).
+ *
+ * The person cutting the release may put ONE line directly under the release heading, above the
+ * first `###` group, in the same bold-lead style as a bullet:
+ *
+ *   **Urgent.** The cache reaper deletes live entries, take this today.
+ *
+ * That position and no other. A line further down the section is part of a group and is read as
+ * prose, exactly as it was before this existed. An absent line is the ordinary release.
+ *
+ * The line changes the DELIVERY of the release, never its number: the phone keeps the daily digest
+ * cadence for it instead of folding it into the weekly patch window.
+ *
+ * A NEAR MISS STOPS THE RELEASE. `**urgent**`, `Urgent:` and a bold lead with no sentence after it
+ * are all somebody trying to mark a release urgent, and reading one of them as prose would publish
+ * a fix on the weekly window while its author believed it was on the daily one. There is no silent
+ * arm of this function: it returns the marker, returns null, or throws.
+ */
+export function parseUrgent(changelog: string, version: string): { reason: string } | null {
+	const { lines } = sectionLines(changelog, version);
+	let urgent: { reason: string } | null = null;
+	let hasContent = false;
+	for (const raw of lines) {
+		if (raw.startsWith("### ")) break; // markers inside groups remain ordinary prose
+		const line = raw.trim();
+		if (line === "") continue;
+		const firstContent = !hasContent;
+		hasContent = true;
+		if (!URGENT_NEAR_MISS.test(line)) continue;
+		if (urgent !== null) {
+			throw new Error(`CHANGELOG [${version}]: at most one urgent marker is allowed before the first group.`);
+		}
+		if (!firstContent) {
+			throw new Error(`CHANGELOG [${version}]: the urgent marker must be the first nonblank line below the release heading.`);
+		}
+		const match = URGENT_EXACT.exec(line);
+		if (!match) {
+			throw new Error(
+				`CHANGELOG [${version}]: this line looks like the urgent marker and is not it.\n  ${line}\n` +
+					`  ${URGENT_EXPECTED_LINE}`,
+			);
+		}
+		urgent = { reason: checkUrgentReason((match[1] ?? "").trim()) };
+	}
+	return urgent;
+}
+
 /** Reads one version's section into its groups. Throws with the reason when the shape is wrong. */
 export function parseSection(changelog: string, version: string): Section {
 	const { date, lines } = sectionLines(changelog, version);
@@ -254,7 +356,13 @@ export function renderBody(
 ): string {
 	const section = parseSection(changelog, version);
 	const anchor = changelogAnchor(version, section.date);
-	const lines: string[] = [...updateBlock(repo, tag), "", "## What changed", ""];
+	// THE URGENT LINE STAYS AS IT WAS WRITTEN, AND IT GOES FIRST (ADR 0046). It is the one sentence a
+	// reader has to see before the update command, so it sits above the block a phone came here to
+	// copy from. One line, the author's own, with no wrapper around it.
+	const urgent = parseUrgent(changelog, version);
+	const lines: string[] = [];
+	if (urgent) lines.push(`**Urgent.** ${urgent.reason}`, "");
+	lines.push(...updateBlock(repo, tag), "", "## What changed", "");
 
 	for (const group of section.groups) {
 		if (group.leads.length === 0) continue;
