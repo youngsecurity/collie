@@ -2,14 +2,15 @@
 # Release-tag gate for Collie.
 #
 # A version is CUT when the three version files and the newest `## [x.y.z]` heading in CHANGELOG.md
-# agree on it (scripts/check-version.sh proves that). A version is PUBLISHED when a `v<x.y.z>` tag
-# reaches the remote, because .github/workflows/release.yml triggers on `push: tags: ["v*.*.*"]` and
-# nothing else creates the GitHub Release the in-app update banner links to.
+# agree on it (scripts/check-version.sh proves that). On this fork, publication requires both
+# an immutable remote `vX.Y.Z+ys.N` tag and a manually created, source-only GitHub Release with
+# notes and collie-release.json. .github/workflows/release.yml only verifies that publication;
+# a tag push never creates or overwrites a release. This script checks local tags, not publication.
 #
-# Those two steps were never joined. Betas 33 to 41 were cut and never tagged — not even locally —
-# so nine consecutive releases exist only as CHANGELOG headings and no tester could install any of
-# them. The publishing automation was never broken; the manual `git tag` in front of it got skipped,
-# and nothing said a word. This script is that word.
+# Historically, upstream's automatic publication still required a manual tag. Betas 33 to 41
+# were cut and never tagged, not even locally, so nine consecutive releases exist only as
+# CHANGELOG headings and no tester could install any of them. The tag step got skipped and
+# nothing said a word. This script is that word.
 #
 # Two modes:
 #

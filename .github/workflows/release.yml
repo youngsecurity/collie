@@ -67,7 +67,7 @@ jobs:
         env:
           TAG: ${{ steps.tag.outputs.tag }}
           GH_TOKEN: ${{ github.token }}
-        run: bun .github/scripts/verify-release.ts "$TAG" "$RUNNER_TEMP/expected-release.json"
+        run: bun .github/scripts/verify-release.ts "$TAG" "$RUNNER_TEMP/expected-release.json" release-source/CHANGELOG.md
 
       - name: Ensure the tag has not moved
         env:

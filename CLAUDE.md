@@ -160,8 +160,12 @@ version on the remote. Never move or recreate a shipped tag to rerun automation.
 
 **GitHub Actions are active, but publication stays manual and source-only.** The fork's
 `.github/workflows/release.yml` verifies tag pushes with read-only permissions. It checks the
-pinned tag's version consistency, published notes shape, and the uploaded `collie-release.json`
-against content generated from that tagged source. It waits up to ten minutes for manual
+pinned tag's version consistency, published What changed groups and leads, version-specific
+changelog link, urgent marker, and the uploaded `collie-release.json` against that tagged source.
+The verifier receives `release-source/CHANGELOG.md`, never the verifier branch's changelog. The
+fork's hand-edited Update block and an optional Compare link to an existing tag stay allowed.
+Successful verification prints `urgent: <reason>` or `urgent: none, ordinary release` to both the
+log and job summary. It waits up to ten minutes for manual
 publication and the sidecar, then fails with a retry instruction. It never creates or overwrites
 a release, uploads assets, or builds binary payloads. Once the updated workflow is on the default
 branch, dispatch **Verify release** with an explicit tag for a late publication or an older release.

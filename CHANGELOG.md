@@ -45,6 +45,7 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 ### Packaging
 
 - **Enabled Actions verify manually published fork releases without replacing them.** Check the source-only notes and generated sidecar against an immutable tag, allow bounded publication delays, and route unconfigured AI labeling to explicit manual triage while preserving real failure reporting (youngsecurity/collie#49).
+- **Release verification checks changelog content and records urgency explicitly.** Compare published groups, leads, changelog links and urgent markers with tagged source, validate optional compare targets, and correct older guidance that implied tag pushes publish releases (youngsecurity/collie#49).
 
 ## [1.10.1+ys.1] - 2026-09-19
 

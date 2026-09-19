@@ -42,6 +42,17 @@ test("release verification has no publishing permission and can retry an explici
 	expect(source).not.toMatch(/gh release (create|upload|edit|delete)|contents: write/);
 });
 
+test("published notes are checked against the pinned release changelog", () => {
+	const script = runStep("release", "verify", "Verify manual publication (wait up to ten minutes)");
+	const result = shell(`bun() { printf '%s\\n' "$@"; }\n${script}`, {
+		TAG: "v1.10.1+ys.1", RUNNER_TEMP: "/tmp/release-test",
+	});
+	expect(result.code).toBe(0);
+	expect(result.stdout.trim().split("\n")).toEqual([
+		".github/scripts/verify-release.ts", "v1.10.1+ys.1", "/tmp/release-test/expected-release.json", "release-source/CHANGELOG.md",
+	]);
+});
+
 test("triage explicitly selects manual triage without weakening configured failures", () => {
 	expect(workflow("triage")).toMatchObject({
 		jobs: {
