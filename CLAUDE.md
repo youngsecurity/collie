@@ -71,7 +71,7 @@ write it as the sentence an operator reads there. Do not touch the three version
      security fix, a broken update path, may carry ONE line directly under the release heading in
      `CHANGELOG.md`, above the first `###` group, in the same bold-lead style as a bullet:
      `**Urgent.** <one sentence, present tense, why this must reach operators today.>` The release
-     job copies that line into the `collie-release.json` sidecar and onto the release page, and the
+     tooling copies that line into the `collie-release.json` sidecar and onto the release page, and the
      phone then keeps the daily digest window for that release instead of folding it into the weekly
      patch one. **The axis stays patch**: urgency changes the delivery, never the number. Use it
      rarely, at most one release in a quarter in normal operation, and a release that is merely good
@@ -79,7 +79,7 @@ write it as the sentence an operator reads there. Do not touch the three version
 
      **Write the sentence for the operator, not for the diff.** Name the impact, never the code path.
      No version numbers, no links, no backticks, under 140 characters, ending in a period. The
-     release fails if the line is nearly right, so copy the shape of one of these:
+     local release validation fails if the line is nearly right, so copy the shape of one of these:
 
      - `**Urgent.** A pane closed from the phone can delete the wrong pane.`
      - `**Urgent.** A paired device stays paired after you revoke it.`
@@ -135,11 +135,9 @@ is nothing to record. Touch one of them *and* the code under it and the ordinary
 source file is what the line is about. This is enforced two ways, but **you are the first line — do
 it as part of the change, not after**:
 
-**A docs change reaches colliepwa.dev only with a release.** Collie's `release.yml` tells the website
-on every tag, and the website re-quotes `docs/*.md` at the newest published release — so a doc-only
-fix pushed to `main` and not released sits unpublished, and the website's daily cron will not pick it
-up either. To publish sooner, run the website's sync by hand against a ref:
-`gh workflow run sync-docs.yml -R AltanS/collie-website -f ref=main`.
+**Upstream's docs website follows upstream releases.** This fork's `release.yml` only verifies
+manual publication; it does not notify or publish to colliepwa.dev. An upstream doc-only fix still
+needs an upstream release or a manual website sync against the intended upstream ref.
 
 - `scripts/check-version.sh` runs inside `collie build` (a release can't build while versions
   disagree).
@@ -154,21 +152,25 @@ up either. To publish sooner, run the website's sync by hand against a ref:
 **Publish every release you cut — tag it when you push it.** Cutting a release means the three
 version files + the newest numbered `CHANGELOG.md` heading agree on `x.y.z`, and `## [Unreleased]`
 is empty again (the release recipe above). A cut version that never gets a tag is not a release at
-all: `.github/workflows/release.yml` triggers on
-`push: tags: ["v*.*.*"]` and nothing else creates the GitHub Release the in-app update banner links
-to, so an untagged version exists only as a CHANGELOG heading and nobody can install it. So when
-that release lands and you push, **always push a matching annotated git tag with it** —
+all: the in-app update banner needs both the matching tag and the manually published GitHub Release.
+When that release lands and you push, **always push a matching annotated git tag with it**:
 `git tag -a 'vX.Y.Z+ys.N' -m 'Collie X.Y.Z+ys.N' && git push origin 'vX.Y.Z+ys.N'` (or
-`git push --follow-tags` so the tag ships *with* the release). One `vX.Y.Z+ys.N` tag per shipped
-version on the remote. **GitHub Actions do not run in this org**, so the fork's `release.yml` is
-inert: it is the pre-1.7.0 notes-only stub, kept unchanged so the next upstream merge stays small,
-and it is NOT the record of the notes format (the next paragraph is). The GitHub Release is
-created by hand (`gh release create 'vX.Y.Z+ys.N' --notes-file …`), and the update banner links
-to it.
+`git push --follow-tags` so the tag ships with the release). One `vX.Y.Z+ys.N` tag per shipped
+version on the remote. Never move or recreate a shipped tag to rerun automation.
+
+**GitHub Actions are active, but publication stays manual and source-only.** The fork's
+`.github/workflows/release.yml` verifies tag pushes with read-only permissions. It checks the
+pinned tag's version consistency, published notes shape, and the uploaded `collie-release.json`
+against content generated from that tagged source. It waits up to ten minutes for manual
+publication and the sidecar, then fails with a retry instruction. It never creates or overwrites
+a release, uploads assets, or builds binary payloads. Once the updated workflow is on the default
+branch, dispatch **Verify release** with an explicit tag for a late publication or an older release.
+Select a branch with the updated verifier. Rerunning an old failed run still uses that run's old
+workflow; use dispatch instead.
 
 **The GitHub Release page is built from the CHANGELOG, not written from scratch.** Upstream's
-`release.yml` runs `scripts/release-notes.ts` over `CHANGELOG.md` on a tag push; here Actions do
-not run, so the same script is run by hand and its output is the `--notes-file` for
+release tooling runs `scripts/release-notes.ts` over `CHANGELOG.md`; here the same script is run
+locally before publication and its output, after the fork edits below, is the `--notes-file` for
 `gh release create`:
 
 ```
@@ -203,10 +205,17 @@ bun scripts/release-reading.ts --version X.Y.Z+ys.N > collie-release.json
 gh release create vX.Y.Z+ys.N --notes-file notes.md collie-release.json
 ```
 
-What does not apply here: upstream's CI gate (`release.yml`'s `gate` job waits for a green `ci.yml`
-run before publishing), its push-`main`-then-tag recipe, and its held-push rule during a release cut
-all assume Actions run. On this fork the same care is by hand: run both typechecks and both test
-suites on the release commit before tagging it.
+**Validate locally before tagging and publishing.** Run `scripts/check-version.sh`, both
+typechecks, both test suites, and the notes and sidecar generators on the release commit. Review
+the edited source-only notes and attach the generated sidecar at creation. Active CI provides
+additional checks, not permission to skip local release validation. Upstream's automated
+publishing gate and binary payload matrix are not adopted here.
+
+**Triage also runs in Actions.** Path labels need no model key. If `OPENROUTER_API_KEY` is absent,
+the classifier explicitly skips its API call, adds `needs triage`, and summarizes the manual
+labeling path. Configure the secret and dispatch Triage with an item number to classify later.
+Configured classifier errors and label API failures remain red. PR triage executes only the
+trusted base checkout under `pull_request_target`, never PR head code.
 
 `scripts/check-tag.sh` checks this: with no arguments it asks whether the version the repo currently
 claims has a tag; given a rev-list selector it asks the same of every `chore(release):` commit the
@@ -312,7 +321,8 @@ page to be skimmed.
   so keep new backend logic pure/injectable enough for `bun test`, or exercise it through `web/`.
 - **`flake.nix` is the build environment, and `nix develop` is the reference.** It pins the five
   tools this tree is built and checked with — Bun, Node, git, tmux, zellij — at one nixpkgs
-  revision, and `release.yml` builds every published payload inside it. Build and check through the
+  revision. Upstream builds binary payloads inside it; this fork's `release.yml` only verifies
+  manual source-only publication. Build and check through the
   flake where you can (`nix develop --command bun run build`, and the same for `lint`, `test` and
   both typechecks); a committed `.envrc` carries `use flake` for direnv users, and nobody is
   obliged to allow it. **Do not install a build tool by hand** to get past a version problem — move

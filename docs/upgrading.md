@@ -695,30 +695,26 @@ bash scripts/collie-ctl.sh build
 # Herdr-managed: invoke the `restart` action instead
 bin/collie restart
 # A cut that is never tagged is not a release: nothing can update to it. Tag it as you push it,
-# then create the GitHub Release the in-app banner links to (Actions do not run on this fork):
+# then publish the GitHub Release manually. Actions verify it, but never create it:
 git tag -a 'vX.Y.Z+ys.1' -m 'Collie X.Y.Z+ys.1'
 git push --follow-tags
-gh release create 'vX.Y.Z+ys.1' --title 'Collie X.Y.Z+ys.1' --notes-file <notes-from-the-CHANGELOG-block>
 ```
 
 ```bash
 asset_dir=$(mktemp -d)
-bun -e '
-import { CREW_PROTOCOL_VERSION } from "./bridge/crew/enrollment.ts";
-import { version } from "./package.json";
-console.log(JSON.stringify({ version, crewProtocol: CREW_PROTOCOL_VERSION }, null, 2));
-' > "$asset_dir/collie-release.json"
-jq -e '.version == "X.Y.Z+ys.1" and (.crewProtocol | type == "number")' \
-  "$asset_dir/collie-release.json"
-gh release upload 'vX.Y.Z+ys.1' "$asset_dir/collie-release.json" \
-  --repo youngsecurity/collie
+bun scripts/release-reading.ts --version X.Y.Z+ys.1 > "$asset_dir/collie-release.json"
+gh release create 'vX.Y.Z+ys.1' --repo youngsecurity/collie --verify-tag \
+  --title 'Collie X.Y.Z+ys.1' --notes-file notes.md "$asset_dir/collie-release.json"
 ```
 
-Run this from the release checkout, replacing `X.Y.Z+ys.1` with the version you cut.
-Every release must attach `collie-release.json`, with the version and protocol number read
-from that checkout, so the update notice can warn when machines need a coordinated update.
-A missing asset means no warning, even when the protocol changes; publishing the release
-alone does not upload it because Actions do not run on this fork.
+Run this from the validated release checkout, replacing `X.Y.Z+ys.1` with the version you cut.
+Prepare `notes.md` using the changelog generator and source-only adjustments in
+[`CLAUDE.md`](../CLAUDE.md#versioning--mandatory) before publishing.
+
+Every release must attach the generated `collie-release.json` at creation, with its version,
+protocol number and any urgent marker read from that checkout. Actions verify the manually
+published notes and asset; they never upload either or overwrite an existing release.
+A missing asset prevents coordinated-update and urgent-release warnings until it is available.
 
 If you run your **own** fork of this fork, set `COLLIE_UPDATE_REPO=you/collie` and tag your releases
 so they parse (`vX.Y.Z`, or `vX.Y.Z+ys.N` if you keep the family); anything else is invisible to

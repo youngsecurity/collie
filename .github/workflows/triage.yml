@@ -74,11 +74,24 @@ jobs:
       # head of the base branch, not the fork head. The script below is the reviewed one.
       - uses: actions/checkout@v7
 
+      - name: Check classifier configuration
+        id: key
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          if [[ -n "$OPENROUTER_API_KEY" ]]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/setup-node@v7
+        if: steps.key.outputs.configured == 'true'
         with:
           node-version: "22"
 
       - name: Classify and label
+        if: steps.key.outputs.configured == 'true'
         env:
           GITHUB_TOKEN: ${{ github.token }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
@@ -88,13 +101,26 @@ jobs:
           ITEM_NUMBER: ${{ inputs.number }}
         run: node .github/scripts/triage.mjs
 
-      # The run stays RED when the step above fails — no continue-on-error. This only makes the
-      # failure visible on the item itself, so nothing falls silently through the cracks.
+      # Missing configuration is an explicit manual path. Configured classifier failures and
+      # label API failures still leave the run red; no continue-on-error or swallowed errors.
       - name: Fall back to manual triage
-        if: failure()
+        if: failure() || steps.key.outputs.configured == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
           NUMBER: ${{ github.event.issue.number || github.event.pull_request.number || inputs.number }}
+          CONFIGURED: ${{ steps.key.outputs.configured }}
         run: |
-          gh api "repos/${{ github.repository }}/issues/${NUMBER}/labels" \
+          set -euo pipefail
+          [[ "$NUMBER" =~ ^[1-9][0-9]*$ ]] || { echo "Expected a positive issue or PR number" >&2; exit 1; }
+          gh api "repos/$GITHUB_REPOSITORY/issues/$NUMBER/labels" \
             -X POST -f "labels[]=needs triage"
+          {
+            echo "### Manual triage required"
+            if [[ "$CONFIGURED" == false ]]; then
+              echo 'OPENROUTER_API_KEY is not configured; the classifier was not run.'
+            else
+              echo 'Automated triage failed. The failed step remains red.'
+            fi
+            echo 'Added `needs triage`. Review the item and apply labels manually, then remove `needs triage`.'
+            echo 'To enable classification, configure OPENROUTER_API_KEY and dispatch Triage with the issue or PR number.'
+          } >> "$GITHUB_STEP_SUMMARY"
