@@ -87,6 +87,34 @@ describe("agyAdapter unit & footer safety", () => {
     expect(model!.options).toHaveLength(2);
   });
 
+  it.each([
+    "Should I tell Claude about the result?",
+    "Should I continue?",
+  ])("keeps ordinary tell Claude content interactive without a visible AGY banner: %s", (question) => {
+    const raw = [
+      question,
+      "❯ 1. Tell Claude about the result",
+      "  2. Continue here",
+      "Enter to select · ↑/↓ to navigate",
+    ].join("\n");
+    const lines = splitLines(parseAnsi(raw));
+
+    expect(isAlienBuffer(raw.split("\n"))).toBe(false);
+    expect(detectPromptSelect(lines)?.options).toHaveLength(2);
+  });
+
+  it.each(["  3.", "❯ 3."])("still refuses Claude's own permission option without a banner: %s", (prefix) => {
+    const raw = [
+      "Allow this operation?",
+      "  1. Yes",
+      "  2. Yes, for this session",
+      `${prefix} No, and tell Claude what to do differently (esc)`,
+      "Enter to select · ↑/↓ to navigate",
+    ].join("\n");
+    expect(isAlienBuffer(raw.split("\n"))).toBe(true);
+    expect(detectPromptSelect(splitLines(parseAnsi(raw)))).toBeNull();
+  });
+
   it("still stands down on a buffer that IS another harness (no AGY dialog chrome)", () => {
     expect(isAlienBuffer(["codex is thinking", "› a draft"])).toBe(true);
     expect(isAlienBuffer(["grok build session"])).toBe(true);

@@ -37,6 +37,11 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 ## [Unreleased]
 
+### Fixed
+
+- **Workspace status counts wrap within their own header slot.** Bound only the workspace counter slot and allow both wrappers to shrink, keeping whole counts together and other section controls unchanged. Thanks @coderabbitai (youngsecurity/collie#49).
+- **Ordinary Claude mentions keep AGY dialog buttons available.** Recognize the numbered Claude permission option rather than treating any occurrence of `tell Claude` as foreign chrome, while retaining the captured foreign-dialog safeguards. Thanks @coderabbitai (youngsecurity/collie#49).
+
 ## [1.10.1+ys.1] - 2026-09-19
 
 ### Changed

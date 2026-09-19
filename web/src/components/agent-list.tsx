@@ -265,8 +265,9 @@ export function AgentList({
             label={g.label}
             tone="strong"
             dot={urgentDot(g)}
+            trailingClassName="min-w-0 max-w-[60%] shrink"
             trailing={
-              <StatusCounts panes={g.panes} className="shrink-0 text-[11px] text-muted-foreground" />
+              <StatusCounts panes={g.panes} className="min-w-0 justify-end text-[11px] text-muted-foreground" />
             }
           />
           <ListGroup>{g.panes.map(row)}</ListGroup>
