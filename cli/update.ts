@@ -1252,6 +1252,13 @@ export async function cmdUpdate(deps: UpdateDeps, args: readonly string[] = []):
     return EXIT.FAIL;
   }
   if (install.kind === "unknown") {
+    if (install.why === "broken-checkout") {
+      deps.io.err(`error: this checkout's git data is unreadable (${deps.ctx.root}/.git exists, git will not read it).`);
+      deps.io.err("       `collie update` will not replace this working tree.");
+      deps.io.err("       Run `git -C <root> status` to see what git says; preserve local work and repair");
+      deps.io.err("       the checkout before updating. Do not reinstall over it.");
+      return EXIT.FAIL;
+    }
     deps.io.err(`error: cannot tell how this Collie was installed (${unknownEvidence(deps, install.why)}).`);
     deps.io.err("       `collie update` will not guess. A git checkout refreshes with:");
     deps.io.err(`       ${REINSTALL_COMMAND}`);

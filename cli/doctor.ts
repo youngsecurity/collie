@@ -504,7 +504,8 @@ function installKind(deps: DoctorDeps, install: InstallKind): Finding {
         // NOT "cannot tell how this was installed" — we can tell, and the answer is why it stopped.
         // The remedy is a repair, and naming it matters: the alternative the operator would
         // otherwise reach for is a reinstall, which throws the working tree away.
-        return warn(
+        // An error also blocks update preflight: the updater cannot advance this checkout.
+        return bad(
           "install",
           `a checkout whose git data is unreadable (${root}/.git exists, git will not read it)`,
           "`git -C <root> status` to see what git says; repair or re-clone before updating",

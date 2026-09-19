@@ -2808,6 +2808,29 @@ describe("the update run id", () => {
 // not a diagnosis failure — and it has to READ that way, because the shape used to fall out as
 // `unknown` and tell operators their packaged install was unrecognisable.
 
+describe("cmdUpdate broken checkout", () => {
+  test("refuses with repair guidance, never an unattended reinstall", async () => {
+    const h = harness({
+      installed: "1.10.1+ys.2",
+      answers: [[`${GIT} rev-parse --show-prefix`, { code: 128 }]],
+    });
+    h.files.entries.set(`${ROOT}/.git`, { text: "gitdir: /missing/worktree" });
+
+    expect(await cmdUpdate(h.deps)).toBe(EXIT.FAIL);
+    const said = [...h.io.stdout, ...h.io.stderr].join("\n");
+    expect(said).not.toContain("herdr plugin install");
+    expect(said).not.toContain("--yes");
+    expect(said).toContain("git data is unreadable");
+    expect(said).toContain("git -C <root> status");
+    expect(said).toContain("repair");
+    expect(said).toContain(ROOT);
+    expect(h.files.ops).toEqual([]);
+    expect(h.exec.calls).toEqual([`${GIT} rev-parse --show-prefix`]);
+    expect(h.exec.spawned).toEqual([]);
+    expect(h.restarts).toBe(0);
+  });
+});
+
 describe("cmdUpdate — a folder a package manager owns", () => {
   /** A root with a marker, no `.git`, and outside `$HOME` — `/opt/collie`, the fake's own root. */
   function packaged() {

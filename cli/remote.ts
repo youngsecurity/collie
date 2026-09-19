@@ -151,7 +151,7 @@ export function sshRunner(
         stdin: new TextEncoder().encode(composeStdin(script, stdin)),
         stdout: "pipe",
         stderr: "pipe",
-        env,
+        env: withoutGitRelocators(env),
       });
       const [stdout, stderr, code] = await Promise.all([
         new Response(proc.stdout).text(),
@@ -168,7 +168,7 @@ export function sshRunner(
           Bun.spawnSync([bin, "-o", `ControlPath=${controlPath}`, "-O", "exit", host], {
             stdout: "ignore",
             stderr: "ignore",
-            env,
+            env: withoutGitRelocators(env),
           });
         } catch {
           // The master may already be gone; the directory removal below is what actually matters.

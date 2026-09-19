@@ -41,6 +41,11 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 - **Collie adopts upstream 1.10.2 while preserving the fork's safeguards.** Require repositories to own their installation root, refuse unreadable checkout metadata, and strip inherited Git relocation variables from child processes and crew bundles. Keep the fork's update safeguards, reviewed UI fixes, Herdr 0.8.0 minimum, and manual source-only release verification. Thanks @AltanS (youngsecurity/collie#48).
 
+### Fixed
+
+- **Broken checkouts block updates and point operators toward repair.** Make unreadable Git metadata a blocking preflight finding and refuse updates without suggesting an unattended reinstall over the working tree (youngsecurity/collie#48).
+- **Crew SSH processes cannot inherit Git repository relocators.** Filter both transport spawn paths as well as the bundle process, preserving authentication and ordinary SSH environment values while preventing forwarding of repository overrides (youngsecurity/collie#48).
+
 ## [1.10.1+ys.2] - 2026-09-19
 
 ### Fixed

@@ -48,6 +48,9 @@ is about the directory Collie names, never the one the environment names.
    is not allowed to depend on that staying true.
 4. **A git child started outside `Exec` applies the rule by hand.** There is exactly one,
    `git bundle create` in `cli/remote.ts`, and it is named here so the next one is not missed.
+   **Fork verification, 2026-09-19:** the SSH transport is a launcher too. Both `sshRunner`
+   spawn paths apply the same filter, so SSH environment forwarding cannot reintroduce a
+   relocator into the remote Git operations. Local launcher tests cover both paths.
 
 **Three groups are deliberately NOT stripped.** `GIT_CEILING_DIRECTORIES` only stops discovery
 walking up, so it can turn a "checkout" answer into a "not a checkout" answer and never the reverse;

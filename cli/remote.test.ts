@@ -40,18 +40,82 @@ import {
   shq,
   shqPath,
   sshOptions,
+  sshRunner,
   STDIN_MARKER,
   type CrewAddDeps,
   type RemoteResult,
 } from "./remote.ts";
 import { realExec } from "./sys.ts";
 
-// `collie crew add` against fakes for every seam. **NOTHING here spawns `ssh` or reaches a network**:
-// the transport is a function that records `(script, stdin)` pairs and answers from a table, the
+// `collie crew add` against fakes for every seam. Nothing here reaches a real SSH host or network.
+// The sshRunner tests spawn a local launcher fixture; the verb tests use a transport that
+// records `(script, stdin)` pairs and answers from a table, the
 // prompts are values, and the trust store is in memory. That is the same safety boundary
 // `cli/fakes.ts` draws for the lifecycle verbs and `cli/crew.test.ts` draws for the crew verbs — a
 // verb that installs software on another machine is exactly the one that must never be run for real
 // by a test suite.
+
+describe("sshRunner child environment", () => {
+  const relocators = {
+    GIT_DIR: "/elsewhere/.git",
+    GIT_WORK_TREE: "/elsewhere",
+    GIT_COMMON_DIR: "/elsewhere/common",
+    GIT_INDEX_FILE: "/elsewhere/index",
+    GIT_OBJECT_DIRECTORY: "/elsewhere/objects",
+    GIT_ALTERNATE_OBJECT_DIRECTORIES: "/elsewhere/alternates",
+    GIT_NAMESPACE: "other",
+    GIT_PREFIX: "other/",
+  };
+
+  for (const polluted of [true, false]) {
+    for (const variant of ["run", "close"] as const) {
+      test(`${variant} preserves ${polluted ? "filtered" : "clean"} environment through a launcher`, async () => {
+        const dir = mkdtempSync(join(tmpdir(), "collie-ssh-env-"));
+        const report = join(dir, "environment");
+        const kept = {
+          PATH: `${dir}:/usr/bin:/bin`,
+          HOME: dir,
+          SSH_AUTH_SOCK: "/operator/agent.sock",
+          GIT_SSH_COMMAND: "ssh -i /operator/key",
+          GIT_CONFIG_GLOBAL: "/operator/gitconfig",
+          GIT_CONFIG_NOSYSTEM: "1",
+          GIT_CONFIG_COUNT: "1",
+          GIT_CONFIG_KEY_0: "credential.helper",
+          GIT_CONFIG_VALUE_0: "operator-helper",
+          GIT_ASKPASS: "/operator/askpass",
+          GIT_CEILING_DIRECTORIES: "/operator/ceiling",
+          SSH_TEST_REPORT: report,
+        };
+        const env = polluted ? { ...kept, ...relocators } : kept;
+        const original = { ...env };
+        // A local SSH stand-in launches another child, just as a wrapper/ProxyCommand can.
+        // No OpenSSH binary is invoked and no network connection is possible.
+        writeFileSync(join(dir, "ssh"), '#!/bin/sh\nexec /bin/sh -c \'env > "$SSH_TEST_REPORT"\'\n', { mode: 0o700 });
+        const runner = sshRunner("unused.invalid", env, dir);
+        try {
+          if (variant === "run") {
+            const result = await runner.run("exit 0\n");
+            expect(result.spawned).toBe(true);
+            expect(result.code).toBe(0);
+          } else {
+            runner.close();
+          }
+          const inherited = readFileSync(report, "utf8").trim().split("\n");
+          for (const name of Object.keys(relocators)) {
+            expect(inherited.some((line) => line.startsWith(`${name}=`))).toBe(false);
+          }
+          for (const [name, value] of Object.entries(original)) {
+            if (!(name in relocators)) expect(inherited).toContain(`${name}=${value}`);
+          }
+          expect(env).toEqual(original);
+        } finally {
+          runner.close();
+          rmSync(dir, { recursive: true, force: true });
+        }
+      });
+    }
+  }
+});
 
 // ── The fake transport ───────────────────────────────────────────────────────
 
