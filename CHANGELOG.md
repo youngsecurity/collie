@@ -37,9 +37,11 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 ## [Unreleased]
 
+## [1.10.1+ys.1] - 2026-09-19
+
 ### Changed
 
-- **Collie adopts upstream 1.10.1 while preserving the fork's safeguards.** Keeps dashboard counts together and finds Claude's input by its own frame, including clipped slash commands and custom statuslines, while refusing sends on the background-agents screen. Fork release selection, update locking, terminal colors, full-width views, and the Herdr 0.8.0 minimum remain. Thanks @AltanS (youngsecurity/collie#47).
+- **Collie adopts upstream 1.10.1 while preserving the fork's safeguards.** Keeps dashboard counts together and finds Claude's input by its own frame, including clipped slash commands and custom statuslines, while refusing sends on the background-agents screen. Fork release selection, update locking, terminal colors, full-width views, and the Herdr 0.8.0 minimum remain. Thanks @AltanS (youngsecurity/collie#47). ([ff9ca255](https://github.com/youngsecurity/collie/commit/ff9ca255))
 
 ## [1.10.0+ys.1] - 2026-09-17
 
