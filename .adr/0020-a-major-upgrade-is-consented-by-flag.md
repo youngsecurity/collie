@@ -20,6 +20,13 @@ contract broken, a workflow that used to work and now doesn't. A silent major is
 contradiction in terms: the release says "you must act", and the mechanism gives the operator no
 moment in which to act.
 
+**Historical upstream pipeline context:** the automatic publication described below is not the
+fork's current policy. On this fork, `.github/workflows/release.yml` only verifies an immutable
+`vX.Y.Z+ys.N` tag and its manually published source-only GitHub Release, including generated notes
+and `collie-release.json`. It never creates or overwrites releases or assets. See
+[`CLAUDE.md`](../CLAUDE.md#versioning--mandatory) for the fork's publication and retry procedure.
+The original upstream context follows unchanged.
+
 Nothing in the pipeline slows this down; it is fully automatic by design. Pushing a `v*` tag
 auto-creates the GitHub Release (`.github/workflows/release.yml`), and the in-app banner reads the
 repo's tags over anonymous HTTPS and compares the newest **strict** `vX.Y.Z` to the running version

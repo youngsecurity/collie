@@ -68,6 +68,19 @@ describe("AgentList — two axes, urgency then workspace", () => {
     expect(within(section).getByLabelText("1 unseen")).toBeInTheDocument();
   });
 
+  it("bounds the workspace count slot and lets both wrappers shrink", () => {
+    render(<AgentList agents={herd} onOpen={vi.fn()} />);
+    const section = groupSection("collie-workspace");
+    const count = within(section).getByLabelText("1 needs you");
+    const counts = count.parentElement;
+    const slot = counts?.parentElement;
+    expect(slot).toHaveClass("min-w-0", "max-w-[60%]", "shrink");
+    expect(slot).not.toHaveClass("shrink-0");
+    expect(counts).toHaveClass("min-w-0", "justify-end");
+    expect(counts).not.toHaveClass("shrink-0");
+    expect(count).toHaveClass("whitespace-nowrap");
+  });
+
   it("marks only the Ready·unseen row with the unread dot", () => {
     render(<AgentList agents={herd} onOpen={vi.fn()} />);
     // Scoped to the group: the top summary line also says "ready · unseen" in its own count.

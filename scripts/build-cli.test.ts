@@ -165,9 +165,9 @@ describe("release and AUR local-binary compile routes", () => {
     expect(packageJson.scripts["build:cli"]).toBe("bun run scripts/build-cli.ts");
   });
 
-  test("the fork's notes-only release workflow does not compile binary payloads", () => {
-    expect(release).toContain('run: gh release create "$GITHUB_REF_NAME"');
-    expect(release).toContain('--notes-file "${{ steps.notes.outputs.file }}"');
+  test("the fork's release verifier neither publishes nor compiles binary payloads", () => {
+    expect(release).toContain("run: bun .github/scripts/verify-release.ts");
+    expect(release).not.toMatch(/gh release (create|upload|edit|delete)/);
     expect(release).not.toContain("scripts/build-cli.ts");
     expect(release).not.toContain("build --compile");
     expect(release).not.toContain("actions/upload-artifact");

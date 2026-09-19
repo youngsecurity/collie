@@ -31,6 +31,8 @@ interface SectionHeaderProps {
    * also fold the section.
    */
   trailing?: ReactNode;
+  /** Layout override for wrapping content; ordinary trailing controls keep their fixed width. */
+  trailingClassName?: string;
   /** Heading level. 2 on a page; 3 inside the pane-switcher sheet, whose own title is the h2. */
   level?: 2 | 3;
   /**
@@ -57,6 +59,7 @@ export function SectionHeader({
   onToggle,
   controls,
   trailing,
+  trailingClassName,
   level = 2,
   tone: toneName = "muted",
   className,
@@ -119,7 +122,7 @@ export function SectionHeader({
           <span className={cn("flex min-w-0 flex-1 items-center gap-1.5", type, tone)}>{inner}</span>
         )}
       </Heading>
-      {trailing && <span className="flex shrink-0 items-center gap-1">{trailing}</span>}
+      {trailing && <span className={cn("flex shrink-0 items-center gap-1", trailingClassName)}>{trailing}</span>}
     </div>
   );
 }

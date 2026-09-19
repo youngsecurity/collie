@@ -1,62 +1,80 @@
-name: Release
+name: Verify release
 
-# Every pushed SemVer tag (including fork build metadata such as vX.Y.Z+ys.N) becomes a GitHub
-# Release whose notes carry the update commands — the
-# in-app update banner links here, so the page a user lands on tells them exactly how to update.
+# Releases stay manual and source-only. This workflow only reads the published record.
 on:
   push:
     tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing fork tag to verify (for example v1.10.1+ys.1)"
+        required: true
+        type: string
 
 permissions:
-  contents: write # create the release
+  contents: read
 
 jobs:
-  release:
+  verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
+      # Keep verifier code separate from the release source. Dispatch from an updated branch
+      # can verify older tags without moving them or requiring this helper at that old tag.
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
-      - name: Assemble release notes (CHANGELOG section + update commands)
-        id: notes
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Pin the existing tag
+        id: tag
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+          FORCED: ${{ github.event.forced }}
+          DELETED: ${{ github.event.deleted }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
-          notes="$RUNNER_TEMP/notes.md"
-          # This version's CHANGELOG block: everything between its exact `## [version]` heading and
-          # the next. Prefix matching avoids treating SemVer `+` build metadata as an awk regex.
-          awk -v "heading=## [$version]" '
-            index($0, heading) == 1 { grab = 1; next }
-            grab && /^## \[/ { exit }
-            grab { print }
-          ' CHANGELOG.md > "$RUNNER_TEMP/changelog.md" || true
-          {
-            if [ -s "$RUNNER_TEMP/changelog.md" ]; then
-              cat "$RUNNER_TEMP/changelog.md"
-              echo
-            fi
-            echo "## Update"
-            echo
-            echo "For a release within your installed major, update the plugin — advances the checkout, rebuilds, and restarts:"
-            echo
-            echo '```'
-            echo "herdr plugin action invoke update --plugin herdr.collie"
-            echo '```'
-            echo
-            echo "If this release starts a newer major, read its migration notes and explicitly consent to the crossing:"
-            echo
-            echo '```'
-            echo "herdr plugin action invoke update-major --plugin herdr.collie"
-            echo '```'
-            echo
-            echo "Or just restart the bridge to pick up an already-built change:"
-            echo
-            echo '```'
-            echo "herdr plugin action invoke restart --plugin herdr.collie"
-            echo '```'
-          } > "$notes"
-          echo "file=$notes" >> "$GITHUB_OUTPUT"
+          [[ "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\+ys\.[1-9][0-9]*$ ]] || { echo "Expected a vX.Y.Z+ys.N fork tag" >&2; exit 1; }
+          [[ "$FORCED" != true && "$DELETED" != true ]] || { echo "Release tags must not be moved or deleted" >&2; exit 1; }
+          oid="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" | jq -er '.object.sha')"
+          [[ "$oid" =~ ^[0-9a-f]{40}$ ]]
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "oid=$oid" >> "$GITHUB_OUTPUT"
 
-      - name: Create GitHub release
+      # Checkout the pinned object, not a branch or a tag that could move during the run.
+      # Git peels annotated tags to their commit; lightweight tags already name the commit.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.tag.outputs.oid }}
+          path: release-source
+          persist-credentials: false
+
+      - name: Validate tagged source and generate expected sidecar
         env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == push ]]; then
+            [[ "$(git rev-parse HEAD)" == "$(git -C release-source rev-parse HEAD)" ]] || { echo "Tag no longer names the pushed commit" >&2; exit 1; }
+          fi
+          bash release-source/scripts/check-version.sh
+          [[ "$(jq -er '.version' release-source/package.json)" == "${TAG#v}" ]] || { echo "Tag and source version disagree" >&2; exit 1; }
+          (cd release-source && bun scripts/release-reading.ts --version "${TAG#v}") > "$RUNNER_TEMP/expected-release.json"
+
+      - name: Verify manual publication (wait up to ten minutes)
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" --title "Collie $GITHUB_REF_NAME" --notes-file "${{ steps.notes.outputs.file }}"
+        run: bun .github/scripts/verify-release.ts "$TAG" "$RUNNER_TEMP/expected-release.json" release-source/CHANGELOG.md
+
+      - name: Ensure the tag has not moved
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          EXPECTED_OID: ${{ steps.tag.outputs.oid }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          actual="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" | jq -er '.object.sha')"
+          [[ "$actual" == "$EXPECTED_OID" ]] || { echo "Release tag moved during verification" >&2; exit 1; }

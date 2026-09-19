@@ -37,6 +37,24 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 ## [Unreleased]
 
+## [1.10.1+ys.2] - 2026-09-19
+
+### Fixed
+
+- **Workspace status counts wrap within their own header slot.** Bound only the workspace counter slot and allow both wrappers to shrink, keeping whole counts together and other section controls unchanged. Thanks @coderabbitai (youngsecurity/collie#49). ([88dbaf15](https://github.com/youngsecurity/collie/commit/88dbaf15))
+- **Ordinary Claude mentions keep AGY dialog buttons available.** Recognize the numbered Claude permission option rather than treating any occurrence of `tell Claude` as foreign chrome, while retaining the captured foreign-dialog safeguards. Thanks @coderabbitai (youngsecurity/collie#49). ([88dbaf15](https://github.com/youngsecurity/collie/commit/88dbaf15))
+
+### Packaging
+
+- **Enabled Actions verify manually published fork releases without replacing them.** Check the source-only notes and generated sidecar against an immutable tag, allow bounded publication delays, and route unconfigured AI labeling to explicit manual triage while preserving real failure reporting (youngsecurity/collie#49). ([ba8be187](https://github.com/youngsecurity/collie/commit/ba8be187))
+- **Release verification checks changelog content and records urgency explicitly.** Compare published groups, leads, changelog links and urgent markers with tagged source, validate optional compare targets, and correct older guidance that implied tag pushes publish releases (youngsecurity/collie#49). ([3837523f](https://github.com/youngsecurity/collie/commit/3837523f))
+
+## [1.10.1+ys.1] - 2026-09-19
+
+### Changed
+
+- **Collie adopts upstream 1.10.1 while preserving the fork's safeguards.** Keeps dashboard counts together and finds Claude's input by its own frame, including clipped slash commands and custom statuslines, while refusing sends on the background-agents screen. Fork release selection, update locking, terminal colors, full-width views, and the Herdr 0.8.0 minimum remain. Thanks @AltanS (youngsecurity/collie#47). ([ff9ca255](https://github.com/youngsecurity/collie/commit/ff9ca255))
+
 ## [1.10.0+ys.1] - 2026-09-17
 
 ### Changed
@@ -97,6 +115,14 @@ the fork's side of the reconciliation.
 ### Packaging
 
 - **The release attaches `collie-release.json` by hand.** Upstream's CI publishes the crew wire reading the update notice consults; `release.yml` stays the fork's inert stub, so the same asset is written from `CREW_PROTOCOL_VERSION` and uploaded with the release, and the phone can say that this release changes the crew link. ([bca973a](https://github.com/youngsecurity/collie/commit/bca973a))
+
+## [1.10.1] - 2026-09-17
+
+### Fixed
+
+- **The dashboard summary no longer splits a count across two lines.** On a phone with all five states, each count stays in one piece, and whole counts move to a second line when the row is too wide. ([45084e9e](https://github.com/AltanS/collie/commit/45084e9e))
+- **A send no longer stalls when Claude's slash menu cuts a command name.** On a narrow pane Claude shortens a long command name with a leading `…`, and Collie then lost sight of the input box, typed the text and held back Enter, so the message needed a second send. Collie now finds the input box by its own frame and reads the shortened names; rows under the box that it cannot name stay visible on the mirror. Names cut onto a hyphen and names that print an alias in brackets are read too. ([67387a7e](https://github.com/AltanS/collie/commit/67387a7e), [56f2846b](https://github.com/AltanS/collie/commit/56f2846b))
+- **A send can no longer land on Claude's background-agents screen.** That screen has a typing field of its own, and Collie read it as the ordinary message box: a send from the phone pressed Enter there and started an agent task. Collie now recognises the screen and holds the send until you leave it. ([67387a7e](https://github.com/AltanS/collie/commit/67387a7e), [56f2846b](https://github.com/AltanS/collie/commit/56f2846b))
 
 ## [1.10.0] - 2026-09-16
 
