@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 import { resolvePluginRoot } from "../bridge/root.ts";
 import { fakeExec, fakeFiles, fakeLinkFs, HOME } from "./fakes.ts";
-import { realExec, realFiles } from "./sys.ts";
+import { realExec, realFiles, withoutGitRelocators } from "./sys.ts";
 import {
   classifyInstall,
   detectInstall,
@@ -238,12 +238,34 @@ describe("process.execPath is realpath-resolved", () => {
 describe("isGitCheckout — the repository must OWN the root (issue #243)", () => {
   // PATH alone: git must not read the running operator's config, only find its own binary.
   const exec = realExec({ PATH: process.env.PATH }, tmpdir());
+  const fixtureGit = (args: string[]) => Bun.spawnSync(args, { env: withoutGitRelocators(process.env) });
   const initRepo = (dir: string): void => {
     mkdirSync(dir, { recursive: true });
     for (const args of [["init", "-q", "."], ["config", "user.email", "t@t"], ["config", "user.name", "t"]]) {
-      expect(Bun.spawnSync(["git", "-C", dir, ...args]).exitCode).toBe(0);
+      expect(fixtureGit(["git", "-C", dir, ...args]).exitCode).toBe(0);
     }
   };
+
+  test("fixture Git operations ignore a disposable caller's inherited GIT_DIR", () => {
+    const base = realpathSync(mkdtempSync(join(tmpdir(), "collie-fixture-git-env-")));
+    try {
+      const caller = join(base, "caller");
+      initRepo(caller);
+      expect(exec.capture("git", ["-C", caller, "config", "user.name", "caller-sentinel"]).code).toBe(0);
+      // Give the child a startup environment override. Mutating process.env after startup
+      // does not exercise every runtime's default subprocess environment behavior.
+      const child = Bun.spawnSync([
+        process.execPath, "test", import.meta.path,
+        "--test-name-pattern", "a real checkout at the top level IS a checkout",
+      ], { env: { PATH: process.env.PATH, HOME: base, GIT_DIR: join(caller, ".git") } });
+      expect(new TextDecoder().decode(child.stderr)).not.toContain("(fail)");
+      expect(child.exitCode).toBe(0);
+      expect(isGitCheckout(exec, caller)).toBe(true);
+      expect(exec.capture("git", ["-C", caller, "config", "user.name"]).stdout.trim()).toBe("caller-sentinel");
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
 
   test("a binary install under a repository $HOME is NOT a checkout", () => {
     // THE BUG. A dotfiles worktree at `~` makes `rev-parse --git-dir` succeed from every directory
@@ -297,8 +319,8 @@ describe("isGitCheckout — the repository must OWN the root (issue #243)", () =
     const dir = realpathSync(mkdtempSync(join(tmpdir(), "collie-detached-")));
     try {
       initRepo(dir);
-      expect(Bun.spawnSync(["git", "-C", dir, "commit", "-q", "--allow-empty", "-m", "x"]).exitCode).toBe(0);
-      expect(Bun.spawnSync(["git", "-C", dir, "checkout", "-q", "--detach", "HEAD"]).exitCode).toBe(0);
+      expect(fixtureGit(["git", "-C", dir, "commit", "-q", "--allow-empty", "-m", "x"]).exitCode).toBe(0);
+      expect(fixtureGit(["git", "-C", dir, "checkout", "-q", "--detach", "HEAD"]).exitCode).toBe(0);
       expect(isGitCheckout(exec, dir)).toBe(true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -310,9 +332,9 @@ describe("isGitCheckout — the repository must OWN the root (issue #243)", () =
     try {
       const main = join(base, "main");
       initRepo(main);
-      expect(Bun.spawnSync(["git", "-C", main, "commit", "-q", "--allow-empty", "-m", "x"]).exitCode).toBe(0);
+      expect(fixtureGit(["git", "-C", main, "commit", "-q", "--allow-empty", "-m", "x"]).exitCode).toBe(0);
       const linked = join(base, "linked");
-      expect(Bun.spawnSync(["git", "-C", main, "worktree", "add", "-q", "--detach", linked, "HEAD"]).exitCode).toBe(0);
+      expect(fixtureGit(["git", "-C", main, "worktree", "add", "-q", "--detach", linked, "HEAD"]).exitCode).toBe(0);
       // Its `.git` is a FILE pointing into the main repository, not a directory.
       expect(isGitCheckout(exec, linked)).toBe(true);
     } finally {
@@ -325,10 +347,10 @@ describe("isGitCheckout — the repository must OWN the root (issue #243)", () =
     try {
       const inner = join(base, "inner");
       initRepo(inner);
-      expect(Bun.spawnSync(["git", "-C", inner, "commit", "-q", "--allow-empty", "-m", "x"]).exitCode).toBe(0);
+      expect(fixtureGit(["git", "-C", inner, "commit", "-q", "--allow-empty", "-m", "x"]).exitCode).toBe(0);
       const outer = join(base, "outer");
       initRepo(outer);
-      const add = Bun.spawnSync([
+      const add = fixtureGit([
         "git", "-C", outer, "-c", "protocol.file.allow=always", "submodule", "add", "-q", inner, "mod",
       ]);
       expect(add.exitCode).toBe(0);
@@ -345,7 +367,7 @@ describe("isGitCheckout — the repository must OWN the root (issue #243)", () =
       const tree = join(base, "tree");
       initRepo(repo);
       mkdirSync(tree, { recursive: true });
-      expect(Bun.spawnSync(["git", "-C", repo, "config", "core.worktree", tree]).exitCode).toBe(0);
+      expect(fixtureGit(["git", "-C", repo, "config", "core.worktree", tree]).exitCode).toBe(0);
       expect(isGitCheckout(exec, repo)).toBe(true);
     } finally {
       rmSync(base, { recursive: true, force: true });
@@ -358,7 +380,7 @@ describe("isGitCheckout — the repository must OWN the root (issue #243)", () =
     const base = realpathSync(mkdtempSync(join(tmpdir(), "collie-bare-")));
     try {
       const bare = join(base, "x.git");
-      expect(Bun.spawnSync(["git", "init", "-q", "--bare", bare]).exitCode).toBe(0);
+      expect(fixtureGit(["git", "init", "-q", "--bare", bare]).exitCode).toBe(0);
       expect(isGitCheckout(exec, bare)).toBe(true);
     } finally {
       rmSync(base, { recursive: true, force: true });
@@ -379,7 +401,7 @@ describe("isGitCheckout — the repository must OWN the root (issue #243)", () =
     try {
       const root = join(base, "versions", "1.10.0");
       initRepo(root);
-      Bun.spawnSync(["git", "-C", root, "commit", "-q", "--allow-empty", "-m", "x"]);
+      fixtureGit(["git", "-C", root, "commit", "-q", "--allow-empty", "-m", "x"]);
       writeFileSync(join(root, ".git", "HEAD"), "garbage\n");
       expect(isGitCheckout(exec, root)).toBe(false);
 
@@ -399,12 +421,35 @@ describe("isGitCheckout — the repository must OWN the root (issue #243)", () =
     }
   });
 
+  test("a dangling .git symlink in versions/ is a broken checkout, never binary", () => {
+    const base = realpathSync(mkdtempSync(join(tmpdir(), "collie-dangling-git-")));
+    try {
+      const root = join(base, "versions", "1.10.0");
+      mkdirSync(root, { recursive: true });
+      symlinkSync(join(base, "missing-git-data"), join(root, ".git"));
+      const deps = {
+        ctx: context({}, { root }),
+        exec,
+        files: realFiles,
+        link: fakeLinkFs({ [join(base, "current")]: { kind: "symlink", target: root } }),
+      };
+      expect(realFiles.exists(join(root, ".git"))).toBe(false);
+      expect(realFiles.entryType(join(root, ".git"))).toBe("symlink");
+      const probed = probeInstall(deps, root);
+      expect(probed.isGitCheckout).toBe(false);
+      expect(probed.hasGitEntry).toBe(true);
+      expect(classifyInstall(probed)).toEqual({ kind: "unknown", why: "broken-checkout" });
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
   test("a directory in no repository at all is not a checkout", () => {
     const dir = realpathSync(mkdtempSync(join(tmpdir(), "collie-bare-dir-")));
     try {
       // `$TMPDIR` is not under a repository on any host this runs on; assert that, so a failure here
       // reads as "the assumption broke" rather than as the predicate being wrong.
-      expect(Bun.spawnSync(["git", "-C", dir, "rev-parse", "--show-prefix"]).exitCode).not.toBe(0);
+      expect(fixtureGit(["git", "-C", dir, "rev-parse", "--show-prefix"]).exitCode).not.toBe(0);
       expect(isGitCheckout(exec, dir)).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });

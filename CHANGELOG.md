@@ -37,6 +37,10 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 ## [Unreleased]
 
+### Fixed
+
+- **Every broken checkout gets a safe, consistent update refusal.** Recognize dangling `.git` symlinks before binary classification and give repair guidance before rollback or Herdr checks, while preserving status and argument-validation precedence. Isolate the regression fixtures from inherited Git relocation variables. Thanks @coderabbitai (youngsecurity/collie#50).
+
 ## [1.10.2+ys.1] - 2026-09-19
 
 ### Changed

@@ -2809,6 +2809,42 @@ describe("the update run id", () => {
 // `unknown` and tell operators their packaged install was unrecognisable.
 
 describe("cmdUpdate broken checkout", () => {
+  test.each([{ args: [] }, { args: ["--rollback"] }])("repair refusal precedes Herdr and rollback for %j", async ({ args }) => {
+    const h = harness({
+      installed: "1.10.1+ys.2",
+      minHerdr: "0.8.0",
+      answers: [[`${GIT} rev-parse --show-prefix`, { code: 128 }], ["herdr --version", { stdout: "herdr 0.7.0" }]],
+    });
+    h.files.entries.set(`${ROOT}/.git`, { text: "gitdir: /missing/worktree" });
+    expect(await cmdUpdate(h.deps, args)).toBe(EXIT.FAIL);
+    const said = h.io.stderr.join("\n");
+    expect(said).toContain("git data is unreadable");
+    expect(said).toContain("repair");
+    expect(said).not.toContain("git checkout v<version>");
+    expect(said).not.toContain("requires Herdr");
+    expect(said).not.toContain("herdr plugin install");
+    expect(h.exec.calls).toEqual([`${GIT} rev-parse --show-prefix`]);
+    expect(h.files.ops).toEqual([]);
+    expect(h.exec.spawned).toEqual([]);
+    expect(h.restarts).toBe(0);
+  });
+
+  test.each([{ args: ["--status"], code: EXIT.OK }, { args: ["--to-tag"], code: EXIT.USAGE }])(
+    "status and argument validation retain precedence for %j",
+    async ({ args, code }) => {
+      const h = harness({
+        installed: "1.10.1+ys.2",
+        minHerdr: "0.8.0",
+        answers: [[`${GIT} rev-parse --show-prefix`, { code: 128 }]],
+      });
+      h.files.entries.set(`${ROOT}/.git`, { text: "gitdir: /missing/worktree" });
+      expect(await cmdUpdate(h.deps, args)).toBe(code);
+      expect(h.io.stderr.join("\n")).not.toContain("git data is unreadable");
+      expect(h.exec.calls).toEqual([`${GIT} rev-parse --show-prefix`]);
+      expect(h.files.ops).toEqual([]);
+    },
+  );
+
   test("refuses with repair guidance, never an unattended reinstall", async () => {
     const h = harness({
       installed: "1.10.1+ys.2",

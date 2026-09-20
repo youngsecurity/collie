@@ -270,8 +270,8 @@ export function probeInstall(
   return {
     isGitCheckout: git,
     isDetached: git && isManagedCheckout(deps.exec, root),
-    // `exists` answers for a directory and for the one-line file a worktree or submodule uses.
-    hasGitEntry: deps.files.exists(join(root, ".git")),
+    // Inspect the entry itself: a dangling .git symlink still marks a broken checkout.
+    hasGitEntry: deps.files.entryType(join(root, ".git")) !== null,
     parentIsVersions: basename(layout.versionsDir) === "versions",
     currentIsSymlink: probe.kind === "symlink",
     currentResolvesHere:
