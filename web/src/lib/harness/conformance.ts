@@ -311,17 +311,20 @@ function emittableKeys(block: Block): string[] | null {
       return [...digits, ...controls];
     }
     case "multi-select":
-      // checkbox: a digit toggles each option (and the "Chat about this" escape), Up/Down move the
-      // pointer, Enter activates it. review: the confirm screen's `1. Submit answers / 2. Cancel`.
-      return block.multi.phase === "checkbox"
-        ? [
-            ...block.multi.options.map((o) => String(o.n)),
-            ...(block.multi.escape ? [String(block.multi.escape.n)] : []),
-            "Up",
-            "Down",
-            "Enter",
-          ]
-        : ["1", "2"];
+      // checkbox: a digit toggles each option (and the "Chat about this" escape) in digit mode, or
+      // jumps the pointer there in pointer mode — either way the digits ride plus Up/Down/Enter.
+      // review: the confirm screen's `1. Submit answers / 2. Cancel` in digit mode, or a pointer
+      // walk + Enter in pointer mode.
+      if (block.multi.phase === "checkbox") {
+        return [
+          ...block.multi.options.map((o) => String(o.n)),
+          ...(block.multi.escape ? [String(block.multi.escape.n)] : []),
+          "Up",
+          "Down",
+          "Enter",
+        ];
+      }
+      return block.multi.submit === "pointer" ? ["Up", "Down", "Enter"] : ["1", "2"];
     case "menu":
       // The generic grammar emits ONLY the keys the screen's own footer named, plus the arrows it
       // advertised. Walking `actions` here is what pins .adr/0009's ban in CI: a digit can only
@@ -359,9 +362,19 @@ function emittableKeys(block: Block): string[] | null {
  */
 export function describeAdapterConformance(
   adapter: HarnessAdapter,
-  opts: { ownFixtures: string[]; foreignFixtures: string[]; neutralFixtures: string[] },
+  opts: {
+    ownFixtures: string[];
+    foreignFixtures: string[];
+    neutralFixtures: string[];
+    /** Captures where the composer is ready but no region can bind, because the harness repaints
+     *  the prompt rows between two reads (Codex Astra's starfield). Each one is a named exception
+     *  to "a region exists exactly when the composer is ready": the sweep goes out unbound there,
+     *  and the list says so in the test output rather than in a silent null. */
+    unboundComposerFixtures?: string[];
+  },
 ): void {
   const { ownFixtures, foreignFixtures, neutralFixtures } = opts;
+  const unbound = opts.unboundComposerFixtures ?? [];
 
   describe(`HarnessAdapter conformance — ${adapter.agent}`, () => {
     describe("conservative detection (fail-closed on foreign + neutral buffers)", () => {
@@ -407,6 +420,14 @@ export function describeAdapterConformance(
         const prompt = adapter.composerPrompt.bind(adapter);
         const ready = adapter.composerReady.bind(adapter);
         for (const name of all) {
+          if (unbound.includes(name)) {
+            it(`${name}: the composer is ready, and no region binds (animated prompt rows)`, () => {
+              const lines = loadLines(name);
+              expect(ready(lines)).toBe(true);
+              expect(prompt(lines)).toBeNull();
+            });
+            continue;
+          }
           it(`${name}: a region exists exactly when the composer is ready`, () => {
             const lines = loadLines(name);
             const region = prompt(lines);
@@ -551,6 +572,27 @@ export function describeAdapterConformance(
             for (const model of modelsOf(adapter, name, kind)) {
               expect(contract.signature(model).length, `${name} signs its ${kind} with ""`).toBeGreaterThan(0);
               expect(contract.region(model).length, `${name} binds its ${kind} to ""`).toBeGreaterThan(0);
+            }
+          });
+
+          it(`${name}: the ${kind} bound region ends inside the bridge's ${BRIDGE_PROMPT_TAIL_LINES}-row tail window`, () => {
+            // The first write of every choreography binds `region` as the bridge's expected prompt,
+            // and `verifyExpectedPrompt` (bridge/prompt-binding.ts) only accepts a match ENDING
+            // within the last 6 non-blank rows of the fresh read. A region ending higher 409s every
+            // tap on a screen that never moved — Muse's checkbox shipped exactly that (question →
+            // Submit left 6 rows below the match) until a live toggle caught it. Same normalisation
+            // as the composerPrompt leg above: trailing whitespace off, blanks dropped.
+            const lines = loadLines(name);
+            const fresh = normalizeRegion(lines.map(lineText).join("\n"));
+            for (const model of modelsOf(adapter, name, kind)) {
+              const expected = normalizeRegion(contract.region(model));
+              const matchEnd = lastMatchEnd(fresh, expected);
+              expect(matchEnd, `${name}: the ${kind} region is not on its own screen`).toBeGreaterThan(-1);
+              expect(
+                fresh.length - 1 - matchEnd,
+                `${name}: ${fresh.length - 1 - matchEnd} non-blank rows sit below the ${kind} region — ` +
+                  `the bridge can only bind within the last ${BRIDGE_PROMPT_TAIL_LINES}`,
+              ).toBeLessThan(BRIDGE_PROMPT_TAIL_LINES);
             }
           });
 

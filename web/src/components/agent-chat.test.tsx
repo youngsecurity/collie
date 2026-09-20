@@ -674,6 +674,32 @@ describe("AgentChat: the device's mirror colours reach both mirror surfaces", ()
     expect(strip.className).not.toContain("[filter:invert(1)_hue-rotate(180deg)]");
   });
 
+  it.each([false, true])("keeps Muse mirror and status strip colors aligned (custom: %s)", (custom) => {
+    if (custom) {
+      localStorage.setItem(
+        "collie:display-prefs:v4",
+        JSON.stringify({ terminalForeground: "#00ff00", terminalBackground: "#000000" }),
+      );
+    }
+    const text = readFileSync(join(import.meta.dirname, "..", "fixtures", "panes", "muse--fresh-idle.txt"), "utf8");
+    const { container } = renderChat({ text, agent: { ...fixtureAgents[0]!, agent: "muse" } });
+    const status = screen.getByText("muse-spark-1.3");
+    expect(status.closest("pre")).toBeNull();
+    const strip = status.closest<HTMLElement>(".font-mono");
+    const pre = container.querySelector("pre");
+    for (const surface of [strip, pre]) {
+      expect(surface).not.toBeNull();
+      expect(surface?.className).not.toContain("[filter:invert(1)_hue-rotate(180deg)]");
+      if (custom) {
+        expect(surface).toHaveStyle({ color: "#00ff00", backgroundColor: "#000000" });
+        expect(surface).not.toHaveClass("terminal-muse");
+      } else {
+        expect(surface).toHaveClass("terminal-muse");
+        expect(surface?.style.color).toBe("");
+      }
+    }
+  });
+
   it("keeps OMP statusline fills mobile-transparent on the custom-colour surface", () => {
     localStorage.setItem(
       "collie:display-prefs:v4",
