@@ -175,10 +175,21 @@ export type CacheStateName = "warm" | "expiring" | "cold" | "unknown";
 /** How sure the number is. Mirrors `Confidence` in bridge/cache/claims.ts. */
 export type CacheConfidence = "documented" | "reported" | "inferred" | "observed";
 
+/** Why a `cold` reading is cold. Mirrors `ColdReason` in bridge/cache/engine.ts. */
+export type CacheColdReason = "observed" | "expired" | "reset";
+
+/** The action behind a cold reading. Mirrors `CacheResetWire` in bridge/cache/engine.ts. */
+export interface CacheResetWire {
+  ruleId: string;
+  /** The rule's own label, a clause in English ("The model changed"). The sheet slots it into a sentence. */
+  label: string;
+  at: number;
+}
+
 /**
  * One pane's prompt-cache reading. Mirrors `PaneCache` in bridge/cache/engine.ts.
  *
- * Seven small fields, because the source title and the retrieved date do not ride every pane: the
+ * A few small fields, because the source title and the retrieved date do not ride every pane: the
  * sheet fetches the rule catalog once from `GET /api/cache-rules`.
  */
 export interface PaneCache {
@@ -193,6 +204,13 @@ export interface PaneCache {
   measuredAt?: number;
   /** Present, and always `true`, when the number came from the operator's `cache-rules.toml`. */
   overridden?: true;
+  /** Present on a `cold` reading only, and absent from a bridge older than the field. */
+  coldReason?: CacheColdReason;
+  /**
+   * The action behind a cold reading: the one since the last turn when `coldReason` is `reset`, the one
+   * that most likely made the last turn miss when it is `observed`.
+   */
+  reset?: CacheResetWire;
 }
 
 /** A Herdr workspace ("space") — a project-scoped container of tabs. */
@@ -557,6 +575,16 @@ export interface UpdateInfo {
    * reader, {@link crewSettledAt}.
    */
   settledAt?: number;
+  /**
+   * The version the run behind those top-level {@link peers} levels the members TO (M32). Sent only
+   * beside them, never on `run`, whose own `to` says it. Absent on a bridge that predates it.
+   *
+   * It is what tells a run that moves only the members from one whose lead moves too. A peers-only
+   * run levels them to this machine's own version, so `peersTo` equals {@link current}. A full run
+   * begins its queue before its own record lands, and for that while its legs ride here with the
+   * release above `current` as their target. `lib/update-screen.ts` is the reader.
+   */
+  peersTo?: string;
 }
 
 /**

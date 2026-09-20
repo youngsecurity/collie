@@ -16,8 +16,8 @@ export interface MultiSelectBlockProps {
   /**
    * Injected send handler (from AgentChat). Presentational contract: this component NEVER touches
    * the network — it maps taps to intents while the handler runs the race-guarded choreography
-   * (toggle = one digit; submit = the closed-loop Down→Up→verify→Enter macro). Returning/throwing
-   * simply clears the busy state.
+   * (toggle = one digit, or digit-jump + verified Enter in pointer mode; submit = the closed-loop
+   * Down→Up→verify→Enter macro). Returning/throwing simply clears the busy state.
    */
   onAction: (action: MultiSelectIntent) => void | Promise<void>;
   /** Read-only device or a gone pane: everything renders (for context) but can't be pressed. */
@@ -46,7 +46,15 @@ export function MultiSelectBlock({ multi, onAction, disabled }: MultiSelectBlock
   }
 
   if (multi.phase === "review") {
-    return <ReviewPhase incomplete={multi.incomplete} locked={locked} sending={sending} onPress={press} />;
+    return (
+      <ReviewPhase
+        incomplete={multi.incomplete}
+        cancelLabel={multi.cancelLabel}
+        locked={locked}
+        sending={sending}
+        onPress={press}
+      />
+    );
   }
   return <CheckboxPhase multi={multi} locked={locked} sending={sending} onPress={press} />;
 }
@@ -164,11 +172,14 @@ function CheckboxPhase({
 
 function ReviewPhase({
   incomplete,
+  cancelLabel,
   locked,
   sending,
   onPress,
 }: {
   incomplete: boolean;
+  /** The terminal's own cancel-row label (Muse: `Interrupt turn`); absent ⇒ "Cancel". */
+  cancelLabel: string | undefined;
   locked: boolean;
   sending: string | null;
   onPress: (id: string, action: MultiSelectIntent) => void;
@@ -202,7 +213,7 @@ function ReviewPhase({
           className="flex w-full items-center justify-center gap-2 rounded-lg border border-border/70 px-3 py-1.5 text-xs text-muted-foreground transition-colors active:bg-muted disabled:opacity-60"
         >
           {sending === "cancel" ? <SpinnerSm /> : null}
-          {t("dialog.cancel")}
+          {cancelLabel ?? t("dialog.cancel")}
         </button>
       </div>
     </PromptPanel>

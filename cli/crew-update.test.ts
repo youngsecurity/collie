@@ -364,6 +364,19 @@ describe("crew update is a lead's verb, over named members", () => {
     expect(h.calls).toEqual([]);
   });
 
+  // A commitless lead using this fork's default needs source instructions, not binary payloads.
+  test("a binary fork lead is told the pinned source path, not a git error", async () => {
+    const h = harness({ installKind: { kind: "binary" } });
+    expect(await cmdCrewUpdate(h.deps, ["--all"])).toBe(EXIT.FAIL);
+    const rendered = text(h.io);
+    expect(rendered).toContain("is a binary install, so it has no commit to push.");
+    expect(rendered).toContain(`Install youngsecurity/collie from source at v${VERSION}`);
+    expect(rendered).not.toContain("install.sh");
+    expect(rendered).not.toContain("collie update --to-tag");
+    expect(rendered).not.toContain("is not a git checkout");
+    expect(h.calls).toEqual([]);
+  });
+
   test("a route override describes one machine, so it refuses a multi-member run", async () => {
     const h = harness({ store: twoPeers(), ops: { nas: opsRecord("nas.example"), pi: opsRecord("pi.example") } });
     expect(await cmdCrewUpdate(h.deps, ["--all", "--host", "elsewhere"])).toBe(EXIT.USAGE);

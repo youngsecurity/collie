@@ -3280,7 +3280,7 @@ describe("update status peers — the legs of a crew-wide run", () => {
     expect(composer).toContain("opts.crewLead?.updateSettledAt() ?? null");
     // M20/09: a peers-only run has no local record, so the legs ride the STATUS instead of being
     // dropped. The guard that dropped them is gone, and nothing has taken its place.
-    expect(composer).toContain("return { ...status, ...crewState };");
+    expect(composer).toContain("return { ...status, ...statusState };");
     expect(composer).not.toContain("status.run === null || legs.length === 0");
     expect(composer).not.toContain("sweep(");
     // M20/01, after review: the legs outlive their run, so the composer names the run they describe
@@ -3290,8 +3290,14 @@ describe("update status peers — the legs of a crew-wide run", () => {
     // update leaves a `done` record behind, so the commonest peers-only run there is — "Retry crew
     // update" after an update — has a different run id and would otherwise be invisible for its whole
     // life, which is spec 09's bug wearing spec 01's guard.
-    expect(composer).toContain("!== status.run.runId) return { ...status, ...crewState };");
+    expect(composer).toContain("!== status.run.runId) return { ...status, ...statusState };");
     expect(composer).not.toContain("!== status.run.runId) return status;");
+    // M32: legs that ride the STATUS carry their run's target, so the phone can tell a peers-only
+    // run (target = this lead's version) from a full run whose record has not landed yet. Never on
+    // the run record, whose own `to` says it.
+    expect(composer).toContain("opts.crewLead?.updateLegsTo() ?? null");
+    expect(composer).toContain("{ ...crewState, peersTo: legsTo }");
+    expect(composer).toContain("return { ...status, run: { ...status.run, ...crewState } };");
     // And there is still no fourth endpoint with a fifth shape.
     expect(src).not.toContain('"/api/update/status"');
   });
@@ -3320,13 +3326,24 @@ describe("update status peers — the legs of a crew-wide run", () => {
       updateStartVerdict({ confirm: true, target: null, major: false, peersOnly: true }, { ...state, crew: [levelled] }),
     ).toMatchObject({ kind: "refuse", status: 409 });
 
-    // A member that rolled back is the other half of the case, read off the legs.
+    // A member that rolled back is the other half of the case, read off the legs, for as long as the
+    // census does not show it level. `attic` has no census row, so nobody knows its version.
+    expect(
+      updateStartVerdict(
+        { confirm: true, target: null, major: false, peersOnly: true },
+        { ...state, crew: [levelled], peers: [{ name: "attic", state: "rolled-back" }] },
+      ),
+    ).toEqual({ kind: "peers", to: current });
+
+    // And once the census shows the member that rolled back at the lead's version, its old leg is
+    // no longer something to retry: the legs outlive their run, and a member that levelled itself
+    // afterwards must not keep a retry alive.
     expect(
       updateStartVerdict(
         { confirm: true, target: null, major: false, peersOnly: true },
         { ...state, crew: [levelled], peers: [{ name: "minibuch", state: "rolled-back" }] },
       ),
-    ).toEqual({ kind: "peers", to: current });
+    ).toMatchObject({ kind: "refuse", status: 409 });
   });
 
   test("retry crew update: one confirm still covers the crew, so a red member refuses it", () => {
