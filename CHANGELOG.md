@@ -37,9 +37,11 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 ## [Unreleased]
 
+## [1.11.0+ys.1] - 2026-09-20
+
 ### Changed
 
-- **Collie adopts upstream 1.11.0 while preserving the fork's safeguards.** Add Muse dialogs, cache reset indicators, Claude session hand-over tracking, and crew-only update progress. Preserve fork release ordering, custom terminal colors, update locking, broken-checkout refusals, the Herdr 0.8.0 minimum, and manual source-only publication. Thanks @AltanS (youngsecurity/collie#51).
+- **Collie adopts upstream 1.11.0 while preserving the fork's safeguards.** Add Muse dialogs, cache reset indicators, Claude session hand-over tracking, and crew-only update progress. Preserve fork release ordering, custom terminal colors, update locking, broken-checkout refusals, the Herdr 0.8.0 minimum, and manual source-only publication. Thanks @AltanS (youngsecurity/collie#51). ([b7b41ea3](https://github.com/youngsecurity/collie/commit/b7b41ea3))
 
 ## [1.10.2+ys.2] - 2026-09-20
 
