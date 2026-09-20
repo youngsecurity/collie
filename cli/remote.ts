@@ -26,6 +26,7 @@ import { EXIT, type Io } from "./io.ts";
 import { ensureStore, parseCrewArgs, probeMembers, resolveSelfAddress, type CrewDeps } from "./crew.ts";
 import { plainAdd, type AddEvent } from "./render.ts";
 import { sshConfigCandidates } from "./ssh-config.ts";
+import { withoutGitRelocators } from "./sys.ts";
 import { findTool } from "./tools.ts";
 import { unitName } from "./unit.ts";
 
@@ -150,7 +151,7 @@ export function sshRunner(
         stdin: new TextEncoder().encode(composeStdin(script, stdin)),
         stdout: "pipe",
         stderr: "pipe",
-        env,
+        env: withoutGitRelocators(env),
       });
       const [stdout, stderr, code] = await Promise.all([
         new Response(proc.stdout).text(),
@@ -167,7 +168,7 @@ export function sshRunner(
           Bun.spawnSync([bin, "-o", `ControlPath=${controlPath}`, "-O", "exit", host], {
             stdout: "ignore",
             stderr: "ignore",
-            env,
+            env: withoutGitRelocators(env),
           });
         } catch {
           // The master may already be gone; the directory removal below is what actually matters.
@@ -1755,10 +1756,14 @@ export function crewAddDeps(base: CrewDeps): CrewAddDeps {
         io.err(`       HEAD moved to ${head.slice(0, 12)} since ${commit.slice(0, 12)} was read.`);
         return null;
       }
+      // The ONE git child Collie starts outside `Exec`, so it applies the seam's rule by hand.
+      // Without it an exported `GIT_DIR` would bundle a DIFFERENT repository and hand it to a peer,
+      // and the `rev-parse HEAD` check above would pass while doing it, because that call reads the
+      // same redirected repository. See `withoutGitRelocators` for why the environment can do this.
       const proc = Bun.spawn([git, "-C", base.ctx.root, "bundle", "create", "-", "HEAD"], {
         stdout: "pipe",
         stderr: "pipe",
-        env: base.ctx.env,
+        env: withoutGitRelocators(base.ctx.env),
       });
       const [bytes, stderr, code] = await Promise.all([
         new Response(proc.stdout).arrayBuffer(),

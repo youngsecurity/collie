@@ -1214,6 +1214,13 @@ export async function cmdUpdate(deps: UpdateDeps, args: readonly string[] = []):
     deps.io.err(`error: ${toTagError}.`);
     return EXIT.USAGE;
   }
+  if (install.kind === "unknown" && install.why === "broken-checkout") {
+    deps.io.err(`error: this checkout's git data is unreadable (${deps.ctx.root}/.git exists, git will not read it).`);
+    deps.io.err("       `collie update` will not replace this working tree.");
+    deps.io.err("       Run `git -C <root> status` to see what git says; preserve local work and repair");
+    deps.io.err("       the checkout before updating. Do not reinstall over it.");
+    return EXIT.FAIL;
+  }
   if (args.includes("--rollback")) {
     if (install.kind === "binary") return await rollbackBinary(deps);
     if (install.kind === "packaged") {
@@ -1355,13 +1362,18 @@ export const releaseAssetUrl = (repo: string, tag: string, name: string): string
   `https://github.com/${repo}/releases/download/${tag}/${name}`;
 
 /** The evidence line `doctor` and the refusal above both quote for an install we cannot name. */
-function unknownEvidence(deps: UpdateDeps, why: "no-marker" | "orphan-layout" | "loose-binary"): string {
+function unknownEvidence(
+  deps: UpdateDeps,
+  why: "no-marker" | "orphan-layout" | "loose-binary" | "broken-checkout",
+): string {
   const root = deps.ctx.root;
   switch (why) {
     case "no-marker":
       return `no herdr-plugin.toml at ${root}`;
     case "orphan-layout":
       return `a versions/ layout at ${binaryLayout(root).installRoot} with no \`current\` symlink`;
+    case "broken-checkout":
+      return `${root}/.git exists but git will not read it`;
     case "loose-binary":
       // NOT "neither a checkout nor a layout": a staged checkout is BOTH, so the either/or would be
       // read as a rule rather than as the two absent shapes it actually reports.

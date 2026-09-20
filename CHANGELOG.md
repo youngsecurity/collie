@@ -37,6 +37,23 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 ## [Unreleased]
 
+## [1.10.2+ys.2] - 2026-09-20
+
+### Fixed
+
+- **Every broken checkout gets a safe, consistent update refusal.** Recognize dangling `.git` symlinks before binary classification and give repair guidance before rollback or Herdr checks, while preserving status and argument-validation precedence. Isolate the regression fixtures from inherited Git relocation variables. Thanks @coderabbitai (youngsecurity/collie#50). ([ef90b523](https://github.com/youngsecurity/collie/commit/ef90b523))
+
+## [1.10.2+ys.1] - 2026-09-19
+
+### Changed
+
+- **Collie adopts upstream 1.10.2 while preserving the fork's safeguards.** Require repositories to own their installation root, refuse unreadable checkout metadata, and strip inherited Git relocation variables from child processes and crew bundles. Keep the fork's update safeguards, reviewed UI fixes, Herdr 0.8.0 minimum, and manual source-only release verification. Thanks @AltanS (youngsecurity/collie#48). ([832dc4f0](https://github.com/youngsecurity/collie/commit/832dc4f0))
+
+### Fixed
+
+- **Broken checkouts block updates and point operators toward repair.** Make unreadable Git metadata a blocking preflight finding and refuse updates without suggesting an unattended reinstall over the working tree (youngsecurity/collie#48). ([65a977d7](https://github.com/youngsecurity/collie/commit/65a977d7))
+- **Crew SSH processes cannot inherit Git repository relocators.** Filter both transport spawn paths as well as the bundle process, preserving authentication and ordinary SSH environment values while preventing forwarding of repository overrides (youngsecurity/collie#48). ([65a977d7](https://github.com/youngsecurity/collie/commit/65a977d7))
+
 ## [1.10.1+ys.2] - 2026-09-19
 
 ### Fixed
@@ -115,6 +132,14 @@ the fork's side of the reconciliation.
 ### Packaging
 
 - **The release attaches `collie-release.json` by hand.** Upstream's CI publishes the crew wire reading the update notice consults; `release.yml` stays the fork's inert stub, so the same asset is written from `CREW_PROTOCOL_VERSION` and uploaded with the release, and the phone can say that this release changes the crew link. ([bca973a](https://github.com/youngsecurity/collie/commit/bca973a))
+
+## [1.10.2] - 2026-09-19
+
+### Fixed
+
+- **`collie update` works again when your home directory is a git repository.** A dotfiles repository whose working tree sits at `~` made Collie read a binary install as a source checkout. `collie update` then refused to run and pointed you at your own dotfiles remote. Collie now counts a directory as a checkout only when the repository starts there. Reported by [@krishkumar](https://github.com/krishkumar) ([#243](https://github.com/AltanS/collie/issues/243)) ([d43f8fd1](https://github.com/AltanS/collie/commit/d43f8fd1))
+- **A checkout whose git data is unreadable is never mistaken for a binary install.** A corrupt or unreadable `.git` made git refuse to answer, and Collie then read the folder as a binary install, which `collie update` moves aside. Collie now stops, says the git data cannot be read, and tells you to repair it. ([0091f5ec](https://github.com/AltanS/collie/commit/0091f5ec))
+- **Collie no longer asks git about the wrong repository.** If `GIT_DIR` or one of its siblings was set in your shell, or Collie ran from a git hook, every git question it asked was answered about that other repository instead of its own. No Collie process passes those variables to anything it starts now. ([ADR 0049](https://github.com/AltanS/collie/blob/main/.adr/0049-no-child-inherits-a-relocated-repository.md), [dcd313b1](https://github.com/AltanS/collie/commit/dcd313b1))
 
 ## [1.10.1] - 2026-09-17
 

@@ -28,6 +28,8 @@ import {
   STATE,
 } from "./fakes.ts";
 import { EXIT } from "./io.ts";
+import { cmdUpdateCheck, preflight, type UpdateCheckDeps } from "./update-check.ts";
+import { unitFilePath } from "./unit.ts";
 import {
   configFilePaths,
   readConfigFilesSync,
@@ -690,9 +692,54 @@ describe("collie doctor — the local checks", () => {
     expect((await findings(h)).byCheck.get("install")?.detail).toContain("Herdr-managed checkout");
   });
 
+  test("install: a broken checkout blocks an otherwise healthy update preflight", async () => {
+    const h = harness(null, [], {
+      files: {
+        ...healthyFiles(),
+        [`${ROOT}/.git`]: "gitdir: /missing/worktree",
+        [`${ROOT}/herdr-plugin.toml`]: 'id = "herdr.collie"\nversion = "1.0.0-alpha.12"\n',
+        [unitFilePath(HOME, null)]: "[Unit]\n",
+      },
+      answers: [
+        ...HEALTHY_ANSWERS,
+        [`git -C ${ROOT} rev-parse --show-prefix`, { code: 128 }],
+        ["df -Pk", { stdout: "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/sda1 100000000 1 50000000 1% /\n" }],
+        ["systemctl --user is-active", { stdout: "active\n" }],
+      ],
+    });
+    const diagnosis = await findings(h);
+    const install = diagnosis.byCheck.get("install");
+    expect(install?.detail).toContain("git data is unreadable");
+    expect(install?.remedy).toContain("git -C <root> status");
+    expect(install?.remedy).not.toContain("herdr plugin install");
+    expect(diagnosis.raw.filter((f) => f.check !== "install" && f.status === "error")).toEqual([]);
+
+    const deps: UpdateCheckDeps = {
+      ...h.deps,
+      link: fakeLinkFs(),
+      platform: "linux",
+      ops: { get: async () => null },
+      remote: () => { throw new Error("solo preflight must not reach SSH"); },
+      net: {
+        getJson: async () => ({ ok: true, value: [{ name: "v1.0.0-alpha.12", commit: { sha: "cccccccc" } }] }),
+        download: async () => { throw new Error("preflight must not download"); },
+        probe: async () => { throw new Error("preflight must not probe the network"); },
+      },
+      doctor: async () => diagnosis.raw,
+    };
+    const report = await preflight(deps);
+    expect(report.checks.filter((c) => c.id !== "doctor").every((c) => c.verdict === "green")).toBe(true);
+    expect(report.checks.find((c) => c.id === "doctor")?.verdict).toBe("red");
+    expect(report.verdict).toBe("red");
+    expect(await cmdUpdateCheck(deps, ["--json"])).toBe(EXIT.FAIL);
+    expect(install?.status).toBe("error");
+    expect(diagnosis.code).toBe(EXIT.FAIL);
+    expect(h.files.ops).toEqual([]);
+  });
+
   test("install: an install it cannot name warns and points at the docs", async () => {
     const h = harness(null, [], {
-      answers: [...HEALTHY_ANSWERS, [`git -C ${ROOT} rev-parse --git-dir`, { code: 128 }]],
+      answers: [...HEALTHY_ANSWERS, [`git -C ${ROOT} rev-parse --show-prefix`, { code: 128 }]],
     });
     const { byCheck, code } = await findings(h);
     expect(byCheck.get("install")?.status).toBe("warn");
@@ -1459,7 +1506,7 @@ describe("collie doctor — a packaged install", () => {
   function systemOwned(link: Record<string, LinkProbe> = {}, answers: Scripted["answers"] = []) {
     const h = harness(null, [], {
       link,
-      answers: [...answers, [`git -C ${ROOT} rev-parse --git-dir`, { code: 128 }], ...(HEALTHY_ANSWERS ?? [])],
+      answers: [...answers, [`git -C ${ROOT} rev-parse --show-prefix`, { code: 128 }], ...(HEALTHY_ANSWERS ?? [])],
       // The manifest is what makes this a Collie at all — `hasMarker` is asked before ownership, so
       // without it the tree classifies `no-marker` and none of these findings would be exercised.
       files: { ...healthyFiles(), [`${ROOT}/herdr-plugin.toml`]: 'id = "herdr.collie"\nversion = "1.5.2"\n' },
