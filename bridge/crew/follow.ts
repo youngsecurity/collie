@@ -590,6 +590,7 @@ export class UpdateTurns {
     this.run = { runId, target: bareVersion(target) ?? target };
     this.held = null;
     this.missed.clear();
+    this.blocked.clear();
     this.legs.clear();
     this.legChangedAt.clear();
     this.expired.clear();

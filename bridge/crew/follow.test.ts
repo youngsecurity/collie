@@ -1088,6 +1088,25 @@ describe("a turn nobody can be handed says why, once", () => {
     ]);
   });
 
+  test("a replacement run reports the same block again without repeating it within either run", () => {
+    const journal: string[] = [];
+    const turns = new UpdateTurns((line) => journal.push(line));
+    const unchecked = member({ memberId: "attic", verdict: null });
+    turns.begin(RUN_ID, "1.4.1");
+    turns.observe([unchecked], NOW);
+    turns.begin(RUN_ID, "1.4.1");
+    turns.observe([unchecked], NOW + 1500);
+    expect(journal.filter((l) => l.includes("not being handed the turn"))).toHaveLength(1);
+
+    turns.begin("run-two", "1.4.1");
+    turns.observe([unchecked], NOW + 3000);
+    turns.observe([unchecked], NOW + 4500);
+    const diagnostics = journal.filter((l) => l.includes("not being handed the turn"));
+    expect(diagnostics).toHaveLength(2);
+    expect(diagnostics[0]).toContain("update r-abc: attic");
+    expect(diagnostics[1]).toContain("update run-two: attic");
+  });
+
   test("a red verdict is named as itself, so the two causes are never one sentence", () => {
     const journal: string[] = [];
     const turns = new UpdateTurns((line) => journal.push(line));
