@@ -37,6 +37,16 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 ## [Unreleased]
 
+### Fixed
+
+- **Replacement crew update runs report blocked members again.** Clear the previous run's diagnostic suppression state when a new run starts, while keeping repeated sweeps and same-run starts quiet. Thanks @coderabbitai (youngsecurity/collie#54).
+
+## [1.11.1+ys.1] - 2026-09-20
+
+### Changed
+
+- **Collie adopts upstream 1.11.1 while preserving the fork's safeguards.** Keep crew updates progressing without an open phone, explain withheld member turns, and move update progress above the header so it does not cover the composer. Preserve fork release ordering, update locking, the Herdr 0.8.0 minimum, and manual source-only publication. Thanks @AltanS (youngsecurity/collie#52). ([46fe0763](https://github.com/youngsecurity/collie/commit/46fe0763))
+
 ## [1.11.0+ys.1] - 2026-09-20
 
 ### Changed
@@ -138,6 +148,14 @@ the fork's side of the reconciliation.
 ### Packaging
 
 - **The release attaches `collie-release.json` by hand.** Upstream's CI publishes the crew wire reading the update notice consults; `release.yml` stays the fork's inert stub, so the same asset is written from `CREW_PROTOCOL_VERSION` and uploaded with the release, and the phone can say that this release changes the crew link. ([bca973a](https://github.com/youngsecurity/collie/commit/bca973a))
+
+## [1.11.1] - 2026-09-20
+
+### Fixed
+
+- **A crew update no longer stalls after the lead has updated itself.** The phone stopped reading the update subject the moment the lead's own run reached `done`, which on a crew update is seconds in, before the members have started. That read is also what asks each member for a fresh preflight verdict, and a member whose verdict the lead does not hold is never handed its turn, so a run could sit on `waiting` for minutes and then take the release in four seconds. The phone follows the crew half of the run now, and the lead asks for the verdict it is stuck on instead of waiting to be asked. ([a0175935](https://github.com/AltanS/collie/commit/a0175935))
+- **A member that is not handed its turn now says why.** A withheld turn was the one thing an update run did in total silence, on the lead and on the member, so a run that had stopped moving looked exactly like one that was working. The lead names the machine and the cause once, in its own journal. ([a0175935](https://github.com/AltanS/collie/commit/a0175935))
+- **The update badge no longer covers the message box.** A run another device started drew a bar across the bottom of the screen, over the composer's input row, and it did so in the one case that hands that box back on purpose: after `keep using the app` on a download that had stopped. It is one line in the band above the header now, beside the connection bar and the update offer, and the band picks one winner rather than stacking them. A connection you have lost still wins that band: during a crew update the two are often one event seen twice, but not always, and hiding a machine you cannot reach is the worse of the two mistakes. ([a0175935](https://github.com/AltanS/collie/commit/a0175935))
 
 ## [1.11.0] - 2026-09-20
 
