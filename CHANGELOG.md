@@ -37,9 +37,11 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 ## [Unreleased]
 
+## [1.11.1+ys.1] - 2026-09-20
+
 ### Changed
 
-- **Collie adopts upstream 1.11.1 while preserving the fork's safeguards.** Keep crew updates progressing without an open phone, explain withheld member turns, and move update progress above the header so it does not cover the composer. Preserve fork release ordering, update locking, the Herdr 0.8.0 minimum, and manual source-only publication. Thanks @AltanS (youngsecurity/collie#52).
+- **Collie adopts upstream 1.11.1 while preserving the fork's safeguards.** Keep crew updates progressing without an open phone, explain withheld member turns, and move update progress above the header so it does not cover the composer. Preserve fork release ordering, update locking, the Herdr 0.8.0 minimum, and manual source-only publication. Thanks @AltanS (youngsecurity/collie#52). ([46fe0763](https://github.com/youngsecurity/collie/commit/46fe0763))
 
 ## [1.11.0+ys.1] - 2026-09-20
 
