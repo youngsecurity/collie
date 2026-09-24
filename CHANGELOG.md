@@ -45,6 +45,8 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 - **Replacement crew update runs report blocked members again.** Clear the previous run's diagnostic suppression state when a new run starts, while keeping repeated sweeps and same-run starts quiet. Thanks @coderabbitai (youngsecurity/collie#54).
 
+- **Mounted images and crew multiplexer changes take effect correctly.** Keep journal blob requests under the app's mount while preserving pane scope and image-reference validation. Restart an already-enrolled peer when configuration changes its multiplexer, without restarting unchanged peers. Refs youngsecurity/collie#57.
+
 ## [1.11.1+ys.1] - 2026-09-20
 
 ### Changed

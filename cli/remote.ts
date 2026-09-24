@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { DEFAULT_PORT } from "../bridge/config.ts";
 import type { HostProbe } from "../bridge/mux/host-candidates.ts";
-import { buildMuxRegistry, muxHostCandidates, muxNames } from "../bridge/mux/registry.ts";
+import { buildMuxRegistry, DEFAULT_MUX, muxHostCandidates, muxNames } from "../bridge/mux/registry.ts";
 import { commitCrewChange, mintInvite } from "../bridge/crew/enrollment.ts";
 import type { OpsRecord } from "../bridge/crew/ops-store.ts";
 import { TrustStore, type TrustedMember, type TrustStoreData } from "../bridge/crew/trust-store.ts";
@@ -1338,7 +1338,6 @@ async function addOverSsh(deps: Wired, runner: RemoteRunner, opts: AddOptions): 
   // ── Leg 2 — install ────────────────────────────────────────────────────────
   // `replaced` is what leg 4 reads: an already-enrolled peer is restarted only when there is
   // something new for it to run. Both routes answer it, in their own terms.
-  const rebound = !bindIsCurrent(probe, peerHost, port);
   const installed =
     opts.route === "release"
       ? await releaseLeg(deps, runner, {
@@ -1365,11 +1364,11 @@ async function addOverSsh(deps: Wired, runner: RemoteRunner, opts: AddOptions): 
     mux: opts.mux,
     probe,
   });
-  if (configured !== null) return configured;
+  if ("code" in configured) return configured.code;
 
   // ── Leg 4 — enroll ─────────────────────────────────────────────────────────
   deps.emit({ kind: "leg-start", leg: "enroll", text: "" });
-  return await enrollLeg(deps, runner, { host, root, port, peerAddress, flags, changed: replaced || rebound });
+  return await enrollLeg(deps, runner, { host, root, port, peerAddress, flags, changed: replaced || configured.changed });
 }
 
 /**
@@ -1872,27 +1871,27 @@ async function configureLeg(
     mux: string | null;
     probe: Probe;
   },
-): Promise<number | null> {
+): Promise<{ readonly code: number } | { readonly changed: boolean }> {
   const { probe } = o;
   // The mux decision FIRST: it is the half that can stop the run.
   const decided = await decideMux(deps, runner, { host: o.host, root: o.root, mux: o.mux, probe });
-  if ("code" in decided) return decided.code;
+  if ("code" in decided) return decided;
   const writeMux = decided.write;
   const bindCurrent = bindIsCurrent(probe, o.peerHost, o.port);
   // The leg writes when EITHER half has something to write. A bind that is already right used to
   // skip the whole leg, which would now skip a `COLLIE_MUX` the operator has just chosen.
   if (bindCurrent && writeMux === null) {
     deps.emit({ kind: "leg-done", leg: "configure", ok: true, detail: `already ${o.peerHost}:${o.port}` });
-    return null;
+    return { changed: false };
   }
   const current = bindOverwriteConfirmation(probe, o.peerHost, o.port);
   if (current !== null) {
     const answer = await ask(deps, `${o.host} is configured to bind ${current}; change it to ${o.peerHost}:${o.port}?`);
-    if (answer === "aborted") return EXIT.FAIL;
+    if (answer === "aborted") return { code: EXIT.FAIL };
     if (!answer) {
       deps.io.err("error: left alone — the bind was not changed, and nothing was enrolled.");
       deps.io.err("       A peer the lead cannot dial stays provisional forever (`collie doctor` there).");
-      return EXIT.STATE;
+      return { code: EXIT.STATE };
     }
   } else if (probe.envhost === "") {
     // Said out loud, because a step that stopped asking is otherwise a step that silently changed.
@@ -1915,10 +1914,10 @@ async function configureLeg(
     }),
   );
   const transport = transportFailure(deps.io, o.host, written);
-  if (transport !== null) return transport;
+  if (transport !== null) return { code: transport };
   if (written.code !== 0) {
     deps.io.err(`error: could not write the peer's .env — ${firstLine(written.stderr)}`);
-    return EXIT.FAIL;
+    return { code: EXIT.FAIL };
   }
   // What was WRITTEN, named: the leg now has two halves, and a re-run that only moved the
   // multiplexer must not report a bind it left alone.
@@ -1939,7 +1938,10 @@ async function configureLeg(
     tone: "info",
     text: "  No front door was published there — a peer publishes none (ADR 0013).",
   });
-  return null;
+  // Match the bridge's effective mux, including its default for an unset name. Rewriting the
+  // same selection is not a runtime change, even when the operator supplied --mux explicitly.
+  const muxChanged = writeMux !== null && writeMux !== (probe.envmux || DEFAULT_MUX);
+  return { changed: !bindCurrent || muxChanged };
 }
 
 /** Leg 4, as its own step: the membership pre-check, the invite, the join, and the final verdict. */
@@ -1952,7 +1954,7 @@ async function enrollLeg(
     port: number;
     peerAddress: string;
     flags: Readonly<Record<string, string>>;
-    /** Did this run replace the far machine's build or rewrite its bind? */
+    /** Did this run change the far machine's build, bind, or effective mux? */
     changed: boolean;
   },
 ): Promise<number> {

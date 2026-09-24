@@ -1602,6 +1602,103 @@ describe("re-running against the same host", () => {
   });
 });
 
+for (const route of ["bundle", "release"] as const) {
+  describe(`re-enrolling with a mux choice via ${route}`, () => {
+    function enrolled(envmux = "herdr", opts: HarnessOptions = {}): Harness {
+      const makeHarness = route === "bundle" ? harness : releaseHarness;
+      return makeHarness({
+        ...opts,
+        store: leadStore({ peers: [member({ memberId: "nas", address: "100.64.0.9:8787" })] }),
+        answers: {
+          probe: {
+            stdout: probeOut({
+              ...(route === "bundle"
+                ? { checkout: REMOTE_CHECKOUT, checkoutgit: "yes", commit: COMMIT }
+                : { checkout: MEMBER_CURRENT, checkoutgit: "no", installroot: MEMBER_INSTALL_ROOT }),
+              version: VERSION,
+              envhost: "100.64.0.9",
+              envport: "8787",
+              envmux,
+            }),
+          },
+          membership: { stdout: ["crew   the herd  (crew-1)", "mode   peer", "self   nas  abcd…"].join("\n") },
+          ...opts.answers,
+        },
+      });
+    }
+
+    test.each(["herdr", ""])(
+      "changing mux from '%s' restarts the enrolled peer without installing or joining again",
+      async (envmux) => {
+        const h = enrolled(envmux);
+        expect(await run(h, ["nas.example", "--mux", "tmux"])).toBe(EXIT.OK);
+        expect(h.calls.map((c) => c.leg)).toEqual(["probe", "configure", "membership", "restart"]);
+        expect(h.calls.find((c) => c.leg === "configure")!.script).toContain("printf 'COLLIE_MUX=%s\\n' 'tmux'");
+        expect(h.calls.find((c) => c.leg === "restart")!.script).toContain(
+          route === "bundle" ? REMOTE_CHECKOUT : MEMBER_CURRENT,
+        );
+        expect(h.restarts).toBe(0);
+        expect(h.data()?.invites).toHaveLength(0);
+        expect(text(h.io)).toContain('already a member of "the herd" as "nas"');
+        expect(text(h.io)).toContain(`now running ${VERSION}`);
+      },
+    );
+
+    test.each([
+      ["tmux", "tmux"],
+      ["  tmux  ", "tmux"],
+      ["", "herdr"],
+    ])("restating effective mux '%s' as %s does not restart the peer", async (envmux, mux) => {
+      const h = enrolled(envmux);
+      expect(await run(h, ["nas.example", "--mux", mux])).toBe(EXIT.OK);
+      expect(h.calls.map((c) => c.leg)).toEqual(["probe", "configure", "membership"]);
+      expect(h.restarts).toBe(0);
+      expect(text(h.io)).not.toContain("now running");
+    });
+
+    test("keeping the current mux leaves an unchanged enrollment alone", async () => {
+      const h = enrolled("tmux");
+      expect(await run(h)).toBe(EXIT.OK);
+      expect(h.calls.map((c) => c.leg)).toEqual(["probe", "membership"]);
+      expect(h.restarts).toBe(0);
+    });
+
+    test("a mux chosen interactively also restarts the enrolled peer", async () => {
+      const h = enrolled("", {
+        prompt: "tmux",
+        answers: { "mux-probe": { stdout: muxProbeOut(["herdr", "tmux"]) } },
+      });
+      expect(await run(h)).toBe(EXIT.OK);
+      expect(h.calls.map((c) => c.leg)).toEqual(["probe", "mux-probe", "configure", "membership", "restart"]);
+      expect(h.calls.find((c) => c.leg === "configure")!.script).toContain("printf 'COLLIE_MUX=%s\\n' 'tmux'");
+      expect(h.restarts).toBe(0);
+    });
+
+    test.each([
+      [1, EXIT.FAIL],
+      [255, EXIT.UNREACHABLE],
+    ])("a mux write failure (%i) stops before enrollment or restart", async (code, expected) => {
+      const h = enrolled("herdr", { answers: { configure: { code, stderr: "write failed" } } });
+      expect(await run(h, ["nas.example", "--mux", "tmux"])).toBe(expected);
+      expect(h.calls.map((c) => c.leg)).toEqual(["probe", "configure"]);
+      expect(text(h.io)).toContain("write failed");
+      expect(text(h.io)).not.toContain("already a member");
+    });
+
+    test.each([
+      [1, EXIT.FAIL],
+      [255, EXIT.UNREACHABLE],
+    ])("a mux-only restart failure (%i) is not reported as success", async (code, expected) => {
+      const h = enrolled("herdr", { answers: { restart: { code, stderr: "restart failed" } } });
+      expect(await run(h, ["nas.example", "--mux", "tmux"])).toBe(expected);
+      expect(h.calls.map((c) => c.leg)).toEqual(["probe", "configure", "membership", "restart"]);
+      expect(text(h.io)).toContain("restart failed");
+      expect(text(h.io)).not.toContain("already a member");
+      expect(h.restarts).toBe(0);
+    });
+  });
+}
+
 // ── The release route (#248) ─────────────────────────────────────────────────
 // A lead with no commit installs a member from the release it runs itself. Everything below is
 // decided from ONE fact about the lead (its install kind) and ONE about the member (what Collie, if

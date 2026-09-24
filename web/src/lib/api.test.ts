@@ -414,6 +414,54 @@ describe("api client — which image references this phone will load", () => {
   });
 });
 
+describe.each(["/collie/", "/tools/collie/"])("journal image URLs mounted at %s", (mount) => {
+  const hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+  beforeEach(() => {
+    const meta = document.createElement("meta");
+    meta.setAttribute("name", "collie-base");
+    meta.setAttribute("content", mount);
+    document.head.appendChild(meta);
+    resetBasePathForTests();
+  });
+
+  afterEach(() => {
+    document.querySelector('meta[name="collie-base"]')?.remove();
+    resetBasePathForTests();
+  });
+
+  it("puts direct image requests under the mount and preserves encoded pane scope", () => {
+    expect(imageSrc(`/api/blobs/${hash}`)).toBe(`${mount}api/blobs/${hash}`);
+    expect(imageSrc(`/api/blobs/${hash}`, { host: "badger" })).toBe(
+      `${mount}api/blobs/${hash}?host=badger`,
+    );
+    expect(imageSrc(`/api/blobs/${hash}`, { host: "badger & co", session: "demo/one" })).toBe(
+      `${mount}api/blobs/${hash}?host=badger%20%26%20co&session=demo%2Fone`,
+    );
+  });
+
+  it("leaves inline image bytes unchanged even with pane scope", () => {
+    expect(imageSrc("data:image/png;base64,AAAA", { host: "badger", session: "demo" })).toBe(
+      "data:image/png;base64,AAAA",
+    );
+  });
+
+  it("still refuses untrusted references before applying a mount", () => {
+    for (const ref of [
+      "https://evil.example/image.png",
+      "//evil.example/image.png",
+      "data:text/html;base64,PHNjcmlwdD4=",
+      "/api/blobs/../snapshot",
+      "/api/blobs/1234",
+      `/api/blobs/${hash}?host=other`,
+      `/api/blobs/${hash}#fragment`,
+      `${mount}api/blobs/${hash}`,
+    ]) {
+      expect(imageSrc(ref, { host: "badger" })).toBeNull();
+    }
+  });
+});
+
 describe("api client — connection-health stamping", () => {
   it("stamps a live moment on a healthy snapshot (bridge connected)", async () => {
     __resetConnectionHealth(1); // pin the anchor far in the past

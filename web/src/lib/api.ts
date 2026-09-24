@@ -201,7 +201,8 @@ function withScope(path: string, scope?: Scope): string {
 const BLOB_REF = /^\/api\/blobs\/[0-9a-f]{64}$/i;
 
 export function imageSrc(ref: string, scope?: Scope): string | null {
-  if (BLOB_REF.test(ref)) return withScope(ref, scope);
+  // Image elements bypass apiFetch, so validated blob references need the mount here.
+  if (BLOB_REF.test(ref)) return mounted(withScope(ref, scope));
   return ref.startsWith("data:image/") ? ref : null;
 }
 
