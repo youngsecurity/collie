@@ -47,6 +47,8 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 - **Mounted images and crew multiplexer changes take effect correctly.** Keep journal blob requests under the app's mount while preserving pane scope and image-reference validation. Restart an already-enrolled peer when configuration changes its multiplexer, without restarting unchanged peers. Refs youngsecurity/collie#57.
 
+- **Reloading during an update keeps following the new worker.** Observe controller changes before asynchronous registration settles, so a manual reload cannot miss the swap and leave the app running its old bundle. Preserve first-visit claim handling and one-reload behavior. Refs youngsecurity/collie#57.
+
 ## [1.11.1+ys.1] - 2026-09-20
 
 ### Changed

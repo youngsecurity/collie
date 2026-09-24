@@ -407,6 +407,10 @@ function nudge(worker: ServiceWorker): void {
 }
 
 if ("serviceWorker" in navigator) {
+  // A manual reload can arrive while a new worker is installing. Observe its controller swap
+  // before awaiting registration, or that event can be lost while the promise is pending.
+  // onControllerChange still ignores a first visit's initial claim and deduplicates reloads.
+  navigator.serviceWorker.addEventListener("controllerchange", onControllerChange);
   void navigator.serviceWorker
     .register(mounted("/sw.js"), { scope: basePath() })
     .then(onRegistered)
@@ -426,10 +430,6 @@ function onRegistered(r: ServiceWorkerRegistration): void {
     // the new document would sit out the download with nothing to say and nothing nudging a worker
     // that parked in `waiting`.
     followWorker(workerOnItsWayIn(r));
-    // A new SW taking control is the other reliable "we're updated now" signal — but only when it
-    // *replaces* a prior controller (see onControllerChange); the first-visit initial claim is not
-    // an update and must not reload.
-    navigator.serviceWorker?.addEventListener("controllerchange", onControllerChange);
     setInterval(() => void r.update().catch(() => {}), UPDATE_CHECK_MS);
   }
 }
