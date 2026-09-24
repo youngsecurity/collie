@@ -9,6 +9,7 @@ import { asJsonString, parseJsonObject } from "./json";
 import { authHeader, clearNotPaired, markNotPaired, NOT_PAIRED_BODY } from "./pairing";
 import { isLead, normalizeScope, paneScopeKey, type Scope } from "./scope";
 import { observeServerBuild, SERVER_BUILD_HEADER } from "./server-build";
+import { mounted } from "./base-path";
 import type {
   ActionResponse,
   BridgeConfig,
@@ -200,7 +201,8 @@ function withScope(path: string, scope?: Scope): string {
 const BLOB_REF = /^\/api\/blobs\/[0-9a-f]{64}$/i;
 
 export function imageSrc(ref: string, scope?: Scope): string | null {
-  if (BLOB_REF.test(ref)) return withScope(ref, scope);
+  // Image elements bypass apiFetch, so validated blob references need the mount here.
+  if (BLOB_REF.test(ref)) return mounted(withScope(ref, scope));
   return ref.startsWith("data:image/") ? ref : null;
 }
 
@@ -228,8 +230,9 @@ function normaliseProxyRedirect(res: Response): Response {
   });
 }
 
-async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
-  return normaliseProxyRedirect(await fetch(input, { ...init, redirect: "manual" }));
+async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
+  // Every caller spells a root-absolute `/api/…`; the mount is applied here, once (ADR 0052).
+  return normaliseProxyRedirect(await fetch(mounted(path), { ...init, redirect: "manual" }));
 }
 
 /**

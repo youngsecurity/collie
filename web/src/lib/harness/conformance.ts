@@ -59,6 +59,7 @@ import {
   MENU_RIGHT_KEYS,
   MENU_UP_KEYS,
   menuKeyFor,
+  readKeyHintFooter,
 } from "./menu-hints";
 
 // Anchored on this file's own directory (NOT `new URL(..., import.meta.url)`, which Vite statically
@@ -109,6 +110,13 @@ function lastMatchEnd(fresh: string[], expected: string[]): number {
 // dialog's footer no longer the last non-blank line, and every tail-anchored detector bails.
 function trailingOutput(): StyledLine[] {
   return [textLine("● Wrote the file"), textLine("  ⎿  done")];
+}
+
+/** The FIRST row of the tail's key-hint footer, which is the last non-blank row on a wide pane and
+ *  the top of the wrapped group on a narrow one. Falls back to the last non-blank row for a tail
+ *  that is not a key-hint footer at all. */
+function footerTop(lines: StyledLine[]): number {
+  return readKeyHintFooter(lines.map(lineText))?.startLine ?? lastNonBlank(lines);
 }
 
 /** The index of the last non-blank line — where every tail-anchored grammar's footer sits. */
@@ -277,7 +285,7 @@ const KEYLESS_FUTURE_KINDS = new Set<string>(["autocomplete"]);
  * needn't be validated. An interactive kind with no case here THROWS rather than returning null, so
  * the key-grammar invariant can never go silently vacuous when a new dialog kind ships.
  */
-function emittableKeys(block: Block): string[] | null {
+export function emittableKeys(block: Block): string[] | null {
   switch (block.kind) {
     case "raw":
       return null;
@@ -336,6 +344,12 @@ function emittableKeys(block: Block): string[] | null {
         ...(block.menu.nav.upDown ? [...MENU_UP_KEYS, ...MENU_DOWN_KEYS] : []),
         ...(block.menu.nav.leftRight !== undefined ? [...MENU_LEFT_KEYS, ...MENU_RIGHT_KEYS] : []),
       ];
+    case "unread-dialog":
+      // The card's ONE control, and it is a DECLARATION (HarnessAdapter.cancelKey), not something
+      // read off the screen. No conformance fixture will ever produce one — the pass that emits this
+      // kind runs OUTSIDE the adapter and this suite calls `adapter.buildBlocks` directly — so the
+      // arm exists to keep the walk non-vacuous if that ever changes.
+      return [block.cancel.key];
     default: {
       // SAFETY: `block` is `never` here today — every kind is cased above — so widening it back to
       // `Block` cannot be wrong for any value that exists. The assertion is what names the offending
@@ -513,9 +527,12 @@ export function describeAdapterConformance(
             expect(block.menu.title.length, `${name} lifts an untitled menu`).toBeGreaterThan(0);
           }
           // Perturb the region's text (a row inserted just ABOVE the footer, so the footer stays the
-          // last non-blank line and the menu still lifts): the signature must move with it.
+          // last thing on screen and the menu still lifts): the signature must move with it. ABOVE
+          // THE FOOTER GROUP, not above the last row: a narrow pane wraps a footer onto two or three
+          // rows (menu-hints.ts `readKeyHintFooter`), and a row spliced into the middle of one would
+          // be cutting the footer in half rather than adding a row above it.
           const perturbed = [...lines];
-          perturbed.splice(lastNonBlank(lines), 0, textLine("  ○ Something else entirely"));
+          perturbed.splice(footerTop(lines), 0, textLine("  ○ Something else entirely"));
           const after = menuSignatures(adapter.buildBlocks(perturbed));
           expect(after.length, `${name}: the perturbed capture stopped lifting a menu`).toBe(
             menuSignatures(adapter.buildBlocks(lines)).length,

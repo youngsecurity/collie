@@ -187,6 +187,9 @@ export const zhTW: Dictionary = {
   "settings.display.rawTerminal.label": "原始終端機",
   "settings.display.rawTerminal.hint":
     "僅顯示純終端機鏡像，隱藏提示按鈕與狀態列。適用於對話框呈現異常時透過按鍵手動操作。",
+  "settings.display.noInvert.label": "以原始配色顯示此窗格",
+  "settings.display.noInvert.hint":
+    "僅對此窗格略過淺色主題的反色。當代理使用淺色主題而鏡像顯示為深色時開啟；顯示正常時保持關閉。",
   "settings.display.textSize.label": "字級大小",
   "settings.display.textSize.decrease": "縮小字級",
   "settings.display.textSize.increase": "放大字級",
@@ -225,12 +228,17 @@ export const zhTW: Dictionary = {
   "composer.attach.title": "附加",
   "composer.attach.photos": "照片",
   "composer.attach.files": "檔案",
+  "composer.attach.listAria": "附件",
+  "composer.attach.removeAria": "移除 {name}",
+  "composer.attach.inFront": "Its marker is gone from your text, so Send puts {name} in front.",
   "composer.send.typeAnyway": "仍要輸入？",
   "composer.send.reallySend": "確認傳送？",
   "composer.send.stopTypingAria": "停止向終端機輸入",
   "composer.send.sendAria": "傳送",
   "composer.draft.tooLong": "內容過長，無法持久儲存為草稿。切換窗格時會保留，但離開應用程式後將遺失。",
   "composer.status.dialogWaiting": "有等待回應的對話框，請先處理後再傳送。",
+  "composer.status.unreadDialog":
+    "Collie 無法讀取此對話框。卡片上是 {key}。要繼續輸入，請再次點擊「傳送」。", // wordsmith
   "composer.status.paneNotWritable": "窗格已不可寫入，未傳送任何內容",
   "composer.status.inputChanged": "清空輸入框時內容發生變動，未寫入任何內容。請檢查窗格狀態。",
   "composer.status.clearFailed": "無法清空終端機目前輸入",
@@ -240,7 +248,7 @@ export const zhTW: Dictionary = {
   "composer.discard.confirmKeys.other": "再次點擊以放棄佇列中的 {count} 個按鍵",
   "composer.destructive.confirm": "破壞性操作：{reason}。再次點擊「傳送」以確認",
   "composer.destructive.confirmOnHost": "破壞性操作：{host} 上的 {reason}。再次點擊「傳送」以確認",
-  "composer.upload.success": "檔案已新增，路徑已填入訊息",
+  "composer.upload.success": "檔案已附加",
   "composer.upload.tooLarge": "檔案超過此 collie 的 {max} MB 大小限制。",
   "composer.upload.badType": "Collie 無法附加 {name}。",
   "composer.noEcho.title": "密碼提示（無回顯）",
@@ -255,6 +263,7 @@ export const zhTW: Dictionary = {
   "composer.noEcho.dismissAria": "關閉密碼提示通知",
   "composer.draftPreview.title": "終端機中的草稿",
   "composer.draftPreview.takeOver": "接管",
+  "composer.draftPreview.dismissAria": "關閉終端機草稿提示",
 
   // --- sendMode (the armed "typing straight through" indicator) ---
   "sendMode.armed.title": "終端機直接輸入",
@@ -647,6 +656,18 @@ export const zhTW: Dictionary = {
 
   // --- dialog (menu / multi-select / wizard / preview-select block renderers) ---
   "dialog.sendingAria": "正在傳送",
+  // TODO wordsmith
+  "dialog.terminalControl": "Terminal",
+  // TODO wordsmith
+  "dialog.terminalControlAria": "Show the terminal instead of this card",
+  // TODO wordsmith
+  "dialog.backToCard": "Back to the card",
+  // TODO wordsmith
+  "dialog.putAwayControl": "Put away",
+  // TODO wordsmith
+  "dialog.putAwayControlAria": "Hide this card's buttons, keep the terminal",
+  // TODO wordsmith
+  "dialog.showButtons": "Show the buttons",
   "dialog.previousStepAria": "上一步",
   "dialog.nextStepAria": "下一步",
   "dialog.answeredAria": "已完成",
@@ -666,6 +687,11 @@ export const zhTW: Dictionary = {
   "dialog.menu.moveDown": "下移",
   "dialog.menu.leftAria": "向左：{verb}（{label}）",
   "dialog.menu.rightAria": "向右：{verb}（{label}）",
+  // TODO wordsmith
+  "dialog.menu.levelAria": "{verb} to {label}",
+  // TODO wordsmith
+  "dialog.menu.levelCurrentAria": "{label}, current",
+  "unreadDialog.caption": "Collie 無法讀取此對話框", // wordsmith
   "dialog.preview.currentAnswerAria": "目前回答",
   "dialog.preview.previewedBelowAria": "下方顯示預覽",
   "dialog.preview.previewLabel": "預覽 · {label}",

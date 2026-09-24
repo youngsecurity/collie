@@ -202,6 +202,9 @@ export const de: Dictionary = {
   "settings.display.rawTerminal.label": "Rohes Terminal",
   "settings.display.rawTerminal.hint":
     "Zeigt den reinen Terminal-Puffer ohne Buttons, Rahmen oder Statusleisten. Gedacht für falsch dargestellte TUI-Dialoge zur manuellen Tastensteuerung.",
+  "settings.display.noInvert.label": "Dieses Pane nativ darstellen",
+  "settings.display.noInvert.hint":
+    "Überspringt die Invertierung im hellen Theme nur für dieses Pane. Aktiviere es, wenn ein Agent ein HELLES Theme nutzt und der Spiegel ihn dunkel darstellt; lass es aus, wenn das Pane richtig aussieht.",
   "settings.display.textSize.label": "Textgröße",
   "settings.display.textSize.decrease": "Schriftgröße verringern",
   "settings.display.textSize.increase": "Schriftgröße erhöhen",
@@ -240,6 +243,9 @@ export const de: Dictionary = {
   "composer.attach.title": "Anhängen",
   "composer.attach.photos": "Fotos",
   "composer.attach.files": "Dateien",
+  "composer.attach.listAria": "Anhänge",
+  "composer.attach.removeAria": "{name} entfernen",
+  "composer.attach.inFront": "Its marker is gone from your text, so Send puts {name} in front.",
   "composer.send.typeAnyway": "Trotzdem tippen",
   "composer.send.reallySend": "Senden bestätigen",
   "composer.send.stopTypingAria": "Eingabe ins Terminal abbrechen",
@@ -247,6 +253,8 @@ export const de: Dictionary = {
   "composer.draft.tooLong":
     "Zu lang für einen dauerhaften Entwurf. Bleibt beim Pane-Wechsel erhalten, geht aber beim Beenden der App verloren.",
   "composer.status.dialogWaiting": "Ein Dialog ist geöffnet. Erst antworten, dann senden.",
+  "composer.status.unreadDialog":
+    "Collie kann diesen Dialog nicht lesen. {key} steht auf der Karte. Zum Tippen erneut auf Senden tippen.", // wordsmith
   "composer.status.paneNotWritable": "Pane ist nicht mehr beschreibbar. Nichts gesendet.",
   "composer.status.inputChanged":
     "Eingabefeld hat sich beim Leeren geändert. Es wurde nichts getippt. Pane prüfen.",
@@ -258,7 +266,7 @@ export const de: Dictionary = {
   "composer.destructive.confirm": "Destruktiv: {reason}. Erneut tippen zum Bestätigen.",
   "composer.destructive.confirmOnHost":
     "Destruktiv: {reason} auf {host}. Erneut tippen zum Bestätigen.",
-  "composer.upload.success": "Datei hinzugefügt, Pfad in Nachricht",
+  "composer.upload.success": "Datei angehängt",
   "composer.upload.tooLarge": "Die Datei ist größer als {max} MB, das Limit für diesen Collie.",
   "composer.upload.badType": "Collie kann {name} nicht anhängen.",
   "composer.noEcho.title": "Passwortabfrage ohne Echo",
@@ -274,6 +282,7 @@ export const de: Dictionary = {
   "composer.noEcho.dismissAria": "Passworthinweis verwerfen",
   "composer.draftPreview.title": "Entwurf im Terminal",
   "composer.draftPreview.takeOver": "Übernehmen",
+  "composer.draftPreview.dismissAria": "Hinweis zum Terminal-Entwurf schließen",
 
   // --- sendMode (the armed "typing straight through" indicator) ---
   "sendMode.armed.title": "Eingabe ins Terminal",
@@ -672,6 +681,18 @@ export const de: Dictionary = {
 
   // --- dialog (menu / multi-select / wizard / preview-select block renderers) ---
   "dialog.sendingAria": "Wird gesendet",
+  // TODO wordsmith
+  "dialog.terminalControl": "Terminal",
+  // TODO wordsmith
+  "dialog.terminalControlAria": "Show the terminal instead of this card",
+  // TODO wordsmith
+  "dialog.backToCard": "Back to the card",
+  // TODO wordsmith
+  "dialog.putAwayControl": "Put away",
+  // TODO wordsmith
+  "dialog.putAwayControlAria": "Hide this card's buttons, keep the terminal",
+  // TODO wordsmith
+  "dialog.showButtons": "Show the buttons",
   "dialog.previousStepAria": "Vorheriger Schritt",
   "dialog.nextStepAria": "Nächster Schritt",
   "dialog.answeredAria": "Beantwortet",
@@ -691,6 +712,11 @@ export const de: Dictionary = {
   "dialog.menu.moveDown": "Nach unten",
   "dialog.menu.leftAria": "Links: {verb} ({label})",
   "dialog.menu.rightAria": "Rechts: {verb} ({label})",
+  // TODO wordsmith
+  "dialog.menu.levelAria": "{verb} to {label}",
+  // TODO wordsmith
+  "dialog.menu.levelCurrentAria": "{label}, current",
+  "unreadDialog.caption": "Collie kann diesen Dialog nicht lesen", // wordsmith
   "dialog.preview.currentAnswerAria": "Aktuelle Antwort",
   "dialog.preview.previewedBelowAria": "Vorschau unten",
   "dialog.preview.previewLabel": "Vorschau: {label}",

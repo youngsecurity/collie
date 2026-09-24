@@ -1,10 +1,13 @@
-import { registerSW } from "virtual:pwa-register";
-
+import { basePath, mounted } from "./base-path";
 import { BUILD, isStaleBuild } from "./build";
 import { getServerBuild, subscribeServerBuild } from "./server-build";
 
-// Service-worker registration + update wiring, in one place so the `virtual:pwa-register` import
-// (a build-time virtual module) stays isolated and easy to stub in tests.
+// Service-worker registration + update wiring, in one place. The worker is registered by hand
+// rather than through `virtual:pwa-register`: that module registers `${import.meta.env.BASE_URL}sw.js`,
+// and the base is a build-time constant while the mount is not (ADR 0052, one build serves any
+// mount): under `/collie/` it would register the root's worker. The mount is known only at runtime,
+// from the document the bridge served (lib/base-path.ts), and the worker is registered at
+// `<mount>sw.js` with the mount as its scope.
 //
 // The bridge serves a freshly-rebuilt bundle the instant it's built, but a browser only adopts it
 // when the service worker runs an update check. We don't trust vite-plugin-pwa's own auto-reload
@@ -403,11 +406,22 @@ function nudge(worker: ServiceWorker): void {
   worker.postMessage({ type: "SKIP_WAITING" }, []);
 }
 
-registerSW({
-  immediate: true,
-  onRegisteredSW(_swUrl, r) {
+if ("serviceWorker" in navigator) {
+  // A manual reload can arrive while a new worker is installing. Observe its controller swap
+  // before awaiting registration, or that event can be lost while the promise is pending.
+  // onControllerChange still ignores a first visit's initial claim and deduplicates reloads.
+  navigator.serviceWorker.addEventListener("controllerchange", onControllerChange);
+  void navigator.serviceWorker
+    .register(mounted("/sw.js"), { scope: basePath() })
+    .then(onRegistered)
+    // An insecure context or a locked-down browser refuses the registration; the app runs without
+    // a worker, as it always has there. Nothing to tell the user that the address bar has not.
+    .catch(() => undefined);
+}
+
+function onRegistered(r: ServiceWorkerRegistration): void {
+  {
     registration = r;
-    if (!r) return;
     // Any newly-found worker (from the poll below or a manual check) → follow it, and let the
     // controller swap behind it be what reloads the page.
     r.addEventListener("updatefound", () => followWorker(r.installing));
@@ -416,13 +430,9 @@ registerSW({
     // the new document would sit out the download with nothing to say and nothing nudging a worker
     // that parked in `waiting`.
     followWorker(workerOnItsWayIn(r));
-    // A new SW taking control is the other reliable "we're updated now" signal — but only when it
-    // *replaces* a prior controller (see onControllerChange); the first-visit initial claim is not
-    // an update and must not reload.
-    navigator.serviceWorker?.addEventListener("controllerchange", onControllerChange);
     setInterval(() => void r.update().catch(() => {}), UPDATE_CHECK_MS);
-  },
-});
+  }
+}
 
 // Force an immediate update check — the footer's manual "tap to update". A newer SW installs,
 // skip-waits, activates, takes control, and the controller swap reloads us onto it (the happy path;

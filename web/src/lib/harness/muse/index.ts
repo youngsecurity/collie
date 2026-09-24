@@ -68,9 +68,11 @@ import { detectTrustRegion } from "./trust";
  *
  * QUESTION, CHECKBOX AND REVIEW LIFTS ALSO NEED A LIVE DIALOG, not one quoted in the transcript:
  * an empty box under it ({@link boxHoldsNoDraft}), and on the review screen the live header right
- * above it ({@link askHeaderDirectlyAbove}). A screen that fails stays raw, and `composerReady`
- * still refuses it through the detectors, so nothing is typed or pressed. Approval and trust need
- * no such check: an approval replaces the box, and trust's footer must be the pane's last row.
+ * above it ({@link askHeaderDirectlyAbove}). A screen that fails stays raw. The send gate agrees:
+ * `composerReady` refuses a match only above a strictly bare box (a live dialog owns the keyboard,
+ * so its `❯` never holds a draft or a placeholder tip); quoted shapes above a live box stay raw
+ * AND sendable (#260). Approval and trust need no such check: an approval replaces the box, and
+ * trust's footer must be the pane's last row.
  */
 export function museBuildBlocks(lines: StyledLine[]): Block[] {
   const approval = detectApprovalRegion(lines);
@@ -144,6 +146,12 @@ export const museAdapter: HarnessAdapter = {
   agent: "muse",
   buildBlocks: museBuildBlocks,
   composerReady,
+  // The way OUT of a Muse modal, for the unread-dialog card (.adr/0053). Read from
+  // `muse/DIALOG_NOTES.md`: the ask footers print `Esc to interrupt` (:84, :132) and the REVIEW
+  // phase prints `Esc to go back` (:159). NOTE the caveat: on Muse this key STEPS OUT of the screen,
+  // it does not always dismiss the request — which is why the card's caption names the key and never
+  // promises "cancel".
+  cancelKey: "Escape",
   extractInputDraft,
   extractStatusLines,
   composerPrompt,

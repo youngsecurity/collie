@@ -28,12 +28,25 @@ function worker(state: string, on: Handlers): FakeWorker {
 
 /** Load a fresh `pwa.ts` against a stubbed registration, and hand back every seam it wired. */
 async function load(
-  opts: { controlled?: boolean; installing?: FakeWorker | null; waiting?: FakeWorker | null } = {},
+  opts: {
+    controlled?: boolean;
+    installing?: FakeWorker | null;
+    waiting?: FakeWorker | null;
+    deferRegistration?: boolean;
+  } = {},
 ) {
   vi.resetModules();
   const reload = vi.fn();
   const regEvents: Handlers = {};
   const swEvents: Handlers = {};
+  const swAddEventListener = vi.fn((type: string, fn: () => void) => {
+    swEvents[type] = fn;
+  });
+  let finishRegistration = () => {};
+  const registrationReady = new Promise<void>((resolve) => {
+    finishRegistration = resolve;
+  });
+  if (!opts.deferRegistration) finishRegistration();
   const registration = {
     installing: opts.installing ?? null,
     waiting: opts.waiting ?? null,
@@ -46,9 +59,8 @@ async function load(
   vi.stubGlobal("navigator", {
     serviceWorker: {
       controller: opts.controlled === true ? {} : null,
-      addEventListener: (type: string, fn: () => void) => {
-        swEvents[type] = fn;
-      },
+      addEventListener: swAddEventListener,
+      register: () => registrationReady.then(() => registration),
       getRegistrations: async () => [registration],
     },
   });
@@ -56,12 +68,16 @@ async function load(
   vi.stubGlobal("location", { reload });
   vi.stubGlobal("window", globalThis.window ?? {});
   Object.defineProperty(globalThis.window, "location", { value: { reload }, configurable: true });
-  vi.doMock("virtual:pwa-register", () => ({
-    registerSW: (o: { onRegisteredSW: (url: string, r: typeof registration) => void }) =>
-      o.onRegisteredSW("/sw.js", registration),
-  }));
   const mod = await import("./pwa");
-  return { mod, reload, registration, regEvents, swEvents };
+  // Flush registration-dependent wiring unless this test deliberately keeps it pending.
+  for (let i = 0; i < 4; i += 1) await Promise.resolve();
+  return {
+    mod, reload, registration, regEvents, swEvents, swAddEventListener,
+    finishRegistration: async () => {
+      finishRegistration();
+      for (let i = 0; i < 4; i += 1) await Promise.resolve();
+    },
+  };
 }
 
 beforeEach(() => {
@@ -70,10 +86,42 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
-  vi.doUnmock("virtual:pwa-register");
   // The stuck guard's note lives here (`GUARD_RELOAD_KEY`), and it is meant to survive a reload —
   // so it also survives a test unless a test clears it.
   sessionStorage.clear();
+});
+
+describe("controller swaps before registration settles", () => {
+  it("reloads an already-controlled page before the registration promise resolves", async () => {
+    const h = await load({ controlled: true, deferRegistration: true });
+    expect(h.regEvents.updatefound).toBeUndefined();
+
+    h.swEvents.controllerchange?.();
+    expect(h.reload).toHaveBeenCalledTimes(1);
+    expect(h.mod.getControllerChangedAt()).not.toBeNull();
+
+    await h.finishRegistration();
+    expect(h.regEvents.updatefound).toBeDefined();
+    h.swEvents.controllerchange?.();
+    expect(h.reload).toHaveBeenCalledTimes(1);
+    expect(h.swAddEventListener.mock.calls.filter(([type]) => type === "controllerchange")).toHaveLength(1);
+  });
+
+  it.each(["before", "after"])("ignores the initial claim but reloads for a replacement %s registration settles", async (when) => {
+    const h = await load({ deferRegistration: true });
+    h.swEvents.controllerchange?.();
+    expect(h.reload).not.toHaveBeenCalled();
+    expect(h.mod.getControllerChangedAt()).toBeNull();
+
+    if (when === "after") await h.finishRegistration();
+    h.swEvents.controllerchange?.();
+    expect(h.reload).toHaveBeenCalledTimes(1);
+    expect(h.mod.getControllerChangedAt()).not.toBeNull();
+
+    if (when === "before") await h.finishRegistration();
+    h.swEvents.controllerchange?.();
+    expect(h.reload).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("the reload latch is split into two lanes", () => {

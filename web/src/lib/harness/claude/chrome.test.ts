@@ -717,6 +717,7 @@ describe("dialogs are refused by the border and blank checks — not by the row 
     "claude--select-preview-note-input.txt",
     "claude--select-preview.txt",
     "claude--trust-prompt.txt",
+    "claude--trust-prompt-unnumbered.txt",
     "claude--wizard-preview-note-attached.txt",
     "claude--wizard-preview-q1.txt",
     "claude--wizard-q1-revisit.txt",
@@ -827,6 +828,39 @@ describe("real corpus — pinned so any change to the walk shows up as a diff", 
     { fixture: "menu-model-picker", statusRows: 0, draft: null, stripped: 1 },
     { fixture: "menu-model-picker-dismissed", statusRows: 3, draft: null, stripped: 7 },
     { fixture: "menu-model-picker-moved", statusRows: 0, draft: null, stripped: 1 },
+    // The /effort slider: a modal with no input box and no statusline under it, so the walk finds
+    // nothing to re-surface and nothing to peel.
+    { fixture: "menu-effort-slider", statusRows: 0, draft: null, stripped: 0 },
+    // The same slider at 120 columns, the second capture width the Effort grammar is proven against.
+    // Same reading: a modal, no box, nothing under it to re-surface or peel.
+    { fixture: "menu-effort-slider--w120", statusRows: 0, draft: null, stripped: 0 },
+    // The same slider at 132 columns, cropped to the dialog. Same reading again: a modal, no box.
+    { fixture: "menu-effort-slider--w132", statusRows: 0, draft: null, stripped: 0 },
+    // The three narrow captures (2026-09-22). At 40 and 60 columns Claude wraps the dialog — the
+    // labels break onto a second row and the footer onto two or three — and the walk still reads a
+    // modal with no box, so nothing here moves with the width.
+    { fixture: "menu-effort-slider--w40", statusRows: 0, draft: null, stripped: 0 },
+    { fixture: "menu-effort-slider--w60", statusRows: 0, draft: null, stripped: 0 },
+    { fixture: "menu-effort-slider--w80", statusRows: 0, draft: null, stripped: 0 },
+    // Six more real captures (2026-09-22): `low` and `ultracode` selected at 40, 60 and 80 columns.
+    // Three lift as the Effort grammar and three decline (a soft-wrapped footer at 60/ultracode, no
+    // marker glyph at 40/low, a render glitch at 40/ultracode) — the walk reads the same either way,
+    // a modal with no box and nothing under it.
+    { fixture: "menu-effort-slider--w60-low", statusRows: 0, draft: null, stripped: 0 },
+    { fixture: "menu-effort-slider--w80-low", statusRows: 0, draft: null, stripped: 0 },
+    // The /resume session picker (2026-09-22, Claude Code 2.1.278) at 60, 80 and 120 columns, a typed
+    // search, and the all-projects view (sanitized). Measured: a modal with no box and nothing under
+    // it, at every width and in every state.
+    { fixture: "menu-resume-picker--w120-first", statusRows: 0, draft: null, stripped: 0 },
+    { fixture: "menu-resume-picker--w120-third", statusRows: 0, draft: null, stripped: 0 },
+    { fixture: "menu-resume-picker--w120-search", statusRows: 0, draft: null, stripped: 0 },
+    { fixture: "menu-resume-picker--w60-first", statusRows: 0, draft: null, stripped: 0 },
+    { fixture: "menu-resume-picker--w80-second", statusRows: 0, draft: null, stripped: 0 },
+    { fixture: "menu-resume-picker--w120-all-sanitized", statusRows: 0, draft: null, stripped: 0 },
+    { fixture: "menu-effort-slider--w80-ultracode", statusRows: 0, draft: null, stripped: 0 },
+    { fixture: "menu-effort-slider--w60-ultracode", statusRows: 0, draft: null, stripped: 0 },
+    { fixture: "menu-effort-slider--w40-low", statusRows: 0, draft: null, stripped: 0 },
+    { fixture: "menu-effort-slider--w40-ultracode", statusRows: 0, draft: null, stripped: 0 },
     { fixture: "plan-approval--numbered-body", statusRows: 0, draft: null, stripped: 0 },
     { fixture: "plan-approval--feedback-focused", statusRows: 0, draft: null, stripped: 0 },
     { fixture: "plan-approval--feedback-typed", statusRows: 0, draft: null, stripped: 0 },
@@ -845,6 +879,7 @@ describe("real corpus — pinned so any change to the walk shows up as a diff", 
     { fixture: "select-preview-note-input", statusRows: 0, draft: null, stripped: 0 },
     { fixture: "send-inflight", statusRows: 2, draft: "/rename", stripped: 5 },
     { fixture: "trust-prompt", statusRows: 0, draft: null, stripped: 0 },
+    { fixture: "trust-prompt-unnumbered", statusRows: 0, draft: null, stripped: 0 },
     { fixture: "wizard-multiselect-checked", statusRows: 0, draft: null, stripped: 0 },
     { fixture: "wizard-multiselect-final", statusRows: 0, draft: null, stripped: 0 },
     { fixture: "wizard-multiselect-pointer-next", statusRows: 0, draft: null, stripped: 0 },
