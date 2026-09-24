@@ -29,6 +29,7 @@ import {
   type CrewUpdateRow,
 } from "../update-action.ts";
 import { UpdateTurns, type PeerLeg, type TurnMember } from "./follow.ts";
+import type { UpdateRun } from "../update-run.ts";
 
 // The lead's side of the crew, assembled: sweep the peers, remember the last-good body, merge.
 //
@@ -293,6 +294,12 @@ export interface FollowDistribution {
    * boot would keep a whole crew waiting for a restart.
    */
   readonly leadRelease: () => string | null;
+  /**
+   * This lead's own run record, resolved, or null. The queue reads it to tell a lead still taking
+   * the release from one whose update rolled back and will never state the target (A1). Optional:
+   * a caller that passes none leaves the queue to its wall clock and its run bound.
+   */
+  readonly leadRun?: () => Pick<UpdateRun, "state" | "runId" | "to"> | null;
   /** The in-memory queue. Never persisted — a lead restart re-derives it and re-grants. */
   readonly turns: UpdateTurns;
   /** `enrolledAt` per member, the trust store's own ordering. Read through the store each sweep. */
@@ -630,7 +637,10 @@ export class CrewLead {
       const kind = state.preflight?.installKind;
       return kind === undefined ? turnMember : { ...turnMember, installKind: kind };
     });
-    if (follow.turns.observe(members, this.now()).released) this.resweep();
+    // What this lead states about itself gates every grant: a turn is handed out only while that is
+    // the run's own target, so a member can never be sent to an intermediate release (§20).
+    const lead = { release: follow.leadRelease(), run: follow.leadRun?.() ?? null };
+    if (follow.turns.observe(members, this.now(), lead).released) this.resweep();
   }
 
   /**
@@ -1027,6 +1037,14 @@ export class CrewLead {
   }
 
   /**
+   * Whether the crew run this lead drives is still open, which refuses a second confirm (A5). It
+   * dials nobody.
+   */
+  updateRunOpen(): boolean {
+    return this.deps.follow?.turns.open(this.now()) ?? false;
+  }
+
+  /**
    * An admitted peer reached this lead, so the backoff this lead is holding against it is stale
    * (M20/02). Mark it due now and return.
    *
@@ -1117,7 +1135,15 @@ export class CrewLead {
 
   updateRows(): CrewUpdateRow[] {
     return crewUpdateRows(
-      this.contributions().map((c) => ({ name: c.name, version: c.state.version, preflight: c.state.preflight })),
+      // `health` rides along so `mergedUpdateVerdict` can tell an ABSENT member from a merely
+      // uninspected one: the bank is in memory, so after any restart every member is `unknown`, and
+      // only the health says which of them the lead simply cannot reach (ADR 0050).
+      this.contributions().map((c) => ({
+        name: c.name,
+        version: c.state.version,
+        preflight: c.state.preflight,
+        health: c.state.health,
+      })),
     );
   }
 

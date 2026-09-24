@@ -143,6 +143,7 @@ import { Snooze } from "./snooze.ts";
 import { StateEngine } from "./state-engine.ts";
 import {
   bridgeStampSync,
+  githubCredential,
   githubTagsFetcher,
   releaseReadingFetcher,
   UpdateMonitor,
@@ -723,7 +724,9 @@ const updateMonitor = new UpdateMonitor({
   // version string (M17/02, the Arch pkgrel rebuild).
   exeReplaced: selfExeReplaced,
   startupStamp: bridgeStampSync(bridgeDir, rootDir),
-  fetchTags: githubTagsFetcher(updateRepo),
+  // With the operator's GitHub token when the env holds one (#254): the same three names, in the
+  // same order, that `collie update` reads, so the banner and the verb share one budget.
+  fetchTags: githubTagsFetcher(updateRepo, githubCredential(process.env)),
   // The newest release's own reading (M27/06) — one small GET beside the tag list, from the same
   // repo the release links point at. It answers null for every release that published none.
   fetchReleaseReading: releaseReadingFetcher(updateRepo),
@@ -869,7 +872,7 @@ const updateAction = canRunUpdate
       newRunId,
       start: startDetachedUpdate,
       beginCrewRun: (a: { runId: string; to: string }) => {
-        updateTurns.begin(a.runId, a.to);
+        updateTurns.begin(a.runId, a.to, Date.now());
         // §20's FIRST immediate sweep: the operator has confirmed, so the first turn goes out on a
         // sweep of its own rather than waiting out the idle cadence.
         crewLead?.resweep();
@@ -1344,6 +1347,7 @@ const crewLead = (() => {
     // mid-life, and the roster changes under a running bridge.
     follow: {
       leadRelease: () => leadReleaseHeader({ version: crewVersion, run: readUpdateRun(cfg.stateDir) }),
+      leadRun: () => readUpdateRun(cfg.stateDir),
       turns: updateTurns,
       enrolledAt: (memberId) =>
         trustStore.current()?.peers.find((m) => m.memberId === memberId)?.enrolledAt ?? 0,
@@ -1536,7 +1540,7 @@ function settleUpdateGate(): void {
   // whose name nobody knows and whose journal outlives it by nothing, so a trace left only there is
   // a trace left nowhere. Once per run id per process, so a poll tick cannot make it a stream.
   console.log(`[crew] update ${start.runId}: levelling peers to ${start.to}`);
-  updateTurns.begin(start.runId, start.to);
+  updateTurns.begin(start.runId, start.to, Date.now());
   crewLead?.resweep();
 }
 

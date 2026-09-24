@@ -1,4 +1,4 @@
-import { Check, Inbox, WifiOff } from "lucide-react";
+import { Inbox, WifiOff } from "lucide-react";
 
 import { clockTime } from "@/lib/format";
 import { useMuxCapability } from "@/lib/mux-capability";
@@ -6,10 +6,10 @@ import { SectionHeader } from "@/components/section-header";
 import { ListGroup } from "@/components/ui/list-group";
 import { groupPanesByWorkspace, type WorkspaceGroup } from "@/lib/pane-groups";
 import { Chip } from "@/components/ui/chip";
-import { StatusCounts } from "@/components/status-counts";
+import { StatusCounts, StatusSummaryLine } from "@/components/status-counts";
 import { STRIP_SCROLLER } from "@/components/ui/labelled-strip";
 import { bucketOf, triage, worstTriage, type TriageKey } from "@/lib/triage";
-import type { AgentView, BridgeStatus, TabView } from "@/lib/types";
+import type { AgentView, BridgeStatus, ServerSummary, TabView } from "@/lib/types";
 import { paneRowKey } from "@/lib/hosts";
 import { AgentCard } from "./agent-card";
 import { t } from "@/lib/i18n";
@@ -42,6 +42,8 @@ interface AgentListProps {
   lastSeenAt?: number;
   /** The raw tab list, for the multiplexer's own tab order inside a workspace. */
   tabs?: readonly TabView[];
+  /** The snapshot's machine list, for the order machines run in: the lead first (lib/pane-groups.ts). */
+  servers?: readonly ServerSummary[] | undefined;
   /**
    * The workspace filter the strip on top drives, per device (hooks/use-dash-prefs.ts). `isolated`
    * shows one workspace alone; `hidden` drops workspaces from the list while their chips stay in
@@ -90,28 +92,24 @@ function groupDomId(key: string): string {
   return `ws-group-${key.replace(/[^A-Za-z0-9_-]/gu, "_")}`;
 }
 
-// ── THE DASHBOARD ASKS TWO QUESTIONS, IN THIS ORDER ──────────────────────────
-// FIRST, what needs you. Needs you → Ready · unseen, pinned to the top under an accented header,
-// and each row still carrying its own place on line 2 — those two groups are by URGENCY, so a row
-// in them has to say where it came from. That is the dashboard's job and it does not move.
+// ── THE DASHBOARD, IN ONE FIXED ORDER (ADR 0063) ─────────────────────────────
+// BY WORKSPACE, always. One group per workspace, headed by its name and counted, in machine and
+// workspace-number order (lib/pane-groups.ts), with the panes inside in the order the bridge sent.
+// Rows under one workspace heading are panes, because that is what a workspace holds. The workspace
+// is the level the operator thinks in, so it is the level the heading names; the tab drops onto
+// line 2 of the row (`AgentCard` at `scope="place"`), where it tells two rows apart without
+// spending a heading, and the group reads as one 44px pitch.
 //
-// THEN, everything else, BY WORKSPACE. One group per workspace, headed by its name and counted, in
-// machine and workspace-number order (lib/pane-groups.ts), with the panes inside in the order the
-// bridge sent. What this replaces is the Working and Recent sections, and the argument for replacing
-// them is the complaint they caused: a flat list of eighteen rows, each repeating an address, said
-// nothing about what KIND of thing a row was, and a status word the row's own dot already carries
-// is a poor heading to spend a group on. Rows under one workspace heading are panes, because that is
-// what a workspace holds. The workspace is the level the operator thinks in, so it is the level the
-// heading names; the tab drops onto line 2 of the row (`AgentCard` at `scope="place"`), where it
-// tells two rows apart without spending a heading, and the group reads as one 44px pitch.
+// A PANE'S ROW NEVER MOVES WHEN ITS STATE CHANGES. The operator finds a pane by where it sits, not
+// by what it is doing right now, and every arrangement that once reordered on a status change — a
+// "Needs you" section pulled to the top, the Working and Recent sections, the sort toggle — broke
+// exactly that and is gone (ADR 0063).
 //
-// A ROW IS LISTED ONCE. An urgent pane is PULLED out of its workspace rather than copied to the top:
-// it is one thing, and two rows for it would mean answering it twice. So the group's count counts
-// the rows actually under the heading, and a workspace whose every pane needs you has no group left
-// at all — it is entirely on top, which is where you are already looking.
-//
-// The sort toggle and the Recent fold went with those two sections: a workspace's handful of rows is
-// not a tail to fold away, and there is no clock left in the order to reverse.
+// URGENCY IS A MARK NOW, NEVER A POSITION. A workspace holding a pane that needs you lights its own
+// heading (a dot) and its own count (`StatusCounts`); the pane's own row takes a full-colour wash
+// (`AgentCard`'s `tint`) rather than moving anywhere; and ONE summary line above every group counts
+// what needs you across the whole herd and jumps to the first of it. A row is listed once, in its
+// one place, and its marks say the rest.
 export function AgentList({
   agents,
   shellPanes = NO_PANES,
@@ -121,6 +119,7 @@ export function AgentList({
   error = false,
   lastSeenAt,
   tabs,
+  servers,
   isolated = null,
   hidden = NO_KEYS,
   onIsolate,
@@ -179,7 +178,7 @@ export function AgentList({
   // the one summary line. Push and the badge carry the alarm; this screen answers "where".
   const all = triage(agents);
   const attention = all.filter((s) => ATTENTION.has(s.key) && s.agents.length > 0);
-  const groups = groupPanesByWorkspace(agents, shellPanes, { order: "fixed", tabs });
+  const groups = groupPanesByWorkspace(agents, shellPanes, { order: "fixed", tabs, servers });
   if (groups.length === 0) return null;
   // A stale key (a workspace since closed) filters nothing: an isolation nobody can see is dropped.
   const isolatedGroup = isolated === null ? undefined : groups.find((g) => workspacePrefKey(g) === isolated);
@@ -220,9 +219,14 @@ export function AgentList({
           each lit with the worst status inside. Tap a chip to see that workspace alone, tap it or
           All to see everything again. Long-press a chip to hide the workspace, and again to bring it
           back; a hidden chip stays in the strip, dimmed, with its dot, so hiding never silences a
-          workspace that needs you. One height always, so nothing below moves. */}
+          workspace that needs you. One height always, so nothing below moves.
+          The scroller keeps STRIP_SCROLLER's own `py-1.5` and must: that padding is the room a
+          chip's STRIP_TAP_TARGET `::before` reaches into for the 44px tap floor. Trimmed to `py-0`
+          it cost both halves at once — the reach was clipped away, so the chips answered a 34px
+          touch, and the same overflow became 6px of vertical scroll that dragged their bottom edge
+          out of sight. `actions-row.tsx` hit this before; its note carries the mechanism. */}
       <nav aria-label={t("space.strip.title")} className="-mx-4">
-        <div className={cn(STRIP_SCROLLER, "px-4 py-0")}>
+        <div className={cn(STRIP_SCROLLER, "px-4")}>
           <Chip label={t("space.tabStrip.all")} active={!isolatedGroup} onClick={() => onIsolate?.(null)} />
           {groups.map((g) => (
             <Chip
@@ -242,20 +246,11 @@ export function AgentList({
           word, once for the whole dashboard (the headings below repeat the numbers, not the words).
           The all-clear check leads when nothing needs you. A tap goes to the first workspace
           holding something urgent. */}
-      <button
-        type="button"
-        onClick={() => firstUrgent && jumpTo(firstUrgent)}
-        disabled={!firstUrgent}
-        className="flex min-h-8 items-center gap-3 text-left text-xs font-medium text-foreground disabled:opacity-100"
-      >
-        {allClear && (
-          <span className="flex items-center gap-1.5 leading-none">
-            <Check className="size-4 shrink-0 text-status-done" aria-hidden />
-            {t("home.allClear")}
-          </span>
-        )}
-        <StatusCounts panes={agents} labelled={!allClear} className={allClear ? "text-muted-foreground" : undefined} />
-      </button>
+      <StatusSummaryLine
+        panes={agents}
+        allClear={allClear}
+        onJump={firstUrgent ? () => jumpTo(firstUrgent) : undefined}
+      />
 
       {/* By workspace. The heading IS the landmark: full ink, its own case, and it lights up with a
           dot and a count when a pane inside needs you. Flat rows in ONE bordered group. */}
