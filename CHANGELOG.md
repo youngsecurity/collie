@@ -37,17 +37,19 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 ## [Unreleased]
 
+## [1.12.1+ys.1] - 2026-09-24
+
 ### Changed
 
-- **Collie adopts upstream 1.12.1 while preserving the fork's safeguards.** Include the 1.12.0 composer, attachment, dialog, and mounted-path improvements, plus stable pane ordering, crew update recovery, and mobile rendering fixes. Preserve custom terminal colors, including docked unread dialogs, fork release selection, update locking, the Herdr 0.8.0 minimum, and manual source-only publication. Thanks @AltanS (youngsecurity/collie#56, youngsecurity/collie#55).
+- **Collie adopts upstream 1.12.1 while preserving the fork's safeguards.** Include the 1.12.0 composer, attachment, dialog, and mounted-path improvements, plus stable pane ordering, crew update recovery, and mobile rendering fixes. Preserve custom terminal colors, including docked unread dialogs, fork release selection, update locking, the Herdr 0.8.0 minimum, and manual source-only publication. Thanks @AltanS (youngsecurity/collie#56, youngsecurity/collie#55). ([d567516c](https://github.com/youngsecurity/collie/commit/d567516c))
 
 ### Fixed
 
-- **Replacement crew update runs report blocked members again.** Clear the previous run's diagnostic suppression state when a new run starts, while keeping repeated sweeps and same-run starts quiet. Thanks @coderabbitai (youngsecurity/collie#54).
+- **Replacement crew update runs report blocked members again.** Clear the previous run's diagnostic suppression state when a new run starts, while keeping repeated sweeps and same-run starts quiet. Thanks @coderabbitai (youngsecurity/collie#54). ([6238074a](https://github.com/youngsecurity/collie/commit/6238074a))
 
-- **Mounted images and crew multiplexer changes take effect correctly.** Keep journal blob requests under the app's mount while preserving pane scope and image-reference validation. Restart an already-enrolled peer when configuration changes its multiplexer, without restarting unchanged peers. Refs youngsecurity/collie#57.
+- **Mounted images and crew multiplexer changes take effect correctly.** Keep journal blob requests under the app's mount while preserving pane scope and image-reference validation. Restart an already-enrolled peer when configuration changes its multiplexer, without restarting unchanged peers. Refs youngsecurity/collie#57. ([f646f410](https://github.com/youngsecurity/collie/commit/f646f410))
 
-- **Reloading during an update keeps following the new worker.** Observe controller changes before asynchronous registration settles, so a manual reload cannot miss the swap and leave the app running its old bundle. Preserve first-visit claim handling and one-reload behavior. Refs youngsecurity/collie#57.
+- **Reloading during an update keeps following the new worker.** Observe controller changes before asynchronous registration settles, so a manual reload cannot miss the swap and leave the app running its old bundle. Preserve first-visit claim handling and one-reload behavior. Refs youngsecurity/collie#57. ([cfe94afb](https://github.com/youngsecurity/collie/commit/cfe94afb))
 
 ## [1.11.1+ys.1] - 2026-09-20
 
