@@ -37,14 +37,16 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 ## [Unreleased]
 
+## [1.13.1+ys.1] - 2026-09-26
+
 ### Changed
 
-- **Collie adopts upstream 1.13.1 while preserving the fork's safeguards.** Include the Changes browser, Focus dashboard, pane transitions, update mode, OpenCode 2 and Muse support, and phone-started update recovery. Preserve source-only fork releases, update locking, the Herdr 0.8.0 minimum, custom terminal colors, mounted images, and early service-worker observation. Thanks @AltanS (youngsecurity/collie#58).
+- **Collie adopts upstream 1.13.1 while preserving the fork's safeguards.** Include the Changes browser, Focus dashboard, pane transitions, update mode, OpenCode 2 and Muse support, and phone-started update recovery. Preserve source-only fork releases, update locking, the Herdr 0.8.0 minimum, custom terminal colors, mounted images, and early service-worker observation. Thanks @AltanS (youngsecurity/collie#58). ([8a0cfb28](https://github.com/youngsecurity/collie/commit/8a0cfb28))
 
 ### Fixed
 
-- **Phone-started updates keep their own progress and retry consent.** The accepted start identifies the newly launched run, so previous completions cannot take its screen and staging failures remain visible. A start that never reports progress releases the phone's claim after a bounded wait and leaves a persistent notice to check its log. Retries normalize version-directory names and reopen major-version confirmation when needed, including from the Updates card. (youngsecurity/collie#58)
-- **Cold Changes links return through the existing parent history.** File and commit-file back arrows reuse the seeded list entry instead of duplicating it, for both pane and workspace links. (youngsecurity/collie#58)
+- **Phone-started updates keep their own progress and retry consent.** The accepted start identifies the newly launched run, so previous completions cannot take its screen and staging failures remain visible. A start that never reports progress releases the phone's claim after a bounded wait and leaves a persistent notice to check its log. Retries normalize version-directory names and reopen major-version confirmation when needed, including from the Updates card. (youngsecurity/collie#58) ([8a0cfb28](https://github.com/youngsecurity/collie/commit/8a0cfb28))
+- **Cold Changes links return through the existing parent history.** File and commit-file back arrows reuse the seeded list entry instead of duplicating it, for both pane and workspace links. (youngsecurity/collie#58) ([8a0cfb28](https://github.com/youngsecurity/collie/commit/8a0cfb28))
 
 ## [1.12.1+ys.1] - 2026-09-24
 
