@@ -37,6 +37,7 @@ import {
 } from "@/lib/last-seen";
 import { detectNoEchoPrompt } from "@/lib/no-echo";
 import { markPollResult } from "@/lib/poll-intent";
+import { prefetchPane, takePanePrefetch } from "@/lib/pane-prefetch";
 import { clearNotPaired, markNotPaired } from "@/lib/pairing";
 import {
   internScope,
@@ -67,7 +68,7 @@ import type {
 // A superseded revalidation is aborted via the loader's request.signal; that surfaces as an
 // AbortError we must RETHROW so React Router discards the stale run — swallowing it into the
 // stale-data/error-banner path would flash a spurious "reconnecting…" on every fast poll.
-function isAbortError<TThrown>(e: TThrown): boolean {
+export function isAbortError<TThrown>(e: TThrown): boolean {
   // `fetch` rejects an aborted request with a DOMException, which is an Error subclass in every
   // engine Collie runs in (and in jsdom) — so an `instanceof Error` test reaches it without having
   // to inspect the shape of an arbitrary thrown value.
@@ -463,6 +464,17 @@ function holdsNoEchoPrompt(text: string): boolean {
   return detectNoEchoPrompt(splitLines(parseAnsi(tail))) !== null;
 }
 
+/**
+ * Start the read `paneLoader` will need for this pane, from a row's `pointerdown`, so the answer is
+ * usually in by the tap's `click` (lib/pane-prefetch.ts). Returns a promise that settles when it is,
+ * and never rejects. Nothing starts during a known outage, where the loader answers from its cache
+ * without a read.
+ */
+export function prefetchPaneData(paneId: string, scope: Scope | undefined): Promise<void> {
+  if (isLostLatched()) return Promise.resolve();
+  return prefetchPane(paneId, scope, getRequestedLines(paneId, scope));
+}
+
 export async function paneLoader({
   params,
   request,
@@ -489,12 +501,18 @@ export async function paneLoader({
   if (isNavigation && isLostLatched()) return stalePane(paneId, scope, lines);
 
   try {
-    // On a 304 fetchPane returns the cached body (and throws when it has none to return), so
-    // `read.text` is the real screen on every success path, and both paths are a success (not the
-    // error branch) so the connection bar doesn't flicker on an unchanged poll. The text is taken
-    // AS IS: an empty string is a real screen too (the operator just ran `clear`), and it must
-    // replace the stale text rather than let the old screen win an `||`.
-    const read: PaneReadResponse = await fetchPane(paneId, lines, scope, request?.signal);
+    // A successful read includes the real screen, including an empty string after `clear`.
+    // A 304 uses the cached body or throws if none exists. Never substitute stale text.
+    // A navigation takes the read the row's `pointerdown` already started, when one is fresh
+    // (lib/pane-prefetch.ts). That read left the pane's unseen mark alone, so the seen read follows
+    // it, once it is in: by then the ETag cache holds its body and the bridge answers a 304. Nothing
+    // waits on it. A poll never takes a prefetched read.
+    const prefetched = isNavigation ? takePanePrefetch(paneId, scope, lines) : undefined;
+    if (prefetched) {
+      const markSeen = () => fetchPane(paneId, lines, scope).catch(() => {});
+      void prefetched.then(markSeen, markSeen);
+    }
+    const read: PaneReadResponse = await (prefetched ?? fetchPane(paneId, lines, scope, request?.signal));
     const text = read.text;
     // THE "IS THE SCREEN STILL MOVING" SIGNAL, taken at the one place that can honestly answer it.
     //

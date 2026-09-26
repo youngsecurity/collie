@@ -2140,24 +2140,22 @@ describe("AgentChat — zen mode", () => {
   });
 
   describe("auto-zen follows the rotation", () => {
-    // The query AgentChat asks for, spelled out once so a case can say what it is holding.
-    const LANDSCAPE_QUERY = "(orientation: landscape) and (max-height: 520px)";
+    // The viewport-height query AgentChat asks for.
+    const LANDSCAPE_QUERY = "(max-height: 520px)";
 
-    // A controllable `matchMedia` fake for the rotation query: the shared stub in test/setup.ts
-    // never fires, which is fine for every other suite and useless for the one mechanism here that
-    // has no other trigger. Installed per case, removed after.
-    //
-    // `viewportHeight` is what makes the fake honest about the `and (max-height: 520px)` half of the
-    // query. A query the viewport is too tall for can never match, however the phone is held, so the
-    // fake hands back a dead list for it rather than the live one — which is exactly what a desktop
-    // browser does.
+    // ScreenOrientation tracks physical rotation; matchMedia tracks viewport height independently.
+    // A keyboard may shrink the viewport without ever rotating the phone.
     let emitOrientation: (landscape: boolean) => void;
+    let emitViewport: (short: boolean) => void;
     function installOrientation(initial: boolean, viewportHeight = 380) {
+      const orientation = new EventTarget();
+      Object.defineProperty(orientation, "type", { configurable: true, value: initial ? "landscape-primary" : "portrait-primary" });
+      Object.defineProperty(window.screen, "orientation", { configurable: true, value: orientation });
       // The fake speaks only the half of MediaQueryListEvent the hook reads (`matches`) — a full
       // event object here would need a cast that discards type evidence for nothing.
       const listeners = new Set<(e: { matches: boolean }) => void>();
       const mql = {
-        matches: initial,
+        matches: viewportHeight <= 520,
         media: LANDSCAPE_QUERY,
         onchange: null,
         addEventListener: (_: string, fn: (e: { matches: boolean }) => void) => {
@@ -2167,23 +2165,36 @@ describe("AgentChat — zen mode", () => {
           void listeners.delete(fn);
         },
       };
-      const dead = {
-        matches: false,
-        media: LANDSCAPE_QUERY,
-        onchange: null,
-        addEventListener: () => {},
-        removeEventListener: () => {},
-      };
-      const short = viewportHeight <= 520;
-      vi.stubGlobal("matchMedia", (query: string) =>
-        query.includes("max-height: 520px") && !short ? dead : mql,
-      );
+      vi.stubGlobal("matchMedia", () => mql);
       emitOrientation = (landscape: boolean) => {
-        mql.matches = landscape;
-        for (const fn of listeners) fn({ matches: landscape });
+        Object.defineProperty(orientation, "type", { configurable: true, value: landscape ? "landscape-primary" : "portrait-primary" });
+        orientation.dispatchEvent(new Event("change"));
+      };
+      emitViewport = (short: boolean) => {
+        mql.matches = short;
+        for (const fn of listeners) fn({ matches: short });
       };
     }
-    afterEach(() => vi.unstubAllGlobals());
+    afterEach(() => {
+      vi.unstubAllGlobals();
+      Reflect.deleteProperty(window.screen, "orientation");
+    });
+
+    it("keeps the composer focused when a portrait cover screen becomes viewport-landscape under the keyboard", async () => {
+      setZenEnabled(true);
+      setAutoZenEnabled(true);
+      installOrientation(false, 900);
+      const { container } = renderChat();
+      const box = screen.getByPlaceholderText(/type a reply/i);
+      box.focus();
+
+      // A keyboard changes only the CSS viewport; ScreenOrientation does not change.
+      act(() => emitViewport(true));
+
+      expect(headerRowOf(container)).not.toBeNull();
+      expect(box).toBeInTheDocument();
+      expect(box).toHaveFocus();
+    });
 
     it("enters zen on rotation to landscape and leaves on rotation back", async () => {
       setZenEnabled(true);
@@ -2199,6 +2210,39 @@ describe("AgentChat — zen mode", () => {
       act(() => emitOrientation(false));
       await waitFor(() => expect(headerRowOf(container)).not.toBeNull());
       expect(screen.queryByRole("button", { name: "Exit zen mode" })).not.toBeInTheDocument();
+    });
+
+    it("falls back to the CSS orientation where screen.orientation does not exist", async () => {
+      setZenEnabled(true);
+      setAutoZenEnabled(true);
+      // iOS Safari before 16.4: no ScreenOrientation, so the CSS query decides as it always did.
+      Reflect.deleteProperty(window.screen, "orientation");
+      const queries = new Map<string, { matches: boolean; fns: Set<(e: { matches: boolean }) => void> }>();
+      vi.stubGlobal("matchMedia", (query: string) => {
+        const entry = queries.get(query) ?? { matches: false, fns: new Set() };
+        queries.set(query, entry);
+        return {
+          get matches() {
+            return entry.matches;
+          },
+          media: query,
+          onchange: null,
+          addEventListener: (_: string, fn: (e: { matches: boolean }) => void) => void entry.fns.add(fn),
+          removeEventListener: (_: string, fn: (e: { matches: boolean }) => void) => void entry.fns.delete(fn),
+        };
+      });
+      const { container } = renderChat();
+      expect(headerRowOf(container)).not.toBeNull();
+
+      act(() => {
+        for (const [query, entry] of queries) {
+          if (query === "(max-height: 520px)" || query === "(orientation: landscape)") {
+            entry.matches = true;
+            for (const fn of entry.fns) fn({ matches: true });
+          }
+        }
+      });
+      await waitFor(() => expect(headerRowOf(container)).toBeNull());
     });
 
     it("does nothing while zen itself is unavailable", async () => {
@@ -2908,5 +2952,23 @@ describe("AgentChat — the terminal draft notice floats (ADR 0061)", () => {
     expect(screen.queryByText(/draft in terminal/i)).toBeNull();
     // The slot stays, empty, and pass-through.
     expect(container.querySelector('[data-slot="draft-notice-slot"]')!.childElementCount).toBe(0);
+  });
+});
+
+// EXPERIMENT (operator, 2026-09-23): the Changes entry (ADR 0065) moved off the ⋮ sheet onto the
+// belt's pinned block, beside the switcher mark. Still gated on the pane reporting a folder.
+describe("AgentChat — the belt's Changes pill", () => {
+  it("shows on the belt when the pane has a folder, and not in the pane menu", async () => {
+    const user = userEvent.setup();
+    const { container } = renderChat();
+    const belt = container.querySelector<HTMLElement>('[data-slot="composer-actions"]')!;
+    expect(within(belt).getByRole("button", { name: "Changes" })).toBeInTheDocument();
+    await openPaneMenu(user);
+    expect(within(screen.getByRole("dialog")).queryByRole("button", { name: "Changes" })).toBeNull();
+  });
+
+  it("is hidden when the pane reports no folder", () => {
+    renderChat({ agent: { ...fixtureAgents[0]!, cwd: "" } });
+    expect(screen.queryByRole("button", { name: "Changes" })).toBeNull();
   });
 });

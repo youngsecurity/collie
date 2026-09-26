@@ -118,7 +118,7 @@ the pointer, it was a supersede.
 | [0041](./0041-cache-rules-are-sourced-claims.md) | Cache rules are sourced claims | Accepted |
 | [0042](./0042-notification-kinds-and-the-cache-watch.md) | Notification kinds, and the cache watch: global OR per-pane, keyed by session ref | Accepted |
 | [0043](./0043-operator-bar-rows-replace-the-bar-not-the-palette.md) | Operator bar rows replace the bar, not the palette (applies 0018 per surface) | Accepted |
-| [0044](./0044-the-update-screen-is-one-reducer-and-one-shared-poll.md) | The update screen is one reducer and one shared poll | Accepted |
+| [0044](./0044-the-update-screen-is-one-reducer-and-one-shared-poll.md) | The update screen is one reducer and one shared poll | Amended in scope by 0064 |
 | [0045](./0045-a-build-below-the-protocol-floor-is-a-red-preflight.md) | A build below the protocol floor is a red preflight, never a silent link | Accepted |
 | [0046](./0046-an-urgent-patch-keeps-the-daily-cadence.md) | An urgent patch keeps the daily cadence | Accepted |
 | [0047](./0047-muse-panes-render-natively.md) | Muse panes render natively: no light-theme inversion (addendum 2026-09-21: the bit's own limit) | Accepted |
@@ -138,6 +138,12 @@ the pointer, it was a supersede.
 | [0061](./0061-the-terminal-draft-notice-floats.md) | The terminal draft notice floats: it leaves the layout for an absolute slot at the mirror's bottom edge, above the card dock or the belt, and an x hides it until that draft is gone | Accepted |
 | [0062](./0062-a-crew-run-levels-to-its-target-and-its-second-step-is-not-a-new-attempt.md) | A crew run levels to its target, and its second step is not a new attempt: no turn below the target, the hourly limit exempts a step inside the same run, the lead names the limit (amends 0016) | Accepted |
 | [0063](./0063-a-pane-keeps-its-place-when-its-state-changes.md) | A pane keeps its place when its state changes: no list is ordered by status, the bridge and the crew merge send place order, every surface recomputes it, and urgency is a mark plus one summary line | Accepted |
+| [0064](./0064-an-update-puts-the-phone-in-update-mode.md) | An update puts the phone in update mode: a locked app, a docked panel, seven steps that end only on Done, Rolled back or Stuck, the phone's own reload last and once, and a panel that never moves (amends 0044) | Accepted |
+| [0065](./0065-the-changes-view-reads-git-read-only.md) | The Changes view reads git, read-only: HEAD as the base, nested repo discovery under two per-device settings, git hardened against repo-driven execution, and a diff served only for a repo and path the bridge itself listed | Accepted |
+| [0066](./0066-the-dashboard-has-a-footer-panes-needs-you-changes.md) | The dashboard has a footer: Panes, Attention, Changes. Attention filters to the attention panes and never sorts, Changes lists workspaces with counts that refresh every 5 s only while the tab is on screen, the tab is kept per device (amends nothing in 0063) | Amended in scope by 0068 |
+| [0067](./0067-back-goes-up-one-level.md) | Back goes up one level: down is a push that records `from`, sideways is a replace that carries it, up steps back onto a legitimate parent or replaces onto the structural one, a cold deep link is seeded with its parents, a POP draws no slide, and sheets own no history | Accepted |
+| [0068](./0068-the-second-tab-is-focus-not-attention.md) | The dashboard's second tab is Focus, not Attention: renamed for the same reason "Needs you" was, and `CircleDot` replaces `BellRing`, which read as a notification even in the quiet state (amends 0066 in scope) | Accepted |
+| [0069](./0069-a-row-glides-into-its-header.md) | A row glides into its header: one engine, hand-started same-document view transitions, forward on the tap and reverse only on the in-app back arrow, a crossfade when the landing isn't real, and no frozen screen because a network wait is paid before the transition starts, not during it | Accepted |
 
 Numbers are claimed across **both** branches: 0011–0016 were accepted here on `v1` while `main` was
 still at 0010, so a new ADR continues from the highest number in use anywhere, not the highest one on

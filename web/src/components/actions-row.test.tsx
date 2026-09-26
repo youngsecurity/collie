@@ -6,7 +6,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { __resetHarnessBar, setHarnessBarEnabled } from "@/lib/harness-bar-pref";
 import { ActionsRow, type GeneralAction } from "./actions-row";
 
-afterEach(() => __resetHarnessBar());
+afterEach(() => {
+  __resetHarnessBar();
+  localStorage.clear();
+});
 
 const took = async () => true;
 
@@ -195,27 +198,90 @@ describe("ActionsRow", () => {
     expect(scroller.className).not.toMatch(/(?:^|\s)pr-3(?=\s|$)/);
     const spacer = scroller.lastElementChild!;
     expect(spacer.getAttribute("aria-hidden")).toBe("true");
-    expect(spacer.getAttribute("style")).toBe("width: 117px;");
+    // 122 (the block's first-frame fallback at the default 1.15 scale: 85 + the 37px mark) + 16
+    // (BELT_END_AIR, the operator's wider right margin).
+    expect(spacer.getAttribute("style")).toBe("width: 138px;");
     // The masked wrapper one level out never carries a right-hand gradient stop — `edges="left"`
     // took effect.
     const masked = scroller.parentElement!;
     expect(masked.className).not.toContain("black_calc");
   });
 
-  it("stands the belt's scroller at py-1 (40px), with no vertical scroll under a thumb", () => {
+  // EXPERIMENT (operator, 2026-09-23): the Changes entry rides the pinned block, left of the mark.
+  it("draws the Changes pill immediately left of the Switch mark, same 32px box, and widens the fallback", async () => {
+    const onChanges = vi.fn();
+    render(
+      <ActionsRow
+        general={[general()]}
+        agent="claude"
+        onRun={took}
+        handle={{ ref: vi.fn(), onClick: vi.fn(), label: "Switch pane" }}
+        changes={{ onClick: onChanges, label: "Changes" }}
+      />,
+    );
+    const pill = screen.getByRole("button", { name: "Changes" });
+    const grip = screen.getByRole("button", { name: "Switch pane" });
+    expect(pill.nextElementSibling).toBe(grip);
+    expect(pill.className).toMatch(/(?:^|\s)w-\(--belt-pill\)(?=\s|$)/);
+    expect(pill.className).toMatch(/(?:^|\s)min-w-\(--belt-pill\)(?=\s|$)/);
+    expect(pill).not.toHaveAttribute("aria-haspopup");
+    await userEvent.click(pill);
+    expect(onChanges).toHaveBeenCalledTimes(1);
+    // 165 (122 + the 37px pill + its 6px gap, at the default 1.15 scale) + 16 of end air.
+    const scroller = document.querySelector<HTMLElement>(".overflow-x-auto")!;
+    expect(scroller.lastElementChild!.getAttribute("style")).toBe("width: 181px;");
+  });
+
+  it("has no Changes pill without the prop", () => {
+    render(
+      <ActionsRow general={[general()]} agent="claude" onRun={took} handle={{ ref: vi.fn(), onClick: vi.fn(), label: "Switch pane" }} />,
+    );
+    expect(screen.queryByRole("button", { name: "Changes" })).not.toBeInTheDocument();
+  });
+
+  // Operator, phone: "can we get a focus hover animation/color change on both icons? so I know
+  // I've clicked" — the Changes pill and the Switch mark share PINNED_PILL, so the tap feedback is
+  // asserted once per class and expected identical on both.
+  it("gives the Changes pill and the Switch mark identical, fast tap feedback", () => {
+    render(
+      <ActionsRow
+        general={[general()]}
+        agent="claude"
+        onRun={took}
+        handle={{ ref: vi.fn(), onClick: vi.fn(), label: "Switch pane" }}
+        changes={{ onClick: vi.fn(), label: "Changes" }}
+      />,
+    );
+    const changesPill = screen.getByRole("button", { name: "Changes" });
+    const switchPill = screen.getByRole("button", { name: "Switch pane" });
+    for (const pill of [changesPill, switchPill]) {
+      expect(pill.className).toMatch(/(?:^|\s)hover:bg-foreground\/8(?=\s|$)/);
+      expect(pill.className).toMatch(/(?:^|\s)active:bg-foreground\/15(?=\s|$)/);
+      expect(pill.className).toMatch(/(?:^|\s)active:scale-\[0\.92\](?=\s|$)/);
+      expect(pill.className).toMatch(/(?:^|\s)motion-reduce:active:scale-100(?=\s|$)/);
+      expect(pill.className).toMatch(/(?:^|\s)duration-\[120ms\](?=\s|$)/);
+    }
+    // No layout shift: the drawn box stays borderless and padding-free in every state — only the
+    // background, the transform and the outline (focus-visible, from ui/button.tsx) move.
+    expect(changesPill.className).toMatch(/(?:^|\s)border-0(?=\s|$)/);
+    expect(changesPill.className).toMatch(/(?:^|\s)px-0(?=\s|$)/);
+  });
+
+  it("stands the belt's scroller on the scaled padding, with no vertical scroll under a thumb", () => {
     // Option 6 of the belt-shade deck (playground, removed 2026-09-14 once it had served) first
     // dropped STRIP_SCROLLER's own `py-1.5` to `py-0`, the pill's own 32px. The phone read that as
     // too thin, so it came back up to `py-1` — 40px, 4px above and below the 32px pills — and
     // `overflow-y-hidden` stays paired with it so STRIP_TAP_TARGET's 46px `::before` reach, still
     // wider than the 4px of padding on each side, cannot force a vertical scrollbar the way it did
     // in the playground.
+    // Since 2026-09-23 the 4px is `--belt-pad`, derived from the belt's one `--belt-scale`.
     render(<ActionsRow general={[general()]} agent="claude" onRun={took} />);
     const scroller = document.querySelector<HTMLElement>(".overflow-x-auto")!;
-    expect(scroller.className).toMatch(/(?:^|\s)py-1(?=\s|$)/);
+    expect(scroller.className).toMatch(/(?:^|\s)py-\(--belt-pad\)(?=\s|$)/);
     expect(scroller.className).toMatch(/(?:^|\s)overflow-y-hidden(?=\s|$)/);
   });
 
-  it("narrows the Switch button to 32px, the operator's pick", () => {
+  it("narrows the Switch button to the pill's own scaled height, square, the operator's pick", () => {
     render(
       <ActionsRow
         general={[general()]}
@@ -225,8 +291,30 @@ describe("ActionsRow", () => {
       />,
     );
     const grip = screen.getByRole("button", { name: "Switch pane" });
-    expect(grip.className).toMatch(/(?:^|\s)w-8(?=\s|$)/);
-    expect(grip.className).toMatch(/(?:^|\s)min-w-8(?=\s|$)/);
+    expect(grip.className).toMatch(/(?:^|\s)w-\(--belt-pill\)(?=\s|$)/);
+    expect(grip.className).toMatch(/(?:^|\s)min-w-\(--belt-pill\)(?=\s|$)/);
+  });
+
+  // ONE SCALE FOR THE WHOLE BELT (operator, 2026-09-23): the root carries `--belt-scale` from the
+  // dash pref, 1.15 by default, and the first-frame fallback follows it.
+  it("sets --belt-scale from the dash pref, 1.15 by default", () => {
+    const { unmount } = render(<ActionsRow general={[general()]} agent="claude" onRun={took} />);
+    const belt = () => document.querySelector<HTMLElement>('[data-slot="composer-actions"]')!;
+    expect(belt().style.getPropertyValue("--belt-scale")).toBe("1.15");
+    unmount();
+    localStorage.setItem("collie:dash-prefs:v1", JSON.stringify({ beltScale: 1.5 }));
+    render(
+      <ActionsRow
+        general={[general()]}
+        agent="claude"
+        onRun={took}
+        handle={{ ref: vi.fn(), onClick: vi.fn(), label: "Switch pane" }}
+      />,
+    );
+    expect(belt().style.getPropertyValue("--belt-scale")).toBe("1.5");
+    // 85 + the 48px mark + 16 of end air.
+    const scroller = document.querySelector<HTMLElement>(".overflow-x-auto")!;
+    expect(scroller.lastElementChild!.getAttribute("style")).toBe("width: 149px;");
   });
 
   it("gives the scroller symmetric px-3 padding, no trailing spacer, and OverflowEdges its default edges when there is no handle", () => {

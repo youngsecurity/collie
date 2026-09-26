@@ -67,6 +67,16 @@ export function compareSemver(a: string, b: string): number {
   return comparePrereleaseTails(pa.prerelease, pb.prerelease);
 }
 
+/** Run records may name version directories; API confirmations require the bare version. */
+export function bareVersion(version: string): string {
+  return version.trim().replace(/^v(?=\d)/, "");
+}
+
+/** Whether a release or version-directory target crosses above the installed major. */
+export function crossesMajor(current: string, target: string): boolean {
+  return versionParts(bareVersion(target)).triple[0] > versionParts(bareVersion(current)).triple[0];
+}
+
 const FORK_COUNTER = /^[^+]*\+ys\.(\d+)(?:\.|$)/;
 
 /** Fork release ordering matches bridge/update.ts: SemVer first, then the +ys.N counter.

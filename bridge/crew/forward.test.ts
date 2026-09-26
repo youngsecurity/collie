@@ -189,7 +189,7 @@ describe("which routes cross a link", () => {
     const tab = server.match(/^const TAB_ACTION_ROUTE = (.+);$/m)![1]!;
     const alternation = /\(([a-z]+(?:\|[a-z]+)+)\)/;
     const paneActions = pane.match(alternation)![1]!.split("|").toSorted();
-    expect(paneActions).toEqual(["close", "focus", "history", "keys", "rename", "reply", "upload"]);
+    expect(paneActions).toEqual(["changes", "close", "focus", "history", "keys", "rename", "reply", "upload"]);
     for (const action of paneActions) expect(crewRouteFor(`/api/pane/x/${action}`)).toBe(`pane/x/${action}`);
     const tabActions = tab.match(alternation)![1]!.split("|").toSorted();
     expect(tabActions).toEqual(["close", "rename"]);
@@ -201,16 +201,26 @@ describe("which routes cross a link", () => {
     expect(blob).toBe("/^\\/api\\/blobs\\/([^/]+)$/");
     expect(crewRouteFor("/api/blobs/x")).toBe("blobs/x");
     expect(crewRouteFor("/api/blobs/x/y")).toBeNull();
+    // The workspace Changes route: one opaque id segment, then the literal `changes`, and nothing
+    // else under `workspace/<id>/` rides the link (worktrees stay lead-local).
+    const wsChanges = server.match(/^const WORKSPACE_CHANGES_ROUTE = (.+);$/m)![1]!;
+    expect(wsChanges).toBe("/^\\/api\\/workspace\\/([^/]+)\\/changes$/");
+    expect(crewRouteFor("/api/workspace/w1/changes")).toBe("workspace/w1/changes");
+    expect(crewRouteFor("/api/workspace/w1/changes/x")).toBeNull();
+    expect(crewRouteFor("/api/workspace/w1/worktrees")).toBeNull();
+    expect(apiPathFor("workspace/w1/changes")).toBe("/api/workspace/w1/changes");
   });
 
   test("read vs write is decided exactly as server.ts decides it — history is a READ", () => {
     expect(forwardKind("pane/w1:p1")).toBe("read");
     expect(forwardKind("pane/w1:p1/history")).toBe("read");
+    expect(forwardKind("pane/w1:p1/changes")).toBe("read");
     for (const action of ["reply", "keys", "upload", "close", "rename"]) {
       expect(forwardKind(`pane/w1:p1/${action}`)).toBe("write");
     }
     expect(forwardKind("tab")).toBe("write");
     expect(forwardKind("workspace")).toBe("write");
+    expect(forwardKind("workspace/w1/changes")).toBe("read");
   });
 
   test("the audit action a forward records is the one the peer will write", () => {
@@ -226,6 +236,8 @@ describe("which routes cross a link", () => {
     // Reads are not audited today and do not become audited by crossing a link.
     expect(forwardAuditAction("pane/w1:p1")).toBeNull();
     expect(forwardAuditAction("pane/w1:p1/history")).toBeNull();
+    expect(forwardAuditAction("pane/w1:p1/changes")).toBeNull();
+    expect(forwardAuditAction("workspace/w1/changes")).toBeNull();
   });
 });
 

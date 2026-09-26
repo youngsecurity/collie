@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { server } from "@/test/setup";
 import {
   CREW_BEGUN_MS,
+  ACCEPTED_RUN_GRACE_MS,
   FRONT_POLL_MS,
   __resetUpdateRunStore,
   crewRunOf,
@@ -11,10 +12,11 @@ import {
   noteCrewRunBegun,
   noteSnapshotCrew,
   noteSnapshotRun,
+  noteStartedRun,
   readUpdateState,
   subscribeUpdateRun,
 } from "./update-run-store";
-import type { UpdateInfo, UpdatePeerLeg } from "./types";
+import type { UpdateInfo, UpdatePeerLeg, UpdateRun } from "./types";
 
 // The store's half of a crew-only run (M32): where the legs that ride the status come from, which of
 // two readings wins, and the one beat after this device's own confirm that nobody else fills. What
@@ -45,6 +47,75 @@ beforeEach(() => {
 afterEach(() => {
   __resetUpdateRunStore();
   vi.useRealTimers();
+});
+
+describe("accepted-start readings", () => {
+  it.each([undefined, "done", "rolled-back"] as const)("expires an unreported start without reviving an old %s record", async (state) => {
+    const accepted: UpdateRun = {
+      schema: 2, state: "preflight", from: "1.12.1+ys.1", to: "1.13.1+ys.1",
+      runId: "new-run", startedAt: NOW, updatedAt: NOW, attempt: 0,
+    };
+    const previous = state === undefined ? undefined : { ...accepted, state, runId: "previous-run", updatedAt: NOW - 1 };
+    noteSnapshotRun(previous);
+    server.use(http.get("/api/update/check", () => HttpResponse.json({ ...status(), run: previous, preflight: null })));
+    await readUpdateState();
+    noteStartedRun(accepted);
+    await vi.advanceTimersByTimeAsync(ACCEPTED_RUN_GRACE_MS + 1);
+    expect(getUpdateRunSnapshot().run).toBeUndefined();
+    noteSnapshotRun(previous === undefined ? undefined : { ...previous });
+    await readUpdateState();
+    expect(getUpdateRunSnapshot().run).toBeUndefined();
+    expect(getUpdateRunSnapshot().answered).toBe(true);
+    // A late real record still wins, including an abort written before its response arrived.
+    const aborted: UpdateRun = { ...accepted, state: "idle", reason: "preflight failed", updatedAt: NOW + 1 };
+    noteSnapshotRun(aborted);
+    expect(getUpdateRunSnapshot().run).toEqual(aborted);
+  });
+
+  it("a second accepted start gets its own full grace", async () => {
+    const first: UpdateRun = {
+      schema: 2, state: "preflight", from: "1.12.1+ys.1", to: "1.13.1+ys.1",
+      runId: "first", startedAt: NOW, updatedAt: NOW, attempt: 0,
+    };
+    noteStartedRun(first);
+    await vi.advanceTimersByTimeAsync(ACCEPTED_RUN_GRACE_MS - 1);
+    const second = { ...first, runId: "second", startedAt: Date.now(), updatedAt: Date.now() };
+    noteStartedRun(second);
+    await vi.advanceTimersByTimeAsync(2);
+    expect(getUpdateRunSnapshot().run).toEqual(second);
+    await vi.advanceTimersByTimeAsync(ACCEPTED_RUN_GRACE_MS);
+    expect(getUpdateRunSnapshot().run).toBeUndefined();
+  });
+
+  it("an observed run keeps its real state beyond the provisional grace", async () => {
+    const accepted: UpdateRun = {
+      schema: 2, state: "preflight", from: "1.12.1+ys.1", to: "1.13.1+ys.1",
+      runId: "new-run", startedAt: NOW, updatedAt: NOW, attempt: 0,
+    };
+    noteStartedRun(accepted);
+    const staging: UpdateRun = { ...accepted, state: "staging", updatedAt: NOW + 1 };
+    noteSnapshotRun(staging);
+    await vi.advanceTimersByTimeAsync(ACCEPTED_RUN_GRACE_MS + 1);
+    expect(getUpdateRunSnapshot().run).toEqual(staging);
+  });
+
+  it.each(["snapshot", "check"])("an authoritative %s wins a timestamp tie with the 202", async (source) => {
+    const accepted: UpdateRun = {
+      schema: 2, state: "preflight", from: "1.12.1+ys.1", to: "1.13.1+ys.1",
+      runId: "new-run", startedAt: NOW, updatedAt: NOW, attempt: 0,
+    };
+    // A previous run can finish in the same millisecond as this confirm.
+    noteSnapshotRun({ ...accepted, runId: "previous-run", state: "done" });
+    noteStartedRun(accepted);
+    expect(getUpdateRunSnapshot().run).toEqual(accepted);
+    const aborted: UpdateRun = { ...accepted, state: "idle", reason: "preflight failed" };
+    if (source === "snapshot") noteSnapshotRun(aborted);
+    else {
+      server.use(http.get("/api/update/check", () => HttpResponse.json({ ...status(), run: aborted, preflight: null })));
+      await readUpdateState();
+    }
+    expect(getUpdateRunSnapshot().run).toEqual(aborted);
+  });
 });
 
 describe("crewRunOf: the legs a status carries at its top level", () => {

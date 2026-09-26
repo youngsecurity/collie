@@ -57,6 +57,33 @@ export function bucketOf(a: AgentView): TriageKey {
   return "recent";
 }
 
+/**
+ * The buckets that mean "a human is required here": what the dashboard's summary line counts, what
+ * lights a heading, and the one predicate the "Focus" tab filters by (ADR 0066, renamed by ADR 0068).
+ */
+export const ATTENTION: ReadonlySet<TriageKey> = new Set<TriageKey>(["needs", "ready"]);
+
+/** Whether a pane is in an {@link ATTENTION} bucket. */
+export function needsYou(a: AgentView): boolean {
+  return ATTENTION.has(bucketOf(a));
+}
+
+/**
+ * How many panes are blocked on you (the "needs" bucket alone): the "Focus" tab's red count.
+ * A finished pane you have not opened is not counted here; the tab marks it with the quiet dot
+ * instead, because a count should mean something is waiting on you (ADR 0066).
+ */
+export function countBlocked(agents: readonly AgentView[]): number {
+  let n = 0;
+  for (const a of agents) if (bucketOf(a) === "needs") n++;
+  return n;
+}
+
+/** Whether any pane is in the "ready" bucket: finished and unseen. The "Focus" tab's dot. */
+export function hasReady(agents: readonly AgentView[]): boolean {
+  return agents.some((a) => bucketOf(a) === "ready");
+}
+
 /** Display order, most urgent first. */
 export const TRIAGE_ORDER: readonly TriageKey[] = ["needs", "ready", "working", "recent"];
 

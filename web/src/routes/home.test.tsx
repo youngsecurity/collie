@@ -1,5 +1,6 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { http, HttpResponse } from "msw";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { vi } from "vitest";
 
@@ -20,6 +21,7 @@ import {
 } from "@/test/handlers";
 import type { SnapshotResponse } from "@/lib/types";
 import { withHeaderHost } from "@/test/header-host";
+import { server } from "@/test/setup";
 import { HomeRoute } from "./home";
 
 // The dashboard, one machine and several. The point of the pair is that the FIRST one is unchanged:
@@ -65,6 +67,7 @@ function renderHome(data: HomeData, initialPath?: string) {
         ),
       },
       { path: "/pane/:paneId", element: <div data-testid="pane" /> },
+      { path: "/space/:spaceId/changes", element: <div data-testid="space-changes" /> },
       { path: "/crew", element: <div data-testid="crew" /> },
     ],
     { initialEntries: [initialPath ?? (data.scope.host ? `/?h=${data.scope.host}` : "/")] },
@@ -354,5 +357,108 @@ describe("the dashboard across sessions", () => {
     renderHome(widened(), "/?all=1");
     await settled();
     expect(screen.getAllByLabelText(/1 pane/i).length).toBe(1);
+  });
+});
+
+describe("the dashboard's footer (ADR 0066)", () => {
+  const footer = () => screen.getByRole("navigation", { name: "Dashboard views" });
+  const tab = (name: RegExp) => within(footer()).getByRole("button", { name });
+
+  it("opens on Panes, with every workspace listed", async () => {
+    renderHome(solo());
+    await settled();
+    expect(tab(/^Panes$/)).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("heading", { name: "webapp" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "collie" })).toBeInTheDocument();
+  });
+
+  it("opens on Focus when a device's stored dashView pre-dates the rename (ADR 0068)", async () => {
+    // "needs" is what the tab's internal name was before ADR 0068 renamed the label to Focus;
+    // "attention" is handled the same way in case any build ever wrote the label instead.
+    for (const stored of ["needs", "attention"]) {
+      localStorage.setItem("collie:dash-prefs:v1", JSON.stringify({ dashView: stored }));
+      renderHome(solo());
+      await settled();
+      expect(tab(/^Focus/)).toHaveAttribute("aria-current", "page");
+      cleanup();
+    }
+  });
+
+  it("badges Focus with the count of blocked panes, and only that tab", async () => {
+    renderHome(solo());
+    await settled();
+    expect(tab(/^Focus/)).toHaveAccessibleName("Focus, 1 blocked");
+    expect(tab(/^Focus/).querySelector('[data-slot="tab-badge"]')).toHaveTextContent("1");
+    expect(tab(/^Panes$/)).toHaveTextContent(/^Panes$/);
+    expect(tab(/^Changes$/)).toHaveTextContent(/^Changes$/);
+  });
+
+  // The red count means something waits on you. A finished pane you have not opened is news, not a
+  // demand, so it gets the quiet dot and no number (ADR 0066).
+  const withAgents = (agents: SnapshotResponse["agents"]) =>
+    homeData({ agents, shellPanes: fixtureShellPanes, sessions: fixtureSessions });
+  const unseen = { ...fixtureAgents[1]!, status: "done" as const, lastActiveAt: 2, lastSeenAt: 1 };
+  const quiet = fixtureAgents.map((a) => ({ ...a, status: "working" as const }));
+
+  it("counts only the blocked panes when finished-unseen ones are there too", async () => {
+    renderHome(withAgents([fixtureAgents[0]!, unseen]));
+    await settled();
+    expect(tab(/^Focus/)).toHaveAccessibleName("Focus, 1 blocked");
+    expect(tab(/^Focus/).querySelector('[data-slot="tab-dot"]')).toBeNull();
+  });
+
+  it("shows the quiet dot and no number when only finished-unseen panes wait", async () => {
+    renderHome(withAgents([quiet[0]!, unseen]));
+    await settled();
+    expect(tab(/^Focus/)).toHaveAccessibleName("Focus, finished panes unseen");
+    expect(tab(/^Focus/).querySelector('[data-slot="tab-dot"]')).not.toBeNull();
+    expect(tab(/^Focus/).querySelector('[data-slot="tab-badge"]')).toBeNull();
+  });
+
+  it("marks nothing when no pane is blocked or unseen", async () => {
+    renderHome(withAgents(quiet));
+    await settled();
+    expect(tab(/^Focus/)).toHaveAccessibleName("Focus");
+    expect(tab(/^Focus/).querySelector('[data-slot="tab-dot"], [data-slot="tab-badge"]')).toBeNull();
+  });
+
+  it("Focus drops the quiet workspace, keeps the heading's full counts, and is remembered", async () => {
+    renderHome(solo());
+    await settled();
+    await userEvent.click(tab(/^Focus/));
+    expect(tab(/^Focus/)).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("heading", { name: "webapp" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "collie" })).not.toBeInTheDocument();
+    // The strip still offers every workspace: the filter removes rows, never places.
+    const strip = screen.getByRole("navigation", { name: /spaces/i });
+    expect(within(strip).getByRole("button", { name: /collie/ })).toBeInTheDocument();
+    expect(JSON.parse(localStorage.getItem("collie:dash-prefs:v1")!).dashView).toBe("focus");
+  });
+
+  it("Focus with nothing urgent shows the all-clear line and no list", async () => {
+    const calm = fixtureAgents.map((a) => Object.assign(structuredClone(a), { status: "working" as const }));
+    renderHome(homeData({ agents: calm, shellPanes: fixtureShellPanes, sessions: fixtureSessions }));
+    await settled();
+    await userEvent.click(tab(/^Focus/));
+    expect(screen.getByText("Nothing needs you")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "webapp" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "collie" })).not.toBeInTheDocument();
+  });
+
+  it("Changes lists each workspace with its counts, says No folder, and opens the workspace's Changes", async () => {
+    server.use(
+      http.get(/\/api\/workspace\/w2\/changes/, () => HttpResponse.json({ workspaceId: "w2", available: false, reason: "no-folder" })),
+    );
+    const router = renderHome(solo());
+    await settled();
+    await userEvent.click(tab(/^Changes$/));
+    const list = await screen.findByRole("list", { name: "Changes by workspace" });
+    // fixtureChanges: 3 files in webapp's root repo and 2 in packages/api, +10 −2 over all five.
+    await within(list).findByText("5 files");
+    await within(list).findByText("No folder");
+    const rows = within(list).getAllByRole("button");
+    expect(rows.map((r) => r.textContent)).toEqual(["webapp5 files+10 −2", "collieNo folder"]);
+    await userEvent.click(rows[0]!);
+    await waitFor(() => expect(url(router)).toBe("/space/w1/changes"));
   });
 });
