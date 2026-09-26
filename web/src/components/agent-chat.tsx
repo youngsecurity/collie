@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
-import { useNavigate, useRevalidator } from "react-router";
+import { useRevalidator } from "react-router";
 import {
   ArrowUpToLine,
   ChevronUp,
@@ -13,6 +13,7 @@ import {
 import { useKeyboardOpen } from "@/hooks/use-keyboard";
 import { useSheetPull } from "@/hooks/use-sheet-pull";
 import { useSpaceActions } from "@/hooks/use-spaces";
+import { useNav } from "@/hooks/use-nav";
 import { useDashPrefs, openForCount } from "@/hooks/use-dash-prefs";
 import { useLaunchers } from "@/lib/launchers";
 import { buzz } from "@/lib/haptics";
@@ -78,7 +79,7 @@ import { panesOfTab } from "@/lib/pane-ordinal";
 import { useMuxCapability } from "@/lib/mux-capability";
 import { hasJournalAdapter } from "@/lib/journal-agents";
 import { paneRowKey, paneScope } from "@/lib/hosts";
-import { historyPath, panePath, spacePath } from "@/lib/nav";
+import { changesPath, historyPath, panePath, spacePath } from "@/lib/nav";
 import { isReadOnly, statusLabel } from "@/lib/types";
 import { usePairing } from "@/lib/pairing";
 import type { AgentView, BridgeStatus, DeviceAuth, ServerSummary, TabView } from "@/lib/types";
@@ -122,7 +123,14 @@ interface AgentChatProps {
   bridge?: BridgeStatus | undefined;
   error?: boolean;
   stalled?: boolean;
+  /** Up one level: the header's back arrow (the Collie mark) and every exit from a pane that closed. */
   onBack: () => void;
+  /**
+   * The header's back arrow alone, when it does more than `onBack`: the glide back into the row this
+   * pane was opened from (routes/detail.tsx, lib/glide.ts). A pane that closed under you leaves by
+   * `onBack` and never glides.
+   */
+  onBackArrow?: () => void;
   onSelect: (paneId: string) => void;
 }
 
@@ -199,10 +207,11 @@ export function AgentChat({
   error = false,
   stalled = false,
   onBack,
+  onBackArrow,
   onSelect,
 }: AgentChatProps) {
   const revalidator = useRevalidator();
-  const navigate = useNavigate();
+  const nav = useNav();
   useLocale();
   // Poll-truth "is the data on screen not live". The one header shell derives the same boolean from
   // the same two root-snapshot fields to drive the Collie mark; here we use it to dim the header's
@@ -364,10 +373,12 @@ export function AgentChat({
     closeFind();
     setZen(true);
   }
-  // Auto-zen follows the ROTATION, and only the rotation: turning the phone sideways enters zen
+  // Auto-zen follows PHYSICAL ROTATION, and only that rotation: turning the phone sideways enters zen
   // (a narrow tall mirror becomes a short wide one, and every chrome row costs terminal lines),
   // turning it back leaves. The query asks for a SHORT landscape viewport, not landscape alone:
-  // under 520px of height is a phone on its side, where the chrome rows hurt. A desktop window and
+  // under 520px of height is a phone on its side, where the chrome rows hurt. The physical orientation
+  // check matters on a narrow cover display: opening its keyboard can make CSS report landscape
+  // without any rotation, and entering zen would unmount the focused textarea. A desktop window and
   // a tablet are landscape all day and have the height to spare, so neither one ever matches. But only a zen this effect entered — a hand-entered zen (the actions
   // sheet's row, tapped in either orientation) is the operator's explicit choice and rotation must
   // not steal it, so `autoZen` marks the effect's own entry and the portrait exit fires only on a
@@ -381,7 +392,25 @@ export function AgentChat({
   // just made — so it acts ONLY on a flip (`wasLandscape`), never re-asserts. Without that, tapping
   // the floating way out in landscape would exit and instantly re-enter. The ref starts portrait so
   // mounting already sideways counts as a flip and opens chrome-free, matching a reload in hand.
-  const landscape = useMediaQuery("(orientation: landscape) and (max-height: 520px)");
+  const shortViewport = useMediaQuery("(max-height: 520px)");
+  // A browser with no `screen.orientation` (iOS Safari before 16.4) falls back to the CSS query it
+  // always used, so auto-zen still follows the rotation there.
+  const cssLandscape = useMediaQuery("(orientation: landscape)");
+  const [physicalLandscape, setPhysicalLandscape] = useState(
+    () => window.screen.orientation?.type.startsWith("landscape") ?? null,
+  );
+  useEffect(() => {
+    const orientation = window.screen.orientation;
+    if (!orientation) return;
+    const update = () => setPhysicalLandscape(orientation.type.startsWith("landscape"));
+    orientation.addEventListener("change", update);
+    update();
+    return () => orientation.removeEventListener("change", update);
+  }, []);
+  // A soft keyboard can make a portrait cover display wider than its remaining viewport height.
+  // CSS orientation then says landscape although the phone has not rotated; physical orientation
+  // keeps auto-zen from unmounting the focused composer in that state.
+  const landscape = (physicalLandscape ?? cssLandscape) && shortViewport;
   const autoZenSetting = useAutoZenEnabled();
   const autoZenActive = zenAvailable && autoZenSetting;
   const autoZen = useRef(false);
@@ -1150,7 +1179,8 @@ export function AgentChat({
   function switchToPane(pane: AgentView) {
     closeDrawer();
     if (paneRowKey(pane) === hereKey) return;
-    navigate(panePath(pane.paneId, paneScope(scope ?? {}, pane, servers)));
+    // Sideways: a replace that keeps the pane's way up (ADR 0067).
+    nav.side(panePath(pane.paneId, paneScope(scope ?? {}, pane, servers)));
   }
 
   // Jump to another tab in this space by opening one of its panes (the in-pane tab bar).
@@ -1202,10 +1232,11 @@ export function AgentChat({
   }
 
   // Open a space from the nav hub — go to its detail route (its tabs + panes, incl. shells). A step
-  // back up out of the pane, so it slides backward.
+  // back up out of the pane to that named parent: a step back when the space opened this pane, else
+  // a replace, so the pane never stays under its own space (ADR 0067).
   function openSpace(workspaceId: string) {
     closeDrawer();
-    navigate(spacePath(workspaceId, scope));
+    nav.upTo(spacePath(workspaceId, scope));
   }
 
   // Tapping the terminal mirror focuses the composer so you can start typing right away. Three bails:
@@ -1260,7 +1291,7 @@ export function AgentChat({
             `width="full"` keeps the header aligned with the mirror, strips and composer on every
             viewport. The history route uses the same width when navigating to the transcript. */}
         <RouteHeader
-          onHome={onBack}
+          onHome={onBackArrow ?? onBack}
           width="full"
           // Zen takes the whole row off the screen — the one shell owns the <header> element, so
           // only the shell can stop drawing it, and this is how a route asks. See HeaderClaim.hidden
@@ -1390,6 +1421,11 @@ export function AgentChat({
             // the route-local growth `min-h-15` exists to prevent.
             <div
               data-slot="pane-identity-block"
+              // The pane pair's destination (lib/glide.ts): a dashboard or space row's dot, tile and
+              // name fly into the three marked below, and back down on the back arrow. Only this
+              // block is marked, so the tab strip's cell, which can read the same word as the name,
+              // never takes a part.
+              data-glide-destination="pane"
               className="relative -mx-1 flex min-h-11 min-w-0 flex-1 items-center rounded-lg px-1 text-left"
             >
               <button
@@ -1468,7 +1504,7 @@ export function AgentChat({
                 <div className="flex min-w-0 items-center gap-2 leading-5">
                   <div className="relative shrink-0">
                     {isShell ? (
-                      <div className="flex size-4 items-center justify-center rounded-sm border bg-muted">
+                      <div data-glide="tile" className="flex size-4 items-center justify-center rounded-sm border bg-muted">
                         <TerminalSquare className="size-2.5 text-muted-foreground" />
                         {/* A shell pane has no agent status, so there is no dot to name — and the
                             composer's status band, which used to say "shell" in words a thumb's
@@ -1478,7 +1514,7 @@ export function AgentChat({
                         <span className="sr-only">{t("status.shellBadge")}</span>
                       </div>
                     ) : (
-                      <AgentIcon agent={agent.agent} className="size-4" />
+                      <AgentIcon agent={agent.agent} className="size-4" glide="tile" />
                     )}
                     {/* A shell pane has no agent status, so it gets no badge — the tile alone says
                         what it is, and the composer strip's "shell" says it in words. The dot IS
@@ -1496,11 +1532,12 @@ export function AgentChat({
                         stale={connecting}
                         live
                         surface="bg-background"
+                        glide="dot"
                         className="absolute -bottom-0.5 -right-0.5 size-2 rounded-full ring-2 ring-background"
                       />
                     )}
                   </div>
-                  <span data-slot="pane-name" className="block truncate font-semibold leading-5">
+                  <span data-slot="pane-name" data-glide="name" className="block truncate font-semibold leading-5">
                     {name}
                   </span>
                 </div>
@@ -1868,7 +1905,7 @@ export function AgentChat({
                   {historyAvailable ? (
                     <button
                       type="button"
-                      onClick={() => navigate(historyPath(paneId, scope))}
+                      onClick={() => nav.down(historyPath(paneId, scope))}
                       className="mb-2 flex w-full items-center justify-center gap-1.5 rounded-md py-2 text-xs font-medium text-muted-foreground transition-colors active:bg-muted/50"
                     >
                       <ScrollText className="size-3.5" />
@@ -2188,6 +2225,15 @@ export function AgentChat({
                   // The switcher mark, for the actions belt's top rule — see the condition at
                   // `pullHandle` above, and actions-row.tsx for what it draws.
                   pullHandle={pullHandle}
+                  // EXPERIMENT (operator, 2026-09-23): the Changes entry rides the belt's pinned
+                  // block beside the switcher mark instead of the ⋮ sheet. Hidden when the pane
+                  // reports no folder: zellij gives an empty cwd, and the view would only be able
+                  // to say so (ADR 0065).
+                  changesPill={
+                    agent?.cwd
+                      ? { onClick: () => nav.down(changesPath(paneId, scope)), label: t("chat.changes.label") }
+                      : undefined
+                  }
                   draftNoticeSlot={draftNoticeSlot}
                 />
               </div>
@@ -2283,7 +2329,7 @@ export function AgentChat({
           onRenamed={() => revalidator.revalidate()}
           onClosed={(id) => (id === paneId ? onBack() : revalidator.revalidate())}
           onFind={display ? openFind : undefined}
-          onHistory={historyAvailable ? () => navigate(historyPath(paneId, scope)) : undefined}
+          onHistory={historyAvailable ? () => nav.down(historyPath(paneId, scope)) : undefined}
           // ZEN'S ONE ENTRY POINT, and the absence of this callback IS the gate — the sheet hides a
           // row it was given nothing for, exactly as it does for find and history. Gated twice: the
           // Settings toggle decides whether this phone offers zen at all, and `display` keeps it off

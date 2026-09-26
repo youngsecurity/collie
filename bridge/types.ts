@@ -237,6 +237,12 @@ export interface WorkspaceView {
    */
   isWorktree?: boolean;
   /**
+   * The space's own folder, when the multiplexer keeps one (MuxSpace.folder): herdr's worktree
+   * checkout, tmux's `session_path`. Absent otherwise. The Changes view prefers it as its root
+   * (bridge/changes-root.ts); without it the root is the panes' common folder.
+   */
+  folder?: string;
+  /**
    * Which member of the crew this space lives on — the same tag panes and sessions carry.
    *
    * **Present exactly when {@link SnapshotResponse.servers} is**, and absent otherwise (§11), so a
@@ -648,6 +654,146 @@ export type PaneHistoryResponse =
       /** The log exceeded the read cap, so only its tail was parsed. */
       fileTruncated: boolean;
     };
+
+/**
+ * One changed file in a Changes list (ADR 0065). `status` is the file's state against HEAD, staged
+ * and unstaged together: Modified, Added, Deleted, Renamed, or `?` untracked. An untracked FOLDER
+ * (git lists one entry for a new folder under `--untracked-files=normal`) keeps its trailing `/`.
+ */
+export type ChangeStatus = "M" | "A" | "D" | "R" | "?";
+
+export interface ChangedFile {
+  /** Relative to the repo's top level, `/`-separated, exactly as git spelled it. */
+  path: string;
+  /** The old path of a rename. Absent otherwise. */
+  oldPath?: string;
+  status: ChangeStatus;
+  added: number;
+  removed: number;
+  binary: boolean;
+}
+
+export interface ChangedRepo {
+  /** Where the repo sits relative to the pane's folder: `.` (the folder itself), `..` style for a
+   *  repo that contains the folder, or `sub/dir` for one found below it. The id a diff names. */
+  relPath: string;
+  /** The repo folder's own name, for display. */
+  name: string;
+  files: ChangedFile[];
+}
+
+/**
+ * Why a Changes request has nothing to show. Ordinary answers, never errors. `no-workspace` is the
+ * workspace route's `no-pane`: the id names no workspace in the snapshot.
+ */
+export type ChangesUnavailableReason = "no-pane" | "no-workspace" | "no-folder" | "no-git";
+
+/**
+ * The uncommitted changes under a workspace's folder, read-only (ADR 0065). Only repos with changes
+ * are listed. `root` is the folder the list was read from; `truncated` means a discovery or listing
+ * cap was reached, so the list may be incomplete. `depthLimited` means discovery stopped at the
+ * asked depth with a repo one level further down, so a deeper setting would find more. Optional:
+ * a bridge from before it sends none, which reads as false.
+ */
+export type ChangesList =
+  | { available: false; reason: ChangesUnavailableReason }
+  | {
+      available: true;
+      root: string;
+      repos: ChangedRepo[];
+      truncated: boolean;
+      depthLimited?: boolean;
+      /**
+       * The discovered repos with nothing uncommitted and at least one commit: what the view offers
+       * "Show last commit" for. Absent when there are none, and from a bridge that predates it.
+       */
+      clean?: CleanRepo[];
+    };
+
+/** A repo discovery found with no uncommitted changes and a HEAD commit to show. */
+export interface CleanRepo {
+  relPath: string;
+  name: string;
+}
+
+/**
+ * One file's diff against HEAD, as raw unified-diff text. The phone parses it. `diff` is empty for
+ * a binary file and for an untracked folder.
+ */
+export type ChangeDiff =
+  | { available: false; reason: ChangesUnavailableReason | "unknown-repo" | "unknown-path" }
+  | {
+      available: true;
+      repo: string;
+      path: string;
+      oldPath?: string;
+      status: ChangeStatus;
+      binary: boolean;
+      /** An untracked folder: git lists it as one entry and there is no single file to show. */
+      directory: boolean;
+      /** The diff hit a line or byte cap and was cut at a line boundary. */
+      truncated: boolean;
+      diff: string;
+    };
+
+/** The commit a commit view shows: always the repo's HEAD at the time of the read. */
+export interface CommitInfo {
+  /** The full object id. The view compares it across re-reads to notice a newer commit. */
+  hash: string;
+  shortHash: string;
+  /** The message's first paragraph on one line, as `git log --format=%s` prints it. */
+  subject: string;
+  author: string;
+  /** Author time, Unix seconds. */
+  time: number;
+}
+
+/**
+ * The last commit of one discovered repo, read-only (ADR 0065, the commit view): HEAD against its
+ * first parent, or against the empty tree for a root commit. `files` carry `M`, `A`, `D` or `R`.
+ * `no-commit` is a repo whose HEAD names no commit yet.
+ */
+export type ChangeCommit =
+  | { available: false; reason: ChangesUnavailableReason | "unknown-repo" | "no-commit" }
+  | { available: true; repo: string; name: string; commit: CommitInfo; files: ChangedFile[]; truncated: boolean };
+
+/**
+ * One file of the last commit. `hash` names the commit the diff was read from, so a view still
+ * showing an older commit can tell the answer belongs to a newer one.
+ */
+export type ChangeCommitDiff =
+  | { available: false; reason: ChangesUnavailableReason | "unknown-repo" | "unknown-path" | "no-commit" }
+  | (Extract<ChangeDiff, { available: true }> & { hash: string });
+
+/**
+ * Which workspace a Changes answer covers, so the screen can say so. Present whenever the workspace
+ * was found, including when the pane route fell back to the pane's own folder.
+ */
+export interface ChangesWorkspace {
+  workspaceId?: string;
+  workspaceLabel?: string;
+}
+
+/**
+ * GET /api/pane/:id/changes — the list for the pane's WORKSPACE (bridge/changes-root.ts). `paneRepo`
+ * is the `relPath` of the listed repo that holds the asking pane's folder, absent when that repo has
+ * no changes; the view marks that group "this pane".
+ */
+export type PaneChangesResponse = { paneId: string; paneRepo?: string } & ChangesWorkspace & ChangesList;
+/** GET /api/pane/:id/changes?repo=&path= — one file's diff in the pane's workspace. */
+export type PaneChangeDiffResponse = { paneId: string } & ChangesWorkspace & ChangeDiff;
+/** GET /api/workspace/:id/changes — the same list, asked by workspace. */
+export type WorkspaceChangesResponse = { workspaceId: string; workspaceLabel?: string } & ChangesList;
+/** GET /api/workspace/:id/changes?repo=&path= — the same diff, asked by workspace. */
+export type WorkspaceChangeDiffResponse = { workspaceId: string; workspaceLabel?: string } & ChangeDiff;
+/** GET /api/pane/:id/changes?view=commit&repo= — the last commit of one repo in the pane's workspace. */
+export type PaneChangeCommitResponse = { paneId: string } & ChangesWorkspace & ChangeCommit;
+/** GET /api/pane/:id/changes?view=commit&repo=&path= — one file of that commit. */
+export type PaneChangeCommitDiffResponse = { paneId: string } & ChangesWorkspace & ChangeCommitDiff;
+/** GET /api/workspace/:id/changes?view=commit&repo= — the same commit, asked by workspace. */
+export type WorkspaceChangeCommitResponse = { workspaceId: string; workspaceLabel?: string } & ChangeCommit;
+/** GET /api/workspace/:id/changes?view=commit&repo=&path= — the same file, asked by workspace. */
+export type WorkspaceChangeCommitDiffResponse = { workspaceId: string; workspaceLabel?: string } & ChangeCommitDiff;
 
 /**
  * POST /api/pane/:id/{reply,keys} — result of a send. Discriminated on `ok`: a failure always

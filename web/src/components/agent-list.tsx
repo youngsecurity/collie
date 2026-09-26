@@ -1,4 +1,5 @@
 import { Inbox, WifiOff } from "lucide-react";
+import type { ReactNode } from "react";
 
 import { clockTime } from "@/lib/format";
 import { useMuxCapability } from "@/lib/mux-capability";
@@ -8,7 +9,8 @@ import { groupPanesByWorkspace, type WorkspaceGroup } from "@/lib/pane-groups";
 import { Chip } from "@/components/ui/chip";
 import { StatusCounts, StatusSummaryLine } from "@/components/status-counts";
 import { STRIP_SCROLLER } from "@/components/ui/labelled-strip";
-import { bucketOf, triage, worstTriage, type TriageKey } from "@/lib/triage";
+import { ATTENTION, bucketOf, triage, worstTriage } from "@/lib/triage";
+import { shownGroups } from "@/lib/dash-view";
 import type { AgentView, BridgeStatus, ServerSummary, TabView } from "@/lib/types";
 import { paneRowKey } from "@/lib/hosts";
 import { AgentCard } from "./agent-card";
@@ -29,7 +31,11 @@ interface AgentListProps {
    * Open a row. Takes the PANE, not its id: `w1:p1` names a different terminal on every machine in a
    * crew, and this list is one herd across all of them — an id alone cannot say which row was tapped.
    */
-  onOpen: (pane: AgentView) => void;
+  onOpen: (pane: AgentView, row?: HTMLElement) => void;
+  /** A row's glide key, its pane's path (lib/glide.ts, the `pane` pair). Omit and no row glides. */
+  glideKeyOf?: (pane: AgentView) => string;
+  /** The finger landed on a row (lib/pane-prefetch.ts). */
+  onPress?: (pane: AgentView) => void;
   /** Show the "no agents" placeholder when the herd is empty (default true). */
   emptyState?: boolean;
   /**
@@ -56,11 +62,18 @@ interface AgentListProps {
   onIsolate?: (key: string | null) => void;
   /** Long-press a chip: hide the workspace, or show it again. */
   onToggleHidden?: (key: string) => void;
+  /**
+   * The "Focus" tab (issue 270, ADR 0066, renamed by ADR 0068): a group shows only its panes that need you, and a
+   * group with none is dropped. A filter, never a sort. The strip, the summary line and every
+   * heading's counts still count ALL panes, so the filter never understates the herd.
+   */
+  needsYouOnly?: boolean;
+  /**
+   * The "Changes" tab: draws its own body in place of the pane groups, from the workspaces the strip
+   * leaves shown. The strip and the summary line above stay exactly where they were.
+   */
+  renderBody?: (shown: readonly WorkspaceGroup[]) => ReactNode;
 }
-
-/** The sections that mean "a human is required here" — pulled to the top and given the accented
- *  header, and now the only ones the dashboard sorts by URGENCY at all. */
-const ATTENTION: ReadonlySet<TriageKey> = new Set<TriageKey>(["needs", "ready"]);
 
 /** A module-level empty list: a fresh `[]` default per render is a new reference for nothing. */
 const NO_PANES: AgentView[] = [];
@@ -115,6 +128,8 @@ export function AgentList({
   shellPanes = NO_PANES,
   bridge,
   onOpen,
+  glideKeyOf,
+  onPress,
   emptyState = true,
   error = false,
   lastSeenAt,
@@ -124,6 +139,8 @@ export function AgentList({
   hidden = NO_KEYS,
   onIsolate,
   onToggleHidden,
+  needsYouOnly = false,
+  renderBody,
 }: AgentListProps) {
   useLocale();
   // Whether the multiplexer can say which agent a pane holds. Read unconditionally — a hook cannot
@@ -186,9 +203,12 @@ export function AgentList({
   const shown = isolatedGroup ? [isolatedGroup] : groups.filter((g) => !hiddenSet.has(workspacePrefKey(g)));
   const allClear = attention.length === 0;
   const firstUrgent = groups.find((g) => urgentCount(g) > 0);
+  // What the body draws. Needs you narrows the rows and drops a group left empty; the group itself
+  // rides along whole, so its heading keeps counting every pane (lib/dash-view.ts).
+  const drawn = shownGroups(shown, needsYouOnly);
   const jumpTo = (g: WorkspaceGroup) => {
     // The target may be filtered out: isolate it, which is also the scroll.
-    if (!shown.includes(g)) {
+    if (!drawn.some((d) => d.group === g)) {
       onIsolate?.(workspacePrefKey(g));
       return;
     }
@@ -204,7 +224,9 @@ export function AgentList({
     <AgentCard
       key={paneRowKey(a)}
       agent={a}
-      onClick={() => onOpen(a)}
+      onClick={(el) => onOpen(a, el)}
+      glideKey={glideKeyOf?.(a)}
+      onPress={onPress && (() => onPress(a))}
       scope="place"
       statusStyle="dot"
       density="row"
@@ -249,12 +271,16 @@ export function AgentList({
       <StatusSummaryLine
         panes={agents}
         allClear={allClear}
-        onJump={firstUrgent ? () => jumpTo(firstUrgent) : undefined}
+        onJump={firstUrgent && !renderBody ? () => jumpTo(firstUrgent) : undefined}
       />
 
+      {renderBody?.(shown)}
+
       {/* By workspace. The heading IS the landmark: full ink, its own case, and it lights up with a
-          dot and a count when a pane inside needs you. Flat rows in ONE bordered group. */}
-      {shown.map((g) => (
+          dot and a count when a pane inside needs you. Flat rows in ONE bordered group. Under Needs
+          you with nothing urgent, no group is left, and the summary line's all-clear above is the
+          whole answer: no empty list, no second message. */}
+      {!renderBody && drawn.map(({ group: g, rows }) => (
         <section key={g.key} id={groupDomId(g.key)} className="flex scroll-mt-4 flex-col gap-2">
           <SectionHeader
             label={g.label}
@@ -265,7 +291,7 @@ export function AgentList({
               <StatusCounts panes={g.panes} className="min-w-0 justify-end text-[11px] text-muted-foreground" />
             }
           />
-          <ListGroup>{g.panes.map(row)}</ListGroup>
+          <ListGroup>{rows.map(row)}</ListGroup>
         </section>
       ))}
     </div>

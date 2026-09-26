@@ -52,10 +52,14 @@ export function crewRouteFor(pathname: string): string | null {
  * but not across a link (or, worse, the reverse).
  */
 const FORWARDABLE: readonly RegExp[] = [
-  /^pane\/[^/]+(?:\/(?:reply|keys|upload|close|rename|history|focus))?$/,
+  /^pane\/[^/]+(?:\/(?:reply|keys|upload|close|rename|history|changes|focus))?$/,
   /^tab$/,
   /^tab\/[^/]+\/(?:rename|close)$/,
   /^workspace$/,
+  // The Changes view asked by workspace (ADR 0065): read-only git over the folder of a space that
+  // lives on ONE member, so a `?host=` call is proxied like `pane/:id/changes`. Mirrors
+  // `WORKSPACE_CHANGES_ROUTE` in bridge/server.ts one-for-one.
+  /^workspace\/[^/]+\/changes$/,
   // Rows must come from the host that runs them: a launch (and the rows a launch button reads)
   // addressed at a peer via `?host=` has to reach THAT machine's `launchers.toml`, never the
   // lead's. Both ride the crew link exactly like `workspace` does.
@@ -67,6 +71,11 @@ const FORWARDABLE: readonly RegExp[] = [
   // `BLOB_ROUTE` in bridge/server.ts one-for-one — `forward.test.ts` pins that correspondence.
   /^blobs\/[^/]+$/,
 ];
+
+/** `workspace/<id>/changes` — the one workspace route that is a read. */
+function isWorkspaceChanges(route: string): boolean {
+  return /^workspace\/[^/]+\/changes$/.test(route);
+}
 
 /** The inverse of {@link crewRouteFor}, for the peer dispatching a crew route into its own routes. */
 export function apiPathFor(route: string): string | null {
@@ -89,9 +98,12 @@ export function forwardKind(route: string): ForwardKind {
   // A blob read serves a file off the owning member's disk and changes nothing there — the same
   // shape as `pane/:id/history`, and attempted against a stale member for the same reason (§10.3).
   if (route.startsWith("blobs/")) return "read";
+  // A workspace's Changes list is the pane route's `changes`, asked by space: a read.
+  if (isWorkspaceChanges(route)) return "read";
   if (!route.startsWith("pane/")) return "write";
   const action = route.split("/")[2];
-  return action === undefined || action === "history" ? "read" : "write";
+  // `changes` is read-only git over the owning member's folder (ADR 0065): a read, like history.
+  return action === undefined || action === "history" || action === "changes" ? "read" : "write";
 }
 
 /** The pane id a route addresses, for the lead's own audit line. `undefined` for tab/workspace. */
@@ -118,9 +130,10 @@ export function forwardAuditAction(route: string): string | null {
   if (route === "launch") return "launch";
   if (route === "launchers") return null;
   if (route.startsWith("blobs/")) return null; // a read
+  if (isWorkspaceChanges(route)) return null; // a read
   if (route.startsWith("tab/")) return route.endsWith("/close") ? "tab.close" : "tab.rename";
   const action = route.split("/")[2];
-  if (action === undefined || action === "history") return null;
+  if (action === undefined || action === "history" || action === "changes") return null;
   if (action === "close" || action === "rename") return `pane.${action}`;
   return action; // reply | keys | upload
 }

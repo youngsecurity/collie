@@ -231,6 +231,8 @@ export interface WorkspaceView {
   repoRoot?: string;
   /** Whether this space is a linked worktree of `repoRoot`, not the repo's own checkout. */
   isWorktree?: boolean;
+  /** The space's own folder, when the multiplexer keeps one (herdr worktree, tmux session_path). */
+  folder?: string;
   /**
    * Which member of the crew this space lives on — the same tag a pane and a session carry.
    *
@@ -616,8 +618,8 @@ export interface UpdateRun {
   startedAt: number;
   updatedAt: number;
   /**
-   * The updater's pid. Absent from the STANDBY door's answer (`GET /standby/update`), which is the
-   * run's shape and progress only; nothing on this side reads it.
+   * The updater's pid. Absent from the standby answer and the accepted start (202), which
+   * describe progress without a process handle; nothing on this side reads it.
    */
   pid?: number;
   attempt: number;
@@ -846,6 +848,112 @@ export interface TranscriptEntry {
   role: "user" | "assistant" | "summary" | "note";
   parts: TranscriptPart[];
 }
+
+/** A file's state against HEAD, staged and unstaged together (ADR 0065). `?` = untracked. */
+export type ChangeStatus = "M" | "A" | "D" | "R" | "?";
+
+/** One changed file. `path` is relative to its repo's top level; an untracked folder ends in `/`. */
+export interface ChangedFile {
+  path: string;
+  oldPath?: string;
+  status: ChangeStatus;
+  added: number;
+  removed: number;
+  binary: boolean;
+}
+
+/** One repo with changes. `relPath` is its id (`.`, `..`, `sub/dir`), `name` its folder's name. */
+export interface ChangedRepo {
+  relPath: string;
+  name: string;
+  files: ChangedFile[];
+}
+
+export type ChangesUnavailableReason = "no-pane" | "no-workspace" | "no-folder" | "no-git";
+
+/**
+ * A Changes list. `root` is the workspace folder it was read from. `depthLimited`: discovery stopped
+ * at the asked depth with a repo one level further down. Mirrors bridge/types.ts.
+ */
+export type ChangesList =
+  | { available: false; reason: ChangesUnavailableReason }
+  | {
+      available: true;
+      root: string;
+      repos: ChangedRepo[];
+      truncated: boolean;
+      depthLimited?: boolean;
+      /** Repos with nothing uncommitted and a commit to show. Absent when none, or from an older bridge. */
+      clean?: CleanRepo[];
+    };
+
+/** A repo with no uncommitted changes and a HEAD commit: what "Show last commit" is offered for. */
+export interface CleanRepo {
+  relPath: string;
+  name: string;
+}
+
+/** The commit a commit view shows: the repo's HEAD at the time of the read. Mirrors bridge/types.ts. */
+export interface CommitInfo {
+  hash: string;
+  shortHash: string;
+  subject: string;
+  author: string;
+  /** Author time, Unix seconds. */
+  time: number;
+}
+
+/** The last commit of one repo (ADR 0065, the commit view). Mirrors bridge/types.ts. */
+export type ChangeCommit =
+  | { available: false; reason: ChangesUnavailableReason | "unknown-repo" | "no-commit" }
+  | { available: true; repo: string; name: string; commit: CommitInfo; files: ChangedFile[]; truncated: boolean };
+
+/** One file's diff as raw unified text. Mirrors bridge/types.ts. */
+export type ChangeDiff =
+  | { available: false; reason: ChangesUnavailableReason | "unknown-repo" | "unknown-path" }
+  | {
+      available: true;
+      repo: string;
+      path: string;
+      oldPath?: string;
+      status: ChangeStatus;
+      binary: boolean;
+      directory: boolean;
+      truncated: boolean;
+      diff: string;
+    };
+
+/** One file of the last commit. `hash` names the commit it was read from. Mirrors bridge/types.ts. */
+export type ChangeCommitDiff =
+  | { available: false; reason: ChangesUnavailableReason | "unknown-repo" | "unknown-path" | "no-commit" }
+  | (Extract<ChangeDiff, { available: true }> & { hash: string });
+
+/** Which workspace a Changes answer covers. Present whenever the bridge found the workspace. */
+export interface ChangesWorkspace {
+  workspaceId?: string;
+  workspaceLabel?: string;
+}
+
+/**
+ * GET /api/pane/:id/changes — the list for the pane's workspace. `paneRepo` is the listed repo that
+ * holds the pane's folder. Mirrors bridge/types.ts.
+ */
+export type PaneChangesResponse = { paneId: string; paneRepo?: string } & ChangesWorkspace & ChangesList;
+/** GET /api/pane/:id/changes?repo=&path= — one file's diff. Mirrors bridge/types.ts. */
+export type PaneChangeDiffResponse = { paneId: string } & ChangesWorkspace & ChangeDiff;
+/** GET /api/workspace/:id/changes — the same list, asked by workspace. */
+export type WorkspaceChangesResponse = { workspaceId: string; workspaceLabel?: string } & ChangesList;
+/** GET /api/workspace/:id/changes?repo=&path= — the same diff, asked by workspace. */
+export type WorkspaceChangeDiffResponse = { workspaceId: string; workspaceLabel?: string } & ChangeDiff;
+
+/** Either Changes list, as the view reads it. Only the pane form carries `paneRepo`. */
+export type ChangesResponse = ChangesWorkspace & { paneRepo?: string } & ChangesList;
+/** Either diff, as the view reads it. */
+export type ChangeDiffResponse = ChangesWorkspace & ChangeDiff;
+/** GET …/changes?view=commit&repo= — the repo's last commit, asked by pane or by workspace. */
+export type ChangeCommitResponse = ChangesWorkspace & ChangeCommit;
+/** GET …/changes?view=commit&repo=&path= — one file of that commit. */
+export type ChangeCommitDiffResponse = ChangesWorkspace & ChangeCommitDiff;
 
 /**
  * GET /api/pane/:id/history — real conversation history, read from the agent's own session log.

@@ -1,12 +1,16 @@
 import { describe, expect, test } from "bun:test";
 
-import { readFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  acceptedUpdateRun,
   firstRed,
   FreshPreflightGate,
   launchUpdateRunner,
+  openRunnerLog,
+  updateRunnerLogPath,
   mergedUpdateVerdict,
   CREW_PREFLIGHT_MAX_CHECKS,
   CREW_PREFLIGHT_TRUNCATED_ID,
@@ -42,6 +46,19 @@ import type { UpdateRun, UpdateRunState } from "./update-run.ts";
 // and cannot be stood up under `bun test` (CLAUDE.md), so every refusal it can make is decided by
 // the pure verdict below and asserted here. The GATE is not one of them — it is the pane path's own
 // closure, and `server.test.ts` proves the two share it.
+
+test("an accepted start names the new run before the detached writer reports", () => {
+  const first = acceptedUpdateRun({ from: "1.12.1+ys.1", to: "1.13.1+ys.1", runId: "first", at: 100 });
+  const second = acceptedUpdateRun({ from: "1.12.1+ys.1", to: "1.13.1+ys.1", runId: "second", at: 100 });
+  expect(second).toEqual({
+    schema: 2, state: "preflight", from: "1.12.1+ys.1", to: "1.13.1+ys.1",
+    runId: "second", startedAt: 100, updatedAt: 100, attempt: 0,
+  });
+  expect(first.runId).not.toBe(second.runId);
+  expect(second).not.toHaveProperty("pid");
+  expect(second).not.toHaveProperty("reason");
+  expect(second).not.toHaveProperty("peers");
+});
 
 const REPORT = (verdict: "green" | "amber" | "red", checks: PreflightReport["checks"]): PreflightReport => ({
   schema: 1,
@@ -438,6 +455,73 @@ describe("the runner leaves the service's process group (#213)", () => {
       throw new Error("ENOENT");
     };
     expect(launchUpdateRunner(plan, { cwd: "/x", spawn })).toEqual({ ok: false, reason: "ENOENT" });
+  });
+});
+
+describe("the runner's own output is kept (#283)", () => {
+  const plan = () =>
+    updateStartCommand({ platform: "darwin", binary: "/x/collie", major: false, stamp: "1", hasSystemdRun: false, hasSetsid: false });
+
+  test("both streams go to the log's descriptor, and the bridge's copy is closed after the spawn", () => {
+    const seen: UpdateRunnerSpawnOptions[] = [];
+    let closed = 0;
+    const r = launchUpdateRunner(plan(), {
+      cwd: "/x",
+      spawn: (_command, options) => {
+        seen.push(options);
+        expect(closed).toBe(0);
+        return { unref: () => {} };
+      },
+      log: { fd: 42, close: () => void closed++ },
+    });
+    expect(r).toEqual({ ok: true });
+    expect(seen[0]?.stdout).toBe(42);
+    expect(seen[0]?.stderr).toBe(42);
+    expect(seen[0]?.stdin).toBe("ignore");
+    expect(closed).toBe(1);
+  });
+
+  test("a spawn that throws still closes the log", () => {
+    let closed = 0;
+    const r = launchUpdateRunner(plan(), {
+      cwd: "/x",
+      spawn: () => {
+        throw new Error("ENOENT");
+      },
+      log: { fd: 42, close: () => void closed++ },
+    });
+    expect(r).toEqual({ ok: false, reason: "ENOENT" });
+    expect(closed).toBe(1);
+  });
+
+  test("each launch starts the file empty with a header, and keeps the previous run as .1", () => {
+    const dir = mkdtempSync(join(tmpdir(), "collie-runner-log-"));
+    try {
+      const path = updateRunnerLogPath(dir);
+      expect(path).toBe(join(dir, "update-runner.log"));
+      writeFileSync(path, "the previous run\n");
+      const log = openRunnerLog(dir, "2026-09-24T00:00:00.000Z setsid /x/collie update");
+      expect(log).not.toBeNull();
+      log!.close();
+      expect(readFileSync(path, "utf8")).toBe("2026-09-24T00:00:00.000Z setsid /x/collie update\n");
+      expect(readFileSync(`${path}.1`, "utf8")).toBe("the previous run\n");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a log that cannot be opened is null, and the launch goes ahead with the streams ignored", () => {
+    const dir = mkdtempSync(join(tmpdir(), "collie-runner-log-"));
+    try {
+      chmodSync(dir, 0o500);
+      expect(openRunnerLog(dir, "header")).toBeNull();
+      const seen: UpdateRunnerSpawnOptions[] = [];
+      launchUpdateRunner(plan(), { cwd: "/x", spawn: (_c, o) => (seen.push(o), { unref: () => {} }), log: null });
+      expect(seen[0]?.stdout).toBe("ignore");
+    } finally {
+      chmodSync(dir, 0o700);
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

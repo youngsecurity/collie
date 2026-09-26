@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { ArrowLeft, Bell, Loader2 } from "lucide-react";
-import { useLoaderData, useNavigate } from "react-router";
+import { useLoaderData } from "react-router";
 
 import { RouteHeader } from "@/components/app-header";
 import { Button } from "@/components/ui/button";
@@ -15,17 +15,20 @@ import { ThemeControl } from "@/components/theme-control";
 import { HapticsControl } from "@/components/haptics-control";
 import { HandsFreeControl } from "@/components/hands-free-control";
 import { ZenControl } from "@/components/zen-control";
+import { ChangesControl } from "@/components/changes-control";
 import { TourControl } from "@/components/tour-control";
 import { InstallControl } from "@/components/install-control";
 import { LanguageControl } from "@/components/language-control";
 import { FontSettingsControl } from "@/components/font-settings";
 import { HarnessBarControl } from "@/components/harness-bar-control";
+import { BeltSizeControl } from "@/components/belt-size-control";
 import { TypefaceControl } from "@/components/typeface-control";
 import { UpdatesSettingsCard } from "@/components/updates-settings-card";
 import { Switch } from "@/components/ui/switch";
 import { fetchConfig } from "@/lib/api";
 import { usePushControl } from "@/hooks/use-push";
 import { useLocale } from "@/hooks/use-locale";
+import { useNav } from "@/hooks/use-nav";
 import { t } from "@/lib/i18n";
 import { type DevicesData } from "@/lib/loaders";
 import { homePath } from "@/lib/nav";
@@ -39,7 +42,7 @@ const EMPTY_DEVICES: DevicesData = { enforced: false, current: null, devices: []
 // Settings page — currently just the push-notification toggle. Reachable from the home header gear.
 // Lives under the root route, so the snapshot polling/push-setup in RootLayout keeps running behind it.
 export function SettingsRoute() {
-  const navigate = useNavigate();
+  const nav = useNav();
   const scope = useScope();
   useLocale();
   const { state, busy, setEnabled } = usePushControl();
@@ -103,7 +106,7 @@ export function SettingsRoute() {
               size="icon"
               // 44px — the tap floor every control in this row shares. size="icon" alone is 36px.
               className="size-11"
-              onClick={() => navigate(homePath(scope))}
+              onClick={() => nav.up(homePath(scope))}
               aria-label={t("settings.nav.back")}
             >
               <ArrowLeft className="size-5" />
@@ -151,6 +154,10 @@ export function SettingsRoute() {
             something that already existed (lib/harness-bar-pref.ts says why). */}
         <HarnessBarControl />
 
+        {/* The same belt's size, right under what it carries: one factor for band, pills, icons
+            and words (components/actions-row.tsx, `--belt-scale`). */}
+        <BeltSizeControl />
+
         {/* Device behaviour sits with appearance — both are "how this phone treats you", as opposed
             to the herd/notification settings below. Renders nothing where vibrate is unsupported. */}
         <HapticsControl />
@@ -166,6 +173,10 @@ export function SettingsRoute() {
             not a rendering pref (those live in the pane's own Display dock). Off by default, because
             zen takes away every way back except one floating button. */}
         <ZenControl />
+
+        {/* How a pane's Changes view looks for repos (ADR 0065). A per-device choice, like zen's
+            availability above it, and read by the pane menu's Changes row, not by anything here. */}
+        <ChangesControl />
 
         {/* Last of the "how this phone treats you" block, and the ONLY way back to a tour that was
             interrupted — the tour is marked seen the moment it opens. An action, so the row ends in

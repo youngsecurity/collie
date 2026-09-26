@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from "react";
 
 import { fetchStandbyRun, fetchUpdateState } from "./api";
-import { legsStillMoving, runInFlight } from "./update-ribbon";
+import { getUpdateStarted, legsStillMoving, runInFlight, subscribeUpdateStarted } from "./update-ribbon";
 import type { UpdateScreenCrewRun } from "./update-screen";
 import type { UpdateCheckResponse, UpdateCrewMember, UpdateInfo, UpdateRun } from "./types";
 
@@ -82,6 +82,9 @@ export const FRONT_POLL_MS = 4000;
  */
 export const CREW_BEGUN_MS = 20_000;
 
+/** An accepted start is provisional until a poll reads the updater's own record. */
+export const ACCEPTED_RUN_GRACE_MS = 20_000;
+
 export interface UpdateRunSnapshot {
   /** `GET /api/update/check` in full — versions, preflight, census. Undefined before the first read. */
   readonly check: UpdateCheckResponse | undefined;
@@ -91,6 +94,13 @@ export interface UpdateRunSnapshot {
   readonly crew: readonly UpdateCrewMember[];
   /** Has the front door answered once? A card cannot claim anything about this machine before it has. */
   readonly checked: boolean;
+  /**
+   * Has ANY source said anything about the run: the front door, the snapshot, the standby door or a
+   * 202? `checked` is true after a failed read too, which is right for the card and wrong for update
+   * mode: a document that boots during the restart gap has heard nothing, and must not read that as
+   * "there is no run" (ADR 0064).
+   */
+  readonly answered: boolean;
   /**
    * What this machine is called, or null while nothing has said.
    *
@@ -111,6 +121,7 @@ const EMPTY: UpdateRunSnapshot = {
   run: undefined,
   crew: [],
   checked: false,
+  answered: false,
   leadName: null,
   crewRun: null,
 };
@@ -119,6 +130,9 @@ let snapshot: UpdateRunSnapshot = EMPTY;
 let checkRun: UpdateRun | undefined;
 let pollRun: UpdateRun | undefined;
 let standbyRun: UpdateRun | undefined;
+let acceptedRun: UpdateRun | undefined;
+let acceptedPending = false;
+let acceptedTimer: ReturnType<typeof setTimeout> | undefined;
 const listeners = new Set<() => void>();
 
 /** One reading of the status legs, and when it was taken: a snapshot when it arrived, this store's
@@ -189,13 +203,24 @@ export function freshest(...runs: (UpdateRun | undefined)[]): UpdateRun | undefi
 }
 
 function recompute(): void {
-  const run = freshest(standbyRun, pollRun, checkRun);
+  // A 202 starts a new identity, even if the previous run ended in the same millisecond.
+  // Records for this accepted run win ties; older identities cannot replace it.
+  const records = [standbyRun, pollRun, checkRun].filter((record) =>
+    acceptedRun === undefined || record === undefined || record.runId === acceptedRun.runId || record.updatedAt > acceptedRun.updatedAt,
+  );
+  if (acceptedPending && records.some((record) => record !== undefined && record.runId === acceptedRun?.runId)) {
+    acceptedPending = false;
+    if (acceptedTimer !== undefined) clearTimeout(acceptedTimer);
+    acceptedTimer = undefined;
+  }
+  const run = freshest(...records, acceptedPending ? acceptedRun : undefined);
   const crewRun = reconcileCrew(Date.now());
   const next: UpdateRunSnapshot = {
     check: snapshot.check,
     run,
     crew: snapshot.check?.crew ?? [],
     checked: snapshot.checked,
+    answered: snapshot.answered || run !== undefined || snapshotCrew !== undefined,
     leadName: snapshot.leadName,
     // The same object while it says the same thing, so a poll that changed nothing about the crew
     // does not hand every reader a new one.
@@ -244,10 +269,19 @@ export function noteCrewRunBegun(current: string): void {
   recompute();
 }
 
-/** The record `POST /api/update` answered with. The freshest thing in the world for one beat. */
+/** The accepted start from `POST /api/update`, superseded by the detached writer's records. */
 export function noteStartedRun(run: UpdateRun | null): void {
   if (run === null) return;
-  standbyRun = run;
+  acceptedRun = run;
+  acceptedPending = true;
+  if (acceptedTimer !== undefined) clearTimeout(acceptedTimer);
+  acceptedTimer = setTimeout(() => {
+    acceptedTimer = undefined;
+    acceptedPending = false;
+    // Keep the identity boundary: an old terminal record is not evidence about this start.
+    // With no real record, the hook's orphan-claim grace releases this device's claim.
+    recompute();
+  }, ACCEPTED_RUN_GRACE_MS);
   recompute();
 }
 
@@ -270,7 +304,7 @@ export async function readUpdateState(signal?: AbortSignal): Promise<void> {
     const check = await fetchUpdateState(signal);
     checkRun = check.run;
     checkCrew = { crew: crewRunOf(check), at: askedAt };
-    snapshot = { ...snapshot, check, checked: true };
+    snapshot = { ...snapshot, check, checked: true, answered: true };
   } catch {
     // A failed read is not an error to render: the versions come from the snapshot anyway, and the
     // preflight simply stays unknown, which disables nothing and claims nothing.
@@ -291,7 +325,9 @@ function stopTimers(): void {
 /** Start or stop the two intervals, so they exist exactly while a run is in flight and somebody is
  *  looking. Called after every change, and idempotent. */
 function arm(): void {
-  const wanted = listeners.size > 0 && (runInFlight(snapshot.run) || crewStillMoving());
+  // A CLAIM ASKS TOO (ADR 0064). A document that boots holding one, mid-restart, knows of no run yet:
+  // without this it would never ask the standby door, the one reader that answers in that window.
+  const wanted = listeners.size > 0 && (runInFlight(snapshot.run) || crewStillMoving() || getUpdateStarted() !== null);
   if (wanted === driving) return;
   if (!wanted) {
     stopTimers();
@@ -335,8 +371,15 @@ function arm(): void {
  */
 function crewStillMoving(): boolean {
   const crew = snapshot.crewRun;
-  return crew !== null && legsStillMoving(crew.legs, crew.settledAt);
+  if (crew !== null && legsStillMoving(crew.legs, crew.settledAt)) return true;
+  // THE LEAD'S OWN RUN, AFTER ITS OWN `done` (ADR 0064). Its members ride its record, and update mode
+  // stays on step 5 while one of them moves, so the front door is asked for as long as they do.
+  const run = snapshot.run;
+  return run !== undefined && legsStillMoving(run.peers ?? [], run.settledAt ?? null);
 }
+
+// The claim comes and goes on its own store; the intervals follow it.
+subscribeUpdateStarted(() => arm());
 
 export function subscribeUpdateRun(listener: () => void): () => void {
   const first = listeners.size === 0;
@@ -362,6 +405,10 @@ export function __resetUpdateRunStore(): void {
   checkRun = undefined;
   pollRun = undefined;
   standbyRun = undefined;
+  acceptedRun = undefined;
+  acceptedPending = false;
+  if (acceptedTimer !== undefined) clearTimeout(acceptedTimer);
+  acceptedTimer = undefined;
   snapshotCrew = undefined;
   checkCrew = undefined;
   begun = null;

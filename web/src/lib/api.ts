@@ -21,6 +21,10 @@ import type {
   CacheWatchState,
   LaunchersResponse,
   NotifyPrefs,
+  ChangeCommitDiffResponse,
+  ChangeCommitResponse,
+  ChangeDiffResponse,
+  ChangesResponse,
   PaneHistoryResponse,
   CrewStatusResponse,
   PaneReadResponse,
@@ -379,11 +383,16 @@ const paneCache = new Map<string, PaneCacheEntry>();
 // pane's last body). 20 comfortably covers any panes in flight on a phone.
 const PANE_CACHE_MAX = 20;
 
+/**
+ * Read one pane's mirror. `seen: false` leaves the pane's unseen mark alone: the read a finger
+ * starts on `pointerdown` (lib/pane-prefetch.ts) may be the start of a scroll, not an open.
+ */
 export async function fetchPane(
   paneId: string,
   lines?: number,
   scope?: Scope,
   signal?: AbortSignal,
+  { seen = true }: { seen?: boolean } = {},
 ): Promise<PaneReadResponse> {
   const q = lines ? `?lines=${lines}` : "";
   const url = withScope(`/api/pane/${encodeURIComponent(paneId)}${q}`, scope);
@@ -398,12 +407,12 @@ export async function fetchPane(
   // seen. A cross-site no-cors GET can't set a custom header, so it can't clear your alerts by
   // guessing pane ids (bridge/server.ts → marksPaneSeen).
   const headers = new Headers({
-    "x-collie-seen": "1",
     [XHR_HEADER]: XHR_HEADER_VALUE,
     // A read needs no token, but the bridge stamps `lastSeenAt` off whatever it resolves — so a
     // paired device's polls are what keep its "last seen" honest. Same injection point as `doReq`.
     ...authHeader(),
   });
+  if (seen) headers.set("x-collie-seen", "1");
   if (cached) headers.set("if-none-match", cached.etag);
 
   const res = await apiFetch(url, { signal: withTimeout(signal, GET_TIMEOUT_MS), headers });
@@ -465,6 +474,87 @@ export function fetchHistory(
     signal,
     headers: { "x-collie-seen": "1" },
   });
+}
+
+/** How far the Changes view looks for repos below the workspace folder (Settings → Changes). */
+export interface ChangesLookup {
+  depth: number;
+  nested: boolean;
+}
+
+function changesQuery(lookup: ChangesLookup, file?: { repo: string; path: string }): string {
+  const q = new URLSearchParams({ depth: String(lookup.depth), nested: lookup.nested ? "1" : "0" });
+  if (file) {
+    q.set("repo", file.repo);
+    q.set("path", file.path);
+  }
+  return q.toString();
+}
+
+/**
+ * Whose Changes list: a pane's (the bridge resolves the pane's workspace) or a workspace asked
+ * directly. Both answer the same shape (ADR 0065).
+ */
+export type ChangesTarget = { kind: "pane"; paneId: string } | { kind: "space"; spaceId: string };
+
+function changesBase(target: ChangesTarget): string {
+  return target.kind === "pane"
+    ? `/api/pane/${encodeURIComponent(target.paneId)}/changes`
+    : `/api/workspace/${encodeURIComponent(target.spaceId)}/changes`;
+}
+
+/**
+ * The uncommitted changes under a workspace's folder, read-only (ADR 0065). Fetched on open and on
+ * the view's refresh button, never on the poll loop. No seen header: a git view of the folder is
+ * not the pane's conversation, so it does not mark the pane seen.
+ */
+export function fetchChanges(
+  target: ChangesTarget,
+  lookup: ChangesLookup,
+  scope?: Scope,
+  signal?: AbortSignal,
+): Promise<ChangesResponse> {
+  const path = `${changesBase(target)}?${changesQuery(lookup)}`;
+  return req<ChangesResponse>(withScope(path, scope), { signal });
+}
+
+/** One changed file's diff. The bridge serves only a repo and path its own list names. */
+export function fetchChangeDiff(
+  target: ChangesTarget,
+  lookup: ChangesLookup,
+  file: { repo: string; path: string },
+  scope?: Scope,
+  signal?: AbortSignal,
+): Promise<ChangeDiffResponse> {
+  const path = `${changesBase(target)}?${changesQuery(lookup, file)}`;
+  return req<ChangeDiffResponse>(withScope(path, scope), { signal });
+}
+
+/** The last commit of one repo in the workspace (ADR 0065, the commit view). HEAD only. */
+export function fetchChangeCommit(
+  target: ChangesTarget,
+  lookup: ChangesLookup,
+  repo: string,
+  scope?: Scope,
+  signal?: AbortSignal,
+): Promise<ChangeCommitResponse> {
+  const q = new URLSearchParams(changesQuery(lookup));
+  q.set("view", "commit");
+  q.set("repo", repo);
+  return req<ChangeCommitResponse>(withScope(`${changesBase(target)}?${q.toString()}`, scope), { signal });
+}
+
+/** One file of that commit. The bridge serves only a path the same read of HEAD listed. */
+export function fetchChangeCommitDiff(
+  target: ChangesTarget,
+  lookup: ChangesLookup,
+  file: { repo: string; path: string },
+  scope?: Scope,
+  signal?: AbortSignal,
+): Promise<ChangeCommitDiffResponse> {
+  const q = new URLSearchParams(changesQuery(lookup, file));
+  q.set("view", "commit");
+  return req<ChangeCommitDiffResponse>(withScope(`${changesBase(target)}?${q.toString()}`, scope), { signal });
 }
 
 export function sendReply(
