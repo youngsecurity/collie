@@ -1,13 +1,38 @@
-<!-- What changed, and why. A sentence or two is fine. -->
+<!-- Resolve the base from repository configuration. This repository uses main.
+See CONTRIBUTING.md#base-branch. Remove optional sections that do not apply. -->
 
-**Base branch** — see [CONTRIBUTING.md](../CONTRIBUTING.md#base-branch):
+## Summary
 
-- [ ] Opened against `main` — there is one line of development, and `main` is it
+<!-- Briefly explain what this PR changes and why. -->
 
-**Checks**
+## Commits
 
-- [ ] `bun run typecheck` (root **and** `web/`), `bun run lint`, `bun test ./bridge ./cli ./scripts`, `cd web && bun run test` all pass
-- [ ] CHANGELOG entry added under `## [Unreleased]`, below one of `### Added` / `### Changed` /
-      `### Fixed` / `### Packaging` / `### Docs`, opening with a bold lead sentence
-      (`- **The lead sentence.** the detail …`), no commit hash. A fork PR or a docs-only
-      change is exempt, the maintainer picks the version there
+<!-- Summarize meaningful commits or logical groups when useful. -->
+
+| SHA | Subject | Scope |
+| --- | --- | --- |
+
+## Changes
+
+<!-- Group related implementation changes. -->
+
+## Out of scope
+
+<!-- State exclusions and link any deferred work to its tracker. -->
+
+## Related
+
+<!-- Use full issue URLs with Closes, Refs, or Depends on as appropriate. -->
+
+## Test plan
+
+<!-- Record concrete commands and observations. Check only completed items.
+This is the single source of truth for validation; do not duplicate it elsewhere.
+For functional changes, add a grouped bold-lead CHANGELOG bullet under Unreleased
+without a commit hash. See CLAUDE.md for fork-PR and documentation-only exemptions. -->
+
+- [ ] Root and web typechecks pass.
+- [ ] `bun run lint` passes.
+- [ ] `bun run test` at the root passes.
+- [ ] `bun run --cwd web test` passes.
+- [ ] Relevant browser checks and any required manual checks are recorded.
