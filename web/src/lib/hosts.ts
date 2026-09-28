@@ -122,8 +122,8 @@ export function paneScope<S extends { host?: string; session?: string }>(
   servers: readonly ServerSummary[] | undefined,
   sessions?: readonly SessionSummary[],
 ): Scope {
-  // BOTH halves of the address come from the PANE when the pane names them, and from the ambient
-  // scope only when it does not. A pane names its session exactly on a widened body (`?all=1`), and
+  // BOTH halves come from the PANE when named. An untagged session inherits the ambient session
+  // only on that same machine; other machines contribute their primary session to a narrow body. A pane names its session exactly on a widened body (`?all=1`), and
   // that is the case this exists for: the widened list holds panes from several sessions, their ids
   // collide, and opening one with the ambient session would point every read, key press and reply at
   // the identically-numbered pane in whichever session the URL happened to be on.
@@ -140,7 +140,7 @@ export function paneScope<S extends { host?: string; session?: string }>(
   const host = pane?.host === undefined ? scope.host : normalizeToday(pane.host, leadHost(servers));
   const session =
     pane?.session === undefined
-      ? scope.session
+      ? pane?.host === undefined || pane.host === scopeHostKey(scope, servers) ? scope.session : undefined
       : // Resolved WITHIN the row's own machine. `sessions` is a merged registry on a crew and holds
         // one primary PER HOST, so asking it flatly would compare this row's session name against
         // whichever machine's primary happened to sort first — and normalise away a name that is

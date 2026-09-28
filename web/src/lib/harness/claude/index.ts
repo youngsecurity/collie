@@ -8,14 +8,16 @@
 // TUI shape, so it has no adapter and keeps the plain raw terminal mirror — running Claude's matchers
 // on it could mis-lift a menu, strip real output as "chrome", or paint a bogus status strip.
 
-import { trimTrailingBlank, type Block, type StyledLine } from "../../blocks";
+import { lineText, trimTrailingBlank, type Block, type StyledLine } from "../../blocks";
 import type { HarnessAdapter } from "../types";
+import { namesAMenuKey } from "../menu-hints";
 import { detectPreviewSelectRegion } from "./preview-select";
 import { detectWizardRegion } from "./wizard";
 import { detectMultiSelectRegion } from "./multi-select";
 import { detectPromptSelectRegion } from "./prompt-select";
 import { detectEffortRegion } from "./effort";
 import { detectResumePickerRegion } from "./resume";
+import { detectMarketplacesRegion } from "./marketplaces";
 import { detectMenuRegion } from "./menu";
 import { detectAutocompleteRegion } from "./autocomplete";
 import {
@@ -110,8 +112,21 @@ export function claudeBuildBlocks(lines: StyledLine[]): Block[] {
     return blocks;
   }
 
+  // The `/plugin` Marketplaces tab and a marketplace's detail screen (marketplaces.ts). Their footers
+  // say "Enter to select", which files them as a question the question grammars cannot read, so the
+  // generic menu below stands aside. Recognised by their own words, they lift as a menu of the keys
+  // the footer printed, minus remove, whose confirm the phone cannot read.
+  const marketplacesRegion = detectMarketplacesRegion(lines);
+  if (marketplacesRegion) {
+    const before = trimTrailingBlank(lines.slice(0, marketplacesRegion.startLine));
+    const blocks: Block[] = [];
+    if (before.length > 0) blocks.push({ kind: "raw", lines: before });
+    blocks.push({ kind: "menu", menu: marketplacesRegion.model, lines: lines.slice(marketplacesRegion.startLine) });
+    return blocks;
+  }
+
   // LAST RESORT: a modal screen none of the specific grammars claimed, driven by the keys its own
-  // footer names (menu.ts). It runs after all six deliberately — every grammar above encodes a
+  // footer names (menu.ts). It runs after all seven deliberately — every grammar above encodes a
   // VERIFIED keystroke recipe for a dialog it recognises, and this one only knows what the screen
   // printed. It must never pre-empt them; it exists to catch what they decline (the `/model` picker),
   // where the alternative is no buttons at all and a composer send typed into the picker.
@@ -155,6 +170,26 @@ export function claudeBuildBlocks(lines: StyledLine[]): Block[] {
 
 export { extractStatusLines, extractAgentsFooter, extractInputDraft };
 
+// How many of the screen's last non-blank rows may carry a modal's mark. A footer wraps onto at most
+// three rows (menu-hints MAX_FOOTER_ROWS), and a hint can sit a row or two above it.
+const MODAL_HINT_ROWS = 6;
+
+// A select's live pointer on a numbered row ("❯ 1. Yes"), and a bare "Press Enter to continue" style
+// prompt, whose key token `namesAMenuKey` does not take. Either is a modal a shell prompt never is.
+const POINTED_OPTION_ROW = /^\s*❯\s*\d+\.\s+\S/;
+const PRESS_KEY_PROMPT = /\bpress\s+(?:enter|esc|escape|any key)\b/i;
+
+/** Whether the screen's last non-blank rows show a Claude modal: a row naming a key the way a modal's
+ *  footer does, a pointed numbered option, or a "Press Enter" prompt. */
+function tailNamesAKey(lines: StyledLine[]): boolean {
+  const rows: string[] = [];
+  for (let i = lines.length - 1; i >= 0 && rows.length < MODAL_HINT_ROWS; i--) {
+    const text = lineText(lines[i]!);
+    if (text.trim() !== "") rows.push(text);
+  }
+  return rows.some((t) => namesAMenuKey(t) || POINTED_OPTION_ROW.test(t) || PRESS_KEY_PROMPT.test(t));
+}
+
 export const claudeAdapter: HarnessAdapter = {
   agent: "claude",
   buildBlocks: claudeBuildBlocks,
@@ -169,6 +204,11 @@ export const claudeAdapter: HarnessAdapter = {
   // the `/effort` slider all print it, and `claude/markers.ts` treats the phrase as background chrome
   // precisely because it is on so many of them.
   cancelKey: "Escape",
+  // Every Claude modal the card has ever been right about names a key in its last rows: "Esc to
+  // cancel", "Esc to close", "enter to return", "Enter to select" (the allow-list in
+  // unread-dialog.test.ts), and a missed select still shows its `❯ N.` pointer. The shell prompt
+  // under a starting or exiting Claude shows none of these.
+  modalOnScreen: tailNamesAKey,
   // Long sends never appear in the box as themselves — Claude collapses them into `[Pasted text #N
   // +M lines]` — so the reply guard's literal match can't verify them and the send stalls. These two
   // read that token: as send evidence when it's consistent with what we typed (.adr/0010), and as

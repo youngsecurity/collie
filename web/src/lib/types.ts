@@ -778,7 +778,16 @@ export interface UpdateStartResponse {
   /** The version the bridge is installing. */
   to: string;
   major: boolean;
+  /**
+   * This fork returns the accepted full-run record. Upstream bridges and peers-only starts may
+   * return the previous record instead, so only a matching response `runId` identifies this start.
+   */
   run: UpdateRun | null;
+  /**
+   * The id of the run this confirm began, the one its record will carry. Absent on a bridge older
+   * than the field, which reads as "no id to key on".
+   */
+  runId?: string;
 }
 
 export interface SnapshotResponse {
@@ -1211,6 +1220,20 @@ export interface Launcher {
  */
 export interface LaunchersResponse {
   launchers: Launcher[];
+  home: string;
+}
+
+/**
+ * GET /api/folders, and the answer to POST /api/folders/star — ONE host's folder list for the
+ * new-space sheet (#289), read off that machine's own `folders.json`. `recent` is newest first (at
+ * most eight, only folders a space was created in), `favourites` in starred order (at most twelve),
+ * and the two never overlap. `home` is that host's home dir, never an entry, for shortening a folder
+ * to `~/…` without the client knowing which machine answered. A host on an older version answers
+ * 404, which the sheet reads as "no list" and never as an error.
+ */
+export interface FoldersResponse {
+  recent: string[];
+  favourites: string[];
   home: string;
 }
 

@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import { coerceDashView, shownGroups } from "./dash-view";
+import { coerceDashView, pinnedRows, shownGroups, stripEntries, type StripEntry } from "./dash-view";
 import { groupPanesByWorkspace } from "./pane-groups";
+import { currentPins, pinMatcher, setPinned } from "./pins";
 import type { AgentView } from "./types";
 
 // Issue 270's filter, as the "Focus" tab draws it (ADR 0066, renamed by ADR 0068): it removes rows
@@ -73,6 +74,69 @@ describe("shownGroups", () => {
   });
 });
 
+// Pinned panes (ADR 0070): a pinned pane leads in a Pinned group, in place order, and leaves its
+// workspace group, so it is listed once. The group itself still rides along whole.
+describe("pinned rows", () => {
+  /** Pin these panes, in THIS order (the time of the pin), and return the list's test. */
+  function pin(...ids: string[]) {
+    let now = 0;
+    for (const id of ids) setPinned(agents.find((a) => a.paneId === id)!, true, agents, ++now);
+    return pinMatcher(currentPins());
+  }
+
+  it("lists the pinned panes in place order, whatever order they were pinned in", () => {
+    // Pinned last-first: ws3 before ws1, and within ws1 the third pane before the first.
+    const isPinned = pin("w3:p2", "w1:p3", "w1:p1");
+    expect(pinnedRows(groups, isPinned).map((p) => p.paneId)).toEqual(["w1:p1", "w1:p3", "w3:p2"]);
+  });
+
+  it("never reads status: a state change moves no pinned row", () => {
+    const isPinned = pin("w1:p1", "w3:p2");
+    const flipped = groupPanesByWorkspace(
+      agents.map((a) => ({ ...a, status: a.status === "blocked" ? ("idle" as const) : ("blocked" as const) })),
+      [],
+      { order: "fixed" },
+    );
+    expect(pinnedRows(flipped, isPinned).map((p) => p.paneId)).toEqual(
+      pinnedRows(groups, isPinned).map((p) => p.paneId),
+    );
+  });
+
+  it("takes pinned rows out of their groups on Panes, and drops a group left empty", () => {
+    const isPinned = pin("w2:p1", "w2:p2", "w1:p2");
+    const shown = shownGroups(groups, false, isPinned);
+    // ws2 had two panes, both pinned: the group is gone. ws1 lost its middle row, in place.
+    expect(shown.map((s) => s.group.label)).toEqual(["ws1", "ws3"]);
+    expect(shown[0]!.rows.map((r) => r.paneId)).toEqual(["w1:p1", "w1:p3"]);
+    // The heading still counts every pane of its workspace, pinned or not.
+    expect(shown[0]!.group).toBe(groups[0]);
+    expect(shown[0]!.group.panes).toHaveLength(3);
+  });
+
+  it("does the same under Focus: a group whose urgent rows are all pinned is dropped", () => {
+    // ws1's one urgent pane is pinned; ws3 keeps its unpinned urgent pane.
+    const isPinned = pin("w1:p2", "w3:p1");
+    const shown = shownGroups(groups, true, isPinned);
+    expect(shown.map((s) => s.group.label)).toEqual(["ws3"]);
+    expect(shown[0]!.rows.map((r) => r.paneId)).toEqual(["w3:p2"]);
+  });
+
+  it("lists each pane once: the pinned rows and the group rows never overlap, and cover the herd", () => {
+    const isPinned = pin("w1:p2", "w2:p1", "w3:p1");
+    const pinnedIds = pinnedRows(groups, isPinned).map((p) => p.paneId);
+    const groupIds = shownGroups(groups, false, isPinned).flatMap((s) => s.rows.map((r) => r.paneId));
+    expect(pinnedIds.filter((id) => groupIds.includes(id))).toEqual([]);
+    expect([...pinnedIds, ...groupIds].toSorted()).toEqual(agents.map((a) => a.paneId).toSorted());
+  });
+
+  it("changes nothing with nothing pinned", () => {
+    const isPinned = pinMatcher(currentPins());
+    expect(pinnedRows(groups, isPinned)).toEqual([]);
+    expect(shownGroups(groups, false, isPinned)).toEqual(shownGroups(groups, false));
+    expect(shownGroups(groups, true, isPinned)).toEqual(shownGroups(groups, true));
+  });
+});
+
 describe("coerceDashView", () => {
   it("keeps the three views and turns anything else into Panes", () => {
     expect(coerceDashView("panes")).toBe("panes");
@@ -87,5 +151,42 @@ describe("coerceDashView", () => {
     // the same way in case any build ever wrote the label instead of the internal name.
     expect(coerceDashView("needs")).toBe("focus");
     expect(coerceDashView("attention")).toBe("focus");
+  });
+});
+
+// The workspace strip with a machine hidden (issue #288): one stand-in per hidden machine, at the
+// place its first workspace held, carrying every pane of that machine; isolate keeps its chip.
+describe("stripEntries — a hidden machine's stand-in", () => {
+  const crew = [
+    pane("p1", 1, "idle", { host: "bluefin" }),
+    pane("p1", 1, "idle", { host: "workshop" }),
+    pane("p1", 2, "blocked", { host: "workshop" }),
+    pane("p1", 1, "working", { host: "attic" }),
+  ];
+  const crewGroups = groupPanesByWorkspace(crew, [], { order: "fixed" });
+  const names = (entries: StripEntry[]) =>
+    entries.map((e) => (e.kind === "machine" ? `[${e.host}:${e.panes.length}]` : e.group.label));
+
+  it("is one chip per workspace when nothing is hidden", () => {
+    expect(names(stripEntries(crewGroups, new Set(), undefined))).toEqual(["ws1", "ws1", "ws2", "ws1"]);
+  });
+
+  it("folds a hidden machine's workspaces into one stand-in at its place, holding all its panes", () => {
+    const entries = stripEntries(crewGroups, new Set(["workshop"]), undefined);
+    expect(names(entries)).toEqual(["ws1", "[workshop:2]", "ws1"]);
+  });
+
+  it("keeps an isolated workspace's chip, right after its machine's stand-in", () => {
+    const isolated = crewGroups.find((g) => g.panes[0]!.host === "workshop" && g.label === "ws2")!;
+    expect(names(stripEntries(crewGroups, new Set(["workshop"]), isolated.key))).toEqual([
+      "ws1",
+      "[workshop:2]",
+      "ws2",
+      "ws1",
+    ]);
+  });
+
+  it("draws no stand-in for a hidden machine with no workspace", () => {
+    expect(names(stripEntries(crewGroups, new Set(["cellar"]), undefined))).toEqual(["ws1", "ws1", "ws2", "ws1"]);
   });
 });

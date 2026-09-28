@@ -21,7 +21,7 @@ const fixtureLines = (name: string): StyledLine[] =>
   linesOf(readFileSync(join(PANES_DIR, name), "utf8"));
 
 /** Every registered agent string. agy and antigravity are two registrations of one adapter. */
-const AGENTS = ["claude", "codex", "grok", "omp", "agy", "antigravity", "muse"] as const;
+const AGENTS = ["claude", "codex", "grok", "omp", "agy", "antigravity", "muse", "opencode"] as const;
 
 /** What the post-pass answers for `agent` on `lines` — the exact composition the three call sites
  *  use (harness/index.ts buildBlocks, agent-chat's dialogPresent, dialog-guard's dialogDetector). */
@@ -41,6 +41,7 @@ describe("the cancel key each adapter declares", () => {
     ["muse", "Escape"],
     ["agy", "Escape"],
     ["antigravity", "Escape"],
+    ["opencode", "Escape"],
     ["grok", "ctrl+c"],
   ])("%s declares %s", (agent, key) => {
     expect(adapterFor(agent)!.cancelKey).toBe(key);
@@ -64,6 +65,7 @@ describe("a real unread modal gets the card", () => {
     ["codex", "codex--ask-notes-focused.txt", "Escape"],
     ["grok", "grok--ask-multi.txt", "ctrl+c"],
     ["muse", "muse--ask-color-notes-open.txt", "Escape"],
+    ["opencode", "oc--agents-picker.txt", "Escape"],
   ])("%s gets the card on %s", (agent, fixture, key) => {
     const lines = fixtureLines(fixture);
     const blocks = pass(agent, lines);
@@ -186,12 +188,9 @@ const CARD_FIXTURES = {
       "claude-lab--agents-screen--w82.txt",
       // corpus: `/status` screen, `Esc to cancel` footer — the M34 reference capture
       "claude-lab--menu-status-screen--w82.txt",
-      // corpus: WebFetch permission dialog, no separate footer row
-      "claude-lab--permission-webfetch--w82.txt",
-      // corpus: plan approval, three numbered options, path footer
-      "claude-lab--plan-approval--w82--h30.txt",
-      "claude-lab--plan-approval--w82.txt",
-      "claude-lab--plan-approval-feedback-typed--w82.txt",
+      // README: a multiSelect with the pointer on its "Type something" field. Declined on purpose,
+      // since every toggle digit would be typed into the field, so the card is the honest answer.
+      "claude--v2283-multiselect-type-something-focused.txt",
       // corpus: `/tasks` panel, `Esc to close` footer; raw only at 40 columns, where its
       // footer wraps and the menu grammar declines. The w82 capture lifts `menu`, so no card.
       "claude-lab--tasks-panel--w40.txt",
@@ -199,15 +198,12 @@ const CARD_FIXTURES = {
       // the marker would sit leftmost (Claude marks `low` by colour only), so the Effort grammar and
       // the generic menu both decline and the card is the honest answer.
       "claude--menu-effort-slider--w40-low.txt",
+      // README: the `/plugin` "Add Marketplace" source field, opened from the Marketplaces tab. A text
+      // field no grammar reads; the Marketplaces grammar does not claim it (no `Manage marketplaces`
+      // title), so the card and its Escape are the way back to the tab.
+      "claude--v2283-plugin-marketplaces-add-form--w82.txt",
     ],
     notModals: [
-      // corpus knownStall: a wrapped draft holding an interior rule, which stops walkFrame's up-scan
-      // before the real prompt row. Declined in M34 spec 06: the only discriminator is the two
-      // borders' widths, and that is false on three real labelled-border captures. The box is LIVE
-      // and holds the operator's own multi-line draft.
-      "claude-lab--draft-adversarial--w120.txt",
-      "claude-lab--draft-adversarial--w40.txt",
-      "claude-lab--draft-adversarial--w82.txt",
       // corpus, DELIBERATE: a statusline printing numbered rows is refused by ADR 0048 step 4
       // because it cannot be told from a live menu. Box live.
       "claude-lab--statusline-numbered-rows--w82.txt",
@@ -239,11 +235,16 @@ const CARD_FIXTURES = {
   // its own prompt-select grammar reads. An entry appearing here is news either way.
   agy: { modals: [], notModals: [] },
   antigravity: { modals: [], notModals: [] },
+  // Every opencode picker: composerReady refuses it (the picker shape) and no grammar reads it, so
+  // Escape, which closes a picker (probed on 1.18.32), is its way out. The permission steps lift
+  // their buttons and get no card.
+  opencode: { modals: ["oc--agents-picker.txt", "oc--command-palette.txt"], notModals: [] },
 } satisfies Record<string, { modals: string[]; notModals: string[] }>;
 
-/** This adapter's own captures, by file prefix. `claude-lab--` is Claude's capture lab. */
+/** This adapter's own captures, by file prefix. `claude-lab--` is Claude's capture lab, and
+ *  opencode's corpus is filed as `oc--`. */
 function ownFixtures(agent: string): string[] {
-  const prefix = agent === "antigravity" ? "agy" : agent;
+  const prefix = agent === "antigravity" ? "agy" : agent === "opencode" ? "oc" : agent;
   return FIXTURES.filter(
     (f) => f.split("--")[0] === prefix || (prefix === "claude" && f.startsWith("claude-lab--")),
   );
@@ -282,6 +283,8 @@ describe("the declaration tracks the harness", () => {
     ["agy", "agy--permission-bash.txt", "esc to cancel"],
     ["antigravity", "agy--permission-bash.txt", "esc to cancel"],
     ["grok", "grok--permission-rm.txt", "Ctrl+c:cancel"],
+    // opencode's pickers print the key as a bare `esc` at the end of the title row.
+    ["opencode", "oc--agents-picker.txt", "Select agent                                     esc"],
   ])("%s: a real dialog's footer names the declared key", (agent, fixture, spelling) => {
     const screen = fixtureLines(fixture).map(lineText).join("\n");
     expect(screen).toContain(spelling);
@@ -291,7 +294,7 @@ describe("the declaration tracks the harness", () => {
 });
 
 describe("the card is built outside the adapter", () => {
-  // Seven adapters over the whole corpus: the slowest assertion in the file, and the one that has to
+  // Eight adapters over the whole corpus: the slowest assertion in the file, and the one that has to
   // stay exhaustive, so it gets its own budget rather than a sample.
   it("no adapter's own buildBlocks emits the kind, on any fixture", { timeout: 30_000 }, () => {
     for (const agent of AGENTS) {
@@ -324,7 +327,9 @@ describe("the signature", () => {
     if (first.kind !== "unread-dialog" || second.kind !== "unread-dialog") return;
     expect(second.cancel.signature).toBe(first.cancel.signature);
 
-    const moved = [...base.slice(0, -1), ...linesOf("something else entirely")];
+    // A row added under the footer, which stays within the last rows: Claude's `modalOnScreen`
+    // needs a key hint there (ADR 0053 addendum 2026-09-26), so replacing the footer would drop the card.
+    const moved = [...base, ...linesOf("something else entirely")];
     const third = cardOf(pass("claude", moved))!;
     if (third.kind !== "unread-dialog") return;
     expect(third.cancel.signature).not.toBe(first.cancel.signature);

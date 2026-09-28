@@ -5,6 +5,7 @@ import type {
   CacheRuleWire,
   ChangeCommitDiffResponse,
   ChangeCommitResponse,
+  CreateResponse,
   CrewStatusResponse,
   PaneChangeDiffResponse,
   PaneChangesResponse,
@@ -256,6 +257,38 @@ export const fixtureCrewStatus: CrewStatusResponse = {
     },
   ],
   ts: 400_000,
+};
+
+/**
+ * What `POST /api/tab` answers: the fresh shell pane of a new tab in `collie` (w2). Shared by the
+ * unit layer's handler below and the browser tier's stub (e2e/fixtures/api.ts), so the two never
+ * describe a created tab two ways.
+ */
+export const fixtureNewTab: Extract<CreateResponse, { ok: true }> = {
+  ok: true,
+  pane: {
+    paneId: "w2:p9",
+    workspaceId: "w2",
+    workspaceLabel: "collie",
+    tabId: "w2:t9",
+    cwd: "/home/you/collie",
+  },
+};
+
+/**
+ * What `POST /api/workspace` answers: the fresh shell pane of a new space, opened in the fixture
+ * operator's home. Shared by the unit layer's handler below and the browser tier's stub
+ * (e2e/fixtures/api.ts), which swaps in the folder a create named, the way a multiplexer reports it.
+ */
+export const fixtureNewSpace: Extract<CreateResponse, { ok: true }> = {
+  ok: true,
+  pane: {
+    paneId: "w9:p1",
+    workspaceId: "w9",
+    workspaceLabel: "new-space",
+    tabId: "w9:t1",
+    cwd: "/home/you",
+  },
 };
 
 /** A minimal two-turn transcript: a human ask and the agent's tool-call-plus-answer reply. */
@@ -559,30 +592,8 @@ export const handlers = [
   http.post(/\/api\/pane\/[^/]+\/keys$/, () => HttpResponse.json({ ok: true })),
   http.post(/\/api\/pane\/[^/]+\/close$/, () => HttpResponse.json({ ok: true })),
   http.post(/\/api\/pane\/[^/]+\/rename$/, () => HttpResponse.json({ ok: true })),
-  http.post("/api/tab", () =>
-    HttpResponse.json({
-      ok: true,
-      pane: {
-        paneId: "w2:p9",
-        workspaceId: "w2",
-        workspaceLabel: "collie",
-        tabId: "w2:t9",
-        cwd: "/home/you/collie",
-      },
-    }),
-  ),
-  http.post("/api/workspace", () =>
-    HttpResponse.json({
-      ok: true,
-      pane: {
-        paneId: "w9:p1",
-        workspaceId: "w9",
-        workspaceLabel: "new-space",
-        tabId: "w9:t1",
-        cwd: "/home/you",
-      },
-    }),
-  ),
+  http.post("/api/tab", () => HttpResponse.json(fixtureNewTab)),
+  http.post("/api/workspace", () => HttpResponse.json(fixtureNewSpace)),
   // The DEFAULT world is solo, so the census refuses exactly as a non-lead bridge does: 404 with the
   // app's ordinary JSON error shape. Every pre-existing test therefore keeps asserting the one-host
   // world, and a test that wants a crew overrides this with `fixtureCrewStatus`.
@@ -596,6 +607,11 @@ export const handlers = [
   // Default world: no `launchers.toml`. Session-scoped (server.ts), so a test that wants rows
   // overrides this with its own `/api/launchers` handler rather than adding a field to `/api/config`.
   http.get("/api/launchers", () => HttpResponse.json({ launchers: [], home: "" })),
+  // Default world: no folder recorded yet (#289), which is every bridge that never created a space
+  // in a folder. The new-space sheet then renders exactly as it did before the list existed; a test
+  // that wants a list overrides these two with its own.
+  http.get("/api/folders", () => HttpResponse.json({ recent: [], favourites: [], home: "" })),
+  http.post("/api/folders/star", () => HttpResponse.json({ recent: [], favourites: [], home: "" })),
   // The prompt-cache rule catalog. Two rows are enough for every sheet case: one plain and one the
   // operator moved. A test that wants a different catalog overrides this handler.
   http.get("/api/cache-rules", () => HttpResponse.json({ rules: fixtureCacheRules })),

@@ -45,8 +45,10 @@ until explicitly configured.
 
 Using Collie from a phone: the dashboard keeps panes in their workspaces and marks agents that need
 input in place. You can inspect spaces, tabs, and panes. Long-press a pane pill or tab chip to rename
-or close it; Claude panes reflect names set via `/rename`. Tap to answer an `AskUserQuestion` prompt,
-switch between herds, and receive push notifications when an agent blocks on input.
+or close it; Claude panes reflect names set via `/rename`. Hold a dashboard row or a pane pill, or
+right-click it with a mouse, to pin that pane to the top of the dashboard and the switcher. Tap to
+answer an `AskUserQuestion` prompt, switch between herds, and receive push notifications when an
+agent blocks on input.
 
 The [interactive demo](https://colliepwa.dev/demo) runs the web client in your browser against mock
 data without installation.
