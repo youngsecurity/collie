@@ -37,6 +37,10 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 ## [Unreleased]
 
+### Changed
+
+- **Collie adopts upstream 1.14.1 while preserving the fork's safeguards.** Restore phone replies to Grok 1.0.41 panes when the draft hint names alternate newline keys, retain fail-closed composer detection, and include upstream's 1.14.0 packaging metadata. Keep the current fork release version until a separate release is cut. Thanks @AltanS and @CorrectRoadH (youngsecurity/collie#63).
+
 ## [1.14.0+ys.1] - 2026-09-28
 
 ### Changed
@@ -175,6 +179,12 @@ the fork's side of the reconciliation.
 ### Packaging
 
 - **The release attaches `collie-release.json` by hand.** Upstream's CI publishes the crew wire reading the update notice consults; `release.yml` stays the fork's inert stub, so the same asset is written from `CREW_PROTOCOL_VERSION` and uploaded with the release, and the phone can say that this release changes the crew link. ([bca973a](https://github.com/youngsecurity/collie/commit/bca973a))
+
+## [1.14.1] - 2026-09-27
+
+### Fixed
+
+- **Grok 1.0.41 panes send from the phone again.** Grok 1.0.41 adds `Shift+Enter/Opt+Enter:newline` to the key-hint row under its input box while a draft is in it. Collie did not know a hint with two keys joined by `/`, so it lost the input box as soon as the phone typed the message: the send stopped with "Message didn't reach the input box", and the unread-dialog card covered the pane. Collie now reads that hint, and the `Alt` spelling a Linux Grok may print. Every other saved pane reads as before. Thanks @CorrectRoadH for the pane capture (#294). ([7c9f6497](https://github.com/AltanS/collie/commit/7c9f6497))
 
 ## [1.14.0] - 2026-09-27
 
