@@ -15,9 +15,9 @@ test("only the swap-server owner clears directives, before releasing its lock", 
     writeFileSync(copy, readFileSync(join(import.meta.dir, "..", "web", "e2e", "fixtures", "builds.ts")));
     const builds: typeof import("../web/e2e/fixtures/builds.ts") = await import(pathToFileURL(copy).href);
     const lock = join(builds.BUILDS_DIR, "lock");
-    mkdirSync(lock, { recursive: true });
+    mkdirSync(builds.BUILDS_DIR, { recursive: true });
     const owner = join(lock, "pid");
-    writeFileSync(owner, String(process.pid + 1));
+    await builds.holdSwapServer();
     const delay = { match: "/probe", ms: 1234 };
     const fail = { match: "/probe", status: 503, times: 2 };
     const throttle = { match: "/probe", bytesPerSecond: 1234 };
@@ -25,6 +25,14 @@ test("only the swap-server owner clears directives, before releasing its lock", 
     builds.setFail(fail);
     builds.setThrottle(throttle);
 
+    // Another owner may neither overwrite nor clear directives, nor release the lock.
+    writeFileSync(owner, String(process.pid + 1));
+    for (const write of [
+      () => builds.serveBuild("b"),
+      () => builds.setDelay(delay), () => builds.clearDelay(),
+      () => builds.setFail(fail), () => builds.clearFail(),
+      () => builds.setThrottle(throttle), () => builds.clearThrottle(),
+    ]) expect(write).toThrow("without the swap server's lock");
     builds.releaseSwapServer();
     expect(builds.readDelay()).toEqual(delay);
     expect(builds.readFail()).toEqual(fail);
@@ -38,6 +46,7 @@ test("only the swap-server owner clears directives, before releasing its lock", 
     expect(builds.readThrottle()).toBeUndefined();
     expect(existsSync(lock)).toBe(false);
     expect(() => builds.releaseSwapServer()).not.toThrow();
+    expect(() => builds.setDelay(delay)).toThrow("without the swap server's lock");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

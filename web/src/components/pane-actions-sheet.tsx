@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Maximize2, Monitor, Pencil, ScrollText, Search, SlidersHorizontal, XCircle } from "lucide-react";
+import { Maximize2, Monitor, Pencil, Pin, PinOff, ScrollText, Search, SlidersHorizontal, XCircle } from "lucide-react";
 
 import { BottomSheet } from "@/components/ui/sheet";
 import { ActionRow, DestructiveActionRow, RenameView } from "@/components/action-sheet-rows";
@@ -15,6 +15,7 @@ import { useMuxCapability, useMuxName } from "@/lib/mux-capability";
 import { setStatus } from "@/lib/status";
 import { stampTopology } from "@/lib/poll-intent";
 import { paneName } from "@/lib/pane-name";
+import { dropPin, pinMatcher, setPinned, usePins } from "@/lib/pins";
 import type { AgentView } from "@/lib/types";
 import type { Scope } from "@/lib/scope";
 
@@ -60,14 +61,32 @@ interface PaneActionsSheetProps {
    *  buffered output to look at. Absence IS the gate, exactly as it is for find and history above —
    *  a device that never asked for zen sees a sheet byte-identical to today's. */
   onZen?: () => void;
+
+  /**
+   * Every pane the caller's list holds, agents and shells. The pins store reads it on a pin or unpin
+   * to tell a live pin from a dormant one and to spot a reused pane id (lib/pins.ts). Omit and only
+   * this pane counts as live.
+   */
+  herd?: readonly AgentView[];
+  /** The source snapshot's scope when it differs from the selected pane's write scope. */
+  herdScope?: Scope;
+  /**
+   * After a pin or unpin, with the pane and its new state. The dashboard passes it, because the row
+   * moves right there and is the answer (it scrolls the row into view and focuses it). Omit, as the
+   * pane view does, and a success toast says it instead, because the outcome is on another screen.
+   */
+  onPinChange?: (pane: AgentView, pinned: boolean) => void;
 }
+
+const NO_HERD: readonly AgentView[] = [];
 
 type Mode = "actions" | "rename";
 
-// The actions for a single pane. TWO entry points, one sheet: long-pressing (or re-tapping) a pane
-// pill in the strip, and the ⋮ button in the pane header — which is why find, history and zen live
-// here rather than in a second menu of their own. The header used to spend two of its four slots on those
-// two icons; the pane already had a menu, so they became rows in it.
+// The actions for a single pane. THREE entry points, one sheet: long-pressing (or re-tapping) a pane
+// pill in the strip, the ⋮ button in the pane header — which is why find, history and zen live
+// here rather than in a second menu of their own — and a hold on a dashboard row (ADR 0070). The
+// header used to spend two of its four slots on those two icons; the pane already had a menu, so they
+// became rows in it.
 // Rename (set/clear its label) and close (kill). Opens on an action-list view; rename is a second
 // tap away so the sheet doesn't shove a keyboard-triggering input at you just to close a pane. The
 // action rows + rename view are the SHARED pieces (action-sheet-rows) the tab sheet also uses, so the
@@ -86,8 +105,17 @@ export function PaneActionsSheet({
   onHistory,
   onSettings,
   onZen,
+  herd = NO_HERD,
+  herdScope = scope,
+  onPinChange,
 }: PaneActionsSheetProps) {
   useLocale();
+  // Whether this pane is pinned on this device, read live from the store so the row's word is right
+  // on every door (lib/pins.ts).
+  const pins = usePins();
+  const { lead, servers, sessions } = useCrew();
+  const pinContext = { scope: herdScope, servers, sessions };
+  const pinned = pane !== null && pinMatcher(pins, pinContext)(pane);
   const [mode, setMode] = useState<Mode>("actions");
   const [label, setLabel] = useState("");
   const [saving, setSaving] = useState(false);
@@ -119,7 +147,6 @@ export function PaneActionsSheet({
   // The mux name for the "Focus in <mux>" row and its toast — see `focusMux` below for why this
   // is gated to panes on the LOCAL machine before it's trusted.
   const localMuxName = useMuxName();
-  const { lead } = useCrew();
   // `useMuxName()` always answers for the collie THIS PAGE IS RUNNING ON (its own `/api/config`,
   // never a peer's — see that hook's own comment). A pane's `host` is undefined on a solo install
   // and, on a crew, is the LEAD's own id for a lead-hosted pane (lib/types.ts's doc on `host`) — so
@@ -184,6 +211,9 @@ export function PaneActionsSheet({
           return false;
         }
         onClose();
+        // A pane closed from Collie takes its pin with it (ADR 0070), on every door this sheet has.
+        // A pane closed in the terminal only leaves its pin dormant: absence never prunes.
+        dropPin(target, pinContext);
         // Same catch-up as a create: the list the operator just closed a pane out of should not
         // wait out an idle-timed gap to show it gone.
         stampTopology();
@@ -224,6 +254,19 @@ export function PaneActionsSheet({
     }
   }
 
+  /**
+   * Pin or unpin this pane on this device. Close first, then act, for the reason the find row
+   * states: the sheet's focus-restore then runs before whatever the caller does with focus.
+   */
+  function togglePin() {
+    if (!pane) return;
+    const next = !pinned;
+    onClose();
+    setPinned(pane, next, herd, Date.now(), pinContext);
+    if (onPinChange) onPinChange(pane, next);
+    else setStatus(next ? t("paneActions.pin.done") : t("paneActions.unpin.done"), "success");
+  }
+
   const confirming = !!pane && pending === pane.paneId;
 
   return (
@@ -262,8 +305,12 @@ export function PaneActionsSheet({
           They lead rather than trail because they are the cheap, repeatable, reversible half of this
           sheet; rename and close are the half you arrive at deliberately.
           Hidden in `rename` mode with the rest of the list — that view is a sub-screen, not a
-          section. */}
-      {mode === "actions" && (onFind || onHistory || onSettings || onZen) && (
+          section.
+          Pin to top / Unpin (ADR 0070) is the LAST of them, so no row the operator knows moves on
+          the ⋮, and so the first row on the two doors that pass no reads (a dashboard row's hold, the
+          pane pill's hold). It is a read in the same sense as settings: it changes this device and
+          types into no terminal, so a read-only device and a pane on a quiet machine can still pin. */}
+      {mode === "actions" && pane && (
         <div className="mb-1 flex flex-col gap-1">
           {onFind && (
             <ActionRow
@@ -316,6 +363,17 @@ export function PaneActionsSheet({
               }}
             />
           )}
+          <ActionRow
+            icon={
+              pinned ? (
+                <PinOff className="size-4 shrink-0 text-muted-foreground" />
+              ) : (
+                <Pin className="size-4 shrink-0 text-muted-foreground" />
+              )
+            }
+            label={pinned ? t("paneActions.unpin.label") : t("paneActions.pin.label")}
+            onClick={togglePin}
+          />
         </div>
       )}
       {readOnly ? (

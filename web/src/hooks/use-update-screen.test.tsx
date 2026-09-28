@@ -1,4 +1,4 @@
-import { act, render, screen, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { UpdateScreen } from "@/components/update-screen";
 import { UpdateRunStrip } from "@/components/update-run-strip";
 import { StripHost } from "@/components/ui/strip-host";
+import { BUILD } from "@/lib/build";
 import { clearStatus, useStatus } from "@/lib/status";
 import { UPDATE_MODE_HOLD, __resetReloadGuard, isReloadHeldBy } from "@/lib/reload-guard";
 import {
@@ -18,6 +19,7 @@ import {
 } from "@/lib/update-run-store";
 import { clearUpdateStarted, getUpdateClaim, noteUpdateStarted } from "@/lib/update-ribbon";
 import { __resetUpdateAsk, beginAskedUpdate, getUpdateAsk } from "@/lib/update-ask";
+import { LEAD_STALLED_MS } from "@/lib/update-screen";
 import type { UpdateCheckResponse, UpdateInfo, UpdatePeerLeg, UpdateRun } from "@/lib/types";
 import { server } from "@/test/setup";
 import { useUpdateScreen } from "./use-update-screen";
@@ -222,7 +224,7 @@ describe("the accepted full run owns update mode", () => {
       runId: "unreported-run", startedAt: at, updatedAt: at, attempt: 0,
     };
     if (previous) noteSnapshotRun({ ...accepted, runId: "old-failure", state: "rolled-back", updatedAt: at - 1 });
-    server.use(http.post("/api/update", () => HttpResponse.json({ ok: true, to: accepted.to, major: false, run: accepted }, { status: 202 })));
+    server.use(http.post("/api/update", () => HttpResponse.json({ ok: true, to: accepted.to, major: false, run: accepted, runId: accepted.runId }, { status: 202 })));
     const { container } = render(<Harness />);
     await act(() => beginAskedUpdate({ kind: "single", current: "1.12.1+ys.1", version: "1.13.1+ys.1", major: false, peersOnly: false }));
     expect(appIsInert(container)).toBe(true);
@@ -244,7 +246,7 @@ describe("the accepted full run owns update mode", () => {
     };
     if (previous) noteSnapshotRun({ ...accepted, runId: "previous-run", state: "done", updatedAt: at - 1 });
     server.use(http.post("/api/update", () => HttpResponse.json({
-      ok: true, to: accepted.to, major: false, run: accepted,
+      ok: true, to: accepted.to, major: false, run: accepted, runId: accepted.runId,
     }, { status: 202 })));
     const { container } = render(<Harness />);
     await act(() => beginAskedUpdate({
@@ -262,6 +264,7 @@ describe("the accepted full run owns update mode", () => {
     await userEvent.click(within(failed).getByRole("button", { name: "Back to the app" }));
     expect(getUpdateClaim()).toBeNull();
     expect(appIsInert(container)).toBe(false);
+    expect(screen.queryByText(/Progress for the update you started is unavailable/)).toBeNull();
   });
 });
 
@@ -273,7 +276,7 @@ describe("late update records", () => {
       schema: 2, state: "preflight", from: "1.12.1+ys.1", to: "1.13.1+ys.1",
       runId: "late-run", startedAt: at, updatedAt: at, attempt: 0,
     };
-    server.use(http.post("/api/update", () => HttpResponse.json({ ok: true, to: accepted.to, major: false, run: accepted }, { status: 202 })));
+    server.use(http.post("/api/update", () => HttpResponse.json({ ok: true, to: accepted.to, major: false, run: accepted, runId: accepted.runId }, { status: 202 })));
     const { container } = render(<Harness />);
     await act(() => beginAskedUpdate({ kind: "single", current: "1.12.1+ys.1", version: "1.13.1+ys.1", major: false, peersOnly: false }));
     await act(() => vi.advanceTimersByTimeAsync(ACCEPTED_RUN_GRACE_MS + 1));
@@ -350,5 +353,47 @@ describe("a failed full run's Back to the app", () => {
     // A later failure is a different one, and it is shown again.
     act(() => noteSnapshotRun(failed(Date.now())));
     expect(screen.getByRole("dialog")).toBeInTheDocument();
+  });
+});
+
+// ── A FULL START WHOSE RUN HAS NOT WRITTEN ITS RECORD (2026-09-26) ──────────────────────────────
+//
+// Right after a confirm every source still holds the LAST run's record, because the bridge reads it
+// before it starts the updater. The device that tapped waits on the check step for its own record
+// and, if none ever comes, spends its claim on the lead's own stall bound rather than keep the app.
+describe("a full start whose run has not written its record yet", () => {
+  const last: UpdateRun = {
+    schema: 2,
+    state: "done",
+    from: "1.9.0",
+    to: "1.9.1",
+    startedAt: Date.now() - 86_500_000,
+    updatedAt: Date.now() - 86_400_000,
+    pid: 1,
+    attempt: 0,
+    runId: "old",
+  };
+
+  it("holds the check step and the app, never the last run's Done", () => {
+    const { container } = render(<Harness />);
+    act(() => {
+      noteUpdateStarted(Date.now(), "new", { target: "1.9.2", bundleAtStart: BUILD.id });
+      noteSnapshotRun(last);
+    });
+    expect(screen.getByRole("dialog")).toHaveAccessibleName("Checking This machine");
+    expect(appIsInert(container)).toBe(true);
+    expect(getUpdateClaim()).not.toBeNull();
+  });
+
+  it("is spent once nothing of it has been heard for LEAD_STALLED_MS, and hands the app back", async () => {
+    const { container } = render(<Harness />);
+    act(() => {
+      noteUpdateStarted(Date.now() - LEAD_STALLED_MS, "new", { target: "1.9.2", bundleAtStart: BUILD.id });
+      noteSnapshotRun(last);
+    });
+    await waitFor(() => expect(getUpdateClaim()).toBeNull());
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(appIsInert(container)).toBe(false);
+    expect(screen.getByText(/Progress for the update you started is unavailable/)).toBeInTheDocument();
   });
 });

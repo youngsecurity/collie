@@ -496,17 +496,22 @@ describe("Ready to start, the first screen", () => {
 // ── SOMEBODY ELSE'S RUN ──────────────────────────────────────────────────────────────────────────
 
 describe("a claim is about ONE run", () => {
-  it.each(["staging", "done", "rolled-back", "stuck", "interrupted"] as const)("a named claim never owns an ID-less %s record", (state) => {
-    const view = read({ run: run(state, { runId: undefined, peers: [], settledAt: NOW - 1_000 }) });
+  it.each(
+    (["staging", "done", "rolled-back", "stuck", "interrupted"] as const).flatMap((state) =>
+      ["bundle-a", "bundle-b"].map((id) => ({ state, id })),
+    ),
+  )("a named claim never owns an ID-less $state record on $id", ({ state, id }) => {
+    const view = read({ run: run(state, { runId: undefined, peers: [], settledAt: NOW - 1_000 }), bundle: { id, version: TO } });
     expect(view.mine).toBe(false);
     expect(view.locked).toBe(false);
     if (state === "staging") expect(view.mode).toBe("collapsed");
     if (state === "done") expect(view.mode).toBe("hidden");
   });
 
-  it("preserves the compatibility reading for claims that have no ID themselves", () => {
-    const view = read({ claim: { ...CLAIM, runId: null }, run: run("staging", { runId: undefined }) });
-    expect(view).toMatchObject({ mine: true, locked: true, mode: "expanded" });
+  it.each(["staging", "done", "rolled-back"] as const)("preserves ID-less claim compatibility for %s", (state) => {
+    const view = read({ claim: { ...CLAIM, runId: null }, run: run(state, { runId: undefined, peers: [] }), bundle: { id: "bundle-a", version: TO } });
+    expect(view).toMatchObject({ mine: true, mode: "expanded" });
+    expect(view.locked).toBe(state === "staging");
   });
 
   it("does not lock this device for a newer run somebody else started", () => {
@@ -514,6 +519,78 @@ describe("a claim is about ONE run", () => {
     expect(view.mine).toBe(false);
     expect(view.mode).toBe("collapsed");
     expect(view.locked).toBe(false);
+  });
+});
+
+// ── A START WHOSE RUN HAS NOT WRITTEN ITS RECORD YET (2026-09-26) ───────────────────────────────
+//
+// `POST /api/update` reads the record BEFORE it starts the updater, so its 202, and every source for a
+// beat after it, holds the LAST run's record. Updating 1.13.2 to 1.13.3 on a lead that had updated
+// before, the phone said "Update finished" at 0:00 with everyone on 1.13.2, and the real run then read
+// as "started on another device".
+
+describe("a start whose run has not written its record yet", () => {
+  const LAST = run("done", {
+    from: "1.13.1",
+    to: "1.13.2",
+    runId: "old",
+    peers: [leg("minibuch", "done", { version: "1.13.2" }), leg("cellar", "done", { version: "1.13.2" })],
+    startedAt: NOW - 86_500_000,
+    updatedAt: NOW - 86_400_000,
+    settledAt: NOW - 86_400_000,
+  });
+  const claim: UpdateClaim = { ...CLAIM, runId: "new", target: "1.13.3", startedAt: NOW - 1_000 };
+  const crew: UpdateCrewMember[] = [
+    { name: "minibuch", version: "1.13.2", verdict: "green", reasons: [], asOf: NOW - 3_000 },
+    { name: "cellar", version: "1.13.2", verdict: "green", reasons: [], asOf: NOW - 3_000 },
+  ];
+  const at = (over: Partial<UpdateScreenInput> = {}) =>
+    read({ run: LAST, claim, crew, bundle: { id: "bundle-a", version: "1.13.2" }, ...over });
+
+  it("is the check step on the device that started it, never the last run's Done", () => {
+    const view = at();
+    expect(view).toMatchObject({ phase: "check", step: 1, mode: "expanded", mine: true, locked: true, target: "1.13.3" });
+    expect(view).toMatchObject({ end: { kind: "none" }, inFlight: "lead", holdsReload: true, elapsedMs: 1_000 });
+    expect(view.heading).toBe("Checking bluefin");
+    // Every row waits to be read. None of them claims the last run's versions.
+    expect(view.rows.map((row) => row.word)).toEqual(Array(4).fill("reading its state"));
+    expect(view.rows.map((row) => row.versions)).toEqual([null, null, null, null]);
+  });
+
+  it("retains the legacy settled-record reading for a claim with no ID", () => {
+    const view = at({ claim: { ...claim, runId: null } });
+    expect(view).toMatchObject({ phase: "done", mine: true, locked: false, target: "1.13.2" });
+  });
+
+  it("does not show the last run's failure either", () => {
+    const view = at({ run: { ...LAST, state: "rolled-back", reason: "health gate timed out" } });
+    expect(view).toMatchObject({ phase: "check", locked: true, end: { kind: "none" } });
+  });
+
+  it("gives way to its own record the moment that lands", () => {
+    const view = at({ run: run("preflight", { from: "1.13.2", to: "1.13.3", runId: "new" }) });
+    expect(view).toMatchObject({ phase: "check", mine: true, locked: true });
+    expect(view.rows[0]).toMatchObject({ status: "active", versions: "1.13.2 → 1.13.3" });
+  });
+
+  it("still reads a record in flight under another id as somebody else's run", () => {
+    const view = at({ run: run("staging", { runId: "other" }) });
+    expect(view).toMatchObject({ mine: false, mode: "collapsed", locked: false });
+  });
+
+  it("after this phone's reload onto the new app, reads the settled record as this run's end", () => {
+    // Only a swapped lead serves a new app, so the record is at least as new as this run. A claim a
+    // bridge gave no id still gets its Done.
+    const done = run("done", { from: "1.13.2", to: "1.13.3", runId: "new", peers: ARRIVED, settledAt: NOW - 1_000 });
+    const view = at({ run: done, claim: { ...claim, runId: null }, bundle: { id: "bundle-b", version: "1.13.3" } });
+    expect(view).toMatchObject({ phase: "done", mine: true });
+  });
+
+  it("is spent once nothing of its run has been heard for LEAD_STALLED_MS", () => {
+    expect(at({ now: claim.startedAt + LEAD_STALLED_MS - 1 }).claimExpired).toBe(false);
+    expect(at({ now: claim.startedAt + LEAD_STALLED_MS }).claimExpired).toBe(true);
+    // Never on any other screen: its own run, however long it takes, is the stall's business.
+    expect(read({ run: run("staging", { updatedAt: NOW - LEAD_STALLED_MS * 2 }) }).claimExpired).toBe(false);
   });
 });
 

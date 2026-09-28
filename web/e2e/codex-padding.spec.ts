@@ -12,7 +12,8 @@ for (const theme of ['dark', 'light']) {
     await installApiStub(page);
     await page.addInitScript((value) => localStorage.setItem('collie:theme:v1', value), theme);
     let harness = 'codex';
-    const body = Array.from({ length: 60 }, (_, i) => `Earlier output ${i}`).join('\n') + '\n';
+    // Overflow even the tablet viewport despite the harness-specific history notice heights.
+    const body = Array.from({ length: 140 }, (_, i) => `Earlier output ${i}`).join('\n') + '\n';
     const rule = '─'.repeat(40);
     const claudeScreen = body + ['• Verification complete. Keep this transcript.', '', rule, '❯ ', rule, '  Claude comparison status'].join('\n');
     await page.route('**/api/snapshot', (route) => route.fulfill({ json: {
@@ -44,6 +45,9 @@ for (const theme of ['dark', 'light']) {
         expect(tail.text).toBe(body + '• Verification complete. Keep this transcript.');
         expect(tail.paintedBlanks).toBe(0);
       }
+      // This compares tail spacing, not the unused height of two differently sized mirrors.
+      await expect(last).toBeInViewport();
+      await expect(page.getByText('Earlier output 0', { exact: true })).not.toBeInViewport();
       // Reduced motion disables transitions; wait for tail-follow geometry to settle.
       let previous: number | undefined;
       let gap = 0;

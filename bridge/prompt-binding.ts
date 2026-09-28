@@ -25,6 +25,10 @@ export function normalizePromptRegion(text: string): string[] {
 // regions span 20 to 32 normalized lines, pushes a stale match outside the accepted tail.
 export const DEFAULT_PROMPT_TAIL_LINES = 6;
 
+// Shared with subject readers: an oversized subject must stay raw, never be truncated into a
+// different approval or offered as a button whose binding the write API cannot accept.
+export const MAX_EXPECTED_PROMPT_CHARS = 8192;
+
 export type PromptBindingResult =
   | { ok: true }
   | { ok: false; reason: "empty" | "not_found" | "not_in_tail" };

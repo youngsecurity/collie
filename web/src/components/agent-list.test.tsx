@@ -1,13 +1,24 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { http, HttpResponse } from "msw";
 
-import { AgentList } from "./agent-list";
 import { clockTime } from "@/lib/format";
 import { t } from "@/lib/i18n";
-import { groupPanesByWorkspace } from "@/lib/pane-groups";
+import { server } from "@/test/setup";
+import { CrewProvider } from "./crew-provider";
+import { AgentList, type HeadingNewTab } from "./agent-list";
+import { HEADING_ADD_REACH } from "./workspace-new-tab";
+import { tabCreateKey } from "@/hooks/use-spaces";
+import { __resetOperatorCommands } from "@/lib/operator-config";
+import { useStatus, clearStatus } from "@/lib/status";
+import type { Scope } from "@/lib/scope";
+import { groupPanesByWorkspace, type WorkspaceGroup } from "@/lib/pane-groups";
 import { paneName } from "@/lib/pane-name";
 import { workspacePrefKey } from "./agent-list";
-import type { AgentStatus, AgentView } from "@/lib/types";
+import { paneRowKey } from "@/lib/hosts";
+import { currentPins, setPinned } from "@/lib/pins";
+import { setMachineHidden, useHiddenMachines } from "@/lib/hidden-machines";
+import type { AgentStatus, AgentView, MuxConfig, ServerSummary } from "@/lib/types";
 
 function agent(
   paneId: string,
@@ -553,5 +564,661 @@ describe("AgentList — the Spaces filter strip", () => {
     // A status change marks the row (a tint, a dot) — it never reorders it. Pane id is the only
     // tiebreak `order: "fixed"` uses (lib/pane-groups.ts).
     expect(order()).toEqual(["first", "second"]);
+  });
+});
+
+// PINNED PANES (ADR 0070): a Pinned group under the summary line on every tab, drawn from every
+// workspace before isolate and hide, deaf to the Focus filter, and each pinned pane listed once.
+describe("AgentList — pinned panes", () => {
+  it("interleaves pinned shells and agents by position, never status or pin time", () => {
+    const sh = agent("shell", "unknown", { ...UI_WORK, kind: "shell", agent: "shell", paneLabel: "shell-first", tabPosition: 0 });
+    const ai = agent("ai", "idle", { ...UI_WORK, sessionName: "agent-second", tabPosition: 1 });
+    const all = [ai, sh];
+    setPinned(ai, true, all, 1);
+    setPinned(sh, true, all, 2);
+    const props = { shellPanes: [sh], onOpen: vi.fn(), pins: currentPins() };
+    const { rerender } = render(<AgentList {...props} agents={[ai]} />);
+    const names = () => within(screen.getByRole("region", { name: "Pinned" })).getAllByRole("button").map((row) => row.textContent);
+    expect(names()).toEqual([expect.stringContaining("shell-first"), expect.stringContaining("agent-second")]);
+    rerender(<AgentList {...props} agents={[{ ...ai, status: "blocked" }]} />);
+    expect(names()).toEqual([expect.stringContaining("shell-first"), expect.stringContaining("agent-second")]);
+  });
+
+  const herd = [
+    agent("a1", "idle", { workspaceId: "w1", workspaceLabel: "one", workspaceNumber: 1, tabId: "w1:t1", sessionName: "orchestrator" }),
+    agent("a2", "blocked", { workspaceId: "w1", workspaceLabel: "one", workspaceNumber: 1, tabId: "w1:t1", sessionName: "stuck" }),
+    agent("b1", "working", { workspaceId: "w2", workspaceLabel: "two", workspaceNumber: 2, tabId: "w2:t1", sessionName: "builder" }),
+    agent("b2", "idle", { workspaceId: "w2", workspaceLabel: "two", workspaceNumber: 2, tabId: "w2:t1", sessionName: "quiet" }),
+  ];
+  const byName = (name: string) => herd.find((a) => a.sessionName === name)!;
+  /** Pin these panes, in this order, and hand back the pins as the list's prop. */
+  const pinned = (...names: string[]) => {
+    let now = 0;
+    for (const n of names) setPinned(byName(n), true, herd, ++now);
+    return currentPins();
+  };
+  const pinnedRegion = () => screen.getByRole("region", { name: "Pinned" });
+  const rowNames = (el: HTMLElement) =>
+    within(el)
+      .getAllByRole("button")
+      .map((b) => herd.find((a) => within(b).queryByText(a.sessionName!))?.sessionName);
+
+  it("draws no Pinned heading and no extra DOM when nothing is pinned", () => {
+    const { container, rerender } = render(<AgentList agents={herd} onOpen={vi.fn()} />);
+    const before = container.innerHTML;
+    expect(screen.queryByRole("heading", { name: "Pinned" })).toBeNull();
+    rerender(<AgentList agents={herd} onOpen={vi.fn()} pins={[]} />);
+    expect(container.innerHTML).toBe(before);
+  });
+
+  it("draws Pinned under the summary line, as the first group, in place order", () => {
+    render(<AgentList agents={herd} onOpen={vi.fn()} pins={pinned("builder", "orchestrator")} />);
+    expect(headings()).toEqual(["pinned", "one", "two"]);
+    // Place order, not pin order: workspace one before two.
+    expect(rowNames(pinnedRegion())).toEqual(["orchestrator", "builder"]);
+    // The summary line sits above the group.
+    const summary = screen.getByRole("button", { name: /^\d+ needs you/ });
+    expect(summary.compareDocumentPosition(pinnedRegion()) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // The heading is the muted section voice, an h2 with no dot and no count.
+    const heading = within(pinnedRegion()).getByRole("heading", { level: 2, name: "Pinned" });
+    expect(heading.textContent).toBe("Pinned");
+  });
+
+  it("takes a pinned row out of its workspace group, and the heading still counts every pane", () => {
+    render(<AgentList agents={herd} onOpen={vi.fn()} pins={pinned("stuck")} />);
+    const one = groupSection("one");
+    expect(rowNames(one)).toEqual(["orchestrator"]);
+    // The pinned pane is blocked, and workspace one's heading still says so.
+    expect(within(one).getByLabelText("1 needs you")).toBeInTheDocument();
+    expect(rowNames(pinnedRegion())).toEqual(["stuck"]);
+  });
+
+  it("drops a workspace group left with no rows, and keeps its chip in the strip", () => {
+    render(<AgentList agents={herd} onOpen={vi.fn()} pins={pinned("builder", "quiet")} />);
+    expect(headings()).toEqual(["pinned", "one"]);
+    expect(within(screen.getByRole("navigation", { name: /spaces/i })).getByRole("button", { name: /two/ })).toBeInTheDocument();
+  });
+
+  it("puts the place on line 2 of a pinned row, because no workspace heading says it", () => {
+    render(<AgentList agents={herd} onOpen={vi.fn()} pins={pinned("builder")} />);
+    const row = within(pinnedRegion()).getByRole("button");
+    expect(row.querySelector('[data-slot="agent-row-detail"]')).toHaveTextContent(/^two/);
+  });
+
+  it("ignores isolate: a pin on another workspace still leads", () => {
+    const pins = pinned("builder");
+    const isolateOne = workspacePrefKey(groupPanesByWorkspace([herd[0]!])[0]!);
+    render(<AgentList agents={herd} onOpen={vi.fn()} pins={pins} isolated={isolateOne} />);
+    expect(headings()).toEqual(["pinned", "one"]);
+    expect(rowNames(pinnedRegion())).toEqual(["builder"]);
+  });
+
+  it("ignores hide: a pin in a hidden workspace still leads", () => {
+    const pins = pinned("builder");
+    const hideTwo = workspacePrefKey(groupPanesByWorkspace([herd[2]!])[0]!);
+    render(<AgentList agents={herd} onOpen={vi.fn()} pins={pins} hidden={[hideTwo]} />);
+    expect(headings()).toEqual(["pinned", "one"]);
+    expect(rowNames(pinnedRegion())).toEqual(["builder"]);
+  });
+
+  it("isolating a workspace whose panes are all pinned shows the Pinned group alone", () => {
+    const pins = pinned("builder", "quiet");
+    const isolateTwo = workspacePrefKey(groupPanesByWorkspace([herd[2]!])[0]!);
+    render(<AgentList agents={herd} onOpen={vi.fn()} pins={pins} isolated={isolateTwo} />);
+    expect(headings()).toEqual(["pinned"]);
+  });
+
+  it("ignores the Focus filter: an idle pinned pane leads, and the groups keep only what needs you", () => {
+    render(<AgentList agents={herd} onOpen={vi.fn()} pins={pinned("orchestrator")} needsYouOnly />);
+    expect(rowNames(pinnedRegion())).toEqual(["orchestrator"]);
+    expect(headings()).toEqual(["pinned", "one"]);
+    expect(rowNames(groupSection("one"))).toEqual(["stuck"]);
+  });
+
+  it("shows only the Pinned group under an all-clear Focus when every urgent pane is pinned", () => {
+    render(<AgentList agents={herd} onOpen={vi.fn()} pins={pinned("stuck")} needsYouOnly />);
+    expect(headings()).toEqual(["pinned"]);
+  });
+
+  it("leads Changes too, and hands the Changes body every shown workspace unchanged (A2)", () => {
+    const renderBody = vi.fn((_shown: readonly WorkspaceGroup[]) => <p>changes body</p>);
+    render(<AgentList agents={herd} onOpen={vi.fn()} pins={pinned("builder", "quiet")} renderBody={renderBody} />);
+    expect(rowNames(pinnedRegion())).toEqual(["builder", "quiet"]);
+    // Workspace two's panes are all pinned, and it still gets its change row, with every pane.
+    const shown = renderBody.mock.calls[0]![0];
+    expect(shown.map((g) => g.label)).toEqual(["one", "two"]);
+    expect(shown[1]!.panes).toHaveLength(2);
+    expect(pinnedRegion().compareDocumentPosition(screen.getByText("changes body")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("opens a pinned row's own pane, exactly as its workspace row would", async () => {
+    const user = userEvent.setup();
+    const onOpen = vi.fn();
+    render(<AgentList agents={herd} onOpen={onOpen} pins={pinned("builder")} />);
+    await user.click(within(pinnedRegion()).getByRole("button"));
+    expect(onOpen).toHaveBeenCalledExactlyOnceWith(byName("builder"), expect.any(HTMLElement));
+  });
+
+  it("jumps the summary line to Pinned when a pinned pane needs you", async () => {
+    const user = userEvent.setup();
+    const scroll = vi.spyOn(Element.prototype, "scrollIntoView");
+    render(<AgentList agents={herd} onOpen={vi.fn()} pins={pinned("stuck")} />);
+    await user.click(screen.getByRole("button", { name: /^\d+ needs you/ }));
+    expect(scroll.mock.contexts[0]).toBe(pinnedRegion());
+    scroll.mockRestore();
+  });
+
+  it("opens the pane's sheet on a hold, and not the pane", () => {
+    const onOpen = vi.fn();
+    const onHold = vi.fn();
+    render(<AgentList agents={herd} onOpen={onOpen} onHold={onHold} />);
+    const row = within(groupSection("two")).getAllByRole("button")[0]!;
+    fireEvent.contextMenu(row);
+    expect(onHold).toHaveBeenCalledExactlyOnceWith(byName("builder"));
+    expect(onOpen).not.toHaveBeenCalled();
+  });
+
+  it("focuses the moved row in its new place after a pin, and the summary line when the row left", () => {
+    const pins = pinned("orchestrator");
+    const { rerender } = render(
+      <AgentList agents={herd} onOpen={vi.fn()} pins={pins} reveal={{ rowKey: paneRowKey(byName("orchestrator")) }} />,
+    );
+    expect(within(pinnedRegion()).getByRole("button")).toHaveFocus();
+    // Unpinned on Focus: an idle pane leaves the list, and focus goes to the summary line.
+    setPinned(byName("orchestrator"), false, herd);
+    rerender(
+      <AgentList
+        agents={herd}
+        onOpen={vi.fn()}
+        pins={currentPins()}
+        needsYouOnly
+        reveal={{ rowKey: paneRowKey(byName("orchestrator")) }}
+      />,
+    );
+    expect(screen.getByRole("button", { name: /^\d+ needs you/ })).toHaveFocus();
+  });
+
+  it("lets the all-clear summary line hold focus once pins are in play", () => {
+    const calm = herd.filter((a) => a.status !== "blocked");
+    const { rerender } = render(<AgentList agents={calm} onOpen={vi.fn()} />);
+    // With nothing pinned, the line is the disabled button it always was.
+    expect(screen.getByRole("button", { name: /nothing needs you/i })).toBeDisabled();
+    rerender(<AgentList agents={calm} onOpen={vi.fn()} needsYouOnly reveal={{ rowKey: paneRowKey(calm[0]!) }} />);
+    const line = screen.getByRole("button", { name: /nothing needs you/i });
+    expect(line).toHaveAttribute("aria-disabled", "true");
+    expect(line).toHaveFocus();
+  });
+});
+
+// HIDING A MACHINE (issue #288, M40/01): a crew's dashboard can leave a machine out. Its workspace
+// groups leave Panes, Focus and Changes, its chips give way to one dimmed stand-in chip with its worst
+// dot, pins and isolate still win, the addressed machine always shows, and solo renders as before.
+describe("AgentList — hiding a machine", () => {
+  const member = (id: string, isLead = false): ServerSummary => ({
+    id,
+    name: id,
+    isLead,
+    reachable: true,
+    protocol: "ok",
+    lastSeenAt: 1_000,
+  });
+  const servers = [member("bluefin", true), member("workshop"), member("attic")];
+  const on = (host: string, workspaceId: string, workspaceLabel: string, workspaceNumber: number) =>
+    ({ host, workspaceId, workspaceLabel, workspaceNumber, tabId: `${workspaceId}:t1` }) as const;
+  const herd = [
+    agent("w1:p1", "idle", { ...on("bluefin", "w1", "collie", 1), sessionName: "lead-idle" }),
+    agent("w1:p2", "blocked", { ...on("bluefin", "w1", "collie", 1), sessionName: "lead-stuck" }),
+    agent("w1:p1", "blocked", { ...on("workshop", "w1", "moonward", 1), sessionName: "peer-stuck" }),
+    agent("w2:p1", "idle", { ...on("workshop", "w2", "docs", 2), sessionName: "peer-idle" }),
+    agent("w1:p1", "working", { ...on("attic", "w1", "attic-ws", 1), sessionName: "attic-busy" }),
+  ];
+  const byName = (name: string) => herd.find((a) => a.sessionName === name)!;
+  const strip = () => within(screen.getByRole("navigation", { name: /spaces/i }));
+  const chipNames = () => strip().getAllByRole("button").map((b) => b.getAttribute("aria-label") ?? b.textContent);
+  const standIn = (name: string) => strip().getByRole("button", { name: `Show ${name}'s panes` });
+  const summaryLine = () => screen.getByRole("button", { name: /^\d+ needs you/ });
+
+  it("leaves a hidden machine's workspaces out of Panes, and the summary line still counts them", () => {
+    render(<AgentList agents={herd} servers={servers} hiddenMachines={["workshop"]} onOpen={vi.fn()} />);
+    expect(headings()).toEqual(["collie", "attic-ws"]);
+    // workshop's blocked pane is off the list and still in the count: nothing is silenced.
+    expect(summaryLine()).toHaveAccessibleName(/^2 needs you/);
+  });
+
+  it("leaves a hidden machine out of Focus too", () => {
+    render(<AgentList agents={herd} servers={servers} hiddenMachines={["workshop"]} needsYouOnly onOpen={vi.fn()} />);
+    expect(headings()).toEqual(["collie"]);
+    expect(rowButtons()).toHaveLength(1);
+  });
+
+  it("hands Changes only the shown machines' workspaces, so it stops asking a hidden machine", () => {
+    const renderBody = vi.fn((_shown: readonly WorkspaceGroup[]) => <p>changes body</p>);
+    render(
+      <AgentList agents={herd} servers={servers} hiddenMachines={["workshop"]} renderBody={renderBody} onOpen={vi.fn()} />,
+    );
+    expect(renderBody.mock.calls[0]![0].map((g) => g.label)).toEqual(["collie", "attic-ws"]);
+  });
+
+  it("keeps a pinned pane on a hidden machine in the Pinned group, leading the list", () => {
+    setPinned(byName("peer-idle"), true, herd, 1);
+    render(
+      <AgentList agents={herd} servers={servers} hiddenMachines={["workshop"]} pins={currentPins()} onOpen={vi.fn()} />,
+    );
+    expect(headings()).toEqual(["pinned", "collie", "attic-ws"]);
+    const pinned = screen.getByRole("region", { name: "Pinned" });
+    expect(within(pinned).getByText("peer-idle")).toBeInTheDocument();
+  });
+
+  it("lets isolate win: an isolated workspace on a hidden machine shows, its chip right after the machine's", () => {
+    const isolated = prefKeyOf(byName("peer-idle"));
+    render(
+      <AgentList agents={herd} servers={servers} hiddenMachines={["workshop"]} isolated={isolated} onOpen={vi.fn()} />,
+    );
+    expect(headings()).toEqual(["docs"]);
+    expect(chipNames()).toEqual(["All", "collie", "Show workshop's panes", "docs", "attic-ws"].map((n) => expect.stringContaining(n)));
+    expect(strip().getByRole("button", { name: /docs/ })).toHaveAttribute("aria-current", "true");
+  });
+
+  it("jumps the summary line to an urgent pane on a hidden machine by isolating its workspace", async () => {
+    const user = userEvent.setup();
+    const onIsolate = vi.fn();
+    // Only the peer's pane needs you, so the jump's target is on the hidden machine.
+    const calmLead = herd.map((a) => (a.sessionName === "lead-stuck" ? { ...a, status: "idle" as const } : a));
+    render(
+      <AgentList agents={calmLead} servers={servers} hiddenMachines={["workshop"]} onIsolate={onIsolate} onOpen={vi.fn()} />,
+    );
+    await user.click(summaryLine());
+    expect(onIsolate).toHaveBeenCalledExactlyOnceWith(prefKeyOf(byName("peer-stuck")));
+  });
+
+  it("never hides the machine the dashboard addresses: the lead when ?h= is absent", () => {
+    const { rerender } = render(
+      <AgentList agents={herd} servers={servers} hiddenMachines={["bluefin", "workshop"]} onOpen={vi.fn()} />,
+    );
+    expect(headings()).toEqual(["collie", "attic-ws"]);
+    // On workshop the stored lead comes back into force, and workshop itself shows.
+    rerender(
+      <AgentList
+        agents={herd}
+        servers={servers}
+        hiddenMachines={["bluefin", "workshop"]}
+        addressedHost="workshop"
+        onOpen={vi.fn()}
+      />,
+    );
+    expect(headings()).toEqual(["moonward", "docs", "attic-ws"]);
+  });
+
+  it("filters nothing with a machine id the roster no longer lists", () => {
+    render(<AgentList agents={herd} servers={servers} hiddenMachines={["cellar"]} onOpen={vi.fn()} />);
+    expect(headings()).toEqual(["collie", "moonward", "docs", "attic-ws"]);
+  });
+
+  it("renders a solo machine list byte-identically, whatever is stored", () => {
+    const solo = herd.map(({ host: _host, ...rest }) => rest);
+    const { container, rerender } = render(<AgentList agents={solo} onOpen={vi.fn()} />);
+    const before = container.innerHTML;
+    rerender(<AgentList agents={solo} hiddenMachines={["workshop", ""]} onOpen={vi.fn()} />);
+    expect(container.innerHTML).toBe(before);
+  });
+
+  it("swaps a hidden machine's chips for one dimmed stand-in chip, at its place, with its worst dot", () => {
+    render(<AgentList agents={herd} servers={servers} hiddenMachines={["workshop"]} onOpen={vi.fn()} />);
+    expect(chipNames()).toEqual(["All", "collie", "Show workshop's panes", "attic-ws"].map((n) => expect.stringContaining(n)));
+    const chip = standIn("workshop");
+    // The machine's name for the eye, its worst status for the ear, and the server glyph in its tint.
+    expect(chip).toHaveTextContent("workshop");
+    expect(chip).toHaveAccessibleDescription("needs you");
+    expect(chip.querySelector("svg")?.getAttribute("class")).toMatch(/text-host-\d/);
+    // Drawn dimmed, like a hidden workspace's chip.
+    expect(chip.className).toContain("border-dashed");
+    expect(chip).not.toHaveAttribute("aria-current");
+  });
+
+  it("draws no stand-in chip for a hidden machine with no panes", () => {
+    const leadOnly = herd.filter((a) => a.host !== "attic");
+    render(<AgentList agents={leadOnly} servers={servers} hiddenMachines={["attic"]} onOpen={vi.fn()} />);
+    expect(strip().queryByRole("button", { name: /^Show attic/ })).toBeNull();
+  });
+
+  it("keeps the stand-in chip of a hidden machine that is down, with its last good dot", () => {
+    const down = servers.map((s) => (s.id === "workshop" ? { ...s, reachable: false } : s));
+    render(<AgentList agents={herd} servers={down} hiddenMachines={["workshop"]} onOpen={vi.fn()} />);
+    expect(standIn("workshop")).toHaveAccessibleDescription("needs you");
+  });
+
+  it("a tap on the stand-in chip shows the machine again, and focus lands on the chip in its place", async () => {
+    const user = userEvent.setup();
+    function Dashboard() {
+      const hidden = useHiddenMachines(true);
+      return (
+        <AgentList
+          agents={herd}
+          servers={servers}
+          hiddenMachines={hidden}
+          onShowMachine={(host) => setMachineHidden(host, false, servers)}
+          onOpen={vi.fn()}
+        />
+      );
+    }
+    setMachineHidden("workshop", true, servers);
+    render(<Dashboard />);
+    expect(headings()).toEqual(["collie", "attic-ws"]);
+
+    await user.click(standIn("workshop"));
+    expect(headings()).toEqual(["collie", "moonward", "docs", "attic-ws"]);
+    expect(strip().queryByRole("button", { name: /^Show workshop/ })).toBeNull();
+    // The machine's first workspace chip took the stand-in's place, and focus with it.
+    expect(strip().getByRole("button", { name: /moonward/ })).toHaveFocus();
+  });
+});
+
+// A NEW TAB FROM THE WORKSPACE HEADING (M40/03, issue 290). Each strong heading ends in a "+" that
+// asks its OWN machine whether it can open a tab, sends the create to that machine and session, and
+// refuses on the tap when that machine is not taking writes. Every strong heading reserves the
+// "+"'s 28px, drawn or not.
+describe("AgentList — the heading's new tab (M40/03)", () => {
+  afterEach(() => {
+    __resetOperatorCommands();
+    clearStatus();
+  });
+
+  const LEAD = "bluefin";
+  const PEER = "workshop";
+  const servers: ServerSummary[] = [
+    { id: LEAD, name: LEAD, isLead: true, reachable: true, protocol: "ok", lastSeenAt: 1_000 },
+    { id: PEER, name: PEER, isLead: false, reachable: true, protocol: "ok", lastSeenAt: 990 },
+  ];
+  /** Two machines, and each calls its first space `w1`: the collision the address exists for. */
+  const crew = [
+    agent("w1:p1", "blocked", { workspaceId: "w1", workspaceLabel: "webapp", workspaceNumber: 1, tabId: "w1:t1", host: LEAD }),
+    agent("w2:p1", "working", { workspaceId: "w2", workspaceLabel: "collie", workspaceNumber: 2, tabId: "w2:t1", host: LEAD }),
+    agent("w1:p1", "idle", { workspaceId: "w1", workspaceLabel: "moonward", workspaceNumber: 1, tabId: "w1:t1", host: PEER }),
+  ];
+  const plus = (name: string) => screen.queryByRole("button", { name: `New tab in ${name}` });
+  /** The heading row of a workspace: the `SectionHeader` div holding the <h2> and the trailing slot. */
+  const headingRow = (label: string) => screen.getByRole("heading", { name: label }).parentElement!;
+
+  function wiring(over: Partial<HeadingNewTab> = {}): HeadingNewTab {
+    return { scope: {}, creating: new Set(), onNewTab: vi.fn(), ...over };
+  }
+
+  /** Serve `/api/config` per machine: the lead's block, and the peer's own when `peer` is given. */
+  function declaresCreateTab(lead: boolean, peer?: boolean): void {
+    const block = (createTab: boolean): MuxConfig => ({
+      name: "reference",
+      capabilities: { createTab },
+      unsupportedKeys: [],
+      notes: { createTab: "no tabs here." },
+    });
+    server.use(
+      http.get("/api/config", ({ request }) => {
+        const host = new URL(request.url).searchParams.get("host");
+        const mux = host === PEER && peer !== undefined ? block(peer) : block(lead);
+        return HttpResponse.json({ push: false, vapidPublicKey: "", mux });
+      }),
+    );
+  }
+
+  it("new tab: puts a '+' on every workspace heading, named for its workspace, and none on Pinned", async () => {
+    const herd = crew.filter((a) => a.host === LEAD);
+    setPinned(herd[1]!, true, herd);
+    render(<AgentList agents={herd} onOpen={vi.fn()} servers={servers} pins={currentPins()} newTab={wiring()} />);
+    expect(await screen.findByRole("button", { name: "New tab in webapp" })).toBeInTheDocument();
+    // `collie`'s one pane is pinned, so its group, heading and "+" are gone (ADR 0070); the space view
+    // keeps its own "+". Pinned carries none: it holds panes, not a workspace.
+    expect(plus("collie")).toBeNull();
+    const pinnedRegion = screen.getByRole("region", { name: "Pinned" });
+    expect(within(pinnedRegion).queryByRole("button", { name: /^New tab in / })).toBeNull();
+  });
+
+  it("new tab: draws none without the route's wiring, and every strong heading reserves its 28px either way", () => {
+    const herd = crew.filter((a) => a.host === LEAD);
+    const { rerender } = render(<AgentList agents={herd} onOpen={vi.fn()} servers={servers} />);
+    expect(screen.queryByRole("button", { name: /^New tab in / })).toBeNull();
+    for (const label of ["webapp", "collie"]) expect(headingRow(label)).toHaveClass("min-h-7");
+    rerender(<AgentList agents={herd} onOpen={vi.fn()} servers={servers} newTab={wiring()} />);
+    for (const label of ["webapp", "collie"]) expect(headingRow(label)).toHaveClass("min-h-7");
+  });
+
+  it("new tab: asks each heading's own machine, and hides the '+' where that machine cannot open a tab", async () => {
+    declaresCreateTab(true, false);
+    render(<AgentList agents={crew} onOpen={vi.fn()} servers={servers} newTab={wiring()} />);
+    expect(await screen.findByRole("button", { name: "New tab in webapp" })).toBeInTheDocument();
+    await waitFor(() => expect(plus("moonward")).toBeNull());
+    expect(plus("collie")).not.toBeNull();
+    // Hidden, not explained: no note, and the heading keeps its height.
+    expect(screen.queryByText("no tabs here.")).toBeNull();
+    expect(headingRow("moonward")).toHaveClass("min-h-7");
+  });
+
+  it("new tab: a lead that cannot open a tab hides every lead heading's '+'", async () => {
+    declaresCreateTab(false);
+    render(<AgentList agents={crew.filter((a) => a.host === LEAD)} onOpen={vi.fn()} servers={servers} newTab={wiring()} />);
+    await waitFor(() => expect(plus("webapp")).toBeNull());
+    expect(plus("collie")).toBeNull();
+  });
+
+  it("new tab: sends the heading's own machine and session, never the ambient ones", async () => {
+    const onNewTab = vi.fn<(workspaceId: string, at: Scope) => void>();
+    const user = userEvent.setup();
+    // The URL is on the PEER: the lead's heading must still go to the lead.
+    render(
+      <AgentList agents={crew} onOpen={vi.fn()} servers={servers} newTab={wiring({ scope: { host: PEER }, onNewTab })} />,
+    );
+    await user.click(await screen.findByRole("button", { name: "New tab in moonward" }));
+    await user.click(screen.getByRole("button", { name: "New tab in webapp" }));
+    expect(onNewTab).toHaveBeenCalledTimes(2);
+    expect(onNewTab.mock.calls[0]).toEqual(["w1", { host: PEER }]);
+    // The lead normalises to no host at all: absent means the lead (lib/scope.ts).
+    const [, leadAt] = onNewTab.mock.calls[1]!;
+    expect(onNewTab.mock.calls[1]![0]).toBe("w1");
+    expect(leadAt.host).toBeUndefined();
+  });
+
+  it("new tab: a widened list's heading carries its own session", async () => {
+    const onNewTab = vi.fn<(workspaceId: string, at: Scope) => void>();
+    const widened = [
+      agent("w1:p1", "idle", { workspaceId: "w1", workspaceLabel: "notes", workspaceNumber: 1, session: "work" }),
+    ];
+    render(
+      <AgentList
+        agents={widened}
+        onOpen={vi.fn()}
+        newTab={wiring({
+          onNewTab,
+          sessions: [
+            { name: "default", isPrimary: true, reachable: true, agents: 0, working: 0, blocked: 0 },
+            { name: "work", isPrimary: false, reachable: true, agents: 1, working: 0, blocked: 0 },
+          ],
+        })}
+      />,
+    );
+    await userEvent.setup().click(await screen.findByRole("button", { name: "New tab in notes" }));
+    expect(onNewTab).toHaveBeenCalledWith("w1", expect.objectContaining({ session: "work" }));
+  });
+
+  it("new tab: refuses on a machine not taking writes, with its reason, and sends nothing", async () => {
+    const onNewTab = vi.fn();
+    const quiet = servers.map((s) => (s.id === PEER ? { ...s, reachable: false, lastSeenAt: 1_000 } : s));
+    function StatusText() {
+      return <output aria-label="status">{useStatus()?.text ?? ""}</output>;
+    }
+    const { container } = render(
+      <CrewProvider servers={quiet} sessions={[]} ts={60_000} pollMs={1500}>
+        <AgentList agents={crew} onOpen={vi.fn()} servers={quiet} newTab={wiring({ onNewTab })} />
+        <StatusText />
+      </CrewProvider>,
+    );
+    const peerPlus = await within(container).findByRole("button", { name: "New tab in moonward" });
+    // Still drawn and still live: a control that vanished with the machine's state would move the row.
+    expect(peerPlus).toBeEnabled();
+    await userEvent.setup().click(peerPlus);
+    expect(onNewTab).not.toHaveBeenCalled();
+    expect(within(container).getByRole("status", { name: "status" })).toHaveTextContent(/workshop/);
+    // The lead is taking writes: its heading still sends.
+    await userEvent.setup().click(within(container).getByRole("button", { name: "New tab in webapp" }));
+    expect(onNewTab).toHaveBeenCalledTimes(1);
+  });
+
+  it("new tab: shows busy only on the heading whose create is in flight, never on the other machine's w1", async () => {
+    render(
+      <AgentList
+        agents={crew}
+        onOpen={vi.fn()}
+        servers={servers}
+        newTab={wiring({ creating: new Set([tabCreateKey("w1", { host: PEER })]) })}
+      />,
+    );
+    const peerPlus = await screen.findByRole("button", { name: "New tab in moonward" });
+    expect(peerPlus).toBeDisabled();
+    expect(peerPlus).toHaveAttribute("aria-busy", "true");
+    const leadPlus = screen.getByRole("button", { name: "New tab in webapp" });
+    expect(leadPlus).toBeEnabled();
+    expect(leadPlus).toHaveAttribute("aria-busy", "false");
+  });
+
+  it("new tab: a 28px face with the heading's 44px reach, inside a row that is at least as tall", async () => {
+    render(<AgentList agents={crew} onOpen={vi.fn()} servers={servers} newTab={wiring()} />);
+    const button = await screen.findByRole("button", { name: "New tab in webapp" });
+    expect(button).toHaveClass("size-7", ...HEADING_ADD_REACH.split(" "));
+    // -9px from the padding box, 1px inside the dashed border: 26 + 18 = 44 across and down, 8px past
+    // the circle on each side, which is exactly the 8px gap down to the first row (agent-list.tsx).
+    expect(HEADING_ADD_REACH).toContain("before:-inset-[9px]");
+    expect(button.closest("section")).toHaveClass("gap-2");
+    expect(headingRow("webapp")).toHaveClass("min-h-7");
+  });
+});
+
+// THE PIN HINT (M38/02): one quiet line on the Panes tab, where the Pinned group will stand, saying a
+// hold pins a pane. Only on Panes, only with a hold wired, only while nothing is pinned, only on three
+// or more rows, and gone for good on this device after its X or the first pin.
+describe("AgentList — the pin hint", () => {
+  const herd = [
+    agent("a1", "idle", { workspaceId: "w1", workspaceLabel: "one", workspaceNumber: 1, tabId: "w1:t1", sessionName: "orchestrator" }),
+    agent("a2", "blocked", { workspaceId: "w1", workspaceLabel: "one", workspaceNumber: 1, tabId: "w1:t1", sessionName: "stuck" }),
+    agent("b1", "working", { workspaceId: "w2", workspaceLabel: "two", workspaceNumber: 2, tabId: "w2:t1", sessionName: "builder" }),
+  ];
+  const HOLD = "Hold a pane to pin it here.";
+  const RIGHT_CLICK = "Right-click a pane to pin it here.";
+  const FLAG = "collie:pin-hint:v1";
+  const hint = (c: HTMLElement) => c.querySelector<HTMLElement>('[data-slot="notice"]');
+  const dismiss = () => screen.getByRole("button", { name: "Dismiss hint" });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  /** A device whose primary pointer is a mouse: `(pointer: fine)` matches, nothing else does. */
+  function finePointer() {
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: query === "(pointer: fine)",
+      media: query,
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    }));
+  }
+
+  it("hint: shows on Panes under the summary line, before the first group, with the pin glyph", () => {
+    const { container } = render(<AgentList agents={herd} onOpen={vi.fn()} onHold={vi.fn()} />);
+    const line = hint(container)!;
+    expect(line).toHaveTextContent(HOLD);
+    // The quiet register: the neutral notice, muted ink, a uniform edge and no status colour.
+    expect(line).toHaveClass("border", "text-muted-foreground");
+    expect(line.className).not.toMatch(/status-|border-l-|primary/u);
+    expect(line.querySelector("svg.lucide-pin")).not.toBeNull();
+    const summary = screen.getByRole("button", { name: /^\d+ needs you/ });
+    expect(summary.compareDocumentPosition(line) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(line.compareDocumentPosition(groupSection("one")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // It leaves through a Collapse, never a bare unmount.
+    expect(line.closest('[data-slot="collapse"]')).not.toBeNull();
+  });
+
+  it("hint: never on Focus or Changes", () => {
+    const { container, rerender } = render(<AgentList agents={herd} onOpen={vi.fn()} onHold={vi.fn()} needsYouOnly />);
+    expect(hint(container)).toBeNull();
+    rerender(<AgentList agents={herd} onOpen={vi.fn()} onHold={vi.fn()} renderBody={() => <p>changes body</p>} />);
+    expect(hint(container)).toBeNull();
+    expect(screen.queryByText(HOLD)).toBeNull();
+  });
+
+  it("hint: never on a list without a hold to teach", () => {
+    const { container } = render(<AgentList agents={herd} onOpen={vi.fn()} />);
+    expect(hint(container)).toBeNull();
+  });
+
+  it("hint: needs at least three pane rows on show, shells included, after isolate", async () => {
+    const { container, rerender } = render(<AgentList agents={herd.slice(0, 2)} onOpen={vi.fn()} onHold={vi.fn()} />);
+    expect(hint(container)).toBeNull();
+    // A bare shell is a pane row too.
+    const shell = agent("s1", "idle", { kind: "shell", workspaceId: "w2", workspaceLabel: "two", workspaceNumber: 2, tabId: "w2:t1" });
+    rerender(<AgentList agents={herd.slice(0, 2)} shellPanes={[shell]} onOpen={vi.fn()} onHold={vi.fn()} />);
+    expect(hint(container)).toHaveTextContent(HOLD);
+    // Isolating workspace one leaves two rows on show, and the line slides shut.
+    const isolateOne = workspacePrefKey(groupPanesByWorkspace([herd[0]!])[0]!);
+    rerender(<AgentList agents={herd} onOpen={vi.fn()} onHold={vi.fn()} isolated={isolateOne} />);
+    await waitFor(() => expect(screen.queryByText(HOLD)).toBeNull());
+  });
+
+  it("hint: hidden while a pin is stored, a dormant one too", () => {
+    const { container, rerender } = render(
+      <AgentList agents={herd} onOpen={vi.fn()} onHold={vi.fn()} pins={[{ row: paneRowKey(herd[2]!), space: "two", at: 1 }]} />,
+    );
+    expect(hint(container)).toBeNull();
+    // A pin whose pane is not on screen draws nothing, and still says the gesture is known.
+    rerender(<AgentList agents={herd} onOpen={vi.fn()} onHold={vi.fn()} pins={[{ row: "gone", space: "elsewhere", at: 1 }]} />);
+    expect(hint(container)).toBeNull();
+    expect(screen.queryByRole("region", { name: "Pinned" })).toBeNull();
+  });
+
+  it("hint: the X writes the flag, the line slides shut, and it stays gone on this device", async () => {
+    const user = userEvent.setup();
+    const { container, unmount } = render(<AgentList agents={herd} onOpen={vi.fn()} onHold={vi.fn()} />);
+    expect(localStorage.getItem(FLAG)).toBeNull();
+    await user.click(dismiss());
+    expect(localStorage.getItem(FLAG)).toBe("1");
+    // Collapse holds the words through its exit, then the box leaves.
+    await waitFor(() => expect(hint(container)).toBeNull());
+    unmount();
+    // A fresh mount, as a reload would give, draws nothing.
+    const again = render(<AgentList agents={herd} onOpen={vi.fn()} onHold={vi.fn()} />);
+    expect(hint(again.container)).toBeNull();
+  });
+
+  it("hint: the X hands focus to the first row below, never to body", async () => {
+    const user = userEvent.setup();
+    render(<AgentList agents={herd} onOpen={vi.fn()} onHold={vi.fn()} />);
+    dismiss().focus();
+    await user.keyboard("{Enter}");
+    expect(within(groupSection("one")).getAllByRole("button")[0]).toHaveFocus();
+  });
+
+  it("hint: the first pin writes the flag, and the line stays gone after every pin is removed", async () => {
+    const { container, rerender } = render(<AgentList agents={herd} onOpen={vi.fn()} onHold={vi.fn()} pins={currentPins()} />);
+    expect(hint(container)).toHaveTextContent(HOLD);
+    act(() => setPinned(herd[2]!, true, herd));
+    expect(localStorage.getItem(FLAG)).toBe("1");
+    rerender(<AgentList agents={herd} onOpen={vi.fn()} onHold={vi.fn()} pins={currentPins()} />);
+    expect(screen.getByRole("region", { name: "Pinned" })).toBeInTheDocument();
+    act(() => setPinned(herd[2]!, false, herd));
+    rerender(<AgentList agents={herd} onOpen={vi.fn()} onHold={vi.fn()} pins={currentPins()} />);
+    expect(currentPins()).toHaveLength(0);
+    await waitFor(() => expect(hint(container)).toBeNull());
+  });
+
+  it("hint: a render, a tab switch or a poll writes no flag", () => {
+    const { rerender } = render(<AgentList agents={herd} onOpen={vi.fn()} onHold={vi.fn()} />);
+    rerender(<AgentList agents={herd} onOpen={vi.fn()} onHold={vi.fn()} needsYouOnly />);
+    rerender(<AgentList agents={[...herd]} onOpen={vi.fn()} onHold={vi.fn()} />);
+    expect(localStorage.getItem(FLAG)).toBeNull();
+  });
+
+  it("hint: says right-click on a device whose pointer is a mouse", () => {
+    finePointer();
+    const { container } = render(<AgentList agents={herd} onOpen={vi.fn()} onHold={vi.fn()} />);
+    expect(hint(container)).toHaveTextContent(RIGHT_CLICK);
+    expect(screen.queryByText(HOLD)).toBeNull();
   });
 });

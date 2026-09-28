@@ -68,11 +68,14 @@ export function subscribeUpdateAsk(listener: () => void): () => void {
 export async function beginAskedUpdate(asked: UpdateAsk): Promise<void> {
   try {
     const answer = await startUpdate({ target: asked.version, major: asked.major, peersOnly: asked.peersOnly });
-    // A PEERS-ONLY START IS A RUN THIS DEVICE STARTED TOO (M32). Its 202 carries this lead's OLD
-    // record, because nothing runs here, so that record's id is not this run's and is not recorded
-    // as if it were, and the record is not handed to the store as the run just begun.
+    // The response ID names this confirm. The fork returns its accepted record too, but upstream
+    // may return the previous run's settled record. Never adopt that record's ID as this claim.
+    //
+    // A PEERS-ONLY START IS A RUN THIS DEVICE STARTED TOO (M32), and it writes no record on this lead
+    // at all, so its claim keys on no id: its legs ride the status.
+    const runId = answer.runId ?? null;
     const known = getUpdateRunSnapshot();
-    noteUpdateStarted(Date.now(), asked.peersOnly ? null : (answer.run?.runId ?? null), {
+    noteUpdateStarted(Date.now(), asked.peersOnly ? null : runId, {
       target: asked.version,
       peersOnly: asked.peersOnly,
       bundleAtStart: BUILD.id,
@@ -80,7 +83,9 @@ export async function beginAskedUpdate(asked: UpdateAsk): Promise<void> {
       members: known.crew.map((member) => member.name).filter((name) => name !== known.leadName),
     });
     if (asked.peersOnly) noteCrewRunBegun(asked.current);
-    else noteStartedRun(answer.run);
+    // Only a matching accepted record is freshest for one bounded beat. A previous record, or one
+    // with no ID to compare, stays with the polls.
+    else if (runId !== null && answer.run?.runId === runId) noteStartedRun(answer.run);
     closeUpdateAsk();
   } catch (thrown) {
     // Nothing was started, so this device has no claim on the screen.

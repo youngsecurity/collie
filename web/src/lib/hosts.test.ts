@@ -86,9 +86,17 @@ describe("resolving a host", () => {
 });
 
 describe("paneScope — a row is opened with its OWN host", () => {
-  it("carries a peer's host onto the navigation, keeping the session", () => {
+  it("keeps the ambient session only when the row belongs to that machine", () => {
+    expect(paneScope({ host: "workshop", session: "demo" }, pane("w1:p1", "workshop"), crew)).toEqual({
+      host: "workshop",
+      session: "demo",
+    });
     expect(paneScope({ session: "demo" }, pane("w1:p1", "workshop"), crew)).toEqual({
       host: "workshop",
+      session: undefined,
+    });
+    expect(paneScope({ session: "demo" }, pane("w1:p1", "bluefin"), crew)).toEqual({
+      host: undefined,
       session: "demo",
     });
   });

@@ -32,6 +32,7 @@ import {
 } from "@/components/mirror-space";
 import type { TerminalColors } from "@/hooks/use-display-prefs";
 import { renderCells } from "@/components/painted-cells";
+import { ImageCard } from "@/components/ui/image-card";
 import { findMatches, splitSegment, type FindMatch } from "@/lib/find";
 import { findLinks } from "@/lib/links";
 
@@ -163,7 +164,21 @@ function preClass(
     surface === "native" ? MUSE_MIRROR : MIRROR_SPACE,
     surface === "inverted" && MIRROR_INVERT,
     wrap
-      ? "whitespace-pre-wrap break-words"
+      ? // `text-pretty` (#302): a 133-column agent row rewraps at phone width, and greedy breaking
+        // strands one word on its last line ("form." alone under a bullet). Pretty pulls a word
+        // down instead. Line breaking only: the text nodes, find offsets, link hrefs and copied
+        // text are untouched, and no capture screen gained or lost a line, so the mirror's height
+        // and the tail-follow hold.
+        //
+        // WHERE IT ACTS, measured on 2026-09-27 at 390px over the 212 Claude, Codex, Muse and Grok
+        // screens in `fixtures/panes`: Chromium changes the breaks on 35, WebKit 26.5 on 12, and
+        // the stranded words drop from 220 to 141 and to 217. WebKit drops `pretty` for the whole
+        // <pre> once any row in it cannot break to fit (a rule wider than the phone, a status line
+        // padded with spaces, a table run), and nearly every screen holds one. Safari before 26
+        // ignores the value and breaks greedily. `web/e2e/issue-302.spec.ts` pins the prose case in
+        // both engines. Don't add `hyphens-none` for "multi-" / "session": `hyphens` governs soft
+        // and automatic hyphenation, never the break a printed hyphen allows.
+        "whitespace-pre-wrap break-words text-pretty"
       : // Horizontal pan for wide TUI tables. `overflow-x-auto` forces `overflow-y` to compute to
         // `auto` (CSS overflow quirk), and a flex item with non-visible overflow may shrink below its
         // content height — the <pre> then becomes the vertical scroller and ChatMessageList's
@@ -235,9 +250,9 @@ const TABLE_RUN_CLASS =
 // could not match, or a journal read that has not answered yet, still has to say "a picture is
 // here", which is the whole difference from the black box this replaces.
 //
-// The card is an ANCHOR to the blob, so it is keyboard reachable and long-pressable, and the href
-// is a URL `imageSrc` already vetted (`lib/api.ts`) — a blob path on the owning host, or inline
-// bytes. Never a URL the agent's log supplied.
+// The picture is the shared `ImageCard` (ui/image-card.tsx), whose href is a URL `imageSrc` already
+// vetted (`lib/api.ts`) — a blob path on the owning host, or inline bytes. Never a URL the agent's
+// log supplied.
 const renderImageCluster = (
   url: string | null,
   key: string,
@@ -251,37 +266,19 @@ const renderImageCluster = (
       {t("mirror.imageBadge")}
     </span>
   ) : (
-    <span
+    // THE CARD SAYS IT IS A GUESS. The placeholder carries a Kitty image id no journal maps to a
+    // blob, so the picture is matched by ORDER (`lib/mirror-images.ts` § "why the match is by
+    // order"). The operator is told that on the card itself, and pointed at History, which reads
+    // the journal turn by turn and is exact. A load that fails falls back to the badge (see FAILED
+    // IMAGES in the component); the handler reports the URL, not the cluster, because the same blob
+    // can sit under two clusters.
+    <ImageCard
       key={key}
-      className="my-2 block select-none overflow-hidden rounded-md border border-border/40 bg-black/20 text-center"
-    >
-      <a
-        href={url}
-        target="_blank"
-        rel="noopener noreferrer"
-        // The same sentence as the caption, as the anchor's tooltip: a pointer that hovers the
-        // picture asks about the picture, and the caption may be scrolled out of the tap target.
-        title={t("mirror.imageMatchedByOrder")}
-        className="inline-block cursor-zoom-in"
-      >
-        <img
-          src={url}
-          alt={t("mirror.imageAlt")}
-          className="mx-auto max-h-80 w-auto max-w-full rounded object-contain"
-          loading="lazy"
-          // A load that fails falls back to the badge (see FAILED IMAGES in the component). The
-          // handler reports the URL, not the cluster: the same blob can sit under two clusters.
-          onError={() => onImageError(url)}
-        />
-      </a>
-      {/* THE CARD SAYS IT IS A GUESS. The placeholder carries a Kitty image id no journal maps to a
-          blob, so the picture is matched by ORDER (`lib/mirror-images.ts` § "why the match is by
-          order"). The operator is told that here, on the card itself, and pointed at History, which
-          reads the journal turn by turn and is exact. */}
-      <span className="block px-2 pb-1 text-xs text-muted-foreground">
-        {t("mirror.imageMatchedByOrder")}
-      </span>
-    </span>
+      src={url}
+      alt={t("mirror.imageAlt")}
+      caption={t("mirror.imageMatchedByOrder")}
+      onError={() => onImageError(url)}
+    />
   );
 
 export const AnsiOutput = memo(function AnsiOutput({

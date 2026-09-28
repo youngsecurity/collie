@@ -2,10 +2,13 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createMemoryRouter, Outlet, RouterProvider } from "react-router";
 
+import { AgentList } from "@/components/agent-list";
+import { fixtureAgents } from "@/test/handlers";
 import { ROOT_ROUTE_ID, type HomeData } from "@/lib/loaders";
 import { useOptionalRootData } from "@/lib/route-data";
 import { resetPollIntent, topologyBursting } from "@/lib/poll-intent";
-import { useSpaceActions } from "./use-spaces";
+import type { Scope } from "@/lib/scope";
+import { tabCreateKey, useSpaceActions } from "./use-spaces";
 
 // Stub the bridge's create endpoints at the api seam — same idiom launch-strip.test.tsx uses for
 // api.launch. Only the calls this tree can make are declared.
@@ -63,14 +66,44 @@ function Harness({ w1 = "w1", w2 = "w2" }: { w1?: string; w2?: string }) {
       <button onClick={() => void newTab(w1)}>new-tab-{w1}</button>
       <button onClick={() => void newTab(w2)}>new-tab-{w2}</button>
       <button onClick={() => void newSpace({})}>new-space</button>
-      <span data-testid="creating-w1">{String(creatingTab.has(w1))}</span>
-      <span data-testid="creating-w2">{String(creatingTab.has(w2))}</span>
+      <span data-testid="creating-w1">{String(creatingTab.has(tabCreateKey(w1, undefined)))}</span>
+      <span data-testid="creating-w2">{String(creatingTab.has(tabCreateKey(w2, undefined)))}</span>
       <span data-testid="creating-space">{String(creatingSpace)}</span>
     </div>
   );
 }
 
-function makeRouter() {
+/** A crew member's space, addressed the way a dashboard heading addresses it (M40/03). */
+const PEER: Scope = { host: "workshop" };
+
+// The dashboard's shape: one list across every machine, so two headings can both name `w1` — the
+// lead's (ambient, no `at`) and a peer's (its own `at`). Each "+" hands its own scope in.
+function AddressedHarness() {
+  const { newTab, creatingTab } = useSpaceActions();
+  return (
+    <div>
+      <button onClick={() => void newTab("w1", PEER)}>new-tab-peer-w1</button>
+      <button onClick={() => void newTab("w1")}>new-tab-lead-w1</button>
+      <span data-testid="creating-peer-w1">{String(creatingTab.has(tabCreateKey("w1", PEER)))}</span>
+      <span data-testid="creating-lead-w1">{String(creatingTab.has(tabCreateKey("w1", undefined)))}</span>
+    </div>
+  );
+}
+
+function HeadingHarness() {
+  const { newTab, creatingTab } = useSpaceActions();
+  return <AgentList
+    agents={[{ ...fixtureAgents[0]!, host: "workshop", workspaceLabel: "peer-project" }]}
+    onOpen={vi.fn()}
+    servers={[
+      { id: "lead", name: "lead", isLead: true, reachable: true, protocol: "ok", lastSeenAt: 0 },
+      { id: "workshop", name: "workshop", isLead: false, reachable: true, protocol: "ok", lastSeenAt: 0 },
+    ]}
+    newTab={{ scope: { session: "work" }, creating: creatingTab, onNewTab: (id, at) => void newTab(id, at) }}
+  />;
+}
+
+function makeRouter(harness = <Harness />) {
   return createMemoryRouter(
     [
       {
@@ -78,7 +111,7 @@ function makeRouter() {
         path: "/",
         loader: () => homeData(),
         element: <Outlet />,
-        children: [{ index: true, element: <Harness /> }],
+        children: [{ index: true, element: harness }],
       },
       { path: "/pane/:paneId", element: <div>pane</div> },
     ],
@@ -165,15 +198,41 @@ describe("useSpaceActions — creating busy state", () => {
   });
 });
 
-// ── The pane opens on the scope the create was ADDRESSED to (#25) ──────────────────────────────
-// `newTab`, `launch` and the worktree creates passed the ambient scope to the API and then called
-// `open` without it, so `open` read the ref again at RESOLVE time. A host or session change while
-// the request was in flight opened the returned pane id on the wrong machine, where that id is a
-// different terminal, which is the one mistake the host dimension exists to prevent.
-describe("useSpaceActions — the addressed scope survives the request", () => {
+// M40/03: a workspace heading on the dashboard names its own machine, and the dashboard is one list
+// across a crew. The create must go to THAT machine and the step down must land there, never on the
+// machine the URL happens to address; and a peer's `w1` is not the lead's `w1`.
+describe("useSpaceActions — newTab addressed to a scope", () => {
+  beforeEach(() => {
+    mockCreateTab.mockReset();
+    resetPollIntent();
+  });
+
+  it("the peer heading under a lead named session creates and navigates in the peer primary", async () => {
+    mockCreateTab.mockResolvedValueOnce(pane("w1"));
+    const router = makeRouter(<HeadingHarness />);
+    const user = userEvent.setup();
+    render(<RouterProvider router={router} />);
+    await user.click(await screen.findByRole("button", { name: "New tab in peer-project" }));
+    await waitFor(() => expect(router.state.location.pathname).toBe("/pane/w1%3Ap1"));
+    expect.soft(mockCreateTab).toHaveBeenCalledExactlyOnceWith("w1", {}, { host: "workshop", session: undefined });
+    expect(router.state.location.search).toBe("?h=workshop");
+  });
+
+  it("an addressed newTab creates on that machine and opens the new pane there", async () => {
+    mockCreateTab.mockResolvedValueOnce(pane("w1"));
+    const user = userEvent.setup();
+    const router = makeRouter(<AddressedHarness />);
+    render(<RouterProvider router={router} />);
+
+    await user.click(await screen.findByRole("button", { name: "new-tab-peer-w1" }));
+
+    expect(mockCreateTab).toHaveBeenCalledTimes(1);
+    expect(mockCreateTab).toHaveBeenCalledWith("w1", {}, PEER);
+    await waitFor(() => expect(router.state.location.pathname).toBe("/pane/w1%3Ap1"));
+    expect(new URLSearchParams(router.state.location.search).get("h")).toBe("workshop");
+  });
+
   it("a scope change while a create is in flight does not move where the new pane opens", async () => {
-    // The root loader's scope is what the hook reads; it starts on `bluefin` and moves to `attic`
-    // while the create is pending, as a host switch in the header would move it.
     let scope = { host: "bluefin" };
     let release = (): void => {};
     mockCreateTab.mockImplementationOnce(
@@ -213,5 +272,29 @@ describe("useSpaceActions — the addressed scope survives the request", () => {
     // The navigation carries the scope the create was ADDRESSED to, not the one now on screen.
     expect(router.state.location.search).toBe("?h=bluefin");
     expect(router.state.location.search).not.toContain("attic");
+  });
+
+  it("an addressed newTab keeps a peer's w1 apart from the lead's w1", async () => {
+    let release = (): void => {};
+    mockCreateTab.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve(refused());
+        }),
+    );
+    mockCreateTab.mockResolvedValueOnce(refused());
+    const user = userEvent.setup();
+    render(<RouterProvider router={makeRouter(<AddressedHarness />)} />);
+
+    await user.click(await screen.findByRole("button", { name: "new-tab-peer-w1" }));
+    await waitFor(() => expect(screen.getByTestId("creating-peer-w1")).toHaveTextContent("true"));
+    // The lead's `w1` shares the peer's number and nothing else: its "+" is not busy, and a tap on it
+    // is sent, to the lead.
+    expect(screen.getByTestId("creating-lead-w1")).toHaveTextContent("false");
+    await user.click(screen.getByRole("button", { name: "new-tab-lead-w1" }));
+    expect(mockCreateTab).toHaveBeenCalledTimes(2);
+    expect(mockCreateTab).toHaveBeenLastCalledWith("w1", {}, {});
+    release();
+    await waitFor(() => expect(screen.getByTestId("creating-peer-w1")).toHaveTextContent("false"));
   });
 });
