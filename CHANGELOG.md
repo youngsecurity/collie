@@ -37,9 +37,11 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 ## [Unreleased]
 
+## [1.14.1+ys.1] - 2026-09-28
+
 ### Changed
 
-- **Collie adopts upstream 1.14.1 while preserving the fork's safeguards.** Restore phone replies to Grok 1.0.41 panes when the draft hint names alternate newline keys, retain fail-closed composer detection, and include upstream's 1.14.0 packaging metadata. Keep the current fork release version until a separate release is cut. Thanks @AltanS and @CorrectRoadH (youngsecurity/collie#63).
+- **Collie adopts upstream 1.14.1 while preserving the fork's safeguards.** Restore phone replies to Grok 1.0.41 panes when the draft hint names alternate newline keys, retain fail-closed composer detection, and include upstream's 1.14.0 packaging metadata. Preserve source-only fork releases and the Herdr 0.8.0 minimum. Thanks @AltanS and @CorrectRoadH (youngsecurity/collie#63). ([4d5e5cd4](https://github.com/youngsecurity/collie/commit/4d5e5cd4))
 
 ## [1.14.0+ys.1] - 2026-09-28
 
