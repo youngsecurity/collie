@@ -37,9 +37,11 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 ## [Unreleased]
 
+## [1.14.0+ys.1] - 2026-09-28
+
 ### Changed
 
-- **Collie adopts upstream 1.14.0 while preserving the fork's safeguards.** Include the 1.13.2 and 1.13.3 harness fixes, pinned panes, machine filters, workspace tab creation, recent folders, composer clear and undo, and pi mirror pictures. Preserve source-only updates, accepted-run identity and retry consent, terminal colors, mixed pane ordering, scoped images, and service-worker ownership. Bind Codex patch and folder-trust approvals to their displayed subjects, keep workspace creates and pins on their own sessions, serialize folder saves with rollback, and refuse canary startup without replacing another run's project. Thanks @AltanS (youngsecurity/collie#60, youngsecurity/collie#61, youngsecurity/collie#62).
+- **Collie adopts upstream 1.14.0 while preserving the fork's safeguards.** Include the 1.13.2 and 1.13.3 harness fixes, pinned panes, machine filters, workspace tab creation, recent folders, composer clear and undo, and pi mirror pictures. Preserve source-only updates, accepted-run identity and retry consent, terminal colors, mixed pane ordering, scoped images, and service-worker ownership. Bind Codex patch and folder-trust approvals to their displayed subjects, keep workspace creates and pins on their own sessions, serialize folder saves with rollback, and refuse canary startup without replacing another run's project. Thanks @AltanS (youngsecurity/collie#60, youngsecurity/collie#61, youngsecurity/collie#62). ([d2822b4e](https://github.com/youngsecurity/collie/commit/d2822b4e))
 
 ## [1.13.1+ys.1] - 2026-09-26
 
