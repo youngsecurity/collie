@@ -152,17 +152,24 @@ describe("ChangesRoute — the list", () => {
 
   it("marks the pane's own repo and scrolls it into view on the first answer only", async () => {
     const scroll = vi.spyOn(Element.prototype, "scrollIntoView");
+    let reads = 0;
     server.use(
-      http.get(/\/api\/pane\/[^/]+\/changes/, () => HttpResponse.json({ ...fixtureChanges, paneRepo: "packages/api" })),
+      http.get(/\/api\/pane\/[^/]+\/changes/, () => {
+        const data = { ...fixtureChanges, paneRepo: "packages/api" };
+        return HttpResponse.json(reads++ === 0 ? data : { ...data, depthLimited: true });
+      }),
     );
     renderAt("/pane/w1%3Ap1/changes");
     const api = await screen.findByRole("region", { name: "api" });
     expect(within(api).getByText(en["changes.thisPane"])).toBeTruthy();
     expect(within(screen.getByRole("region", { name: "webapp" })).queryByText(en["changes.thisPane"])).toBeNull();
-    expect(scroll).toHaveBeenCalledTimes(1);
+    // The scroll is a passive effect, so it can run just after the region the finder resolved on.
+    await waitFor(() => expect(scroll).toHaveBeenCalledTimes(1));
     expect(scroll.mock.contexts[0]).toBe(api);
-    // A re-read keeps the mark and moves nothing.
+    // A changed answer must rerun the marking effect, but its first-answer guard keeps us still.
+    expect(screen.queryByText(/Stopped at 2 levels, with repos further down\./)).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: en["changes.refreshAria"] }));
+    expect(await screen.findByText(/Stopped at 2 levels, with repos further down\./)).toBeTruthy();
     await waitFor(() => expect(screen.getByRole("button", { name: en["changes.refreshAria"] }).hasAttribute("disabled")).toBe(false));
     expect(within(screen.getByRole("region", { name: "api" })).getByText(en["changes.thisPane"])).toBeTruthy();
     expect(scroll).toHaveBeenCalledTimes(1);

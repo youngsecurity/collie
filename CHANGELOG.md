@@ -37,6 +37,12 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 ## [Unreleased]
 
+## [1.14.2+ys.1] - 2026-09-29
+
+### Changed
+
+- **Collie adopts upstream 1.14.2 while preserving the fork's safeguards.** Add the embedded Claude Code phone guide, clarify the README introduction, stabilize the Changes scroll test, and include upstream's 1.14.1 packaging metadata. Preserve source-only fork releases and the Herdr 0.8.0 minimum. Thanks @AltanS (youngsecurity/collie#66). ([d0134c72](https://github.com/youngsecurity/collie/commit/d0134c72))
+
 ## [1.14.1+ys.1] - 2026-09-28
 
 ### Changed
@@ -181,6 +187,15 @@ the fork's side of the reconciliation.
 ### Packaging
 
 - **The release attaches `collie-release.json` by hand.** Upstream's CI publishes the crew wire reading the update notice consults; `release.yml` stays the fork's inert stub, so the same asset is written from `CREW_PROTOCOL_VERSION` and uploaded with the release, and the phone can say that this release changes the crew link. ([bca973a](https://github.com/youngsecurity/collie/commit/bca973a))
+
+## [1.14.2] - 2026-09-28
+
+### Docs
+
+- **A walkthrough for running Claude Code from your phone.** `docs/claude-code-on-your-phone.md`
+  first keeps Claude Code alive in tmux, Herdr or zellij when SSH drops, and shows how to run
+  several sessions at once. Then it takes one path end to end, from install to answering an agent
+  from the Keys tray. `collie docs claude-code-on-your-phone` prints it. ([2bec9cbd](https://github.com/AltanS/collie/commit/2bec9cbd))
 
 ## [1.14.1] - 2026-09-27
 
