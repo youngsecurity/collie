@@ -64,7 +64,9 @@ const FIXTURES = join(import.meta.dir, "fixtures", "solo-baseline");
 const REGEN = process.env.COLLIE_REGEN_SOLO_BASELINE === "1";
 
 function golden(name: string): string {
-  return readFileSync(join(FIXTURES, name), "utf8");
+  // A Windows checkout may turn the committed LF into CRLF (core.autocrlf); the bytes the code
+  // produces are LF, so the fixture is read as the LF text that was committed.
+  return readFileSync(join(FIXTURES, name), "utf8").replace(/\r\n/g, "\n");
 }
 
 /** Compare against a committed golden, or rewrite it under COLLIE_REGEN_SOLO_BASELINE=1. */
@@ -602,8 +604,10 @@ describe("solo zero-tax — routes", () => {
       // journal named the file (CREW_PROTOCOL.md §9.1).
       "/^\\/api\\/blobs\\/([^/]+)$/",
       // `changes` is the Changes view (ADR 0065): read-only git over the pane's folder, read-gated
-      // like `history` beside it and forwarded to the member that owns the pane.
-      "/^\\/api\\/pane\\/([^/]+)(?:\\/(reply|keys|upload|close|rename|history|changes|focus))?$/",
+      // like `history` beside it and forwarded to the member that owns the pane. `chat` is the live
+      // half of `history` (journal/live.ts): the same log, asked "anything after this?" — a read, on
+      // the poll path, forwarded to the owning member and taxing a solo instance with nothing.
+      "/^\\/api\\/pane\\/([^/]+)(?:\\/(reply|keys|upload|close|rename|history|chat|changes|focus))?$/",
       "/^\\/api\\/tab\\/([^/]+)\\/(rename|close)$/",
       // The Changes view asked by workspace (ADR 0065): the same read as the pane route's `changes`,
       // read-gated and forwarded with `?host=` to the member that owns the space.
@@ -752,12 +756,16 @@ const CONFIG_KEYS = {
   basePath: true,
   uploadExtraTypes: true,
   cacheWarnSeconds: true,
+  accessTeam: true,
+  accessAud: true,
 } satisfies Record<keyof Config, true>;
 
 describe("solo zero-tax — config", () => {
   test("Config carries no crew/peer/lead key", () => {
     const keys = Object.keys(CONFIG_KEYS).toSorted();
     expect(keys).toEqual([
+      "accessAud",
+      "accessTeam",
       "allowAnyHost",
       "allowNonLoopbackBind",
       "allowedOrigins",
@@ -823,7 +831,7 @@ describe("solo zero-tax — config", () => {
   // Read from `bridge/config-schema.ts` rather than by grepping `config.ts`'s source, because the
   // schema is now the single declaration of what every setting is (ADR 0040). The rows that carry a
   // `configField` are exactly the settings `loadConfig` resolves, which is the list §11 pins. A
-  // CONFIG FILE ADDS NO ENV KEY, so this list is the 38 names it has always been plus `COLLIE_BASE_PATH` (ADR 0052) — the two
+  // CONFIG FILE ADDS NO ENV KEY, so this list is the 38 names it has always been plus `COLLIE_BASE_PATH` (ADR 0052), `COLLIE_MUSE_ROOT` and the two `COLLIE_ACCESS_*` keys (ADR 0081) — the two
   // `COLLIE_MUX_ENDPOINT_<NAME>` rows collapse back to the prefix the old grep saw, because the env
   // name is built at the call site and the file key must not be.
   test("the schema names exactly today's COLLIE_* env keys — no crew enrollment key", () => {
@@ -835,6 +843,8 @@ describe("solo zero-tax — config", () => {
       ),
     ].toSorted();
     expect(keys).toEqual([
+      "COLLIE_ACCESS_AUD",
+      "COLLIE_ACCESS_TEAM",
       "COLLIE_ALLOWED_ORIGINS",
       "COLLIE_ALLOW_ANY_HOST",
       "COLLIE_ALLOW_NON_LOOPBACK_BIND",
@@ -850,6 +860,7 @@ describe("solo zero-tax — config", () => {
       "COLLIE_HOST",
       "COLLIE_MAX_UPLOAD_MB",
       "COLLIE_MULTI_SESSION",
+      "COLLIE_MUSE_ROOT",
       "COLLIE_MUX",
       "COLLIE_MUX_ENDPOINT_",
       "COLLIE_NOTIFY_DELAY_MS",
@@ -885,6 +896,10 @@ describe("solo zero-tax — config", () => {
 
 /** Every `<stateDir>/…` path any bridge module names. `uploads` is a directory, the rest are files. */
 const STATE_DIR_ENTRIES = [
+  // Windows only (M43 spec 04): the access lists Collie saved before it changed one, so the change can
+  // be undone with `icacls /restore`. Absent until the bridge actually repaired a loose folder or file;
+  // never on Linux or macOS, and never on a Windows install whose folders were private already.
+  "acl-backups",
   "activity.json",
   "audit.log",
   // Agent beacons (M11/01) — a directory, and one no bridge module ever writes: the bridge only ever
@@ -1087,7 +1102,7 @@ describe("solo zero-tax — notifications", () => {
     expect(src).toContain("if (msg.session !== undefined) data.session = msg.session;");
     expect(src).toContain("if (msg.host !== undefined) data.host = msg.host;");
     // Never stamped unconditionally: an unguarded assignment is what would change the solo payload.
-    const stamps = src.split("\n").filter((l) => l.includes("data.host"));
+    const stamps = src.split(/\r?\n/).filter((l) => l.includes("data.host"));
     expect(stamps).toEqual(["    if (msg.host !== undefined) data.host = msg.host;"]);
   });
 
@@ -1097,10 +1112,25 @@ describe("solo zero-tax — notifications", () => {
     const { makeNotifySink } = await import("./notifications.ts");
     const sent: PushMessage[] = [];
     const sink = makeNotifySink({ send: (m: PushMessage) => sent.push(m) }, { isMuted: () => false }, "collie:herd");
-    sink.render({ title: "claude needs you", body: "demo · /home/you", paneId: "p1", renotify: true });
+    sink.render({
+      title: "claude needs you",
+      titleCode: "agent.blocked",
+      titleDetail: { agent: "claude" },
+      body: "demo · /home/you",
+      paneId: "p1",
+      renotify: true,
+    });
     sink.clear();
     expect(sent).toEqual([
-      { title: "claude needs you", body: "demo · /home/you", tag: "collie:herd", paneId: "p1", renotify: true },
+      {
+        title: "claude needs you",
+        titleCode: "agent.blocked",
+        titleDetail: { agent: "claude" },
+        body: "demo · /home/you",
+        tag: "collie:herd",
+        paneId: "p1",
+        renotify: true,
+      },
       { type: "clear", tag: "collie:herd" },
     ]);
     expect(sent.every((m) => !("host" in m))).toBe(true);

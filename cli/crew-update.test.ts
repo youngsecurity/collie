@@ -6,7 +6,7 @@ import { leadStore, material, member, peerStore, T0 } from "../bridge/crew/fixtu
 import { type OpsRecord, parseCrewOps } from "../bridge/crew/ops-store.ts";
 import { serializeTrustStore, TrustStore, type TrustStoreData, type TrustStoreIo } from "../bridge/crew/trust-store.ts";
 import { UPDATE_RUN_SCHEMA, type UpdateRun } from "../bridge/update-run.ts";
-import { capture, context, fakeExec, fakeFiles, fakeOps, ROOT, type SeededFiles, type SeededOps } from "./fakes.ts";
+import { capture, context, fakeExec, fakeFiles, fakeOps, ROOT, type SeededFiles, type SeededOps, probeDefaults, probeOutput, type ProbeField } from "./fakes.ts";
 import type { InstallKind } from "./install-kind.ts";
 import { EXIT } from "./io.ts";
 import type { CrewUpdateRow } from "../bridge/update-action.ts";
@@ -24,6 +24,7 @@ import {
   type PreflightOptions,
   type PreflightReport,
 } from "./update-check.ts";
+import { hostFor } from "../bridge/host.ts";
 
 // `collie crew update` against fakes for every seam. NOTHING here spawns `ssh`, dials a network or
 // touches a disk: the transport records `(host, script)` pairs and answers from a table, the one
@@ -50,7 +51,12 @@ const VERSION = "1.2.3";
 const OLD_VERSION = "1.2.2";
 const CHECKOUT = "/home/pat/.collie";
 
+// `probeDefaults()` FIRST, then this suite's own values. The shared table is the one place the
+// field list lives (`cli/fakes.ts`, held against the golden script by `cli/probe-contract.test.ts`),
+// so this cannot be short a field the way it was until 2026-10-01. What stays here is the VALUES,
+// which are this suite's subject: a member on an older version, mid-update.
 const PROBE_DEFAULTS = {
+  ...probeDefaults(),
   home: "/home/pat",
   git: "/usr/bin/git",
   bun: "/home/pat/.bun/bin/bun",
@@ -75,9 +81,8 @@ const PROBE_DEFAULTS = {
   sha256: "/usr/bin/sha256sum",
 } satisfies Record<string, string>;
 
-function probeOut(over: Record<string, string> = {}): string {
-  const all = { ...PROBE_DEFAULTS, ...over };
-  return [...Object.entries(all).map(([k, v]) => `collie-probe:${k}=${v}`), "collie-probe:probe=ok", ""].join("\n");
+function probeOut(over: Partial<Record<ProbeField, string>> = {}): string {
+  return probeOutput({ ...PROBE_DEFAULTS, ...over });
 }
 
 interface Recorded {
@@ -165,6 +170,7 @@ function harness(opts: HarnessOptions = {}) {
   });
 
   const deps: CrewUpdateDeps = {
+    host: hostFor("linux"),
     // The same reason the other crew suites set it: `PeerClient`'s REAL `setTimeout` must never fire
     // and report a fake member as unreachable.
     ctx: context({ COLLIE_CREW_TIMEOUT_MS: "60000", ...opts.env }),

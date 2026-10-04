@@ -3,6 +3,8 @@ import { asJsonBoolean, asJsonObject, asJsonString, type JsonValue } from "@/lib
 
 import type { ChangesLayout } from "@/lib/changes-tree";
 import { coerceDashView, type DashView } from "@/lib/dash-view";
+import { coercePaneOrder, type PaneOrder } from "@/lib/pane-order";
+import { coercePaneView, type PaneView } from "@/lib/pane-view";
 import type { RecentDir } from "@/lib/triage";
 
 // Dashboard layout preferences, persisted in localStorage. Deliberately separate from
@@ -52,6 +54,58 @@ export interface DashPrefs {
   beltScale: BeltScale;
   /** The dashboard's footer tab: Panes, Focus or Changes (ADR 0066, renamed by ADR 0068). Panes by default. */
   dashView: DashView;
+  /**
+   * Whether a session view draws the agent's tool calls: the reads, the searches, the commands and
+   * the edits it ran between saying things.
+   *
+   * OFF by default, and that is the decision rather than an accident. A working session is mostly
+   * tool calls — a single turn can be forty reads and a grep — so a transcript that draws them all
+   * is a transcript you scroll past to find the one paragraph you came for. What the agent SAID is
+   * what the page is for; what it DID is available in one tap.
+   *
+   * Read by the History page today (components/transcript-view.tsx) and by the Chat stream when it
+   * lands. One pref for both: two settings for one idea is how they drift apart.
+   */
+  showToolCalls: boolean;
+  /**
+   * Whether a session view keeps the recap the agent writes when it compacts its own context.
+   *
+   * OFF by default, for the reason Claude Code's own UI folds it: the recap is thousands of
+   * characters the agent wrote for ITSELF, and a phone has no use for it. Off draws one marker line
+   * where the compaction happened and never builds the text; on folds the recap behind that marker.
+   * Read by the Chat stream and the History page, as {@link showToolCalls} is.
+   */
+  showCompactions: boolean;
+  /**
+   * The order a pane list runs in: `place` (machine, space, tab, position) or `activity` (whatever
+   * happened last, first). PLACE by default, which is the order ADR 0063 gave every surface.
+   *
+   * The operator's own request is the only thing that turns this on, and ADR 0071 holds the reason
+   * the list does not then re-sort itself on a poll: the reading is taken when the list opens and
+   * held while it is on screen. See lib/pane-order.ts, which owns both halves.
+   *
+   * Read by the pane switcher today (components/agent-sidebar.tsx).
+   */
+  paneOrder: PaneOrder;
+  /**
+   * Whether this device has opted into Chat at all (Settings → Experiments).
+   *
+   * OFF by default, and that is the whole gate: while it is off no pane draws the chat stream and
+   * the pane's ⋮ menu shows no switch, so a device that never opens that row behaves exactly as it
+   * did. 1.15.0 ships Chat's reader for six harnesses and its screen on the first pass, with two
+   * known holes on the day it ships (codex tool calls, and a hermes turn that can vanish with no
+   * reducer able to tell — ADR 0073's Consequences). Default-on would make those the first
+   * impression of the release; default-off with a named switch makes them the cost of opting in.
+   */
+  chatExperiment: boolean;
+  /**
+   * Which body a pane draws ONCE {@link chatExperiment} is on: the terminal mirror or the chat
+   * stream. One standing value for the whole device, written from the pane's ⋮ menu alone.
+   *
+   * See lib/pane-view.ts for why its default is `chat` while the app's default view is still the
+   * terminal — the two are different questions, and the gate above is what answers the second.
+   */
+  paneView: PaneView;
 }
 
 const STORAGE_KEY = "collie:dash-prefs:v1";
@@ -78,6 +132,11 @@ const DEFAULTS: DashPrefs = {
   changesLayout: "list",
   beltScale: 1.15,
   dashView: "panes",
+  showToolCalls: false,
+  showCompactions: false,
+  paneOrder: "place",
+  chatExperiment: false,
+  paneView: "chat",
 };
 
 function coerceDepth(raw: JsonValue | undefined): number {
@@ -126,6 +185,11 @@ export function coerceDashPrefs(raw: JsonValue | undefined): DashPrefs {
     changesLayout: p.changesLayout === "tree" ? "tree" : DEFAULTS.changesLayout,
     beltScale: coerceBeltScale(p.beltScale),
     dashView: coerceDashView(p.dashView),
+    showToolCalls: asJsonBoolean(p.showToolCalls) ?? DEFAULTS.showToolCalls,
+    showCompactions: asJsonBoolean(p.showCompactions) ?? DEFAULTS.showCompactions,
+    paneOrder: coercePaneOrder(p.paneOrder),
+    chatExperiment: asJsonBoolean(p.chatExperiment) ?? DEFAULTS.chatExperiment,
+    paneView: coercePaneView(p.paneView),
   };
 }
 
@@ -162,6 +226,11 @@ export interface UseDashPrefsReturn {
   setChangesLayout: (layout: ChangesLayout) => void;
   setBeltScale: (scale: number) => void;
   setDashView: (view: DashView) => void;
+  setShowToolCalls: (show: boolean) => void;
+  setShowCompactions: (show: boolean) => void;
+  setPaneOrder: (order: PaneOrder) => void;
+  setChatExperiment: (on: boolean) => void;
+  setPaneView: (view: PaneView) => void;
 }
 
 export function useDashPrefs(): UseDashPrefsReturn {
@@ -187,6 +256,11 @@ export function useDashPrefs(): UseDashPrefsReturn {
   );
 
   const setChangesLayout = useCallback((changesLayout: ChangesLayout) => update({ changesLayout }), [update]);
+  const setShowToolCalls = useCallback((showToolCalls: boolean) => update({ showToolCalls }), [update]);
+  const setShowCompactions = useCallback((showCompactions: boolean) => update({ showCompactions }), [update]);
+  const setPaneOrder = useCallback((paneOrder: PaneOrder) => update({ paneOrder }), [update]);
+  const setChatExperiment = useCallback((chatExperiment: boolean) => update({ chatExperiment }), [update]);
+  const setPaneView = useCallback((paneView: PaneView) => update({ paneView }), [update]);
 
   const setBeltScale = useCallback(
     (scale: number) => update({ beltScale: coerceBeltScale(scale) }),
@@ -220,5 +294,10 @@ export function useDashPrefs(): UseDashPrefsReturn {
     setChangesLayout,
     setBeltScale,
     setDashView,
+    setShowToolCalls,
+    setShowCompactions,
+    setPaneOrder,
+    setChatExperiment,
+    setPaneView,
   };
 }

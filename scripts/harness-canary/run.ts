@@ -1,11 +1,13 @@
 #!/usr/bin/env bun
 // `bun run canary`: drive claude, codex, opencode and pi in a Herdr session of the canary's own and
-// judge what the phone would read and whether a send lands, with Collie's own code. Spec M37/02;
-// the how and the traps are in ./README.md.
+// judge what the phone would read and whether a send lands, with Collie's own code, off the screen
+// AND off the session each agent wrote. Specs M37/02 and M41/05; the how and the traps are in
+// ./README.md.
 
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { USAGE, parseArgs, type CanaryAgent, type CanaryOptions } from "./args";
 import { claude } from "./agents/claude";
 import { codex } from "./agents/codex";
@@ -13,8 +15,10 @@ import { opencode } from "./agents/opencode";
 import { pi } from "./agents/pi";
 import type { AgentProfile } from "./agents/profile";
 import { CANARY_SESSION, CanarySession, listSessions } from "./herdr";
+import { canaryJournals } from "./journal";
 import { loadKnownGaps } from "./known-gaps";
-import { LEDGER_FILE, recordVerified } from "./ledger";
+import { LEDGER_FILE, recordVerified, type LedgerRecord } from "./ledger";
+import { README_TOKEN } from "./messages";
 import { loadReaders } from "./readers";
 import { runBusy, runDialogs } from "./dialogs";
 import { runAgent } from "./scenarios";
@@ -22,7 +26,7 @@ import { installTransport } from "./transport";
 import { applyKnownGaps, exitCode, notReachedCase, recordable, renderTable, scenarioResult, type ScenarioResult } from "./verdict";
 
 const PROFILES = { claude, codex, opencode, pi } satisfies Record<CanaryAgent, AgentProfile>;
-const REPO_ROOT = new URL("../..", import.meta.url).pathname.replace(/\/$/, "");
+const REPO_ROOT = fileURLToPath(new URL("../..", import.meta.url)).replace(/[\\/]$/, "");
 
 function log(line: string): void {
   console.log(line);
@@ -59,7 +63,8 @@ function freshProject(): string {
   } catch (err) {
     throw new Error(`cannot acquire canary project ${dir}; leave existing runs intact and remove stale resources manually`, { cause: err });
   }
-  writeFileSync(join(dir, "README.md"), "# canary\n\nA scratch project the Collie canary starts agents in.\n");
+  // The token makes the journal send require a file read, rather than a guess from the folder name.
+  writeFileSync(join(dir, "README.md"), `# canary\n\nA scratch project the Collie canary starts agents in.\n\ntoken: ${README_TOKEN}\n`);
   const git = (...args: string[]) =>
     Bun.spawnSync(["git", "-c", "user.name=collie-canary", "-c", "user.email=canary@invalid", ...args], { cwd: dir, stdout: "ignore", stderr: "ignore" });
   git("init", "-q");
@@ -110,6 +115,10 @@ async function main(options: CanaryOptions): Promise<number> {
     const transport = installTransport(session, join(project, ".collie-home-unused"));
     audit = transport.audit;
     const readers = await loadReaders(options.readers);
+    // The journal adapters are THIS checkout's, never `--readers`': that flag swaps the web/src
+    // screen readers so an older checkout can be shown missing what it missed, and the bridge side
+    // of the canary has always been this checkout's (README § "Proof against 1.13.1").
+    const journals = canaryJournals();
     adapters = new Map(options.agents.map((a) => [a, readers.adapterFor(a) !== undefined]));
     for (const agent of options.agents) {
       const profile = PROFILES[agent];
@@ -126,6 +135,7 @@ async function main(options: CanaryOptions): Promise<number> {
         session,
         transport,
         readers,
+        journals,
         options,
         project,
         dir: join(runDir, `${agent}-${version}`),
@@ -190,16 +200,22 @@ function record(
       continue;
     }
     const passed = results.filter((r) => r.agent === agent && r.verdict === "pass").map((r) => r.scenario);
-    recordVerified(
-      {
-        agent,
-        version: versions.get(agent)!,
-        verified: id.slice(0, 4) + "-" + id.slice(4, 6) + "-" + id.slice(6, 8),
-        adapter: adapters.get(agent) ?? false,
-        evidence: `canary run ${id}: ${passed.join(", ")} pass`,
-      },
-      ledger,
-    );
+    const verified = id.slice(0, 4) + "-" + id.slice(4, 6) + "-" + id.slice(6, 8);
+    const rec: LedgerRecord = {
+      agent,
+      version: versions.get(agent)!,
+      verified,
+      adapter: adapters.get(agent) ?? false,
+      evidence: `canary run ${id}: ${passed.join(", ")} pass`,
+    };
+    // The JOURNAL reader's own line, beside the screen reader's, and only when this run judged it:
+    // the two readers drift apart on the same agent version (M41/05), so one date cannot speak for
+    // both. `withRecord` writes it only where the ledger already has a journal block, which is the
+    // agents this build has a journal adapter for.
+    if (passed.includes("journal")) {
+      rec.journal = { version: rec.version, verified, evidence: `canary run ${id}: journal kinds asserted, nothing unrecognised` };
+    }
+    recordVerified(rec, ledger);
     log(`--record: ${agent} ${versions.get(agent)} written to ${ledger}`);
   }
 }

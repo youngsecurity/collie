@@ -216,7 +216,7 @@ keystroke, an attachment, a send, a tap on another belt button, or leaving the p
 belt keeps it.
 
 To verify, open a pane running Claude Code, Codex, pi or omp; the tinted segment sits at the right
-of the row above the keyboard. Turn that segment off per device in **Settings → Harness shortcuts**;
+of the row above the keyboard. Turn that segment off per device in **Settings → Appearance → Harness shortcuts**;
 Collie's own controls stay.
 
 ## Your own key presets
@@ -325,7 +325,7 @@ To verify, reload the dashboard and look under the herd. If a row fails to load,
 
 ## Your own typefaces
 
-The interface font is a per-device setting. Under **Settings → Typeface**, you can choose between
+The interface font is a per-device setting. Under **Settings → Appearance → Typeface**, you can choose between
 System, Space Grotesk (the default), and Aldrich. You can add custom fonts in `theme.toml`, the
 fourth configuration file:
 
@@ -358,7 +358,7 @@ Three behaviors to note:
   immediately.
 - **Chrome only.** The selected font applies only to Collie's chrome. The terminal mirror,
   transcript, and rendered markdown retain their own typography (the mirror's own face and, on this
-  fork, its colours are set under **Settings → Terminal font**; see
+  fork, its colours are set under **Settings → Appearance → Terminal font**; see
   [Terminal appearance](#terminal-appearance-young-security-fork) below).
 - **Live on next reload.** Changes do not require a restart, taking effect on the next page reload.
   Invalid configurations log errors visible via `journalctl --user -u collie -n 20`.
@@ -541,7 +541,7 @@ sessions. [Security](security.md) lists this behavior as a sharp edge.
 
 > **Note.** Collie follows your phone's appearance by default.
 
-To pin it, open **Settings → Appearance** and pick **System**, **Light** or **Dark**. The setting is
+To pin it, open **Settings → Appearance → Theme** and pick **System**, **Light** or **Dark**. The setting is
 stored **per device** in the browser rather than on the bridge. Your phone can remain on Dark while
 a laptop tracks the OS. The preference persists across reloads and PWA reinstalls on the same
 device.
@@ -566,7 +566,7 @@ This implementation has two practical consequences:
 
 ### Terminal appearance (Young Security fork)
 
-**Settings → Terminal font** also carries the mirror's **colours** on this fork: a default text
+**Settings → Appearance → Terminal font** also carries the mirror's **colours** on this fork: a default text
 colour and a background colour, two native pickers under the font family. They are stored **per
 device** in the browser beside the font, so a phone can run green on black while a laptop keeps the
 dark ground. **Matrix** is the one preset: it picks the MesloLGS NF family with green (`#00ff00`) on
@@ -608,7 +608,7 @@ instead; the choice is stored per device in the browser.
 
 > **Note.** Zen mode is off by default.
 
-Enable it in **Settings → Zen mode** (stored per device in the browser). This adds a **Zen mode**
+Enable it in **Settings → Device → Zen mode** (stored per device in the browser). This adds a **Zen mode**
 option to the pane menu, under the ⋮ beside Find and History. Tapping it hides all Collie UI
 elements: the header, tab and pane strips, agent statusline, and composer docks. Only the terminal
 mirror remains visible. A floating button in the top-right corner or the Escape key restores the
@@ -621,43 +621,50 @@ The terminal mirror continues polling in Zen mode, and interactive buffer elemen
 functional. Prompt buttons, "Load older", and "Show entire history" controls stay available because
 they are part of the content stream rather than chrome.
 
+## Chat view
+
+> **Note.** Chat is experimental and off by default.
+
+Turn it on in **Settings → Experiments**. The setting is stored per device in the browser. A pane's
+**⋮** menu then gets a row that switches that pane between **Terminal** and **Chat**. Chat draws the
+agent's own conversation instead of the terminal: your turns, its replies, thinking behind a fold and
+a card per step. The composer, the belt and the pane menu stay where they were.
+
+Chat reads the agent's session log, not the screen. That means a pane gets Chat only when Collie
+knows which session the pane is running, and the agent has to tell the multiplexer. The pane itself
+cannot work this out.
+
+| Multiplexer | What reports the session | Chat works for |
+| --- | --- | --- |
+| Herdr | The matching Herdr integration for that agent, installed once with `herdr integration install <agent>` (for example `claude`, `codex`, `opencode`, `pi`, `omp`, `grok`, `hermes`), then restart the agent | Every agent that has an integration and a session log Collie reads |
+| tmux, zellij | Collie's [beacon hooks](multiplexers.md#agent-beacons-optional-linux) | Claude Code only, after `collie hooks install claude` |
+| tuios | The tuios daemon | The agents the daemon reports |
+
+`herdr integration status` shows which integrations are installed. A hook is read when the agent
+starts, so an agent that was already running when you installed it needs a restart. Oh My Pi is the
+`omp` integration, not the `pi` one: they are two agents with two hooks, and they share one log
+format.
+
+A pane whose agent never named its session keeps the terminal, and the **⋮** row says why. Chat never
+hides the row, so you can tell a missing hook from a missing feature. `collie doctor` lists those
+panes under `agent-sessions` and names the integration line (`integration-<agent>`) that fixes each.
+The [troubleshooting page](troubleshooting.md) has the steps, under **a pane has no Chat or History**.
+
 ## Changes
 
-The pane menu's **Changes** row shows what changed in the pane's workspace since the last commit.
-
-Open a pane, tap the ⋮, then **Changes**. The list groups the changed files by git repo, with
-added and removed line counts. Tap a file to read its diff, and use **Previous file** and
-**Next file** to step through the list. The refresh button reads the folder again; the list does
-not update on its own.
-
-The diff is against the last commit, so staged and unstaged changes show together. A new file
-shows as all added lines. A binary file shows no lines.
-
-The list covers the pane's whole workspace, so every pane in one workspace shows the same list.
-The header names the workspace and its folder. Collie picks that folder in this order:
-
-| Order | Folder |
-| --- | --- |
-| 1 | The workspace's own folder, when the multiplexer keeps one: herdr's worktree, tmux's session folder |
-| 2 | The deepest folder that holds every pane of the workspace |
-| 3 | The pane's own folder, when the first two would be `/`, your home folder, or above it |
+The [Changes view](changes.md) shows what an agent changed in its workspace's git repos. Two
+per-device settings decide how far it looks for repos, in **Settings → Device → Changes**:
 
 | Setting | Default | What it does |
 | --- | --- | --- |
 | Look for repos inside this folder | on | Also lists repos in folders below the workspace folder, even ones the parent repo ignores |
 | How deep to look | 2 | How many folder levels below the workspace folder the search goes, 1 to 4 |
 
-Both live in **Settings → Changes** and are stored per device.
-
-> **Note.** Changes only reads. It never stages, commits or edits, and a repo's own hooks, filters
-> and diff programs never run while Collie reads it
-> ([ADR 0065](../.adr/0065-the-changes-view-reads-git-read-only.md)).
-
-zellij panes have no Changes row, because zellij does not report a pane's folder.
+See [Which folder, and which repos](changes.md#which-folder-and-which-repos) for how the search works.
 
 ## Language
 
-Collie's interface is available in six languages. Configure this under **Settings → Language**.
+Collie's interface is available in six languages. Configure this under **Settings → Appearance → Language**.
 
 - English
 - Deutsch
@@ -669,6 +676,11 @@ Collie's interface is available in six languages. Configure this under **Setting
 The selection is saved locally in the browser per device. The terminal mirror remains untranslated:
 it displays the raw output from the agent, while quick replies, menu labels, and key caps match the
 underlying screen or keyboard names.
+
+A notification's title follows the same choice: "claude needs you" arrives as "claude 입력 대기" on a
+device set to Korean. The device picks up a new choice the next time Collie is open on it, and until
+then its titles stay in the language it had. The body under the title is the pane's own name and
+place, and is never translated ([Web Push](voice-and-push.md#web-push-optional)).
 
 
 ---

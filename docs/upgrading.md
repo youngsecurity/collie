@@ -319,6 +319,28 @@ Expect the newest tag.
 within about a minute, and it holds that reload for the length of an update run. If you are mid-task
 it shows a "tap to update" banner and waits for your tap.
 
+### On Windows
+
+The fork requires manual source updates; binary updates belong to upstream only.
+
+> **Note.** For `youngsecurity/collie`, fetch and select a reviewed `+ys` tag, rebuild, then
+> restart. The migration below installs upstream `AltanS/collie` and leaves the fork. There is
+> no fork Windows zip. See [Windows source builds](windows.md#build-from-source).
+
+**A source checkout never updates itself on Windows; an upstream zip install does.** `collie update` and
+the phone's Update button say so in one sentence on a source checkout and change nothing. Moving to
+the zip install is a one-time manual step:
+
+```powershell
+collie uninstall
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+After that, `collie update` works from the terminal and from the phone. That chain was rehearsed
+on a Windows 11 VM against a local copy of the release files, and the move itself was not.
+Releases up to and including v1.15.0 also could not swap a running `collie.exe`. See
+[Collie on Windows](windows.md#update).
+
 ### If the version did not move
 
 `collie update` asks GitHub directly on every run, `git ls-remote` for a checkout, the GitHub tags
@@ -412,7 +434,7 @@ collie crew update --all
 ```
 
 That is the terminal path, for a peer the phone cannot level. From the phone, update the whole crew
-with one tap and one confirmation: open **Settings → Updates** on the lead and select
+with one tap and one confirmation: open **Settings → System → Updates** on the lead and select
 **Update crew to `<version>`**. The preflight above the button covers every member, not just the
 lead. If a check is red anywhere, the button is disabled and names the failing machine and the
 reason.

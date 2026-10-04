@@ -5,9 +5,11 @@ import { fixtureCrewSnapshot, fixtureSnapshot } from "@/test/handlers";
 import { __resetConnectionHealth, isLostLatched, lastHealthyAt } from "./connection-health";
 import { isConnecting } from "./connection";
 import { resetBasePathForTests } from "./base-path";
+import { burstPaneId, resetPollIntent, sendCount } from "./poll-intent";
 import {
   checkForUpdates,
   createTab,
+  fetchChat,
   fetchConfig,
   fetchPane,
   fetchSnapshot,
@@ -16,6 +18,7 @@ import {
   refreshNow,
   sendKeys,
   sendReply,
+  textBeforeLastSend,
   uploadFile,
   sttTimeoutFor,
   transcribeAudio,
@@ -64,6 +67,24 @@ describe("api client", () => {
     ]);
   });
 
+  it("adds expected_styled to a keys body only when supplied, beside expected_prompt", async () => {
+    const bodies: unknown[] = [];
+    server.use(
+      http.post(/\/api\/pane\/[^/]+\/keys$/, async ({ request }) => {
+        bodies.push(await request.json());
+        return HttpResponse.json({ ok: true });
+      }),
+    );
+
+    await sendKeys("w1:p1", ["Enter"], undefined, "Approve?", "styled lines");
+    await sendKeys("w1:p1", ["Enter"], undefined, "Approve?");
+
+    expect(bodies).toEqual([
+      { keys: ["Enter"], expected_prompt: "Approve?", expected_styled: "styled lines" },
+      { keys: ["Enter"], expected_prompt: "Approve?" },
+    ]);
+  });
+
   it("returns the structured prompt_changed result instead of throwing on 409", async () => {
     server.use(
       http.post(/\/api\/pane\/[^/]+\/keys$/, () =>
@@ -73,6 +94,31 @@ describe("api client", () => {
         ),
       ),
     );
+    await expect(sendKeys("w1:p1", ["1"], undefined, "Approve?")).resolves.toEqual({
+      ok: false,
+      error: "prompt changed",
+      code: "prompt_changed",
+    });
+  });
+
+  it("keeps the bridge's reason code on the 409 result, and drops one that is not a plain code", async () => {
+    const respond = (reason: string) =>
+      server.use(
+        http.post(/\/api\/pane\/[^/]+\/keys$/, () =>
+          HttpResponse.json(
+            { ok: false, error: "prompt changed", code: "prompt_changed", reason },
+            { status: 409 },
+          ),
+        ),
+      );
+    respond("style_misaligned");
+    await expect(sendKeys("w1:p1", ["1"], undefined, "Approve?")).resolves.toEqual({
+      ok: false,
+      error: "prompt changed",
+      code: "prompt_changed",
+      reason: "style_misaligned",
+    });
+    respond("Approve this command? 1. Yes");
     await expect(sendKeys("w1:p1", ["1"], undefined, "Approve?")).resolves.toEqual({
       ok: false,
       error: "prompt changed",
@@ -97,6 +143,67 @@ describe("api client", () => {
       ok: false,
       error: "prompt changed",
       code: "prompt_changed",
+    });
+  });
+
+  // The burst starts at this one chokepoint, so a dialog tap, the key bar and the composer's typed
+  // text never have to remember to start it (a card that waited for the idle poll kept a stale
+  // highlight for up to 6 s).
+  describe("the poll burst", () => {
+    beforeEach(() => resetPollIntent());
+    afterEach(() => resetPollIntent());
+
+    it("a successful sendKeys starts a burst for that pane, on issue and again on the ok answer", async () => {
+      expect(burstPaneId()).toBeNull();
+      const pending = sendKeys("w1:p1", ["Up"]);
+      // Issued, not yet answered: the operator is already watching.
+      expect(burstPaneId()).toBe("w1:p1");
+      expect(sendCount()).toBe(1);
+      await pending;
+      expect(burstPaneId()).toBe("w1:p1");
+      expect(sendCount()).toBe(2);
+    });
+
+    it("a successful sendReply starts a burst for that pane", async () => {
+      await sendReply("w1:p2", "hi");
+      expect(burstPaneId()).toBe("w1:p2");
+      expect(sendCount()).toBe(2);
+    });
+
+    // The rule: stamp on issue, and again only on an ok answer. A write that fails leaves the one
+    // issue stamp, which is harmless because a burst ends itself after its minimum polls and two quiet
+    // ones (poll-intent.ts); nothing here can keep the fast gap running.
+    it("a failed sendKeys leaves only the stamp from the issue, never a second one", async () => {
+      server.use(
+        http.post(/\/api\/pane\/[^/]+\/keys$/, () => new HttpResponse("herdr down", { status: 502 })),
+      );
+      await expect(sendKeys("w1:p1", ["Up"])).rejects.toThrow(/502/);
+      expect(sendCount()).toBe(1);
+      server.use(
+        http.post(/\/api\/pane\/[^/]+\/keys$/, () =>
+          HttpResponse.json(
+            { ok: false, error: "prompt changed", code: "prompt_changed" },
+            { status: 409 },
+          ),
+        ),
+      );
+      await sendKeys("w1:p1", ["Up"], undefined, "Approve?");
+      expect(sendCount()).toBe(2); // one more issue stamp, no ok stamp
+    });
+
+    it("remembers what the pane showed when the latest key was sent, not what it shows after", async () => {
+      let text = "before";
+      server.use(
+        http.get(/\/api\/pane\/[^/]+$/, () =>
+          HttpResponse.json({ paneId: "w9:p9", text, truncated: false, revision: 0 }, { headers: { etag: `"${text}"` } }),
+        ),
+      );
+      expect(textBeforeLastSend("w9:p9")).toBeUndefined();
+      await fetchPane("w9:p9");
+      await sendKeys("w9:p9", ["Up"]);
+      text = "after";
+      await fetchPane("w9:p9");
+      expect(textBeforeLastSend("w9:p9")).toBe("before");
     });
   });
 
@@ -636,5 +743,118 @@ describe("api client under a mount", () => {
     );
     await fetchSnapshot();
     expect(asked).toEqual(["/collie/api/snapshot"]);
+  });
+});
+
+// ── THE LIVE SESSION READ (ADR 0073) ────────────────────────────────────────────────────────────
+// The transport half of spec 09: which query it builds, and the three outcomes a caller must tell
+// apart. The merge itself is `lib/chat-window.test.ts` and has no fetch in it at all.
+describe("fetchChat", () => {
+  const liveBody = (paneId: string) => ({
+    paneId,
+    available: true,
+    page: "live",
+    gen: 7,
+    rev: 3,
+    head: 1_000_002,
+    oldest: 1_000_000,
+    hasOlder: false,
+    upserts: [],
+  });
+
+  function captureChat(paneId: string, etag?: string) {
+    const asked: string[] = [];
+    const seen: Headers[] = [];
+    server.use(
+      http.get(`/api/pane/${paneId}/chat`, ({ request }) => {
+        const url = new URL(request.url);
+        asked.push(url.search);
+        seen.push(request.headers);
+        return HttpResponse.json(liveBody(paneId), etag ? { headers: { etag } } : undefined);
+      }),
+    );
+    return { asked, seen };
+  }
+
+  it("asks with no query at all when the caller holds nothing", async () => {
+    const { asked } = captureChat("chat-plain");
+    await fetchChat("chat-plain");
+    expect(asked).toEqual([""]);
+  });
+
+  it("spells the two cursors the way the bridge parses them", async () => {
+    const after = captureChat("chat-after");
+    await fetchChat("chat-after", { limit: 40, after: { gen: 7, rev: 3 } });
+    expect(after.asked).toEqual(["?limit=40&after=7%3A3"]);
+
+    const before = captureChat("chat-before");
+    await fetchChat("chat-before", { before: { seq: 1_000_000, uuid: "u-1" } });
+    expect(before.asked).toEqual(["?before=1000000%3Au-1"]);
+  });
+
+  it("marks the pane seen — watching a session is looking at the pane", async () => {
+    const { seen } = captureChat("chat-seen");
+    await fetchChat("chat-seen");
+    expect(seen[0]?.get("x-collie-seen")).toBe("1");
+  });
+
+  it("returns the bridge's own body on a 200", async () => {
+    captureChat("chat-body");
+    await expect(fetchChat("chat-body")).resolves.toEqual({
+      outcome: "body",
+      body: liveBody("chat-body"),
+    });
+  });
+
+  it("returns `available: false` as a body — a pane with no session is not a failure", async () => {
+    server.use(
+      http.get("/api/pane/chat-none/chat", () =>
+        HttpResponse.json({ paneId: "chat-none", available: false, reason: "no-session" }),
+      ),
+    );
+    await expect(fetchChat("chat-none")).resolves.toEqual({
+      outcome: "body",
+      body: { paneId: "chat-none", available: false, reason: "no-session" },
+    });
+  });
+
+  it("validates the LIVE page with the ETag it was given, and reads the 304 as no change", async () => {
+    let asks = 0;
+    server.use(
+      http.get("/api/pane/chat-etag/chat", ({ request }) => {
+        asks += 1;
+        if (request.headers.get("if-none-match") === 'W/"c1"') {
+          return new HttpResponse(null, { status: 304, headers: { etag: 'W/"c1"' } });
+        }
+        return HttpResponse.json(liveBody("chat-etag"), { headers: { etag: 'W/"c1"' } });
+      }),
+    );
+    await expect(fetchChat("chat-etag")).resolves.toMatchObject({ outcome: "body" });
+    await expect(fetchChat("chat-etag")).resolves.toEqual({ outcome: "unchanged" });
+    expect(asks).toBe(2);
+  });
+
+  it("does not validate a `?before=` page — a one-shot tap has no repeat fetch to save", async () => {
+    const { seen } = captureChat("chat-older", 'W/"c2"');
+    await fetchChat("chat-older");
+    await fetchChat("chat-older", { before: { seq: 1_000_000, uuid: "u-1" } });
+    expect(seen[0]?.get("if-none-match")).toBeNull();
+    expect(seen[1]?.get("if-none-match")).toBeNull();
+  });
+
+  it("reads a 404 as a machine a release behind, never as an empty session", async () => {
+    server.use(
+      http.get("/api/pane/chat-404/chat", () => new HttpResponse("not found", { status: 404 })),
+    );
+    await expect(fetchChat("chat-404")).resolves.toEqual({
+      outcome: "stale",
+    });
+  });
+
+  it("still throws on anything else — a stale member is not a refusal", async () => {
+    server.use(
+      http.get("/api/pane/chat-502/chat", () => new HttpResponse("herdr down", { status: 502 })),
+    );
+    await expect(fetchChat("chat-502")).rejects.toThrow(/502/);
   });
 });

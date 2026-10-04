@@ -26,9 +26,11 @@ import type { StyledLine } from "../../blocks";
 import {
   barDraftText,
   hasFooterHints,
+  isBareBar,
   isBarRow,
   isBlank,
   isModelRow,
+  isQuestionFooter,
   isRuleRow,
   lineText,
   rstrip,
@@ -54,6 +56,65 @@ const MAX_STATUS_ROWS = 6;
 // at 50 columns (measured 2026-09-26, `oc--narrow--fresh-idle.txt`). Two leaves a row of slack;
 // more than that is not the composer's bottom.
 const MAX_RULE_PAD = 2;
+
+// A foreign panel's box border where it crosses the composer's bar run. TWO conditions, and it takes
+// both, because either one alone gets a real draft wrong:
+//
+//   the ANCHOR — a corner or a junction. A plain rule (────) is not one, because people type those:
+//   oc--draft-multiline.txt has a row that is nothing but a rule INSIDE a real draft, and the run has
+//   to read through it.
+//
+//   and NOTHING BUT CHROME on the row. A junction ANYWHERE was the first shape of this rule, and it
+//   truncated a draft: `├── src` carries a junction and words, a pasted `tree` is the ordinary way
+//   that happens, and the walk stopped at the first branch. Measured on
+//   oc--draft-tree-glyphs.txt — four typed lines read back as the last one.
+//
+// A panel's border is never words. That is the whole distinction, and it is the same one
+// {@link isPanelBorder}'s use in `extractInputDraft` rests on, so the two cannot drift.
+const PANEL_JUNCTION = /[┌┐└┘├┤┬┴┼╭╮╰╯╔╗╚╝╠╣╦╩╬]/u;
+const CHROME_ONLY = /^[\s─━┄┈│┃═║┌┐└┘├┤┬┴┼╭╮╰╯╔╗╚╝╠╣╦╩╬╹▀]*$/u;
+
+/**
+ * True when this row's interior is a foreign panel's border and nothing else.
+ *
+ * The INTERIOR, not the whole row: the composer's own `┃` is chrome by definition and says nothing
+ * about what was typed inside it.
+ */
+function isPanelBorder(text: string): boolean {
+  const inside = interiorOf(text);
+  return PANEL_JUNCTION.test(inside) && CHROME_ONLY.test(inside);
+}
+
+// A sidebar's vertical edge where it crosses the bar run: `│` and nothing else. It is
+// padding, not content — the trims below and the empty filter treat it the way they treat
+// a bare bar row. Deliberately NOT part of isPanelBorder: that predicate answers "border"
+// for the walk and the join together, and an edge-only row must stay walkable so typed
+// words below it still read (same reason the walk reads through a typed rule).
+function isBlankInterior(text: string): boolean {
+  return isEdgeOnly(interiorOf(text));
+}
+
+function isEdgeOnly(text: string): boolean {
+  return /^[\s│]*$/u.test(text);
+}
+
+// A panel's bottom border sharing its row with typed text (`┃  hello  └───┘`): cut the
+// trailing border run, keeping the words. The run must hold a corner or junction: `│`, `┃`
+// and rule-blocks alone never strip, because a table row (`│ a │ b │`) ends in one and
+// cutting it breaks the reply guard's contiguity check — the stripped run is gone from the
+// draft but still in what was sent, so verification can never match. A typed rule (`───`)
+// never strips for the same reason. The strip applies only when words remain; a border-only
+// row keeps its text for the isPanelBorder join below to refuse. The run must also follow a gap of
+// two or more spaces: an overlay sits in its own column, far from the typed words, while a pasted
+// `╭─ title ─╮` or `┌ Name ┐` closes its box one space after its words and must stay whole. The walk still owns
+// row-level stops — this owns suffixes in kept rows.
+const OVERLAY_SUFFIX =
+  /[ \t]{2,}[─━┄┈│┃═║┌┐└┘├┤┬┴┼╭╮╰╯╔╗╚╝╠╣╦╩╬╹▀]*[┌┐└┘├┤┬┴┼╭╮╰╯╔╗╚╝╠╣╦╩╬][─━┄┈│┃═║┌┐└┘├┤┬┴┼╭╮╰╯╔╗╚╝╠╣╦╩╬╹▀]*$/u;
+
+function stripOverlaySuffix(text: string): string {
+  const cut = text.replace(OVERLAY_SUFFIX, "");
+  return cut.trim() === "" ? text : cut;
+}
 
 /** The composer tail located at the buffer's end. Every index is into the ORIGINAL `lines` array. */
 export interface ComposerTail {
@@ -126,21 +187,31 @@ export function locateComposer(lines: StyledLine[]): ComposerTail | null {
   //     draft; the strip then starts at the model row and the draft probe answers null.
   // (d) The draft: the composer's own bar run above the separator, up to its top padding row. The
   //     run ends where the bars do: the transcript's last block sits across a row with no bar (its
-  //     bottom margin, measured on every 1.18.32 capture). Inside the run, a bare bar row is a
-  //     blank line the operator typed, not the draft's edge (oc--draft-multiline.txt): stopping
-  //     there read only the last paragraph, left the first on the mirror as if it were transcript,
-  //     and "Take over" copied half a draft. Bare-bar rows at either end (the top padding, the empty
-  //     row of an empty composer) are not draft.
+  //     bottom margin, measured on every 1.18.32 capture) — and, since the Models-sidebar overlay,
+  //     at a row that is a foreign box border and nothing else (isPanelBorder): claiming that row
+  //     joined overlay chrome into the draft, which broke the reply guard's verification of real
+  //     messages. "And nothing else" is load-bearing, not caution: a row holding a junction AND words
+  //     is a pasted tree, and stopping there loses most of a real draft. Inside
+  //     the run, a bare bar row is a blank line the operator typed, not the draft's edge
+  //     (oc--draft-multiline.txt): stopping there read only the last paragraph, left the first on
+  //     the mirror as if it were transcript, and "Take over" copied half a draft. Bare-bar rows at
+  //     either end (the top padding, the empty row of an empty composer) are not draft.
   let draftStart = modelRow;
   let draftEnd = modelRow - 1;
   const above = modelRow - 1;
   if (above >= 0 && isBareBar(texts[above]!)) {
     let top = above;
-    while (top - 1 >= 0 && modelRow - (top - 1) <= MAX_INTERIOR_ROWS && isBarRow(texts[top - 1]!)) top--;
+    while (
+      top - 1 >= 0 &&
+      modelRow - (top - 1) <= MAX_INTERIOR_ROWS &&
+      isBarRow(texts[top - 1]!) &&
+      !isPanelBorder(texts[top - 1]!)
+    )
+      top--;
     let first = top;
     let last = above - 1;
-    while (first <= last && interiorOf(texts[first]!) === "") first++;
-    while (last >= first && interiorOf(texts[last]!) === "") last--;
+    while (first <= last && isBlankInterior(texts[first]!)) first++;
+    while (last >= first && isBlankInterior(texts[last]!)) last--;
     if (first <= last) {
       draftStart = first;
       draftEnd = last;
@@ -173,11 +244,6 @@ export function stripChrome(lines: StyledLine[]): StyledLine[] {
   const texts = lines.map((l) => rstrip(lineText(l)));
   while (end > 0 && (isBlank(texts[end - 1]!) || isBareBar(texts[end - 1]!))) end--;
   return end === lines.length ? lines : lines.slice(0, end);
-}
-
-/** A row whose only glyph is the bar — interior padding, not content. */
-function isBareBar(text: string): boolean {
-  return /^\s*┃\s*$/.test(rstrip(text));
 }
 
 /**
@@ -216,11 +282,23 @@ export function extractInputDraft(lines: StyledLine[]): string | null {
     // A bare bar row inside the block is a blank line of the draft.
     const text = isBareBar(texts[i]!) ? "" : barDraftText(texts[i]!);
     if (text === null) return null; // a non-gutter row inside the block — not a shape we claim
-    parts.push(text.trim());
+    const cleaned = stripOverlaySuffix(text);
+    const trimmed = cleaned.trim();
+    parts.push(isEdgeOnly(trimmed) ? "" : trimmed);
   }
   const draft = parts.filter((p) => p.length > 0).join(" ");
   if (draft.length === 0) return null;
   if (draft.trimStart().startsWith("Ask anything")) return null; // the empty box's placeholder
+  // The walk above cannot always exclude a panel's border — it can land on the separator row, which
+  // the walk never climbs past — so a border-only join surfaced as a phantom "Draft in terminal"
+  // card holding just a line, and "Take over" would have typed border junk into the composer.
+  //
+  // ONE predicate with the walk, deliberately: a first cut of this rule used a second, WIDER glyph
+  // set here, which said `─` and `│` were border glyphs while the walk's own comment said they were
+  // not. Two sets that disagree about the same question are two answers waiting to drift. So a join
+  // is refused on exactly the terms a row is: a junction, and no words. A draft of nothing but a
+  // typed rule is therefore a draft, which is what the operator typed.
+  if (isPanelBorder(`┃ ${draft}`)) return null;
   return draft;
 }
 
@@ -293,9 +371,12 @@ const MODAL_FOOTER_WINDOW = 3;
  * Positive evidence that one of opencode's own modals is up — the fifth condition of the
  * unread-dialog card (.adr/0053, addendum 2026-09-26). `composerReady` answering false says only
  * that no composer is there, which is also what the shell looks like while opencode starts and
- * after it exits; the card must not offer Escape there. Two shapes count, both measured on 1.18.32:
- * a picker (`pickerOverlayUp`), and a dialog painted in the bar run, whose footer — a bar row
- * carrying `⇆ select` and `enter confirm` — sits at the tail.
+ * after it exits; the card must not offer Escape there. Three shapes count: a picker
+ * (`pickerOverlayUp`), a permission dialog painted in the bar run, whose footer — a bar row
+ * carrying `⇆ select` and `enter confirm` — sits at the tail (1.18.32), and a question dialog,
+ * whose footer is a bar row carrying `esc dismiss` after `enter submit|toggle|confirm` (1.18.33).
+ * The question footer counts on EVERY question screen, the ones the grammar refuses included (a tab
+ * bar, a long list): the card and the composer lock must work on exactly those.
  */
 export function modalOnScreen(lines: StyledLine[]): boolean {
   if (pickerOverlayUp(lines)) return true;
@@ -304,7 +385,7 @@ export function modalOnScreen(lines: StyledLine[]): boolean {
     const text = rstrip(lineText(lines[i]!));
     if (isBlank(text)) continue;
     seen++;
-    if (isBarRow(text) && hasFooterHints(text)) return true;
+    if (isBarRow(text) && (hasFooterHints(text) || isQuestionFooter(text))) return true;
   }
   return false;
 }

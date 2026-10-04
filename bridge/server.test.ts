@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 
 import { updateStartVerdict, type CrewUpdateRow } from "./update-action.ts";
+import { MAX_EXPECTED_PROMPT_CHARS } from "./prompt-binding.ts";
+import { encodeStyledRegion, styledRegionLines } from "../web/src/lib/styled-region.ts";
 
 import {
   blobRoute,
@@ -157,6 +159,7 @@ function cfg(overrides: Partial<Config> = {}): Config {
       opencode: ["/nope/opencode"],
       grok: ["/nope/grok"],
       hermes: ["/nope/hermes"],
+      muse: ["/nope/muse"],
     },
     submitKeys: ["Enter"],
     commandsFile: "/nope/commands.toml",
@@ -168,6 +171,8 @@ function cfg(overrides: Partial<Config> = {}): Config {
     cacheRulesFile: "/nope/cache-rules.toml",
     trustedUser: "",
     trustedUserOptional: false,
+    accessTeam: "",
+    accessAud: [],
     auditContent: "preview",
     deviceHeader: "",
     deviceAllowlist: [],
@@ -666,19 +671,21 @@ describe("isLoopbackAddress", () => {
 });
 
 describe("resolveStaticPath — static path traversal guard", () => {
-  const WEB = "/srv/collie/web/dist";
+  // `join`, because the resolver `normalize`s its result and the guard compares it to `webDir + sep`:
+  // on Windows a `/`-spelled webDir would never match its own backslashed output.
+  const WEB = join("/srv", "collie", "web", "dist");
 
   test("resolves a normal file under the web dir", () => {
     expect(resolveStaticPath("/assets/app.js", WEB)).toEqual({
       rel: "assets/app.js",
-      full: "/srv/collie/web/dist/assets/app.js",
+      full: join(WEB, "assets", "app.js"),
     });
   });
 
   test("maps / to index.html", () => {
     expect(resolveStaticPath("/", WEB)).toEqual({
       rel: "index.html",
-      full: "/srv/collie/web/dist/index.html",
+      full: join(WEB, "index.html"),
     });
   });
 
@@ -822,6 +829,7 @@ describe("pane write prompt binding", () => {
     text?: string;
     submit?: boolean;
     expected_prompt?: string | number | null;
+    expected_styled?: string | number | null;
   }
 
   function request(body: PaneActionBody): Request {
@@ -862,11 +870,11 @@ describe("pane write prompt binding", () => {
       return block.prompt;
     };
 
-    test(`Codex ${name} binds a full 8192-character subject, but never offers a truncated larger one`, async () => {
+    test(`Codex ${name} binds a full ${MAX_EXPECTED_PROMPT_CHARS}-character subject, but never offers a truncated larger one`, async () => {
       const subject = mutations[0][0];
-      const atLimit = shown.replace(subject, subject + "x".repeat(8192 - prompt().signature.length));
+      const atLimit = shown.replace(subject, subject + "x".repeat(MAX_EXPECTED_PROMPT_CHARS - prompt().signature.length));
       const model = prompt(atLimit);
-      expect(model.signature.length).toBe(8192);
+      expect(model.signature.length).toBe(MAX_EXPECTED_PROMPT_CHARS);
       const client = new FakePaneClient();
       client.text = atLimit;
       const res = await keysPane(asMux(client), cfg(), "w1:p1",
@@ -979,6 +987,17 @@ describe("pane write prompt binding", () => {
     });
   });
 
+  test("a bound region as wide as a full-screen picker on a wide pane is accepted", async () => {
+    const client = new FakePaneClient();
+    // 59 rows of 220 columns: 12,980 characters, over the old 8192 cap and inside the new one.
+    const expected = Array.from({ length: 59 }, (_, index) => `${String(index).padStart(2, "0")}`.padEnd(220, "x")).join("\n");
+    client.text = expected;
+    const { audit } = auditEntries();
+    const res = await keysPane(asMux(client), cfg(), "w1:p1", request({ keys: ["Enter"], expected_prompt: expected }), audit, null, "default");
+    expect(res.status).toBe(200);
+    expect(client.keys).toEqual([["w1:p1", ["Enter"]]]);
+  });
+
   test("binding read depth grows beyond a small configured window to contain the expectation", async () => {
     const client = new FakePaneClient();
     const expected = Array.from({ length: 32 }, (_, index) => `prompt line ${index + 1}`).join("\n");
@@ -1061,6 +1080,7 @@ describe("pane write prompt binding", () => {
       ok: false,
       error: "prompt changed",
       code: "prompt_changed",
+      reason: "not_found",
     });
     expect(client.keys).toEqual([]);
     expect(client.texts).toEqual([]);
@@ -1111,7 +1131,7 @@ describe("pane write prompt binding", () => {
   });
 
   test("rejects oversized and non-string expected_prompt before a keys write", async () => {
-    for (const expected_prompt of ["x".repeat(8193), 42]) {
+    for (const expected_prompt of ["x".repeat(32_769), 42]) {
       const client = new FakePaneClient();
       const { audit } = auditEntries();
       const res = await keysPane(
@@ -1131,7 +1151,7 @@ describe("pane write prompt binding", () => {
   });
 
   test("rejects oversized and non-string expected_prompt before a reply write", async () => {
-    for (const expected_prompt of ["x".repeat(8193), null]) {
+    for (const expected_prompt of ["x".repeat(32_769), null]) {
       const client = new FakePaneClient();
       const { audit } = auditEntries();
       const res = await replyPane(
@@ -1149,6 +1169,286 @@ describe("pane write prompt binding", () => {
       expect(client.texts).toEqual([]);
       expect(client.keys).toEqual([]);
     }
+  });
+
+  // `expected_styled` (ADR 0080 point 7): the phone's canonical styled lines of the region
+  // `expected_prompt` names, for a pointer drawn only as a background colour. Same single read.
+  describe("expected_styled", () => {
+    const E = "\u001b";
+    const chips = (pointer: 0 | 1) =>
+      [
+        "Permission required",
+        `${pointer === 0 ? `${E}[43m` : ""} Allow once ${E}[0m  ${pointer === 1 ? `${E}[43m` : ""} Reject ${E}[0m`,
+      ].join("\n");
+    const TEXT_REGION = "Permission required\n Allow once    Reject";
+    const styledOf = (screen: string): string => encodeStyledRegion(styledRegionLines(screen));
+
+    test("a matching pair sends the keys after ONE read, for keys and for reply", async () => {
+      const client = new FakePaneClient();
+      client.text = chips(0);
+      const { audit, entries } = auditEntries();
+      const body = { keys: ["Enter"], expected_prompt: TEXT_REGION, expected_styled: styledOf(chips(0)) };
+      const res = await keysPane(asMux(client), cfg(), "w1:p1", request(body), audit, "phone", "default");
+      expect(res.status).toBe(200);
+      expect(client.reads).toHaveLength(1);
+      expect(client.keys).toEqual([["w1:p1", ["Enter"]]]);
+      expect(entries[0]?.detail).toMatchObject({ promptBinding: { checked: true, passed: true } });
+
+      const replied = await replyPane(
+        asMux(client),
+        cfg(),
+        "w1:p1",
+        request({ text: "", submit: true, expected_prompt: TEXT_REGION, expected_styled: styledOf(chips(0)) }),
+        audit,
+        null,
+        "default",
+      );
+      expect(replied.status).toBe(200);
+      expect(client.reads).toHaveLength(2);
+    });
+
+    test("the highlight moved: the text still matches, the colours do not, so 409 and no keys", async () => {
+      const client = new FakePaneClient();
+      client.text = chips(1); // the pointer left the chip the phone verified
+      const { audit, entries } = auditEntries();
+      const res = await keysPane(
+        asMux(client),
+        cfg(),
+        "w1:p1",
+        request({ keys: ["Enter"], expected_prompt: TEXT_REGION, expected_styled: styledOf(chips(0)) }),
+        audit,
+        null,
+        "default",
+      );
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({
+        ok: false,
+        error: "prompt changed",
+        code: "prompt_changed",
+        reason: "style_not_found",
+      });
+      expect(client.reads).toHaveLength(1); // no second RPC
+      expect(client.keys).toEqual([]);
+      expect(entries[0]?.detail).toMatchObject({
+        promptBinding: { checked: true, passed: false, reason: "style_not_found" },
+      });
+    });
+
+    test("the same text without expected_styled still passes (an older phone)", async () => {
+      const client = new FakePaneClient();
+      client.text = chips(1);
+      const { audit } = auditEntries();
+      const res = await keysPane(
+        asMux(client),
+        cfg(),
+        "w1:p1",
+        request({ keys: ["Enter"], expected_prompt: TEXT_REGION }),
+        audit,
+        null,
+        "default",
+      );
+      expect(res.status).toBe(200);
+      expect(client.keys).toEqual([["w1:p1", ["Enter"]]]);
+    });
+
+    test("a style refusal on reply types nothing and submits nothing", async () => {
+      const client = new FakePaneClient();
+      client.text = chips(1);
+      const { audit } = auditEntries();
+      const res = await replyPane(
+        asMux(client),
+        cfg(),
+        "w1:p1",
+        request({ text: "hello", expected_prompt: TEXT_REGION, expected_styled: styledOf(chips(0)) }),
+        audit,
+        null,
+        "default",
+      );
+      expect(res.status).toBe(409);
+      expect(client.texts).toEqual([]);
+      expect(client.keys).toEqual([]);
+    });
+
+    test("a stale TEXT is still refused first, with the text check's own reason", async () => {
+      const client = new FakePaneClient();
+      client.text = "Command finished";
+      const { audit, entries } = auditEntries();
+      const res = await keysPane(
+        asMux(client),
+        cfg(),
+        "w1:p1",
+        request({ keys: ["Enter"], expected_prompt: TEXT_REGION, expected_styled: styledOf(chips(0)) }),
+        audit,
+        null,
+        "default",
+      );
+      expect(res.status).toBe(409);
+      expect(entries[0]?.detail).toMatchObject({ promptBinding: { reason: "not_found" } });
+    });
+
+    test("expected_styled without expected_prompt is a 400 before any read or write", async () => {
+      for (const route of ["keys", "reply"] as const) {
+        const client = new FakePaneClient();
+        const { audit } = auditEntries();
+        const body = { keys: ["Enter"], text: "hello", expected_styled: styledOf(chips(0)) };
+        const res =
+          route === "keys"
+            ? await keysPane(asMux(client), cfg(), "w1:p1", request(body), audit, null, "default")
+            : await replyPane(asMux(client), cfg(), "w1:p1", request(body), audit, null, "default");
+        expect(res.status).toBe(400);
+        expect(await res.text()).toBe("bad expected_styled");
+        expect(client.reads).toEqual([]);
+        expect(client.keys).toEqual([]);
+        expect(client.texts).toEqual([]);
+      }
+    });
+
+    test("rejects non-string and over-cap values: the cap is four times the prompt's", async () => {
+      for (const expected_styled of ["x".repeat(131_073), 42, null]) {
+        const client = new FakePaneClient();
+        const { audit } = auditEntries();
+        const res = await keysPane(
+          asMux(client),
+          cfg(),
+          "w1:p1",
+          request({ keys: ["1"], expected_prompt: TEXT_REGION, expected_styled }),
+          audit,
+          null,
+          "default",
+        );
+        expect(res.status).toBe(400);
+        expect(await res.text()).toBe("bad expected_styled");
+        expect(client.reads).toEqual([]);
+        expect(client.keys).toEqual([]);
+      }
+    });
+
+    test("a value at the cap is accepted past the parse (and then judged on its merits)", async () => {
+      const client = new FakePaneClient();
+      client.text = chips(0);
+      const { audit } = auditEntries();
+      const res = await keysPane(
+        asMux(client),
+        cfg(),
+        "w1:p1",
+        request({ keys: ["Enter"], expected_prompt: TEXT_REGION, expected_styled: `v1\n${"x".repeat(131_069)}` }),
+        audit,
+        null,
+        "default",
+      );
+      expect(res.status).toBe(409); // read and judged: the colours are not those
+      expect(client.reads).toHaveLength(1);
+    });
+
+    test("the 409 body names the refusing check by its reason code and carries no pane content", async () => {
+      const client = new FakePaneClient();
+      client.text = `${chips(1)}\nSECRET-PANE-CONTENT`;
+      const { audit } = auditEntries();
+      const stale = await keysPane(
+        asMux(client),
+        cfg(),
+        "w1:p1",
+        request({ keys: ["Enter"], expected_prompt: TEXT_REGION, expected_styled: styledOf(chips(0)) }),
+        audit,
+        null,
+        "default",
+      );
+      const body = await stale.text();
+      expect(stale.status).toBe(409);
+      expect(JSON.parse(body)).toEqual({
+        ok: false,
+        error: "prompt changed",
+        code: "prompt_changed",
+        reason: "style_not_found",
+      });
+      expect(body).not.toContain("SECRET-PANE-CONTENT");
+
+      const empty = await keysPane(
+        asMux(client),
+        cfg(),
+        "w1:p1",
+        request({ keys: ["Enter"], expected_prompt: TEXT_REGION, expected_styled: "v1" }),
+        audit,
+        null,
+        "default",
+      );
+      expect(await empty.json()).toMatchObject({ reason: "style_empty" });
+    });
+
+    test("an unknown format version is skipped on both routes: the text check decides and the audit says so", async () => {
+      // The highlight moved, which a v1 value would refuse, but the value is not v1.
+      const future = `v2\n${styledRegionLines(chips(0)).join("\n")}`;
+      const client = new FakePaneClient();
+      client.text = chips(1);
+      const { audit, entries } = auditEntries();
+      const keyed = await keysPane(
+        asMux(client),
+        cfg(),
+        "w1:p1",
+        request({ keys: ["Enter"], expected_prompt: TEXT_REGION, expected_styled: future }),
+        audit,
+        null,
+        "default",
+      );
+      expect(keyed.status).toBe(200);
+      expect(client.keys).toEqual([["w1:p1", ["Enter"]]]);
+      expect(entries[0]?.detail).toMatchObject({
+        promptBinding: { checked: true, passed: true, styled: "skipped_unknown_version" },
+      });
+
+      const replied = await replyPane(
+        asMux(client),
+        cfg(),
+        "w1:p1",
+        request({ text: "", submit: true, expected_prompt: TEXT_REGION, expected_styled: future }),
+        audit,
+        null,
+        "default",
+      );
+      expect(replied.status).toBe(200);
+      expect(entries[1]?.detail).toMatchObject({
+        promptBinding: { checked: true, passed: true, styled: "skipped_unknown_version" },
+      });
+
+      // A stale TEXT is still refused whatever the version says.
+      client.text = "Command finished";
+      const stale = await keysPane(
+        asMux(client),
+        cfg(),
+        "w1:p1",
+        request({ keys: ["Enter"], expected_prompt: TEXT_REGION, expected_styled: future }),
+        audit,
+        null,
+        "default",
+      );
+      expect(stale.status).toBe(409);
+    });
+
+    test("a checked style is recorded as such, and an unbound style leaves no styled key", async () => {
+      const client = new FakePaneClient();
+      client.text = chips(0);
+      const { audit, entries } = auditEntries();
+      await keysPane(
+        asMux(client),
+        cfg(),
+        "w1:p1",
+        request({ keys: ["Enter"], expected_prompt: TEXT_REGION, expected_styled: styledOf(chips(0)) }),
+        audit,
+        null,
+        "default",
+      );
+      await keysPane(
+        asMux(client),
+        cfg(),
+        "w1:p1",
+        request({ keys: ["Enter"], expected_prompt: TEXT_REGION }),
+        audit,
+        null,
+        "default",
+      );
+      expect(entries[0]?.detail).toMatchObject({ promptBinding: { styled: "checked" } });
+      expect(entries[1]?.detail).not.toHaveProperty("promptBinding.styled");
+    });
   });
 });
 
@@ -2526,81 +2826,21 @@ describe("the host gate — `?host=` selects among enrolled members and nothing 
 // verdict for a send and for an update; and structurally, on the source, because behaviour agreeing
 // today is exactly what two copies do right up until one of them is edited.
 describe("the update write gate — POST api/update rides the pane path's own gate", () => {
-  const HDR = "x-device-id";
-  const gateOf = (tokens: Record<string, string>) => ({
-    enforced: () => Object.keys(tokens).length > 0,
-    resolve: (token: string | null) =>
-      token !== null && tokens[token] !== undefined ? { label: tokens[token]! } : null,
-  });
-
-  /** Every posture the two routes must answer identically. */
-  const CASES: { name: string; cfg: Config; pairing?: ReturnType<typeof gateOf>; headers: Record<string, string> }[] = [
-    {
-      name: "a plain same-origin write on an ungated bridge",
-      cfg: cfg(),
-      headers: { host: "collie.ts.net", origin: "https://collie.ts.net" },
-    },
-    {
-      name: "a cross-origin write",
-      cfg: cfg(),
-      headers: { host: "collie.ts.net", origin: "https://evil.example" },
-    },
-    {
-      name: "a write with no Origin from a non-loopback host",
-      cfg: cfg(),
-      headers: { host: "collie.ts.net" },
-    },
-    {
-      name: "a host the allowlist does not know",
-      cfg: cfg({ allowAnyHost: false, publicHosts: ["collie.ts.net"] }),
-      headers: { host: "rebound.example", origin: "https://rebound.example" },
-    },
-    {
-      name: "the device header is configured and absent",
-      cfg: cfg({ deviceHeader: HDR, deviceAllowlist: ["phone"] }),
-      headers: { host: "collie.ts.net", origin: "https://collie.ts.net" },
-    },
-    {
-      name: "the device header carries an unlisted device",
-      cfg: cfg({ deviceHeader: HDR, deviceAllowlist: ["phone"] }),
-      headers: { host: "collie.ts.net", origin: "https://collie.ts.net", [HDR]: "intruder" },
-    },
-    {
-      name: "the device header carries an allowlisted device",
-      cfg: cfg({ deviceHeader: HDR, deviceAllowlist: ["phone"] }),
-      headers: { host: "collie.ts.net", origin: "https://collie.ts.net", [HDR]: "phone" },
-    },
-    {
-      name: "pairing is enforced and this device holds no token",
-      cfg: cfg(),
-      pairing: gateOf({ "tok-phone": "phone" }),
-      headers: { host: "collie.ts.net", origin: "https://collie.ts.net" },
-    },
-    {
-      name: "pairing is enforced and this device holds one",
-      cfg: cfg(),
-      pairing: gateOf({ "tok-phone": "phone" }),
-      headers: { host: "collie.ts.net", origin: "https://collie.ts.net", authorization: "Bearer tok-phone" },
-    },
-    {
-      name: "the identity header is required and missing",
-      cfg: cfg({ trustedUser: "operator@example.com" }),
-      headers: { host: "collie.ts.net", origin: "https://collie.ts.net" },
-    },
-  ];
-
-  for (const c of CASES) {
-    test(`same device auth as pane input: ${c.name}`, () => {
-      // The pane's reply route asks exactly this, through `RouteCaller.gate`. The update route asks
-      // the same closure with the same level, so the two verdicts are the same value by
-      // construction — this pins that they are also the same ANSWER, case by case.
-      const paneVerdict = guard(req(c.headers), c.cfg, "write", c.pairing);
-      const updateVerdict = guard(req(c.headers), c.cfg, "write", c.pairing);
-      expect(updateVerdict === null).toBe(paneVerdict === null);
-      expect(updateVerdict?.status).toBe(paneVerdict?.status);
-    });
-  }
-
+  // The route starts a real update, so its gate is the one thing about it that must not be its own.
+  // It is the pane path's gate — literally, the same `browserGate` closure, passed to both call
+  // sites — and the test below asserts that ON THE SOURCE.
+  //
+  // ── WHAT USED TO BE HERE, AND WHY IT IS NOT ─────────────────────────────────
+  // A ten-case matrix ran `guard(req(h), cfg, "write", pairing)` twice with character-identical
+  // arguments and compared the two results to each other. Its own comment said the two were "the
+  // same value by construction", which is the whole objection: it asserted that a pure function is
+  // deterministic, not that the two routes agree. Every one of its ten postures is already covered
+  // against the REAL routes above (`:188` and `:875`), where a wrong answer is a wrong answer rather
+  // than a mirror. Removed 2026-10-01; 74 lines, no coverage lost.
+  //
+  // The source test below is the one that can fail. If someone re-spells either call site as its own
+  // `guard(req, cfg, …)`, the two checks drift and this catches it, which is the thing a behavioural
+  // matrix over one closure never could.
   test("same device auth as pane input: one gate expression, two call sites, no second guard() call", () => {
     const src = readFileSync(join(import.meta.dir, "server.ts"), "utf8");
     // Defined once…
