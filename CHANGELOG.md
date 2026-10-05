@@ -37,9 +37,11 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 ## [Unreleased]
 
+## [1.16.2+ys.1] - 2026-10-05
+
 ### Changed
 
-- **Collie adopts upstream through 1.16.2 without cutting a fork release.** Import 1.15.0 through 1.16.2: live-session Chat, tuios, activity ordering, settings sections, translated push titles, local-command voice input, Windows lifecycle and ACL support, harness fixes, crew enrollment fixes, and optional Cloudflare Access verification. Preserve fork safeguards, the Herdr 0.8.0 minimum, `+ys` update selection and manual source-only publication. Windows binary installers and release gates remain upstream-only; fork Windows checkouts require manual source updates. The separate upstream history below records the imported releases, not fork releases. Thanks @AltanS (youngsecurity/collie#68, youngsecurity/collie#69, youngsecurity/collie#70, youngsecurity/collie#71, youngsecurity/collie#72, youngsecurity/collie#73).
+- **Collie adopts upstream 1.16.2 while preserving the fork's safeguards.** Import 1.15.0 through 1.16.2: live-session Chat, tuios, activity ordering, settings sections, translated push titles, local-command voice input, Windows lifecycle and ACL support, harness fixes, crew enrollment fixes, and optional Cloudflare Access verification. Preserve fork safeguards, the Herdr 0.8.0 minimum, `+ys` update selection and manual source-only publication. Windows binary installers and release gates remain upstream-only; fork Windows checkouts require manual source updates. The separate upstream history below records the imported releases, not fork releases. Thanks @AltanS (youngsecurity/collie#68, youngsecurity/collie#69, youngsecurity/collie#70, youngsecurity/collie#71, youngsecurity/collie#72, youngsecurity/collie#73). ([49c5660e](https://github.com/youngsecurity/collie/commit/49c5660e))
 
 ## [1.14.2+ys.1] - 2026-09-29
 
