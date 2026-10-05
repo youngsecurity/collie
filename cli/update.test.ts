@@ -2975,7 +2975,7 @@ describe("the update state file and its lock", () => {
     const run = parseUpdateRun(h.files.read(RUN_FILE));
     expect(run?.state).toBe("interrupted");
     expect(run?.reason).toBe("the updater threw: ENOSPC: no space left on device");
-    expect(run?.recovery).toBe(`${INST}/versions/1.0.0/bin/collie update --rollback`);
+    expect(run?.recovery).toBe(`${collieBinary(join(INST, "versions", "1.0.0"), hostFor("linux"))} update --rollback`);
     const err = h.io.stderr.join("\n");
     expect(err).toContain("failed part-way through");
     expect(err).toContain("ENOSPC");

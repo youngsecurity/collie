@@ -80,10 +80,11 @@ describe("sshRunner child environment", () => {
   for (const polluted of [true, false]) {
     for (const variant of ["run", "close"] as const) {
       test(`${variant} preserves ${polluted ? "filtered" : "clean"} environment through a launcher`, async () => {
-        const dir = mkdtempSync(join(tmpdir(), "collie-ssh-env-"));
-        const report = join(dir, "environment");
+        const { findTool } = await import("./tools.ts");
+        const dir = mkdtempSync(join(tmpdir(), "collie ssh env "));
+        const report = join(dir, "environment.json");
         const kept = {
-          PATH: `${dir}:/usr/bin:/bin`,
+          PATH: dir,
           HOME: dir,
           SSH_AUTH_SOCK: "/operator/agent.sock",
           GIT_SSH_COMMAND: "ssh -i /operator/key",
@@ -99,8 +100,25 @@ describe("sshRunner child environment", () => {
         const env = polluted ? { ...kept, ...relocators } : kept;
         const original = { ...env };
         // A local SSH stand-in launches another child, just as a wrapper/ProxyCommand can.
-        // No OpenSSH binary is invoked and no network connection is possible.
-        writeFileSync(join(dir, "ssh"), '#!/bin/sh\nexec /bin/sh -c \'env > "$SSH_TEST_REPORT"\'\n', { mode: 0o700 });
+        // Absolute Bun paths keep PATH fake-only; neither process invokes SSH or a remote shell.
+        const source = `
+import { writeFileSync } from "node:fs";
+writeFileSync(process.env.SSH_TEST_REPORT + ".launcher", JSON.stringify(process.env));
+const child = Bun.spawnSync([process.execPath, "-e", ${JSON.stringify(`
+import { writeFileSync } from "node:fs";
+writeFileSync(process.env.SSH_TEST_REPORT, JSON.stringify(process.env));
+`)}], { env: process.env });
+process.exit(child.exitCode);
+`;
+        const launcher = join(dir, process.platform === "win32" ? "ssh.cmd" : "ssh");
+        if (process.platform === "win32") {
+          writeFileSync(join(dir, "ssh.js"), source);
+          writeFileSync(launcher, `@echo off\r\n"${process.execPath}" "%~dp0ssh.js" %*\r\n`);
+        } else {
+          writeFileSync(launcher, `#!${process.execPath}\n${source}`, { mode: 0o700 });
+        }
+        // Fail before constructing the runner if lookup would fall back to any real SSH.
+        expect(findTool("ssh", env, dir)?.toLowerCase()).toBe(launcher.toLowerCase());
         const runner = sshRunner("unused.invalid", env, dir);
         try {
           if (variant === "run") {
@@ -110,12 +128,14 @@ describe("sshRunner child environment", () => {
           } else {
             runner.close();
           }
-          const inherited = readFileSync(report, "utf8").trim().split("\n");
-          for (const name of Object.keys(relocators)) {
-            expect(inherited.some((line) => line.startsWith(`${name}=`))).toBe(false);
-          }
-          for (const [name, value] of Object.entries(original)) {
-            if (!(name in relocators)) expect(inherited).toContain(`${name}=${value}`);
+          for (const path of [report + ".launcher", report]) {
+            const inherited: Record<string, string> = JSON.parse(readFileSync(path, "utf8"));
+            for (const name of Object.keys(relocators)) {
+              expect(inherited).not.toHaveProperty(name);
+            }
+            for (const [name, value] of Object.entries(original)) {
+              if (!(name in relocators)) expect(inherited[name]).toBe(value);
+            }
           }
           expect(env).toEqual(original);
         } finally {

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { join } from "node:path";
 
 import {
   CODE_ALPHABET,
@@ -14,7 +15,7 @@ import {
   PENDING_FILENAME,
   sha256Hex,
 } from "../bridge/pairing.ts";
-import { capture, context, type FakeFiles, fakeExec, fakeFiles, type SeededFiles, STATE } from "./fakes.ts";
+import { capture, context, type FakeFiles, fakeExec, fakeFiles, posixKey, type SeededFiles, STATE } from "./fakes.ts";
 import { EXIT } from "./io.ts";
 import {
   cmdDevices,
@@ -332,7 +333,7 @@ describe("collie devices revoke — the registry lock (#19)", () => {
     d.sleep = (ms) => void (clock += ms);
     expect(cmdDevicesRevoke(d, ["pixel"])).toBe(EXIT.FAIL);
     expect(d.io.stderr.join("\n")).toContain(`could not lock the paired-device registry within ${LOCK_WAIT_MS}ms`);
-    expect(d.io.stderr.join("\n")).toContain(LOCK);
+    expect(d.io.stderr.join("\n")).toContain(join(STATE, LOCK_FILENAME));
     expect(d.files.entries.get(REGISTRY)!.text).toBe(before);
     expect(d.files.entries.has(LOCK)).toBe(true); // not ours to remove: it is fresh
   });
@@ -374,7 +375,7 @@ describe("collie devices revoke — ownership is proved before the write", () =>
     // stale bound) and took it: modelled at the registry read, which is where the pause would be.
     const read = d.files.read;
     d.files.read = (p) => {
-      if (p === REGISTRY) d.files.entries.set(LOCK, { text: '{"pid":424242,"at":9}', mtimeMs: d.files.clock.now });
+      if (posixKey(p) === REGISTRY) d.files.entries.set(LOCK, { text: '{"pid":424242,"at":9}', mtimeMs: d.files.clock.now });
       return read(p);
     };
     expect(cmdDevicesRevoke(d, ["pixel"])).toBe(EXIT.FAIL);
