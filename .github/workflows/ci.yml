@@ -17,6 +17,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
 
       # The MANDATORY invariant: the three version files + the newest CHANGELOG heading must agree.
       - name: Version consistency
@@ -58,6 +60,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
       - name: Install (root)
         run: bun install --frozen-lockfile
       - name: Crew drill
@@ -77,6 +81,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
 
       - name: Install (web)
         run: cd web && bun install --frozen-lockfile

@@ -90,16 +90,18 @@ describe("flake.nix and MIN_BUN", () => {
   });
 });
 
-describe("the Windows check runs the flake's Bun", () => {
-  test("windows.yml pins setup-bun to flake.nix's bunVersion", () => {
-    const workflow = readFileSync(join(ROOT, ".github", "workflows", "windows.yml"), "utf8");
-    // SAFETY: `Bun.YAML.parse` answers plain data; the one field read is compared against a string.
-    const parsed = Bun.YAML.parse(workflow) as { jobs: Record<string, { steps: { uses?: string; with?: Record<string, string> }[] }> };
-    const steps = Object.values(parsed.jobs).flatMap((j) => j.steps);
-    const setup = steps.filter((s) => s.uses?.startsWith("oven-sh/setup-bun@") === true);
-    expect(setup).toHaveLength(1);
-    expect(String(setup[0]?.with?.["bun-version"])).toBe(flakeBunVersion());
-  });
+describe("CI runs the flake's Bun", () => {
+  for (const [name, count] of [["ci", 3], ["windows", 1], ["release", 1]] as const) {
+    test(`${name}.yml pins every setup-bun to flake.nix's bunVersion`, () => {
+      const workflow = readFileSync(join(ROOT, ".github", "workflows", `${name}.yml`), "utf8");
+      // SAFETY: `Bun.YAML.parse` answers plain data; each field read is compared against a string.
+      const parsed = Bun.YAML.parse(workflow) as { jobs: Record<string, { steps: { uses?: string; with?: Record<string, string> }[] }> };
+      const steps = Object.values(parsed.jobs).flatMap((j) => j.steps);
+      const setup = steps.filter((s) => s.uses?.startsWith("oven-sh/setup-bun@") === true);
+      expect(setup).toHaveLength(count);
+      for (const step of setup) expect(String(step.with?.["bun-version"])).toBe(flakeBunVersion());
+    });
+  }
 
   test("windows-suites.ps1 gives each suite its own skip budget, 28 in all, each skip named", () => {
     const script = readFileSync(join(ROOT, "scripts", "windows-suites.ps1"), "utf8");
