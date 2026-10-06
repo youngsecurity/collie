@@ -4,6 +4,7 @@
 import type { Confidence } from "./cache/claims.ts";
 import type { PaneCache } from "./cache/engine.ts";
 import type { ApiErrorDetail, ErrorCode } from "./error-codes.ts";
+import type { ChatBody } from "./journal/live.ts";
 import type { AgentSessionRef, TranscriptEntry } from "./journal/types.ts";
 import type { MuxCapability, MuxSpaceCapacity, MuxTopologyLatency } from "./mux/capabilities.ts";
 import type { UpdateRun } from "./update-run.ts";
@@ -12,6 +13,7 @@ import type { UpdateRun } from "./update-run.ts";
 // entry shape from here too, without reaching into an adapter module. `PaneCache` rides along for the
 // same reason — it is a pane field now, so a reader of this module needs no second import.
 export type { TranscriptEntry, TranscriptPart } from "./journal/types.ts";
+export type { ChatBody, ChatEntry, ChatOlderBody, ChatWindowBody } from "./journal/live.ts";
 export type { CacheStateName, PaneCache } from "./cache/engine.ts";
 export type { Confidence } from "./cache/claims.ts";
 
@@ -207,9 +209,22 @@ export function journalAgentOf(pane: AgentView): string {
   return pane.sessionAgent ?? pane.agent;
 }
 
-export function toPaneWire(pane: AgentView, hasJournal: (agent: string) => boolean): PaneWire {
+/**
+ * The wire form of one pane: server-only fields stripped, the History affordance decided.
+ *
+ * `hasSession` answers "may this pane have history": its harness has a journal adapter AND a
+ * session is addressable — reported on the pane record, or discoverable by an adapter that finds
+ * its own (`JournalAdapter.discover`). Keyed off the live `agent` either way, so an exited
+ * agent's pane still offers no affordance and reads like every other shell pane.
+ */
+export function toPaneWire(
+  pane: AgentView,
+  hasJournal: (agent: string) => boolean,
+  discoversSessions: (agent: string) => boolean = () => false,
+): PaneWire {
   const { agentSession, sessionAgent: _sessionAgent, ...rest } = pane;
-  return agentSession && hasJournal(pane.agent) ? { ...rest, hasSession: true } : rest;
+  const addressable = agentSession !== undefined || discoversSessions(pane.agent);
+  return addressable && hasJournal(pane.agent) ? { ...rest, hasSession: true } : rest;
 }
 
 /** A Herdr workspace ("space") — a project-scoped container of tabs. From `workspace.list`. */
@@ -656,6 +671,28 @@ export type PaneHistoryResponse =
     };
 
 /**
+ * GET /api/pane/:id/chat — the same conversation as `history`, asked the other way round.
+ *
+ * `history` answers "show me this session" and pays a bounded whole-window read for it. This answers
+ * "anything after this?", every poll, and costs the change: a session that gained one turn costs one
+ * turn (bridge/journal/live.ts). The two share the grammar, the containment rule and the
+ * `available:false` vocabulary, and they differ in exactly that question.
+ *
+ * The body is one of two shapes, told apart by `page`. `page:"live"` is the tail plus its three
+ * positions; `page:"older"` is a backwards page off disk. Both carry `upserts`, because both are
+ * "turns to put in the thread at their `seq`".
+ *
+ * **A member one release behind answers 404 to this route, and that is not an empty session.** The
+ * route is additive-optional over the crew link (CREW_PROTOCOL.md §7.1), so a lead that has it and a
+ * peer that does not is an ordinary version skew: the client must read a 404 here as "update this
+ * member" and never as "this pane has nothing to show". `available:false` is the answer for a pane
+ * with no session; a 404 is the answer for a bridge with no route.
+ */
+export type PaneChatResponse =
+  | { paneId: string; available: false; reason: "disabled" | "no-session" | "no-log" }
+  | ({ paneId: string; available: true } & ChatBody);
+
+/**
  * One changed file in a Changes list (ADR 0065). `status` is the file's state against HEAD, staged
  * and unstaged together: Modified, Added, Deleted, Renamed, or `?` untracked. An untracked FOLDER
  * (git lists one entry for a new folder under `--untracked-files=normal`) keeps its trailing `/`.
@@ -815,6 +852,9 @@ export type ActionResponse =
       textDelivered?: boolean;
       code?: ErrorCode;
       detail?: ApiErrorDetail;
+      /** On a 409 `prompt_changed` only: which check refused (`not_found`, `not_in_tail`, `empty`,
+       *  `style_empty`, `style_not_found`, `style_misaligned`). A reason code, never pane content. */
+      reason?: string;
     };
 
 /** POST /api/pane/:id/upload — image saved to a host file; `path` is the absolute path to ref. */

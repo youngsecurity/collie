@@ -15,26 +15,32 @@ import { useSheetPull } from "@/hooks/use-sheet-pull";
 import { tabCreateKey, useSpaceActions } from "@/hooks/use-spaces";
 import { useNav } from "@/hooks/use-nav";
 import { useDashPrefs, openForCount } from "@/hooks/use-dash-prefs";
+import { useAgentStart } from "@/hooks/use-agent-start";
 import { useLaunchers } from "@/lib/launchers";
 import { buzz } from "@/lib/haptics";
-import { mirrorSurface, useDisplayPrefs } from "@/hooks/use-display-prefs";
+import { mirrorFont, mirrorSurface, useDisplayPrefs } from "@/hooks/use-display-prefs";
+import { useChatWindow } from "@/hooks/use-chat-window";
+import { useChatReady } from "@/hooks/use-chat-ready";
 import { useLatestReply } from "@/hooks/use-latest-reply";
 import { finishedTurnKey, useMirrorImages } from "@/hooks/use-mirror-images";
 import { useStableTerminalDraft } from "@/hooks/use-terminal-draft";
 import { useLocale } from "@/hooks/use-locale";
 import { isConnecting } from "@/lib/connection";
 import { t, type MessageKey } from "@/lib/i18n";
+import { settleAfterSend } from "@/lib/harness/guard";
 import { setStatus } from "@/lib/status";
-import { setFollowing as publishFollowing, stampSend } from "@/lib/poll-intent";
+import { setFollowing as publishFollowing } from "@/lib/poll-intent";
 import { useAutoZenEnabled, useZenEnabled } from "@/lib/zen";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import { setStripsCollapsed, useStripsCollapsed } from "@/lib/strips-collapsed";
 import { ChatMessageList, type ChatMessageListHandle } from "@/components/ui/chat/chat-message-list";
 import { BottomSheet } from "@/components/ui/sheet";
+import { DisplayPrefsContent } from "@/components/display-prefs";
 import { Collapse, CollapseSwap } from "@/components/ui/collapse";
 import { ImageCard } from "@/components/ui/image-card";
 import { RouteHeader } from "@/components/app-header";
 import { HeaderStatus } from "@/components/header-status";
+import { AgentStart } from "@/components/agent-start";
 import { AnsiOutput } from "@/components/ansi-output";
 import { CardDock } from "@/components/card-dock";
 import { MIRROR_SPACE, MIRROR_INVERT, MUSE_MIRROR, segmentStyle } from "@/components/mirror-space";
@@ -43,6 +49,7 @@ import { cn } from "@/lib/utils";
 import { parseAnsi } from "@/lib/ansi";
 import { splitLines } from "@/lib/blocks";
 import { adapterFor, buildBlocks, rendersNativeMirror } from "@/lib/harness";
+import { waitingQuestionNote } from "@/lib/question-waiting";
 import { blockOwnsKeyboard } from "@/lib/harness/dialog-contract";
 import { FindBar } from "@/components/find-bar";
 import { LatestReply } from "@/components/latest-reply";
@@ -55,6 +62,8 @@ import { StripsSummary } from "@/components/strips-summary";
 import { PaneMeta } from "@/components/pane-meta";
 import { CacheSheet } from "@/components/cache-sheet";
 import { PaneActionsSheet } from "@/components/pane-actions-sheet";
+import { CardWaitingCtx } from "@/components/chat-cards";
+import { SessionStream } from "@/components/session-stream";
 import { PaneSettingsSheet } from "@/components/pane-settings-sheet";
 import { CompactStripLabels, TAB_ROW_SQUARE_TAP_TARGET } from "@/components/ui/labelled-strip";
 import { ReadOnlyBanner } from "@/components/read-only-banner";
@@ -80,6 +89,7 @@ import { panesOfTab } from "@/lib/pane-ordinal";
 import { useMuxCapability } from "@/lib/mux-capability";
 import { hasJournalAdapter, reportsSessionOnFirstPrompt } from "@/lib/journal-agents";
 import { paneRowKey, paneScope } from "@/lib/hosts";
+import { paneScopeKey } from "@/lib/scope";
 import { usePins } from "@/lib/pins";
 import { changesPath, historyPath, panePath, spacePath } from "@/lib/nav";
 import { isReadOnly, statusLabel } from "@/lib/types";
@@ -149,7 +159,7 @@ function foldLabelKey(tabCount: number, paneCount: number): MessageKey {
 
 // At most one drawer/sheet is open at a time; null = none. (The composer's own Keys/Quick/Agent
 // sheets are separate and live inside <Composer>.)
-type Drawer = "switcher" | "paneMenu" | "paneSettings" | null;
+type Drawer = "switcher" | "paneMenu" | "paneSettings" | "display" | null;
 
 /**
  * Is the caret in the MESSAGE COMPOSER's field, as opposed to any other input on the screen?
@@ -214,7 +224,7 @@ export function AgentChat({
 }: AgentChatProps) {
   const revalidator = useRevalidator();
   const nav = useNav();
-  useLocale();
+  const { revision: localeRevision } = useLocale();
   const { sessions } = useCrew();
   // Poll-truth "is the data on screen not live". The one header shell derives the same boolean from
   // the same two root-snapshot fields to drive the Collie mark; here we use it to dim the header's
@@ -250,7 +260,7 @@ export function AgentChat({
 
   const { launchers, home: launchersHome } = useLaunchers(scope);
   // Single display-prefs instance: the View controls (in <Composer>) write it, the mirror reads it.
-  const { prefs, setWrap, stepFontSize, setRawTerminal, setTapToFocus, setExpandClippedReply } =
+  const { prefs, setWrap, stepFontSize, stepChatFontSize, setRawTerminal, setTapToFocus, setExpandClippedReply } =
     useDisplayPrefs();
   // The chosen terminal font (Settings → Terminal font), applied by re-pointing `--font-mono` on
   // the two mirror surfaces below and NOWHERE else — see mirrorFont() for how, and why it is not a
@@ -263,10 +273,17 @@ export function AgentChat({
   // Memoised on `prefs` because `colors` is a prop of a React.memo component polled every second:
   // a fresh object per render would re-render the whole mirror on every poll once colours are set.
   const mirrorFace = useMemo(() => mirrorSurface(prefs), [prefs]);
+  // Chat shares the terminal face for code, but its prose and cards use the app's colors.
+  // Keep the fork's absolute mirror paint off the shared body while Chat is showing.
+  const chatFace = mirrorFont(prefs.fontFamily);
   // Raw-terminal escape hatch: when on, every Claude grammar is bypassed and the plain mirror shows,
   // so a mis-detected/mis-rendered dialog can always be driven by hand with the keys pad.
   const grammarsOn = !prefs.rawTerminal;
   const isShell = agent?.kind === "shell";
+  // A bare shell that just became an agent pane. The hook is the EDGE and nothing else: opening a
+  // pane that has been running Claude for an hour announces nothing, because this mount never
+  // watched it turn over (hooks/use-agent-start.ts).
+  const agentStart = useAgentStart(paneId, agent?.agent, isShell);
   // LINE 1 IS THE NAME, LINE 2 IS THE PLACE — the one rule every other surface follows
   // (lib/pane-name.ts). The header used to lead with the ADDRESS and never consult the terminal
   // title at all, so a pane the dashboard called "Collie playground sync check" was called
@@ -773,6 +790,23 @@ export function AgentChat({
     setFindQuery("");
   }
 
+  // Copy the pane's buffered terminal output to the clipboard, from the FROZEN snapshot the operator
+  // is looking at (`shown`, not the live props) so a poll landing mid-tap can't swap what gets
+  // copied. Prefer the unwrapped logical text — the buffer without the phone-width hard wraps, so a
+  // paste reads as real lines — and fall back to the display text when the agent reports no unwrapped
+  // form. `navigator.clipboard` is absent over plain HTTP (an insecure context, a supported deploy —
+  // see status-detail-sheet's copy), so this can reject; `canCopyOutput` keeps the row off that
+  // deploy, and the catch keeps a failure honest rather than claiming a copy that never happened.
+  const canCopyOutput = !!navigator.clipboard;
+  async function copyOutput() {
+    try {
+      await navigator.clipboard.writeText(shown.logicalText || shown.text);
+      setStatus(t("chat.copyOutput.done"), "success");
+    } catch {
+      setStatus(t("chat.copyOutput.failed"), "error");
+    }
+  }
+
   // What the top of the buffer can offer — see the JSX for why these are mutually exclusive.
   // `historyAvailable`: the pane reported an agent session, so a transcript exists to open.
   // `moreScrollback`: Herdr says this pane can still yield lines beyond the window we've asked for,
@@ -808,6 +842,63 @@ export function AgentChat({
   const noSessionKey = reportsSessionOnFirstPrompt(agent?.agent)
     ? "chat.scrollback.noSessionYet"
     : "chat.scrollback.noSessionReported";
+  // ── THE PANE'S SECOND BODY: CHAT (M41/11) ───────────────────────────────────
+  //
+  // Chat is a MODE, not a route: `nav.ts`'s two leaf lists are untouched, and nothing below this
+  // line moves the header, the strips, the card dock, the belt or the composer. What swaps is the
+  // box between the mirror's own top rule and the chrome block, and only that.
+  //
+  // TWO VALUES DECIDE IT, and they are different questions (lib/pane-view.ts). `chatExperiment` is
+  // whether this device has opted in at all — off by default, written from Settings → Experiments,
+  // and while it is off the pane menu shows no switch and this whole block is inert. `paneView` is
+  // which body, once opted in, and the pane's ⋮ menu is the one place it is written.
+  //
+  // `historyAvailable` is the third gate and it is about the PANE rather than the device: the chat
+  // route reads the same journal the History page does, so a pane that has no transcript to open
+  // has no session to stream either. A pane like that falls back to the terminal and the ⋮ row
+  // carries the reason — it never hides, because a control that disappears on some panes is how an
+  // operator concludes the app is broken.
+  const chatOffered = dash.prefs.chatExperiment;
+  const chatChosen = chatOffered && dash.prefs.paneView === "chat";
+  const chatBody = chatChosen && historyAvailable;
+  // The live window, moved by the poll that already exists (ADR 0073). Disabled is free: no fetch,
+  // no timer, the empty window.
+  // WARMED BEFORE THE TAP. The read starts when the menu that holds the switch opens, not when the
+  // switch is pressed, so by the time it is the answer is already in hand and the swap lands with the
+  // sheet's own close instead of after it. Only for a pane that has a journal and only while one of
+  // the two sheets that carry the switch is open, so a terminal-only operator pays nothing standing
+  // still on a pane.
+  const switchSheetOpen = drawer === "paneMenu" || drawer === "display";
+  const warming = chatOffered && historyAvailable && switchSheetOpen;
+  const chatFeed = useChatWindow({ paneId, scope, enabled: chatBody || warming });
+  // What the Chat body's running question card says about the dialog below it. Chat body only: the
+  // terminal body draws no cards, so nothing there reads it. `localeRevision` is READ by the note's
+  // `t()` and keys the memo so the sentence follows a language change.
+  const questionNotes = useMemo(() => {
+    void localeRevision;
+    return waitingQuestionNote(chatFeed.window.entries, blocks);
+  }, [chatFeed.window.entries, blocks, localeRevision]);
+  // WHICH BODY IS ON SCREEN. `chatBody` is what was chosen and starts the read above; `chatShown` is
+  // what is drawn, and it lags by one answer. The swap used to land on an empty stream in the same
+  // tick the menu started to close, so the turns popped in after it. The terminal now stays up until
+  // Chat has something to show (hooks/use-chat-ready.ts), with a cap so a failed read cannot strand it.
+  const chatShown = useChatReady(chatBody, chatFeed.window.status.kind !== "empty");
+  // Why this pane keeps the terminal, in the operator's own terms — and ONLY for the half of that
+  // question this side can answer. There are two layers and the split is deliberate: a pane with no
+  // journal at all never asks the bridge, so the reason belongs on the ⋮ row here, while a pane
+  // that DOES ask and is told `available: false` or handed a 404 is drawing the chat body, and the
+  // stream says so in its own words there. Saying both would put "this pane keeps the terminal" on
+  // a menu row above a chat stream.
+  //
+  // The multiplexer's own words come first where it has any, because a multiplexer that keeps no
+  // agent session log at all is not Collie's fault and Collie does not say it is.
+  const chatReason = historyAvailable
+    ? null
+    : sessionLog.capable
+      ? t("history.unavailable.noSession")
+      : sessionLog.note || t("history.unavailable.noLog");
+  const chatNote = chatReason === null ? undefined : t("chat.mode.noChat", { reason: chatReason });
+
   // Scrollback has its own capability, and it is a genuinely different one: a multiplexer can keep
   // screen history while knowing nothing about agents. Hidden rather than explained when absent —
   // "there is nothing older to load" is not a fact anyone comes looking for.
@@ -927,6 +1018,20 @@ export function AgentChat({
     listRef.current?.scrollToBottom();
   };
 
+  // The tail of every dialog tap that SENT: wait for the TUI to repaint, then show it. The read a
+  // card revalidates on can land before the repaint (measured: the screen changes about 19 ms after
+  // the key), and a card left on the old highlight refuses its next committing tap, whose guard
+  // compares the full signature against a fresh read. The card's buttons stay disabled while the
+  // `onAction` promise is pending, so awaiting this keeps the card inactive until its picture is
+  // fresh. A key that changes nothing just runs out the bound (lib/harness/guard.ts). The poll burst
+  // is not started here: `sendKeys` in lib/api.ts stamps it for every key written.
+  const showAfterSend = useCallback(async () => {
+    await settleAfterSend({ paneId, requestedLines, scope });
+    setFollowing(true);
+    revalidator.revalidate();
+    listRef.current?.scrollToBottom();
+  }, [paneId, requestedLines, scope, revalidator]);
+
   // Tap a prompt-select option. This can type into a real terminal, so it runs the revision-based
   // race guard first (fresh fetch → revision + re-derived-menu equality); only a clean match sends
   // the option's keys. The guard checks against the FROZEN pair's revision — the menu the user
@@ -941,9 +1046,6 @@ export function AgentChat({
         setStatus(refusal, "error");
         return false;
       }
-      // A prompt button is a send too — the same "watch this land" moment as the composer's Send,
-      // just with the keys chosen for you.
-      stampSend(paneId);
       const base = {
         paneId,
         scope,
@@ -964,10 +1066,11 @@ export function AgentChat({
           action.kind === "feedback" ? t("chat.status.feedbackSent") : t("chat.status.sent"),
           "success",
         );
-        setFollowing(true);
-        revalidator.revalidate();
-        listRef.current?.scrollToBottom();
+        await showAfterSend();
       } else if (result.status === "changed") {
+        // Which step refused, for a person with the console open (`why` is a diagnosis, never UI
+        // text). A harness drift shows up here as the one field that differed.
+        if (result.why !== undefined) console.info("collie: tap refused", result.why);
         setStatus(t("chat.status.menuChanged"), "warn");
         revalidator.revalidate();
       } else {
@@ -977,7 +1080,7 @@ export function AgentChat({
       // what someone just thumb-typed. Option taps ignore it.
       return result.status === "sent";
     },
-    [refuseWrite, paneId, scope, requestedLines, shown.revision, agent?.agent, revalidator],
+    [refuseWrite, paneId, scope, requestedLines, shown.revision, agent?.agent, revalidator, showAfterSend],
   );
 
   // Tap a wizard control (an option digit, step navigation, or the review step's submit/cancel).
@@ -1004,9 +1107,7 @@ export function AgentChat({
       });
       if (result.status === "sent") {
         setStatus(t("chat.status.sent"), "success");
-        setFollowing(true);
-        revalidator.revalidate();
-        listRef.current?.scrollToBottom();
+        await showAfterSend();
       } else if (result.status === "changed") {
         setStatus(t("chat.status.wizardChanged"), "warn");
         revalidator.revalidate();
@@ -1014,7 +1115,7 @@ export function AgentChat({
         setStatus(result.error || t("chat.status.sendFailed"), "error");
       }
     },
-    [refuseWrite, paneId, scope, requestedLines, shown.revision, agent?.agent, revalidator],
+    [refuseWrite, paneId, scope, requestedLines, shown.revision, agent?.agent, revalidator, showAfterSend],
   );
 
   // Tap a preview-dialog control (an option, the note add/edit/remove, or the wizard step nav).
@@ -1053,9 +1154,7 @@ export function AgentChat({
             : t("chat.status.sent"),
           "success",
         );
-        setFollowing(true);
-        revalidator.revalidate();
-        listRef.current?.scrollToBottom();
+        await showAfterSend();
       } else if (result.status === "changed") {
         setStatus(t("chat.status.dialogChanged"), "warn");
         revalidator.revalidate();
@@ -1064,7 +1163,7 @@ export function AgentChat({
         revalidator.revalidate();
       }
     },
-    [refuseWrite, paneId, scope, requestedLines, shown.revision, agent?.agent, revalidator],
+    [refuseWrite, paneId, scope, requestedLines, shown.revision, agent?.agent, revalidator, showAfterSend],
   );
 
   // Tap a multi-select control (toggle a checkbox, Submit, the "Chat about this" escape, or the
@@ -1090,9 +1189,7 @@ export function AgentChat({
       });
       if (result.status === "sent") {
         setStatus(t("chat.status.sent"), "success");
-        setFollowing(true);
-        revalidator.revalidate();
-        listRef.current?.scrollToBottom();
+        await showAfterSend();
       } else if (result.status === "changed") {
         setStatus(t("chat.status.selectionChanged"), "warn");
         revalidator.revalidate();
@@ -1100,7 +1197,7 @@ export function AgentChat({
         setStatus(result.error || t("chat.status.sendFailed"), "error");
       }
     },
-    [refuseWrite, paneId, scope, requestedLines, shown.revision, agent?.agent, revalidator],
+    [refuseWrite, paneId, scope, requestedLines, shown.revision, agent?.agent, revalidator, showAfterSend],
   );
 
   // Tap a generic-menu control (a footer-named key like Enter/s/Esc, or an arrow). Same guard-first
@@ -1127,9 +1224,7 @@ export function AgentChat({
       });
       if (result.status === "sent") {
         setStatus(t("chat.status.sent"), "success");
-        setFollowing(true);
-        revalidator.revalidate();
-        listRef.current?.scrollToBottom();
+        await showAfterSend();
       } else if (result.status === "changed") {
         setStatus(t("chat.status.screenChanged"), "warn");
         revalidator.revalidate();
@@ -1137,7 +1232,7 @@ export function AgentChat({
         setStatus(result.error || t("chat.status.sendFailed"), "error");
       }
     },
-    [refuseWrite, paneId, scope, requestedLines, shown.revision, agent?.agent, revalidator],
+    [refuseWrite, paneId, scope, requestedLines, shown.revision, agent?.agent, revalidator, showAfterSend],
   );
 
   // The unread-dialog card's one control (.adr/0053). Same guard as every other dialog tap — the
@@ -1165,9 +1260,7 @@ export function AgentChat({
       );
       if (result.status === "sent") {
         setStatus(t("chat.status.sent"), "success");
-        setFollowing(true);
-        revalidator.revalidate();
-        listRef.current?.scrollToBottom();
+        await showAfterSend();
       } else if (result.status === "changed") {
         setStatus(t("chat.status.screenChanged"), "warn");
         revalidator.revalidate();
@@ -1175,7 +1268,7 @@ export function AgentChat({
         setStatus(result.error || t("chat.status.sendFailed"), "error");
       }
     },
-    [refuseWrite, paneId, scope, requestedLines, shown.revision, agent?.agent, revalidator],
+    [refuseWrite, paneId, scope, requestedLines, shown.revision, agent?.agent, revalidator, showAfterSend],
   );
 
   // NOTE: the composer is deliberately NOT auto-focused on open/switch — that would pop the Android
@@ -1642,6 +1735,13 @@ export function AgentChat({
             zen && "[padding-bottom:env(safe-area-inset-bottom)]",
           )}
         >
+          {/* THE HANDOFF. A shell pane became an agent pane, so the Collie mark flies out of the
+              header's own mark, blooms over the mirror and hands the pane to the agent's mark. It is
+              absolutely positioned against this region, holds no space and moves nothing (§2), and a
+              tap ends it at once. It marks a fact the poll has already found; it never predicts one. */}
+          {agentStart.started !== null && (
+            <AgentStart harness={agentStart.started} onDone={agentStart.clear} />
+          )}
           {/* THE ONE WAY OUT OF ZEN. A single floating affordance over the mirror rather than a
               strip, so "everything hides" stays literally true, and TOP-right so entering (the ⋮ that
               opened the sheet) and leaving happen in the same corner — opposite corners would make
@@ -1892,9 +1992,31 @@ export function AgentChat({
               "relative min-h-0 min-w-0 flex-1 border-t border-rule",
               mirrorFace.className,
             )}
-            style={mirrorFace.style}
+            style={chatShown ? chatFace.style : mirrorFace.style}
             onClick={focusFromMirror}
           >
+            {/* THE TWO BODIES. One box, one top rule, one face, one list handle — a send snaps
+                whichever body is on screen back to its tail without knowing which one it is. The
+                draft-notice slot below is outside the swap on purpose: the composer portals into it
+                and the notice floats over both bodies alike (ADR 0061). */}
+            {chatShown ? (
+              <CardWaitingCtx.Provider value={questionNotes}>
+                <SessionStream
+                  feed={chatFeed}
+                  address={paneScopeKey(scope, paneId)}
+                  // The pane record's own status, the one live fact both bodies share. The mirror gets
+                  // this for free — the agent's spinner is in the output it draws — so only this body
+                  // has to be told (session-stream.tsx § LIVE_ROW). `connecting` withholds it for the
+                  // same reason the status dot dims: a frozen reading must not animate as if it were
+                  // arriving.
+                  working={agent?.status === "working" && !connecting}
+                  showToolCalls={dash.prefs.showToolCalls}
+                  showCompactions={dash.prefs.showCompactions}
+                  fontSize={prefs.chatFontSize}
+                  listRef={listRef}
+                />
+              </CardWaitingCtx.Provider>
+            ) : (
             <ChatMessageList
               ref={listRef}
               dep={display}
@@ -2032,6 +2154,7 @@ export function AgentChat({
                 </div>
               )}
             </ChatMessageList>
+            )}
             {/* THE TERMINAL-DRAFT NOTICE FLOATS HERE (ADR 0061). The composer portals the notice
                 into this box, pinned to the mirror's bottom edge: above the card dock when a card
                 is docked, else above the chrome block and its belt. Absolute, so it covers the
@@ -2255,13 +2378,12 @@ export function AgentChat({
                   terminalDraft={terminalDraft}
                   rawTerminalDraft={rawTerminalDraft}
                   prefs={prefs}
-                  setWrap={setWrap}
-                  stepFontSize={stepFontSize}
-                  setRawTerminal={setRawTerminal}
-                  setTapToFocus={setTapToFocus}
-                  mirrorNative={mirrorNative}
-                  setMirrorNative={setMirrorNative}
-                  setExpandClippedReply={setExpandClippedReply}
+                  // The belt's ⚙: the button is the composer's, the sheet it opens is mounted below
+                  // beside the switcher's, for the stacking-context reason the pane-menu note gives.
+                  display={{
+                    open: drawer === "display",
+                    onToggle: () => setDrawer(drawer === "display" ? null : "display"),
+                  }}
                   onSent={onSent}
                   // The switcher mark, for the actions belt's top rule — see the condition at
                   // `pullHandle` above, and actions-row.tsx for what it draws.
@@ -2337,7 +2459,57 @@ export function AgentChat({
             launchRefusal={hostBlock}
             launchOpen={openForCount(dash.prefs.launchOpen, launchers.length)}
             onLaunchOpenChange={dash.setLaunchOpen}
+            // Place or activity (ADR 0071), the operator's own standing choice, stored per device
+            // beside the two folds above. The sheet's toggle and the Settings row write this same
+            // value, so a person who taps it here finds it there.
+            order={dash.prefs.paneOrder}
+            onOrderChange={dash.setPaneOrder}
             className="px-0 py-1"
+          />
+        </BottomSheet>
+
+        {/* The belt's ⚙ — how this pane is DRAWN, which body and how that body reads.
+            A sheet and no longer the in-flow ComposerDock it rode until 2026-09-30. The dock took
+            its height out of the mirror, so opening the settings moved the thing you had opened them
+            to look at, and the two row lists are different lengths, so switching bodies moved it
+            again. This covers instead of pushing, and nothing above it shifts by a pixel.
+            Mounted HERE and not in the composer, for the reason the pane-menu sheet below states:
+            a BottomSheet is a plain `fixed inset-0` element with no portal, so it is positioned by
+            the nearest transformed ancestor, and the composer sits inside an animating Collapse. */}
+        <BottomSheet
+          open={drawer === "display"}
+          onClose={closeDrawer}
+          title={t("composer.controls.display")}
+        >
+          <DisplayPrefsContent
+            prefs={prefs}
+            mirrorNative={mirrorNative}
+            setMirrorNative={setMirrorNative}
+            setWrap={setWrap}
+            stepFontSize={stepFontSize}
+            setRawTerminal={setRawTerminal}
+            setTapToFocus={setTapToFocus}
+            setExpandClippedReply={setExpandClippedReply}
+            // THE BODY SWITCH, second door. The ⋮ menu writes the same value; this is the one an
+            // operator opens to change how a pane LOOKS, which is the question it answers. `chosen`
+            // and `showing` are both passed because they differ on a pane with no journal, and the
+            // sheet draws rows for what is on screen, not for what was picked.
+            paneView={
+              chatOffered
+                ? {
+                    chosen: dash.prefs.paneView,
+                    showing: chatShown ? "chat" : "terminal",
+                    onChange: dash.setPaneView,
+                    note: chatNote,
+                    showToolCalls: dash.prefs.showToolCalls,
+                    setShowToolCalls: dash.setShowToolCalls,
+                    showCompactions: dash.prefs.showCompactions,
+                    setShowCompactions: dash.setShowCompactions,
+                    chatFontSize: prefs.chatFontSize,
+                    stepChatFontSize,
+                  }
+                : undefined
+            }
           />
         </BottomSheet>
 
@@ -2374,8 +2546,15 @@ export function AgentChat({
           readOnly={readOnly}
           onRenamed={() => revalidator.revalidate()}
           onClosed={(id) => (id === paneId ? onBack() : revalidator.revalidate())}
-          onFind={display ? openFind : undefined}
+          // Find searches the MIRROR, and highlights its hits there. In chat mode the mirror is
+          // not on screen, so the row would open a bar over a surface with nothing to show —
+          // withheld, the way the sheet withholds every row it was given nothing for.
+          onFind={display && !chatShown ? openFind : undefined}
           onHistory={historyAvailable ? () => nav.down(historyPath(paneId, scope)) : undefined}
+          // Copy the buffered output — gated on there being output AND a clipboard to write to (absent
+          // over plain HTTP), so the row hides where it could only fail, the way find hides with no
+          // output. Same read-row family as find and history.
+          onCopyOutput={display && canCopyOutput ? copyOutput : undefined}
           // ZEN'S ONE ENTRY POINT, and the absence of this callback IS the gate — the sheet hides a
           // row it was given nothing for, exactly as it does for find and history. Gated twice: the
           // Settings toggle decides whether this phone offers zen at all, and `display` keeps it off
@@ -2392,6 +2571,12 @@ export function AgentChat({
           // already spent. It hands over to the sheet below in one React event, so the actions sheet
           // unmounts in the same commit the settings sheet mounts.
           onSettings={() => setDrawer("paneSettings")}
+          // THE BODY SWITCH. `undefined` while Settings → Experiments has Chat off, which is what
+          // keeps the row off the sheet entirely; `chatNote` is why this pane keeps the terminal
+          // when it does. One standing per-device value, written here and nowhere else.
+          paneView={chatOffered ? dash.prefs.paneView : undefined}
+          onPaneViewChange={chatOffered ? dash.setPaneView : undefined}
+          paneViewNote={chatOffered ? chatNote : undefined}
           // Pin to top / Unpin, the last read row (ADR 0070). No `onPinChange`: the Pinned group is
           // on the dashboard and in the switcher, not on this screen, so the sheet says it in a toast.
           herd={herd}

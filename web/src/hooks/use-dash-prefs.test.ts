@@ -39,6 +39,11 @@ describe("coerceDashPrefs", () => {
       changesLayout: "list",
       beltScale: 1.15,
       dashView: "panes",
+      showToolCalls: false,
+      showCompactions: false,
+      paneOrder: "place",
+      chatExperiment: false,
+      paneView: "chat",
     });
   });
 
@@ -56,6 +61,10 @@ describe("coerceDashPrefs", () => {
         changesLayout: "tree",
         beltScale: 1.5,
         dashView: "changes",
+        showToolCalls: true,
+        paneOrder: "activity",
+        chatExperiment: true,
+        paneView: "terminal",
       }),
     ).toEqual({
       spacesOpen: false,
@@ -69,6 +78,11 @@ describe("coerceDashPrefs", () => {
       changesLayout: "tree",
       beltScale: 1.5,
       dashView: "changes",
+      showToolCalls: true,
+      showCompactions: false,
+      paneOrder: "activity",
+      chatExperiment: true,
+      paneView: "terminal",
     });
   });
 
@@ -126,6 +140,11 @@ describe("coerceDashPrefs", () => {
       changesLayout: "list",
       beltScale: 1.15,
       dashView: "panes",
+      showToolCalls: false,
+      showCompactions: false,
+      paneOrder: "place",
+      chatExperiment: false,
+      paneView: "chat",
     });
   });
 });
@@ -147,6 +166,11 @@ describe("useDashPrefs", () => {
       changesLayout: "list",
       beltScale: 1.15,
       dashView: "panes",
+      showToolCalls: false,
+      showCompactions: false,
+      paneOrder: "place",
+      chatExperiment: false,
+      paneView: "chat",
     });
   });
 
@@ -165,6 +189,10 @@ describe("useDashPrefs", () => {
     act(() => first.result.current.setChangesLayout("tree"));
     act(() => first.result.current.setBeltScale(1.3));
     act(() => first.result.current.setDashView("focus"));
+    act(() => first.result.current.setShowToolCalls(true));
+    act(() => first.result.current.setPaneOrder("activity"));
+    act(() => first.result.current.setChatExperiment(true));
+    act(() => first.result.current.setPaneView("terminal"));
 
     const second = renderHook(() => useDashPrefs());
     expect(second.result.current.prefs).toEqual({
@@ -179,6 +207,11 @@ describe("useDashPrefs", () => {
       changesLayout: "tree",
       beltScale: 1.3,
       dashView: "focus",
+      showToolCalls: true,
+      showCompactions: false,
+      paneOrder: "activity",
+      chatExperiment: true,
+      paneView: "terminal",
     });
   });
 

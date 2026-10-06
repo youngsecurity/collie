@@ -5,6 +5,8 @@ import { join } from "node:path";
 
 import { DEFAULT_NOTIFY_PREFS, NotifyPrefsStore, coerceNotifyPrefs } from "./notify-prefs.ts";
 import { loadConfig } from "./config.ts";
+import { HOST } from "./host.ts";
+import { ensureOwnerOnlyDir, isOwnerOnly, privateRoot } from "./owner-only.ts";
 
 // Notify-type prefs own which agent statuses push. The coercion is pure; the merge + disk round-trip
 // is verified through a throwaway temp state dir (mirrors snooze.test.ts / push.test.ts).
@@ -74,10 +76,17 @@ describe("NotifyPrefsStore", () => {
     expect(store.current()).toEqual(DEFAULT_NOTIFY_PREFS);
   });
 
+  // Windows: the bridge gives the state dir an owner-only access list at start (M43 spec 04), and the
+  // file the store writes inherits it. NTFS has no 0600, so the check reads that list instead.
   test("persists with owner-only (0600) permissions", async () => {
     const cfg = await tempCfg();
+    if (process.platform === "win32") ensureOwnerOnlyDir(cfg.stateDir, HOST, { root: privateRoot("state"), repair: true });
     const store = new NotifyPrefsStore(cfg);
     await store.set({ blocked: false });
+    if (process.platform === "win32") {
+      expect(isOwnerOnly(join(cfg.stateDir, "notify-prefs.json"), HOST)).toEqual({ state: "private" });
+      return;
+    }
     const mode = (await stat(join(cfg.stateDir, "notify-prefs.json"))).mode & 0o777;
     expect(mode).toBe(0o600);
   });

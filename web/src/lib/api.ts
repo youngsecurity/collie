@@ -8,11 +8,16 @@ import { abortSignalAfter, abortSignalAny } from "./env";
 import { asJsonString, parseJsonObject } from "./json";
 import { authHeader, clearNotPaired, markNotPaired, NOT_PAIRED_BODY } from "./pairing";
 import { isLead, normalizeScope, paneScopeKey, type Scope } from "./scope";
+import { stampSend } from "./poll-intent";
 import { observeServerBuild, SERVER_BUILD_HEADER } from "./server-build";
 import { mounted } from "./base-path";
+import { CHAT_UNCHANGED, type ChatAnswer } from "./chat-window";
 import type {
   ActionResponse,
   BridgeConfig,
+  ChatAfter,
+  ChatBefore,
+  PaneChatResponse,
   CreateResponse,
   DismissScope,
   DevicesResponse,
@@ -256,7 +261,12 @@ function promptChangedResponse(detail: string): ActionResponse | null {
   if (body.ok !== false || body.code !== "prompt_changed") return null;
   const error = asJsonString(body.error);
   if (error === undefined) return null;
-  return { ok: false, error, code: "prompt_changed" };
+  const response: ActionResponse = { ok: false, error, code: "prompt_changed" };
+  // The bridge's reason code, kept only when it is a plain code: it is shown to a person with the
+  // console open and never as UI text, and a body that is not one is not forwarded.
+  const reason = asJsonString(body.reason);
+  if (reason !== undefined && /^[a-z_]{1,32}$/.test(reason)) response.reason = reason;
+  return response;
 }
 
 /**
@@ -384,6 +394,30 @@ const paneCache = new Map<string, PaneCacheEntry>();
 // pane's last body). 20 comfortably covers any panes in flight on a phone.
 const PANE_CACHE_MAX = 20;
 
+// What the client had last SEEN of each pane, and what it had seen at the moment of its most recent
+// key send. The second is the baseline `settleAfterSend` (lib/harness/guard.ts) waits to leave: a
+// tap that moves a highlight is only "on screen" once a read differs from the one the tap was made
+// against. Kept here, beside the one function that reads and the one that sends, so a multi-step
+// choreography needs no plumbing: the last key it sends snapshots whatever its last verified read
+// showed. Both are FIFO-bounded like `paneCache`, and keyed the same way.
+const lastSeenText = new Map<string, string>();
+const textBeforeSend = new Map<string, string>();
+
+function remember(map: Map<string, string>, key: string, text: string): void {
+  map.delete(key); // re-insert, so the FIFO bound evicts the pane least recently touched
+  map.set(key, text);
+  if (map.size > PANE_CACHE_MAX) {
+    const oldest = map.keys().next().value;
+    if (oldest !== undefined) map.delete(oldest);
+  }
+}
+
+/** The pane text the client had seen when its latest key was sent (`undefined` = never read, or no
+ *  key sent yet). The baseline for `settleAfterSend`. */
+export function textBeforeLastSend(paneId: string, scope?: Scope): string | undefined {
+  return textBeforeSend.get(paneScopeKey(scope, paneId));
+}
+
 /**
  * Read one pane's mirror. `seen: false` leaves the pane's unseen mark alone: the read a finger
  * starts on `pointerdown` (lib/pane-prefetch.ts) may be the start of a scroll, not an open.
@@ -423,6 +457,7 @@ export async function fetchPane(
     // Unchanged — hand back the cached body (text included) so the mirror keeps its content. An
     // unchanged poll is still a live poll: stamp the connection-health anchor (a 304 counts as live).
     markLive();
+    remember(lastSeenText, cacheKey, cached.response.text);
     return { ...cached.response, notModified: true };
   }
 
@@ -447,6 +482,7 @@ export async function fetchPane(
 
   // A pane body served from Herdr is provably-live data — stamp the connection-health anchor.
   markLive();
+  remember(lastSeenText, cacheKey, data.text);
   return data;
 }
 
@@ -475,6 +511,116 @@ export function fetchHistory(
     signal,
     headers: { "x-collie-seen": "1" },
   });
+}
+
+/**
+ * One page request for {@link fetchChat} — `limit`, and AT MOST ONE of the two cursors.
+ *
+ * The bridge honours `before` and does not even read `after` when both arrive
+ * (bridge/journal/live.ts § `chatParams`), so a caller that sent both would be handed a page it did
+ * not ask for and have nothing on screen to explain it. The `never` pair makes that a compile error
+ * here instead of a puzzle there. The runtime order below matches the bridge exactly anyway, for
+ * the one caller a type cannot reach.
+ */
+export type ChatRequest =
+  | { limit?: number; after?: ChatAfter; before?: never }
+  | { limit?: number; after?: never; before: ChatBefore };
+
+// The last ETag per (host, session, pane), for the LIVE page only. Same key as the pane cache, and
+// for the same reason: a pane id is unique only inside one session on one machine.
+//
+// Only the live page is validated, because only the live page repeats — the poll asks it on the
+// cadence `hooks/use-polling.ts` already owns, and an unchanged session answers 304 (ADR 0073 point
+// 6). A `?before=` page is a one-shot tap like fetchHistory's, so there is no repeat fetch for a
+// validator to save. The body alone is NOT cached beside the tag: a 304 here means "you already
+// hold this", and what the client holds is the merged window (lib/chat-window.ts), not this answer.
+const chatEtags = new Map<string, string>();
+// One Chat screen is open at a time and a second device makes two; eight covers any plausible
+// come-and-go across a session, and matches MAX_WINDOWS on the bridge side.
+const CHAT_ETAG_MAX = 8;
+
+/**
+ * Ask a pane's session what moved (ADR 0073). The answer is merged by `lib/chat-window.ts`.
+ *
+ * Three outcomes, and the caller must tell them apart:
+ *
+ *  - `body` — a 200. Either a live window or a `?before=` page; `available: false` lives in here too,
+ *    because "this pane has no session" is an ordinary answer and not a failure.
+ *  - `unchanged` — a 304. Nothing moved. Neither an error nor a change.
+ *  - `stale` — a 404. **This machine's Collie predates the route**, which is a version fact and never
+ *    "this pane has nothing to show". The route is additive-optional over a crew link, so it is the
+ *    ordinary skew a crew is in while it levels. The remedy is `chat.stale.member`, which the VIEW
+ *    resolves; this module names no sentence.
+ *
+ * Anything else still throws, exactly as every other call here does.
+ */
+export async function fetchChat(
+  paneId: string,
+  opts: ChatRequest = {},
+  scope?: Scope,
+  signal?: AbortSignal,
+): Promise<ChatAnswer> {
+  const q = new URLSearchParams();
+  if (opts.limit) q.set("limit", String(opts.limit));
+  // The bridge's own precedence, restated rather than assumed: `before` wins and `after` is not read.
+  if (opts.before) q.set("before", `${opts.before.seq}:${opts.before.uuid}`);
+  else if (opts.after) q.set("after", `${opts.after.gen}:${opts.after.rev}`);
+  const qs = q.toString();
+  const url = withScope(
+    `/api/pane/${encodeURIComponent(paneId)}/chat${qs ? `?${qs}` : ""}`,
+    scope,
+  );
+  const cacheKey = opts.before ? null : paneScopeKey(scope, paneId);
+  const cached = cacheKey === null ? undefined : chatEtags.get(cacheKey);
+
+  const headers = new Headers({
+    [XHR_HEADER]: XHR_HEADER_VALUE,
+    // Watching a session IS looking at the pane, the same reading history takes (bridge/server.ts →
+    // marksPaneSeen), so a Chat screen left open keeps the pane's unseen mark clear.
+    "x-collie-seen": "1",
+    ...authHeader(),
+  });
+  if (cached !== undefined) headers.set("if-none-match", cached);
+
+  const res = await apiFetch(url, { signal: withTimeout(signal, GET_TIMEOUT_MS), headers });
+  captureBuild(res);
+
+  if (res.status === 304) {
+    // An unchanged poll is still a live poll — stamp the connection-health anchor, as fetchPane does.
+    markLive();
+    return CHAT_UNCHANGED;
+  }
+  if (res.status === 404) {
+    // An older bridge's route table has no `chat` segment at all, so the request falls through to
+    // its 404. The pane route answers `available:false` for every reason a pane itself has nothing,
+    // which is why this status can only mean the version skew.
+    //
+    // It carries no sentence. This module is transport: an api error here carries a CODE and
+    // `lib/api-error-message.ts` is what turns one into words. Resolving a sentence in the fetch
+    // would put wording in the layer that has no business choosing it, and would freeze the
+    // language at the moment of the answer. The view calls `t("chat.stale.member")`.
+    return { outcome: "stale" };
+  }
+  if (!res.ok) {
+    const detail = await errorDetail(res);
+    throw new ApiError(`${url} → ${res.status} ${detail}`, res.status, parseApiErrorFields(detail));
+  }
+
+  // SAFETY: a 200 on `/api/pane/:id/chat` is the bridge's own `PaneChatResponse` by contract — the
+  // same endpoint contract every other call in this module rests on. Non-ok answers returned above.
+  const body = (await res.json()) as PaneChatResponse;
+  // Recorded only AFTER the body parsed, so a truncated read can never leave a tag behind that
+  // 304s the next poll into a window nothing ever filled.
+  const etag = res.headers.get("etag");
+  if (cacheKey !== null && etag) {
+    chatEtags.set(cacheKey, etag);
+    if (chatEtags.size > CHAT_ETAG_MAX) {
+      const oldest = chatEtags.keys().next().value;
+      if (oldest !== undefined) chatEtags.delete(oldest);
+    }
+  }
+  markLive();
+  return { outcome: "body", body };
 }
 
 /** How far the Changes view looks for repos below the workspace folder (Settings → Changes). */
@@ -558,6 +704,22 @@ export function fetchChangeCommitDiff(
   return req<ChangeCommitDiffResponse>(withScope(`${changesBase(target)}?${q.toString()}`, scope), { signal });
 }
 
+/**
+ * Run a write to a pane's input under the poll burst. The burst starts when the request is ISSUED,
+ * because the operator is watching the mirror from the tap on, and again when it comes back ok, so
+ * the minimum polls it buys start counting at the moment the pane can actually have changed. A write
+ * that fails leaves no burst behind that could run forever: a burst ends itself after its minimum
+ * and two quiet polls (lib/poll-intent.ts), so the stamp on issue is the whole cost of a failure.
+ *
+ * This is the one chokepoint: every dialog tap, the key bar and the composer's typed text end in
+ * `sendKeys` or `sendReply`, so no call site has to remember to stamp.
+ */
+async function withSendBurst(paneId: string, write: Promise<ActionResponse>): Promise<ActionResponse> {
+  const res = await write;
+  if (res.ok) stampSend(paneId);
+  return res;
+}
+
 export function sendReply(
   paneId: string,
   text: string,
@@ -565,15 +727,19 @@ export function sendReply(
   scope?: Scope,
   expectedPrompt?: string,
 ): Promise<ActionResponse> {
-  return req<ActionResponse>(
-    withScope(`/api/pane/${encodeURIComponent(paneId)}/reply`, scope),
-    {
-      method: "POST",
-      // `JSON.stringify` omits an `undefined` property entirely, so an absent binding puts no
-      // `expected_prompt` on the wire — byte-identical to not naming the field at all.
-      body: JSON.stringify({ text, submit, expected_prompt: expectedPrompt }),
-    },
-    recoverPromptChanged,
+  stampSend(paneId);
+  return withSendBurst(
+    paneId,
+    req<ActionResponse>(
+      withScope(`/api/pane/${encodeURIComponent(paneId)}/reply`, scope),
+      {
+        method: "POST",
+        // `JSON.stringify` omits an `undefined` property entirely, so an absent binding puts no
+        // `expected_prompt` on the wire — byte-identical to not naming the field at all.
+        body: JSON.stringify({ text, submit, expected_prompt: expectedPrompt }),
+      },
+      recoverPromptChanged,
+    ),
   );
 }
 
@@ -582,15 +748,27 @@ export function sendKeys(
   keys: string[],
   scope?: Scope,
   expectedPrompt?: string,
+  expectedStyled?: string,
 ): Promise<ActionResponse> {
-  return req<ActionResponse>(
-    withScope(`/api/pane/${encodeURIComponent(paneId)}/keys`, scope),
-    {
-      method: "POST",
-      // As in `sendReply`: an `undefined` property is omitted by `JSON.stringify`.
-      body: JSON.stringify({ keys, expected_prompt: expectedPrompt }),
-    },
-    recoverPromptChanged,
+  stampSend(paneId);
+  // Snapshot what the client has seen NOW, before the key can change anything: `settleAfterSend`
+  // waits for a read that differs from it.
+  const key = paneScopeKey(scope, paneId);
+  const seen = lastSeenText.get(key);
+  if (seen === undefined) textBeforeSend.delete(key);
+  else remember(textBeforeSend, key, seen);
+  return withSendBurst(
+    paneId,
+    req<ActionResponse>(
+      withScope(`/api/pane/${encodeURIComponent(paneId)}/keys`, scope),
+      {
+        method: "POST",
+        // As in `sendReply`: an `undefined` property is omitted by `JSON.stringify`. The bridge honours
+        // `expected_styled` only beside `expected_prompt` (ADR 0080 point 7); an older bridge ignores it.
+        body: JSON.stringify({ keys, expected_prompt: expectedPrompt, expected_styled: expectedStyled }),
+      },
+      recoverPromptChanged,
+    ),
   );
 }
 

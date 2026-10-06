@@ -4,6 +4,8 @@ import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { HOST } from "./host.ts";
+import { ensureOwnerOnlyDir, isOwnerOnly, privateRoot } from "./owner-only.ts";
 import {
   acquireRegistryLock,
   acquireRegistryLockSync,
@@ -612,11 +614,16 @@ describe("pairing never crosses the crew seam", () => {
 describe("filePairingIo", () => {
   test("writes are owner-only and land under the state dir", async () => {
     const stateDir = join(await tempStateDir(), "nested");
+    // Windows: the bridge gives the state dir an owner-only access list at start (M43 spec 04).
+    if (process.platform === "win32") ensureOwnerOnlyDir(stateDir, HOST, { root: privateRoot("state"), repair: true });
     const io = filePairingIo(stateDir);
     await io.writePending(newPending("ABCD2345", 0));
     await io.writeRegistry({ devices: [{ label: "phone", tokenHash: sha256Hex("t"), createdAt: 1, lastSeenAt: 1 }] });
     for (const name of [PENDING_FILENAME, DEVICES_FILENAME]) {
-      expect((await stat(join(stateDir, name))).mode & 0o777).toBe(0o600);
+      // NTFS has no 0600 mode bits (stat() says 0o666), so Windows reads the access list instead.
+      const { mode } = await stat(join(stateDir, name));
+      if (process.platform !== "win32") expect(mode & 0o777).toBe(0o600);
+      else expect(isOwnerOnly(join(stateDir, name), HOST)).toEqual({ state: "private" });
     }
     expect(JSON.parse(await readFile(join(stateDir, DEVICES_FILENAME), "utf8")).devices).toHaveLength(1);
   });
@@ -734,7 +741,7 @@ describe("the registry lock (#19)", () => {
    */
   function memoryLockFs(seed: { held?: boolean; mtime?: number } = {}, clock: () => number = () => 0) {
     const files = new Map<string, { mtime: number; body: string }>();
-    if (seed.held) files.set("/state/" + LOCK_FILENAME, { mtime: seed.mtime ?? 0, body: '{"pid":999,"at":0}' });
+    if (seed.held) files.set(LOCK, { mtime: seed.mtime ?? 0, body: '{"pid":999,"at":0}' });
     const removed: string[] = [];
     const state = { files, removed };
     const fs: LockFsSync = {
@@ -752,8 +759,8 @@ describe("the registry lock (#19)", () => {
     };
     return { fs, state };
   }
-  const LOCK = "/state/" + LOCK_FILENAME;
-  const MARKER = "/state/" + LOCK_BREAK_FILENAME;
+  const LOCK = join("/state", LOCK_FILENAME);
+  const MARKER = join("/state", LOCK_BREAK_FILENAME);
 
   test("lockVerdict: a fresh lock is waited on, a dead holder's stale one is broken, a vanished one is retried", () => {
     expect(lockVerdict(1_000, 1_000 + LOCK_STALE_MS - 1, false)).toBe("wait");
@@ -1121,10 +1128,13 @@ describe("the registry lock (#19)", () => {
 
   test("on disk: the lock file is owner-only and names its holder", async () => {
     const stateDir = await tempStateDir();
+    // Match bridge startup: Windows files inherit the state directory's private access list.
+    if (process.platform === "win32") ensureOwnerOnlyDir(stateDir, HOST, { root: privateRoot("state"), repair: true });
     const disk = filePairingIo(stateDir);
     const lock = await disk.lockRegistry();
     const path = join(stateDir, LOCK_FILENAME);
-    expect((await stat(path)).mode & 0o777).toBe(0o600);
+    if (process.platform !== "win32") expect((await stat(path)).mode & 0o777).toBe(0o600);
+    else expect(isOwnerOnly(path, HOST)).toEqual({ state: "private" });
     expect(JSON.parse(await readFile(path, "utf8")).pid).toBe(process.pid);
     await lock.release();
   });

@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 // TWO BUNDLES, ONE DIRECTORY (M26/04).
 //
@@ -35,7 +36,7 @@ export const SWAP_BASE_URL = `http://127.0.0.1:${SWAP_PORT}`;
 export const SERVER_ONLY_MARKER = "e2e-server-answered";
 
 /** `web/`, wherever the checkout sits. This file is `web/e2e/fixtures/`, so two levels up. */
-export const WEB_ROOT = resolve(dirname(new URL(import.meta.url).pathname), "..", "..");
+export const WEB_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 /** Where the two builds live. Git-ignored (root `.gitignore`, `web/e2e/.builds/`). */
 export const BUILDS_DIR = join(WEB_ROOT, "e2e", ".builds");
