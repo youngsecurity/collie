@@ -15,18 +15,18 @@ const sessions: SessionSummary[] = [
 ];
 const props = { open: true, onClose: vi.fn(), onRenamed: vi.fn(), onClosed: vi.fn() };
 
-it("a narrow named-session pin follows its pane to All, not a same-ID other session", async () => {
+it.each(["place", "activity", "cache"] as const)("a narrow named-session pin follows its pane to All, not a same-ID other session in %s order", async (order) => {
   const user = userEvent.setup();
   const sheet = render(<PaneActionsSheet {...props} pane={pane} scope={{ session: "work" }} />);
   await user.click(screen.getByRole("button", { name: "Pin to top" }));
   sheet.unmount();
   const tagged = { ...pane, session: "work" };
   const pins = currentPins();
-  const view = render(<AgentList agents={[tagged]} pins={pins} onOpen={vi.fn()} />);
+  const view = render(<AgentList agents={[tagged]} pins={pins} order={order} onOpen={vi.fn()} />);
   expect(screen.getByRole("heading", { name: "Pinned" })).toBeInTheDocument();
-  view.rerender(<AgentList agents={[pane]} scope={{ session: "other" }} pins={pins} onOpen={vi.fn()} />);
+  view.rerender(<AgentList agents={[pane]} scope={{ session: "other" }} pins={pins} order={order} onOpen={vi.fn()} />);
   expect(screen.queryByRole("heading", { name: "Pinned" })).toBeNull();
-  view.rerender(<AgentList agents={[pane]} scope={{ session: "work" }} pins={pins} onOpen={vi.fn()} />);
+  view.rerender(<AgentList agents={[pane]} scope={{ session: "work" }} pins={pins} order={order} onOpen={vi.fn()} />);
   expect(screen.getByRole("heading", { name: "Pinned" })).toBeInTheDocument();
   view.unmount();
   render(<ThreadSidebar agents={[pane]} scope={{ session: "work" }} pins={pins} currentPaneKey="" onSelect={vi.fn()} />);

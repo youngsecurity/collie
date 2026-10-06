@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, readlinkSync, statSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
-import { homedir, hostname } from "node:os";
+import { mkdir, readFile as readFileAsync, realpath as realpathAsync, stat as statAsync, statfs as statfsAsync, writeFile } from "node:fs/promises";
+import { cpus, freemem, homedir, hostname, loadavg, totalmem } from "node:os";
 import { join } from "node:path";
 
 import { classifyInstall, probeInstall, updateRepoOf } from "../cli/install-kind.ts";
@@ -13,6 +13,11 @@ import { trackActivity } from "./activity-tracking.ts";
 import { CacheTracker } from "./cache/tracker.ts";
 import { CacheWarden } from "./cache/warden.ts";
 import { CacheWatchStore } from "./cache/watch.ts";
+import { MachineAlertStore } from "./machine-alerts.ts";
+import { loadMachineHistory, saveMachineHistory } from "./machine-history.ts";
+import { DiskWatch } from "./machine-disks.ts";
+import { MachineSampler } from "./machine-stats.ts";
+import { machineRosterOf, MachineWatch, SOLO_MACHINE_ID, type MachineRosterEntry } from "./machines.ts";
 import { localWatchPane, peerWatchPane } from "./cache/watch-key.ts";
 import { buildJournalRegistry } from "./journal/registry.ts";
 import { createCacheRulesReader } from "./operator-cache-rules.ts";
@@ -53,6 +58,7 @@ import {
   factoryFor,
   type MuxTarget,
 } from "./mux/registry.ts";
+import { TERN_BINARY_OPTION } from "./mux/tern/adapter.ts";
 import { TMUX_BINARY_OPTION } from "./mux/tmux/adapter.ts";
 import type { MuxAdapter } from "./mux/types.ts";
 import { ZELLIJ_BINARY_OPTION } from "./mux/zellij/adapter.ts";
@@ -1047,6 +1053,7 @@ const makeSession: SessionFactory = (name, socketPath, isPrimary) => {
       [HERDR_DIAL_MODE_OPTION]: cfg.dialMode ?? "auto",
       [TMUX_BINARY_OPTION]: cfg.tmuxBin,
       [ZELLIJ_BINARY_OPTION]: cfg.zellijBin,
+      [TERN_BINARY_OPTION]: cfg.ternBin,
     },
   };
   const herdr = withBeaconsIfBlind(createMux(muxRegistry, cfg.mux, target), target);
@@ -1423,8 +1430,12 @@ const crewLead = (() => {
         }),
       );
     },
+    // ADR 0084: a member's own load, off the answer this sweep already parsed, on this lead's clock.
+    onMachineStats: (memberId, sample, at) => machineWatch?.observe(memberId, sample, at),
     onPeerGone: (memberId) => {
       peerNotifier?.forget(memberId);
+      // A member that left takes its last sample and its day of history with it (ADR 0084).
+      machineWatch?.forget(memberId);
       // The client remembers one thing that reaches a verdict, how long this member has been
       // answering without a protocol header (M20/03). A member pruned with that run nearly spent,
       // then enrolled again under the same id, would inherit it and land on the ladder at once.
@@ -1589,6 +1600,81 @@ function settleUpdateGate(): void {
   updateTurns.begin(start.runId, start.to, Date.now());
   crewLead?.resweep();
 }
+
+// ── Machines: every machine's load (ADR 0084) ────────────────────────────────
+// Every collie samples itself — a peer for the `machineStats` sibling it answers its lead with, a lead
+// and a solo collie for their own row. The sampler reads `/proc` (Linux) or `node:os` and nothing
+// else, and never spawns a process. Only a lead and a solo collie keep the watch: the day of minutes,
+// the alert rules and the push. A peer is not a front door (ADR 0013), so it has no Machines page.
+const machineSampler = new MachineSampler({
+  host: HOST,
+  readText: (path) => {
+    try {
+      return readFileSync(path, "utf8");
+    } catch {
+      return null;
+    }
+  },
+  os: { cpus, totalmem, freemem, loadavg },
+  now: Date.now,
+  // The disks that hold the home folder, the root (the system drive on Windows) and the state folder.
+  // Every read is async and started, never awaited, from the sampler's tick (machine-disks.ts).
+  disks: new DiskWatch({
+    platform: HOST.platform,
+    paths: [homedir(), HOST.platform === "win32" ? `${process.env.SystemDrive ?? "C:"}\\` : "/", cfg.stateDir],
+    statfs: (path) => statfsAsync(path),
+    dev: async (path) => (await statAsync(path)).dev,
+    realpath: (path) => realpathAsync(path),
+    mounts: () => readFileAsync("/proc/self/mounts", "utf8").catch(() => null),
+    now: Date.now,
+  }),
+});
+
+/**
+ * The machines a lead or a solo collie answers for, read on every call. A lead's list is the crew
+ * overview's own rows (the same closure `GET /api/crew` answers from), so the two pages cannot name a
+ * machine two ways. A solo collie that never enrolled has no member id and answers as `local`.
+ */
+function machineRoster(): MachineRosterEntry[] {
+  const data = trustStore.current();
+  return machineRosterOf(
+    crewStatus?.() ?? null,
+    data === null ? { id: SOLO_MACHINE_ID, name: hostname() } : crewSelfOf(data),
+  );
+}
+
+const machineWatch =
+  crew.mode === "peer"
+    ? undefined
+    : new MachineWatch({
+        now: Date.now,
+        roster: machineRoster,
+        history: await loadMachineHistory(cfg.stateDir, Date.now()),
+        alerts: await MachineAlertStore.load(cfg.stateDir),
+        saveHistory: (history, now) => saveMachineHistory(cfg.stateDir, history, now),
+        // The cache warning's two gates, for the cache warning's reason (ADR 0042): quiet hours apply,
+        // and the operator's switch for the kind is read live.
+        muted: () => snooze.isMuted(),
+        enabled: () => notifyPrefs.current().machines,
+        send: (msg) => void push.send(msg),
+        // A deposed lead's roster is void (§18.12): it stops sweeping, and it must stop judging and
+        // pushing about machines it no longer answers for, and stop recording its own minutes too.
+        active: () => deposed === null,
+      });
+
+// The same tick the crew sweep rides (CREW_PROTOCOL.md §10.1, §11): no second timer. The sampler reads
+// at most once every 15 s, or every 5 s while a phone has the Machines list or the Crew tab open (the
+// watch says which, `machines.ts` holds the arithmetic); a peer has no watch and always reads at the
+// slow rate. The watch judges once a minute.
+registry.get()?.engine.onTick(() => {
+  const sample = machineSampler.tick(machineWatch?.sampleEveryMs());
+  if (machineWatch === undefined) return;
+  if (sample !== null) {
+    const self = machineRoster().find((m) => m.isLead);
+    if (self !== undefined) machineWatch.observe(self.id, sample, Date.now());
+  }
+  machineWatch.tick();
+});
 
 if (crewLead) {
   registry.get()?.engine.onTick(() => {
@@ -1820,6 +1906,8 @@ const server = startServer({
   cache: paneCache ?? undefined,
   cacheWatch,
   folders,
+  // Every machine's load and its alert rules (ADR 0084). Undefined on a peer, whose routes then 404.
+  machines: machineWatch,
   crew,
   pairing,
   stt,
@@ -1855,6 +1943,8 @@ const server = startServer({
             // §20: this machine's own run, beside its preflight. It is what lets a lead's page say
             // "updating" or "rolled back" about a member instead of only "still behind".
             updateRun: () => peerRunWire(readUpdateRun(cfg.stateDir)),
+            // ADR 0084: this machine's own last load sample, the one the sampler already holds.
+            machineStats: () => machineSampler.latest(),
             // §20's two REQUEST headers, handed to this peer's own follow. A build with no follower
             // — a lead, or a checkout with nothing compiled — passes `undefined` and ignores both,
             // which is a correct peer.
@@ -1923,6 +2013,8 @@ const shutdown = async () => {
   // persist them before exiting, or every restart quietly resurrects alerts you'd already cleared.
   activity.stop();
   await activity.flush();
+  // The day of minutes is saved every five minutes from the tick; the last few go to disk here.
+  await machineWatch?.flush();
   clearInterval(sweepTimer);
   clearTimeout(updateFirstCheck);
   clearInterval(updateTimer);
