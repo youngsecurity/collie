@@ -1,6 +1,6 @@
 import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
-import { extname, join, normalize, sep } from "node:path";
+import { dirname, extname, join, normalize, sep } from "node:path";
 import { createAccessGate } from "./access-jwt.ts";
 import type { JsonObject, JsonValue } from "./json.ts";
 import type { ActivityLedger } from "./activity.ts";
@@ -14,7 +14,8 @@ import {
   sharedListChanges,
   sharedReadCommit,
 } from "./changes.ts";
-import { rootOfWorkspace, type RootSnapshot } from "./changes-root.ts";
+import { rootOfWorkspace, type RootSnapshot, withinBound } from "./changes-root.ts";
+import { filesQuery, serveFiles, UNKNOWN_PATH } from "./files-view.ts";
 import { apiError, type ApiErrorBody, type ApiErrorDetail, type ErrorCode } from "./error-codes.ts";
 import { MUX_CAPABILITIES, type MuxCapability, type MuxCapabilityDeclaration } from "./mux/capabilities.ts";
 import type { MuxAdapter, MuxAck, MuxGrid } from "./mux/types.ts";
@@ -25,7 +26,7 @@ import { watchKeyOf, type CacheWatchSurface } from "./cache/watch.ts";
 import { createCacheRulesReader } from "./operator-cache-rules.ts";
 import { computeEtag, gzipJsonResponse, notModified, wantsGzip } from "./http-cache.ts";
 import { pluginRoot } from "./root.ts";
-import type { NotifyPrefs, NotifyPrefsStore } from "./notify-prefs.ts";
+import { DEFAULT_NOTIFY_PREFS, type NotifyPrefs, type NotifyPrefsStore } from "./notify-prefs.ts";
 import { MAX_FAVOURITES, MAX_FOLDER_CHARS, type FolderSurface } from "./folders.ts";
 import { createOperatorCommands } from "./operator-commands.ts";
 import { createOperatorKeys } from "./operator-keys.ts";
@@ -70,7 +71,7 @@ import {
 import { modeForWire } from "./crew/mode.ts";
 import type { CrewRuntime } from "./crew/config.ts";
 import type { CrewLead } from "./crew/lead.ts";
-import { crewDeviceOf, crewGate } from "./crew/peer-gate.ts";
+import { crewDeviceOf, crewGate, type GateLevel } from "./crew/peer-gate.ts";
 import { snapshotPlan } from "./crew/merge.ts";
 import { selectHostFrom, type HostSelector } from "./crew/registry.ts";
 import type { CrewHandler, CrewSurface } from "./crew/router.ts";
@@ -79,6 +80,10 @@ import { createSttAdmission, MAX_STT_AUDIO_BYTES, sttCapability, transcribeReque
 import type { SttProvider } from "./stt/provider.ts";
 import { uploadTooLarge } from "./uploads.ts";
 import { MUX_LOGO_PATH, OPERATOR_FONTS_PATH, journalAgentOf, toPaneWire } from "./types.ts";
+import type { MachineAlertsResponse } from "./types.ts";
+import { parseMachineAlerts } from "./machine-parse.ts";
+import { SPARK_MAX_MINUTES } from "./machine-history.ts";
+import type { MachineSurface } from "./machines.ts";
 import type {
   ActionResponse,
   AgentView,
@@ -105,10 +110,12 @@ import type {
   PaneChangeCommitResponse,
   PaneChangeDiffResponse,
   PaneChangesResponse,
+  PaneFilesResponse,
   WorkspaceChangeCommitDiffResponse,
   WorkspaceChangeCommitResponse,
   WorkspaceChangeDiffResponse,
   WorkspaceChangesResponse,
+  WorkspaceFilesResponse,
   PaneChatResponse,
   PaneHistoryResponse,
   PaneReadResponse,
@@ -272,7 +279,7 @@ export function isLoopbackPeer(address: string | null | undefined): boolean {
   return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(v4);
 }
 
-const PANE_ROUTE = /^\/api\/pane\/([^/]+)(?:\/(reply|keys|upload|close|rename|history|chat|changes|focus))?$/;
+const PANE_ROUTE = /^\/api\/pane\/([^/]+)(?:\/(reply|keys|upload|close|rename|history|chat|changes|files|focus))?$/;
 
 /**
  * A pairing claim's refusal, as an error code.
@@ -334,6 +341,22 @@ const WORKTREE_ACTION_ROUTE = /^\/api\/workspace\/([^/]+)\/worktree(?:\/(open))?
 const WORKSPACE_CHANGES_ROUTE = /^\/api\/workspace\/([^/]+)\/changes$/;
 
 /**
+ * `GET /api/workspace/<id>/files` — the Files view asked by workspace (ADR 0083): one folder or one
+ * file under the same root the workspace's Changes list reads. A READ that needs an authorised
+ * device (`device-read`), forwarded with `?host=` like the Changes route: `bridge/crew/forward.ts`
+ * mirrors this shape and `forward.test.ts` pins it.
+ */
+const WORKSPACE_FILES_ROUTE = /^\/api\/workspace\/([^/]+)\/files$/;
+
+/**
+ * `GET /api/machines/<id>/history` and `POST /api/machines/<id>/alerts` (ADR 0084). The id is a
+ * machine's member id, matched as an opaque segment and only ever LOOKED UP in the roster, never
+ * decoded into anything else. Not forwardable: the lead keeps every machine's history and rules
+ * itself, so `bridge/crew/forward.ts` names neither and a `?host=` here addresses nothing.
+ */
+const MACHINE_ROUTE = /^\/api\/machines\/([^/]+)\/(history|alerts)$/;
+
+/**
  * Header the web app sets on its own pane reads, and the ONLY thing that lets a read mark a pane
  * seen. See {@link marksPaneSeen} for why a header, of all things, is the check.
  */
@@ -373,7 +396,36 @@ export function marksPaneSeen(req: Request, action: string | undefined): boolean
  * forwarded route's kind the same way.
  */
 export function isPaneReadAction(action: string | undefined): boolean {
-  return action === "history" || action === "chat" || action === "changes";
+  return action === "history" || action === "chat" || action === "changes" || action === "files";
+}
+
+/**
+ * Does this request write INPUT into a pane: typed text (`reply`) or keys (`keys`)? Those are the two
+ * routes after which the operator watches the pane for an effect, so a landed one puts the engine
+ * that owns the pane into its hot cadence (state-engine.ts § noteInput). Structural writes (close,
+ * rename, focus, a new tab) settle their own topology and need no intent; an upload types nothing.
+ */
+export function isPaneInput(pathname: string, method: string): boolean {
+  if (method !== "POST") return false;
+  const action = pathname.match(PANE_ROUTE)?.[2];
+  return action === "reply" || action === "keys";
+}
+
+/** Answer `res`, and when it landed, tell `engine` an input was written (§ isPaneInput). */
+export function afterPaneInput(engine: Pick<StateEngine, "noteInput">, res: Response): Response {
+  if (res.ok) engine.noteInput();
+  return res;
+}
+
+/**
+ * The gate level a pane route asks at. A plain read for the pane itself and for `history`, `chat`
+ * and `changes`; `device-read` for `files`, which is a read that needs an authorised device (ADR 0083:
+ * it exposes every file under the root, which Changes does not); a write for everything that types
+ * into or restructures a terminal.
+ */
+export function paneGateLevel(action: string | undefined): GateLevel {
+  if (action === "files") return "device-read";
+  return !action || isPaneReadAction(action) ? "read" : "write";
 }
 
 /**
@@ -399,8 +451,11 @@ interface RouteCaller {
    * response comes back here (§9.1). For a crew caller it is always local.
    */
   resolve(): Promise<SessionRuntime | Response>;
-  /** The caller's own authorisation at this level, or `null` to proceed. */
-  gate(level: "read" | "write"): Response | null;
+  /**
+   * The caller's own authorisation at this level, or `null` to proceed. `device-read` is a read that
+   * needs the write level's device factors (ADR 0083) without the write level's `Origin` rule.
+   */
+  gate(level: GateLevel): Response | null;
   /** The device a write is attributed to. */
   device(): string | null;
   /** Where a write's audit line lands — the peer's is pre-stamped `via:"crew"` + originator (§12). */
@@ -857,6 +912,14 @@ export function startServer(opts: {
    * exactly today's four entries.
    */
   folders?: FolderSurface;
+  /**
+   * Every machine's load, the day of minutes behind it and the alert rules (ADR 0084).
+   *
+   * Supplied on a lead and on a solo collie, and **absent on a peer**, which answers the three
+   * `/api/machines*` routes with `crew.not_lead` exactly as it answers `/api/crew`: a peer is not a
+   * front door (ADR 0013), and its own load already reaches the lead beside its snapshot.
+   */
+  machines?: MachineSurface;
 }) {
   const { cfg, registry, push, snooze, notifyPrefs, updateMonitor, audit, activity, crew } = opts;
   // The prompt-cache ledger, built in bridge/index.ts beside the journal registry it probes through,
@@ -865,6 +928,7 @@ export function startServer(opts: {
   const cache = opts.cache;
   const pairing = opts.pairing;
   const folders = opts.folders;
+  const machines = opts.machines;
   const stt = opts.stt ?? (async () => null);
   // One gate per Bun server, not per request: two slow uploads and their two provider calls share
   // the same bounded process-local capacity (bridge/stt/http.ts).
@@ -1182,6 +1246,22 @@ export function startServer(opts: {
       return workspaceChanges(rt.engine, workspaceId, url, req);
     }
 
+    // ── Files, asked by workspace (ADR 0083): one folder or one file under the same root ──
+    const workspaceFilesMatch = pathname.match(WORKSPACE_FILES_ROUTE);
+    if (workspaceFilesMatch && req.method === "GET") {
+      const denied = caller.gate("device-read");
+      if (denied) return denied;
+      const rt = await caller.resolve();
+      if (rt instanceof Response) return rt;
+      let workspaceId: string;
+      try {
+        workspaceId = decodeURIComponent(workspaceFilesMatch[1]!);
+      } catch {
+        return text("malformed URL", 400);
+      }
+      return workspaceFiles(rt.engine, workspaceId, url, req, filesPrivateFolders(cfg));
+    }
+
     // ── Worktrees: list / create / open / remove, all scoped to a space (ADR 0032) ──
     const worktreeListMatch = pathname.match(WORKTREE_LIST_ROUTE);
     if (worktreeListMatch && req.method === "GET") {
@@ -1228,7 +1308,8 @@ export function startServer(opts: {
       // `history` and `changes` are READS despite being action segments — one reads a log off disk,
       // the other runs read-only git over the pane's folder.
       const isRead = !action || isPaneReadAction(action);
-      const denied = caller.gate(isRead ? "read" : "write");
+      // `files` is a read that still needs an authorised device (ADR 0083); see paneGateLevel.
+      const denied = caller.gate(paneGateLevel(action));
       if (denied) return denied;
       const rt = await caller.resolve();
       if (rt instanceof Response) return rt;
@@ -1266,8 +1347,14 @@ export function startServer(opts: {
       if (action === "chat" && req.method === "GET")
         return paneChat(cfg, journals, live, rt.engine, paneId, url, req);
       if (action === "changes" && req.method === "GET") return paneChanges(rt.engine, paneId, url, req);
-      if (action === "reply" && req.method === "POST") return replyPane(herdr, cfg, paneId, req, audit_, device, session);
-      if (action === "keys" && req.method === "POST") return keysPane(herdr, cfg, paneId, req, audit_, device, session);
+      if (action === "files" && req.method === "GET")
+        return paneFiles(rt.engine, paneId, url, req, filesPrivateFolders(cfg));
+      // A landed input makes the engine hot for a few polls (§ isPaneInput). On a member this runs
+      // through the crew dispatch, so the member that owns the pane is the one that goes hot.
+      if (action === "reply" && req.method === "POST")
+        return afterPaneInput(rt.engine, await replyPane(herdr, cfg, paneId, req, audit_, device, session));
+      if (action === "keys" && req.method === "POST")
+        return afterPaneInput(rt.engine, await keysPane(herdr, cfg, paneId, req, audit_, device, session));
       if (action === "upload" && req.method === "POST") return uploadPane(cfg, paneId, req, audit_, device, session);
       if (action === "close" && req.method === "POST") return closePane(herdr, rt.engine, paneId, req, audit_, device, session);
       if (action === "rename" && req.method === "POST") return renamePane(herdr, rt.engine, paneId, req, audit_, device, session);
@@ -1572,10 +1659,15 @@ export function startServer(opts: {
             );
           }
           if (resolved.kind === "peer") {
+            // An input forwarded to a member makes the member's engine hot there, and the LEAD's
+            // too: the lead sees the member's panes only through its sweep, which rides this
+            // engine's tick (CREW_PROTOCOL.md §10.1), so a cold lead would show the member's answer
+            // up to one idle interval late.
+            const input = isPaneInput(pathname, req.method);
             // The lead's own record of the forward (§12): one line, the same `action` the peer will
             // write, plus the target host — two independent logs of one event, neither depending on
             // the other machine's disk.
-            return secure(
+            const forwarded = secure(
               await crewLead!.forward(req, url, resolved, {
                 device: whois(req).device,
                 audit: (entry) => {
@@ -1593,6 +1685,9 @@ export function startServer(opts: {
                 },
               }),
             );
+            // The PRIMARY engine, because that is the one whose tick the sweep rides (index.ts).
+            const own = registry.get()?.engine;
+            return input && own !== undefined ? afterPaneInput(own, forwarded) : forwarded;
           }
           return resolved.runtime;
         }
@@ -1649,7 +1744,7 @@ export function startServer(opts: {
       // SAME closure, passed to both, never a second call that agrees today. Two authorisation
       // checks meant to be identical drift the moment one of them is edited, so there is only one
       // (spec M15/05; `server.test.ts` → "same device auth as pane input").
-      const browserGate = (level: "read" | "write"): Response | null =>
+      const browserGate = (level: GateLevel): Response | null =>
         guard(req, cfg, level, pairing, peerAddress);
       const sessionRouted = await serveSessionRoute(req, url, {
         resolve: target,
@@ -2229,6 +2324,19 @@ export function startServer(opts: {
         }
         return json(body, req.headers.get("accept-encoding"));
       }
+      // ── Machines: every machine's load, kept by the lead (ADR 0084) ──────
+      // Global routes, never forwardable: see `serveMachinesRoute`.
+      const machinesAnswer = await serveMachinesRoute(
+        req,
+        pathname,
+        {
+          gate: browserGate,
+          device: () => whois(req).device,
+          audit: (entry) => audit.record(entry),
+        },
+        machines,
+      );
+      if (machinesAnswer !== null) return machinesAnswer;
       if (pathname === "/api/devices" && req.method === "GET") {
         if (!pairing) return text("pairing unavailable", 503);
         // Read-level, so an unpaired device can still see whether pairing is on and which devices
@@ -2742,6 +2850,76 @@ export async function workspaceChanges(
   } catch (err) {
     return text(`changes read failed: ${errorText(err)}`, 502);
   }
+}
+
+/**
+ * The folders the Files view never shows (ADR 0083): this bridge's state folder and its config folder
+ * (`PRIVATE_ROOTS` in bridge/acl-policy.ts). The config folder is where `commands.toml` lives, beside
+ * the `.env`. On a crew member this is the MEMBER's own config, because the member runs this. A
+ * SIBLING instance's state secrets are refused by basename in bridge/files-view.ts instead.
+ */
+export function filesPrivateFolders(cfg: Pick<Config, "stateDir" | "commandsFile">): string[] {
+  return [cfg.stateDir, dirname(cfg.commandsFile)];
+}
+
+/** The one refusal for a path: absent, outside, denied, or the wrong kind (ADR 0083). */
+function unknownPath(): Response {
+  return jsonError({ error: UNKNOWN_PATH }, 404, null);
+}
+
+/**
+ * GET /api/pane/:id/files — one folder (`?dir=`, or none for the root) or one file (`?path=`) under
+ * the pane's WORKSPACE root, the Changes view's own (ADR 0083). The root comes off the live snapshot;
+ * when the workspace has none, the pane's cwd stands in only if it passes the same bound, else
+ * `no-folder`. The client names a path relative to that root and never a root. A refused path is
+ * `404 { error: "unknown-path" }`, the same answer whatever the reason. JSON only: file bytes are
+ * never served as a document.
+ */
+export async function paneFiles(
+  engine: ChangesSnapshotSource,
+  paneId: string,
+  url: URL,
+  req: Request,
+  privateFolders: readonly string[],
+  home: string = homedir(),
+): Promise<Response> {
+  const accept = req.headers.get("accept-encoding");
+  const snap = engine.current();
+  const pane = [...snap.agents, ...snap.shellPanes].find((a) => a.paneId === paneId);
+  if (!pane) return json({ paneId, available: false, reason: "no-pane" } satisfies PaneFilesResponse, accept);
+  const found = rootOfWorkspace(snap, pane.workspaceId, home);
+  // The fallback is bounded, unlike the Changes route's: a pane sitting in `~` or `/` lists nothing.
+  const root = found?.root ?? (withinBound(pane.cwd, home) ? pane.cwd : null);
+  const subject = found
+    ? { paneId, workspaceId: found.workspace.workspaceId, workspaceLabel: found.workspace.label }
+    : { paneId };
+  if (root === null) return json({ ...subject, available: false, reason: "no-folder" } satisfies PaneFilesResponse, accept);
+  const answer = await serveFiles({ root, home, privateFolders }, filesQuery(url));
+  if (answer === UNKNOWN_PATH) return unknownPath();
+  return json({ ...subject, ...answer } satisfies PaneFilesResponse, accept);
+}
+
+/** GET /api/workspace/:id/files — the same, asked by workspace; no pane, so no fallback (ADR 0083). */
+export async function workspaceFiles(
+  engine: ChangesSnapshotSource,
+  workspaceId: string,
+  url: URL,
+  req: Request,
+  privateFolders: readonly string[],
+  home: string = homedir(),
+): Promise<Response> {
+  const accept = req.headers.get("accept-encoding");
+  const found = rootOfWorkspace(engine.current(), workspaceId, home);
+  if (found === null) {
+    return json({ workspaceId, available: false, reason: "no-workspace" } satisfies WorkspaceFilesResponse, accept);
+  }
+  const subject = { workspaceId, workspaceLabel: found.workspace.label };
+  if (found.root === null) {
+    return json({ ...subject, available: false, reason: "no-folder" } satisfies WorkspaceFilesResponse, accept);
+  }
+  const answer = await serveFiles({ root: found.root, home, privateFolders }, filesQuery(url));
+  if (answer === UNKNOWN_PATH) return unknownPath();
+  return json({ ...subject, ...answer } satisfies WorkspaceFilesResponse, accept);
 }
 
 /** Just the two port calls a reply needs — the real adapter in the bridge, a fake in tests. */
@@ -3827,6 +4005,103 @@ export async function serveFolderRoute(
   return null;
 }
 
+// ── Machines (ADR 0084) ──────────────────────────────────────────────────────────
+//
+// Three routes, none forwardable: the lead (or a solo collie) holds every machine's last sample, its
+// day of minutes and its alert rules, so a `?host=` addresses nothing here. A peer has no watch and
+// refuses all three with the `/api/crew` refusal, for that route's reason. Pulled out of the inline
+// dispatch so `bun test` can drive the gate, the refusals and the audit line with a fake caller.
+
+/** What the machine routes need of their caller: the gate, who is asking, and the audit trail. */
+export interface MachineRouteCaller {
+  gate(level: "read" | "write"): Response | null;
+  /** The requesting device's name across both gates, or `null` when neither names one. */
+  device(): string | null;
+  audit(entry: AuditEntry): void;
+}
+
+/** A whole number from the query between `min` and `max`, or `null` when absent or anything else. */
+function queryCount(req: Request, key: string, min: number, max: number): number | null {
+  const raw = new URL(req.url).searchParams.get(key);
+  if (raw === null || !/^\d{1,16}$/.test(raw)) return null;
+  const n = Number(raw);
+  return n >= min && n <= max ? n : null;
+}
+
+/** The three machine routes, or `null` when `pathname` is none of them. */
+export async function serveMachinesRoute(
+  req: Request,
+  pathname: string,
+  caller: MachineRouteCaller,
+  machines: MachineSurface | undefined,
+): Promise<Response | null> {
+  const ae = req.headers.get("accept-encoding");
+  if (pathname === "/api/machines") {
+    if (req.method !== "GET") return text("method not allowed", 405);
+    // Read-level, like `/api/crew`: a report from memory that dials nobody.
+    const denied = caller.gate("read");
+    if (denied) return denied;
+    if (machines === undefined) return jsonError(apiError("crew.not_lead"), 404, ae);
+    // `?spark=N` (1..60) adds each row's last N complete minutes for the dashboard's small charts.
+    // Opt-in, so the answer without it is the one the Machines pages always had.
+    const spark = queryCount(req, "spark", 1, SPARK_MAX_MINUTES);
+    return json(spark === null ? machines.rows() : machines.rows({ spark }), ae);
+  }
+  const route = MACHINE_ROUTE.exec(pathname);
+  if (route === null) return null;
+  const id = route[1]!;
+  const isHistory = route[2] === "history";
+  if (req.method !== (isHistory ? "GET" : "POST")) return text("method not allowed", 405);
+  // The history is a read. A rule is a WRITE: it decides what every subscribed device is told, so it
+  // takes the device gates a send takes, and it is audited.
+  const denied = caller.gate(isHistory ? "read" : "write");
+  if (denied) return denied;
+  if (machines === undefined) return jsonError(apiError("crew.not_lead"), 404, ae);
+  const unknownMachine = () => jsonError(apiError("host.unknown", { host: id }), 404, ae);
+  if (isHistory) {
+    // `?since=<ms>` keeps the minutes starting at or after it: the page reads the day once, then
+    // only what it has not seen. Anything that is not a whole, non-negative number is ignored.
+    const since = queryCount(req, "since", 0, Number.MAX_SAFE_INTEGER);
+    const body = since === null ? machines.history(id) : machines.history(id, since);
+    return body === null ? unknownMachine() : json(body, ae);
+  }
+  const entry = machines.entry(id);
+  if (entry === undefined) return unknownMachine();
+  let raw: JsonValue;
+  try {
+    // SAFETY: `Request.json()` output IS a JsonValue by construction; `parseMachineAlerts` re-checks
+    // every field of it before any of it is used.
+    raw = (await req.json()) as JsonValue;
+  } catch {
+    return text("bad request", 400);
+  }
+  const alerts = parseMachineAlerts(raw);
+  if (alerts === null) return text("bad alerts", 400);
+  const stored = await machines.setAlerts(id, alerts);
+  if (stored === null) return unknownMachine();
+  // The machine rides the envelope's `host`, absent for this collie's own machine as on every other
+  // line, and the rule rides as numbers, which no `audit.content` setting redacts.
+  const detail: AuditDetail = {};
+  if (stored.cpu !== undefined) {
+    detail.cpuAbove = stored.cpu.above;
+    detail.cpuForMin = stored.cpu.forMin;
+  }
+  if (stored.mem !== undefined) {
+    detail.memAbove = stored.mem.above;
+    detail.memForMin = stored.mem.forMin;
+  }
+  if (stored.disk !== undefined) {
+    detail.diskAbove = stored.disk.above;
+    detail.diskForMin = stored.disk.forMin;
+  }
+  const row: AuditEntry = { action: "machine.alerts", detail };
+  const device = caller.device();
+  if (device !== null) row.device = device;
+  if (!entry.isLead) row.host = id;
+  caller.audit(row);
+  return json({ alerts: stored } satisfies MachineAlertsResponse, ae);
+}
+
 // GET /api/cache-rules — the rule catalog behind every cache chip on THIS host, plus the overrides
 // the operator's own `cache-rules.toml` applies right now.
 //
@@ -4246,7 +4521,9 @@ export function isHostAllowed(
  * Combined API gate used by every handler. A request must always pass {@link checkAccess}
  * (same-origin / CSRF + optional Tailscale identity). A `"write"` request — one that types into a
  * terminal or creates panes — must additionally come from an authorised device (see
- * {@link deviceAuth}). Returns a 403 Response to short-circuit on denial, or null to proceed.
+ * {@link deviceAuth}). A `"device-read"` (the Files view, ADR 0083) needs the same device factors,
+ * both of them, but is checked for access as a read. Returns a 403 Response to short-circuit on
+ * denial, or null to proceed.
  * `peerAddress` is the kernel-reported socket peer the Host gate needs; a caller that has none
  * passes null and thereby forfeits the loopback exception rather than gaining it.
  *
@@ -4256,13 +4533,16 @@ export function isHostAllowed(
 export function guard(
   req: Request,
   cfg: Config,
-  level: "read" | "write",
+  level: GateLevel,
   pairing?: PairingGate,
   peerAddress: string | null = null,
 ): Response | null {
-  const gate = checkAccess(req, cfg, level, peerAddress);
+  // `device-read` (ADR 0083) is checked for ACCESS as a read: it changes nothing, so the `Origin`
+  // rule for writes (a CSRF defence, and browsers send no `Origin` on a same-origin GET) does not
+  // apply, and a cross-site page cannot read the answer anyway. Its DEVICE half is the write's.
+  const gate = checkAccess(req, cfg, level === "write" ? "write" : "read", peerAddress);
   if (!gate.ok) return text(gate.reason, 403);
-  if (level !== "write") return null;
+  if (level === "read") return null;
   if (!deviceAuth(req, cfg).authorized) return text("device not authorised", 403);
   // The second, independent write factor. Distinct refusal text on purpose: "not authorised" is the
   // operator's proxy allowlist, "not paired" is this device's own missing credential, and the two
@@ -4365,7 +4645,9 @@ function json<TBody>(data: TBody, acceptEncoding: string | null, status = 200): 
  *
  * It takes a BODY rather than a message so a caller must have gone through {@link apiError} to get
  * one — which is what keeps a refusal's English and its code in the catalogue together. The bare
- * `{ error }` shape stays legal for the one caller that must not carry a code: the crew link's 404.
+ * `{ error }` shape stays legal for two callers that must not carry a code: the crew link's 404, and
+ * the Files view's `404 { error: "unknown-path" }` (ADR 0083), whose `error` IS the machine word, as
+ * Changes' `reason: "unknown-path"` is, and which the web tells apart from an older member's 404 by it.
  */
 function jsonError(
   body: ApiErrorBody | { error: string },
@@ -4453,18 +4735,28 @@ export function parsePairRequest(v: JsonValue | undefined): PairRequest | null {
  * considered and each, if present, must be a boolean — a non-boolean value is rejected (null return
  * → 400). Unknown keys are ignored. An empty patch is valid (a no-op that echoes current prefs).
  * Pure + exported so the validation is unit-testable without Bun.serve.
+ *
+ * The known keys are READ OFF THE DEFAULTS, never listed here. A hand-written list of three kept
+ * dropping `cache` from 1.9.0 on: the global "Cache about to go cold" switch answered with the old
+ * value and never reached `notify-prefs.json`. A kind added to `NotifyPrefs` must have a default, so
+ * deriving the list from that object means a new kind can no longer be silently refused here.
  */
 export function parseNotifyPrefsPatch(v: JsonValue | undefined): Partial<NotifyPrefs> | null {
   const o = asJsonRecord(v);
   if (o === null) return null;
   const patch: Partial<NotifyPrefs> = {};
-  for (const key of ["blocked", "done", "updates"] as const) {
+  for (const key of notifyPrefKeys()) {
     if (!(key in o)) continue;
     const value = o[key];
     if (typeof value !== "boolean") return null;
     patch[key] = value;
   }
   return patch;
+}
+
+/** Every key of {@link NotifyPrefs}, in the order the defaults spell them. */
+function notifyPrefKeys(): (keyof NotifyPrefs)[] {
+  return Object.keys(DEFAULT_NOTIFY_PREFS).filter((k): k is keyof NotifyPrefs => k in DEFAULT_NOTIFY_PREFS);
 }
 
 /**
