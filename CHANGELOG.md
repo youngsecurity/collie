@@ -37,13 +37,15 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 ## [Unreleased]
 
+## [1.17.0+ys.1] - 2026-10-06
+
 ### Changed
 
-- **Collie adopts upstream 1.17.0 while preserving the fork's safeguards.** Add default Chat, the Files browser, Machines monitoring and alerts, Tern support, dashboard ordering controls, and upstream harness and lifecycle fixes. Preserve fork update selection and consent, scoped pins and images, terminal preferences, the Herdr 0.8.0 minimum, and manual source-only releases. Native Windows fork updates still require a manual source rebuild. Thanks @AltanS (youngsecurity/collie#75).
+- **Collie adopts upstream 1.17.0 while preserving the fork's safeguards.** Add default Chat, the Files browser, Machines monitoring and alerts, Tern support, dashboard ordering controls, and upstream harness and lifecycle fixes. Preserve fork update selection and consent, scoped pins and images, terminal preferences, the Herdr 0.8.0 minimum, and manual source-only releases. Native Windows fork updates still require a manual source rebuild. Thanks @AltanS (youngsecurity/collie#75). ([73b12886](https://github.com/youngsecurity/collie/commit/73b12886))
 
 ### Fixed
 
-- **Concurrent Tern creations keep their own terminal targets.** Serialize tab and space creation together, verify the requested scope, and refuse ambiguous snapshot changes before renaming or returning a pane to the launcher. (youngsecurity/collie#75)
+- **Concurrent Tern creations keep their own terminal targets.** Serialize tab and space creation together, verify the requested scope, and refuse ambiguous snapshot changes before renaming or returning a pane to the launcher. (youngsecurity/collie#75) ([73b12886](https://github.com/youngsecurity/collie/commit/73b12886))
 
 ## [1.16.2+ys.1] - 2026-10-05
 
