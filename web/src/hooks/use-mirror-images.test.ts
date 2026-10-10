@@ -185,7 +185,7 @@ describe("useMirrorImages — the newest turn's picture", () => {
     history.mockReset();
   });
 
-  it("keeps turn pictures under the mount and scoped to their host and session", async () => {
+  it("keeps turn pictures root-relative and scoped for the authenticated mounted fetch", async () => {
     const meta = document.createElement("meta");
     meta.name = "collie-base";
     meta.content = "/tools/collie/";
@@ -197,7 +197,7 @@ describe("useMirrorImages — the newest turn's picture", () => {
       const { result, unmount } = renderHook(() =>
         useMirrorImages({ paneId: "w1:p1", scope, enabled: true, clusterCount: 0, finishedTurn: "1000" }),
       );
-      await waitFor(() => expect(result.current.turnImage).toBe(`/tools/collie${BLOB_A}?host=badger%20%26%20co&session=demo%2Fone`));
+      await waitFor(() => expect(result.current.turnImage).toBe(`${BLOB_A}?host=badger%20%26%20co&session=demo%2Fone`));
       expect(history).toHaveBeenLastCalledWith("w1:p1", { limit: 40 }, scope, expect.anything());
       unmount();
     } finally {

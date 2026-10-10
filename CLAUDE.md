@@ -412,7 +412,7 @@ case never invents its own payload.
 **The selector rule.** A case addresses a role and an accessible name, `getByRole` or `getByText`,
 never a CSS class. No case adds a `data-testid` anywhere in `web/src`. The one exception is the
 playground: every card carries an explicit `data-state` handle, set by a `state` prop on `Card`
-(`web/src/playground/harness.tsx`), never derived from its label.
+(`web/src/playground/layout.tsx`), never derived from its label.
 
 **The locale rule.** A case that checks translated text pins the locale before the first
 navigation, by writing the bare locale code into `collie:locale:v1` in `localStorage`
@@ -426,8 +426,9 @@ against the string in `web/src/lib/i18n/messages/<code>.ts`, never against Engli
   by `STATES_TEST_MATCH` in `web/playwright.config.ts`, `page.goto("/playground.html")`, and address
   a card by `[data-state="…"]`.
 - Tier 2: add a `.spec.ts` under `web/e2e/live/`, import `test`/`expect`/`message` from
-  `web/e2e/live/live.ts`. Read only, no pairing, no "Take over", no update, no device revoke, no
-  pane close or rename.
+  `web/e2e/live/live.ts`. Read only: the suite pairs once first through `web/e2e/live/pair.ts`
+  (`COLLIE_E2E_DEVICE_TOKEN` or `COLLIE_E2E_PAIR_CODE`), and a case never pairs itself. No "Take
+  over", no update, no device revoke, no pane close or rename.
 
 **Reading a failure.** A failed case leaves a screenshot and, on a retry, a trace
 (`screenshot: "only-on-failure"`, `trace: "on-first-retry"` in `web/playwright.config.ts`); CI
@@ -686,7 +687,9 @@ root comes off the snapshot, never the request, and its real path must pass the 
 client's path is relative, refused on its shape before any disk call, and its real path must sit
 inside the root's through `containedRealpath`; `.git` and the bridge's state and config folders are
 denied on top. It needs an authorised device (`device-read`), and its bytes go out as JSON, never as
-a document. `GET /api/fonts/<basename>` does not become a fourth such place: the request's name is **looked up** in the rows the operator's own
+a document, with one exception: `files/image` ([ADR 0090](./.adr/0090-files-shows-images.md)) sends a
+picture's raw bytes, typed by `sniffImageType` from the bytes alone (PNG, JPEG, GIF, WebP, AVIF; no
+SVG), with `no-store` and a `default-src 'none'; sandbox` CSP, through the same `readFile` checks. `GET /api/fonts/<basename>` does not become a fourth such place: the request's name is **looked up** in the rows the operator's own
 `theme.toml` declared and that row's path is taken, so a name nobody declared is refused before any path exists. The containment
 rule in [`files.ts`](./bridge/journal/files.ts) then runs anyway, on both surfaces and as an
 independent second check: **every** path about to be read goes through `containedRealpath` — after
@@ -727,9 +730,11 @@ a web form, for the reason pairing is.
 
 **Two device gates guard writes, independently, and compose by AND.** `COLLIE_DEVICE_HEADER` trusts
 a name a proxy injects; **pairing** (`bridge/pairing.ts`, `collie pair` / `collie devices`) requires a
-bearer credential the device holds, and is on exactly when the registry is non-empty. Reads stay
-ungated by both, with one exception: the Files view asks for both as a `device-read`
-([ADR 0083](./.adr/0083-the-files-view-reads-the-changes-root.md)). Neither applies to `/crew/v1/*`, which has its own two factors. The reasoning sits in
+bearer credential the device holds, and is always on, reads included
+([ADR 0086](./.adr/0086-reads-need-the-pairing-token.md)). Every `/api/*` route except `/api/health`
+and `/api/pair` needs a valid token, and an empty registry answers `403 device not paired`. The
+header gate still covers writes only, with one exception: the Files view asks for both as a
+`device-read` ([ADR 0083](./.adr/0083-the-files-view-reads-the-changes-root.md)). Neither applies to `/crew/v1/*`, which has its own two factors. The reasoning sits in
 `bridge/pairing.ts`'s header; don't collapse the two gates into one.
 
 **Collie manages exactly one front door: `tailscale serve`** — the CLI (`cli/serve.ts`) publishes it,

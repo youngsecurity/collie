@@ -4,7 +4,14 @@ import { de } from "@/lib/i18n/messages/de";
 import { en } from "@/lib/i18n/messages/en";
 
 import { fill, installApiStub, pinLocale } from "./fixtures/api";
-import { installMirrorWorld, MIRROR_NEEDLE, MIRROR_PANE_ID, stubBlob } from "./fixtures/mirror";
+import {
+  E2E_DEVICE_TOKEN,
+  installMirrorWorld,
+  MIRROR_NEEDLE,
+  MIRROR_PANE_ID,
+  pairDevice,
+  stubBlob,
+} from "./fixtures/mirror";
 
 // ── Issue 180: the mirror shows the picture, or says a picture is there ──────────────────────────
 //
@@ -33,6 +40,11 @@ import { installMirrorWorld, MIRROR_NEEDLE, MIRROR_PANE_ID, stubBlob } from "./f
 // waiting for it.
 test.use({ serviceWorkers: "block" });
 
+/** A `blob:` URL minted by the page itself: its own origin, then a UUID. */
+function blobUrlOf(origin: string): RegExp {
+  return new RegExp(`^blob:${origin.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}/[0-9a-f-]{36}$`);
+}
+
 /** The live pane route, `pane/:paneId` (`src/router.tsx:72`). */
 const PANE_URL = `/pane/${encodeURIComponent(MIRROR_PANE_ID)}`;
 /** The transcript route, `pane/:paneId/history` (`src/router.tsx:73`). */
@@ -52,7 +64,8 @@ test.beforeEach(async ({ page }, testInfo) => {
 // Replaces the hand check "open a pane whose screen holds a Kitty placeholder run and see the
 // picture instead of a black box", run by hand 2026-09-09.
 test("a run of image placeholders shows the picture the journal is holding", async ({ page }) => {
-  await stubBlob(page, "bytes");
+  const blobRequests = await stubBlob(page, "bytes");
+  await pairDevice(page);
   await page.goto(PANE_URL);
 
   // The picture, by its alt text — which is the app's own `mirror.imageAlt`.
@@ -62,13 +75,58 @@ test("a run of image placeholders shows the picture the journal is holding", asy
   // And it is the JOURNAL's picture, not a decoration: the anchor around it points at the blob path
   // the fixture transcript named. The anchor takes its accessible name from the picture's alt text,
   // so it is reachable by role as well.
+  //
+  // Reads need the pairing token (ADR 0086) and an `<img src>` cannot send it, so the page fetches
+  // the blob itself and shows an object URL: the anchor's href is a `blob:` URL of the page's own
+  // origin, and the proof it is the journal's picture is the fetch behind it, which asked the bridge
+  // for `/api/blobs/<hash>` with the Authorization header.
   const link = page.getByRole("link", { name: en["mirror.imageAlt"] });
-  await expect(link).toHaveAttribute("href", /\/api\/blobs\/[0-9a-f]{64}$/);
+  await expect(link).toHaveAttribute("href", blobUrlOf(new URL(page.url()).origin));
+  expect(blobRequests.length).toBeGreaterThan(0);
+  for (const request of blobRequests) {
+    expect(request.path).toMatch(/\/api\/blobs\/[0-9a-f]{64}$/);
+    expect(request.authorization).toBe(`Bearer ${E2E_DEVICE_TOKEN}`);
+  }
 
   // The screen holds two clusters and the journal holds one image, so the cluster with nothing left
   // of it says "a picture is here" rather than repeating the one that is.
   await expect(page.getByText(en["mirror.imageBadge"], { exact: true })).toBeVisible();
 });
+
+for (const change of ["remove-token", "replace-token", "wipe-broadcast"] as const) {
+  test(`another tab's ${change} removes the journal image without reloading`, async ({ page, context }) => {
+    const requests = await stubBlob(page, "bytes");
+    await pairDevice(page);
+    await page.goto(PANE_URL);
+    const picture = page.getByRole("img", { name: en["mirror.imageAlt"] });
+    await expect(picture).toBeVisible();
+    const before = requests.length;
+
+    // A second same-origin document uses the browser's real storage/channel delivery. No module
+    // imports or synthetic events in the receiving app, and no production bridge is contacted.
+    const other = await context.newPage();
+    await other.route("**/__image-wipe-sender", (route) => route.fulfill({
+      contentType: "text/html", body: "<!doctype html><title>Other tab</title>",
+    }));
+    await other.goto("/__image-wipe-sender");
+    await other.evaluate((action) => {
+      if (action === "remove-token") localStorage.removeItem("collie:device-token");
+      else if (action === "replace-token") localStorage.setItem("collie:device-token", "replacement-token");
+      else {
+        const channel = new BroadcastChannel("collie-wipe");
+        const post = channel.postMessage.bind(channel);
+        post({ type: "wipe", reason: "unpair", from: "other-e2e-tab" });
+        channel.close();
+      }
+    }, change);
+
+    await expect(picture).toHaveCount(0);
+    await expect(page.getByRole("link", { name: en["mirror.imageAlt"] })).toHaveCount(0);
+    expect(new URL(page.url()).pathname).toBe(PANE_URL);
+    expect(requests).toHaveLength(before);
+    await other.close();
+  });
+}
 
 // Replaces the hand check "the picture on the mirror admits it is a guess, and points at History",
 // run by hand 2026-09-09.

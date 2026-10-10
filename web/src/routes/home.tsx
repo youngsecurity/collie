@@ -1,5 +1,5 @@
 import { ListTree, Network, Rows3 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRevalidator } from "react-router";
 
 import { RouteHeader, SettingsGear } from "@/components/app-header";
@@ -34,6 +34,7 @@ import { setMachineHidden, useHiddenMachines } from "@/lib/hidden-machines";
 import type { ChangesLookup } from "@/lib/api";
 import type { DashView } from "@/lib/dash-view";
 import { t, tn } from "@/lib/i18n";
+import { prefetchFolders } from "@/lib/folders";
 import { glideForward } from "@/lib/glide";
 import { spaceChangesPath, spacePath } from "@/lib/nav";
 import type { WorkspaceGroup } from "@/lib/pane-groups";
@@ -90,7 +91,7 @@ function ChangesTabBody({
 // Dashboard home screen. Every pane sits under the workspace it lives in, in the multiplexer's own
 // order (lib/pane-groups.ts, ADR 0063); urgency is a mark on a row and a heading and one summary
 // line on top, never a position. The operator may ask for Activity or Cache order instead, with the
-// toggle beside that line (ADR 0071): one ranked list, read once and held. The Spaces navigator sits
+// order select under that line (ADR 0071): one ranked list, read once and held. The Spaces navigator sits
 // last, under the thing it navigates to.
 // Launchers sit directly above Spaces: they are one-tap act-on-able actions like the herd above
 // them, but they CREATE rather than triage, so they sit under the herd and above the navigator
@@ -113,6 +114,13 @@ export function HomeRoute() {
         .map((w) => ({ workspaceId: w.workspaceId, repoRoot: w.repoRoot!, label: w.label }))
     : [];
   const [newSpaceOpen, setNewSpaceOpen] = useState(false);
+  // The new-space sheet's Favourites and Recent, read once ahead of the tap so the sheet opens at its
+  // final height (lib/folders.ts). Once per mount, for the machine this view shows.
+  const folderHost = data.scope?.host;
+  const folderSession = data.scope?.session;
+  useEffect(() => {
+    prefetchFolders({ host: folderHost, session: folderSession });
+  }, [folderHost, folderSession]);
   useLocale();
   const {
     prefs,
@@ -253,7 +261,9 @@ export function HomeRoute() {
               glideKeyOf={paneOpen.glideKeyOf}
               onPress={paneOpen.press}
               error={data.error}
+              notPaired={notPaired}
               lastSeenAt={data.lastSeenAt}
+              stale={data.stale === true}
               tabs={data.tabs}
               servers={data.servers}
               // Each workspace heading's "+" (M40/03): the list resolves each heading's own machine and
@@ -374,6 +384,9 @@ export function HomeRoute() {
         pane={held}
         scope={held === null ? data.scope : paneScope(data.scope, held, data.servers, data.sessions)}
         readOnly={readOnly}
+        // The herd on screen is the saved copy: its ids may have been reused, so nothing is renamed,
+        // focused or closed from it (the sheet shows a note, `useSpaceActions` refuses the creates).
+        savedCopy={data.stale === true}
         onRenamed={() => revalidator.revalidate()}
         onClosed={() => revalidator.revalidate()}
         herd={herd}

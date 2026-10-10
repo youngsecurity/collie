@@ -69,12 +69,15 @@ export function classifyFooter(text: string): PromptFamily | null {
 // option is a bare "No". agy's prompt-select lifts their numbered options, and no wider name list
 // fixes it. Those two captures are therefore not in fixtures/panes; see its README for the record.
 const CLAUDE_PERMISSION_OPTION = /^\s*(?:❯\s*)?\d+\.\s+No,\s+and tell Claude\b/i;
+// Claude 2.1.291 names its plan feedback field this way, without a welcome banner.
+const CLAUDE_PLAN_FEEDBACK_OPTION = /^\s*(?:❯\s*)?\d+\.\s+Tell Claude what to change\s*$/i;
 
 export function isAlienBuffer(texts: string[]): boolean {
   for (const text of texts) {
     if (
       /Claude Code|\.claude\/|Claude Sonnet|Claude Opus|Claude Max|AskUserQuestion/i.test(text) ||
-      CLAUDE_PERMISSION_OPTION.test(text)
+      CLAUDE_PERMISSION_OPTION.test(text) ||
+      CLAUDE_PLAN_FEEDBACK_OPTION.test(text)
     ) {
       const full = texts.join(" ");
       if (!/Antigravity CLI|\.antigravity|agy/i.test(full)) return true;
