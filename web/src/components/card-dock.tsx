@@ -11,6 +11,7 @@ import type {
   WizardModel,
 } from "@/lib/blocks";
 import type { MultiSelectIntent } from "@/lib/multi-select-action";
+import type { Scope } from "@/lib/scope";
 import { PromptSelectBlock, type PromptBlockAction } from "@/components/prompt-select-block";
 import { WizardBlock } from "@/components/wizard-block";
 import { PreviewSelectBlock, type PreviewBlockAction } from "@/components/preview-select-block";
@@ -76,6 +77,12 @@ export interface CardDockProps extends RawMirrorAppearance {
   onUnreadDialogAction?: (key: string, cancel: UnreadDialogModel) => void | Promise<void>;
   /** Disable every card's controls (read-only device, gone pane). */
   promptDisabled?: boolean;
+  /** The pane the card answers for, and its scope. The prompt card enables only while the bridge has
+   *  answered a read for it lately (lib/liveness.ts, M46 spec 11). */
+  paneId?: string;
+  scope?: Scope;
+  /** The screen is drawn from the on-device cache (M46 spec 10): the prompt card stays locked. */
+  stale?: boolean;
   /** The soft keyboard is up: the dock's cap drops from 55dvh to 40dvh. */
   composing?: boolean;
   /** The mirror's chosen face (`mirrorFont`), so a card's `font-mono` rows and its Terminal mirror
@@ -98,6 +105,9 @@ function liftedCard({
   onMenuAction,
   onUnreadDialogAction,
   promptDisabled,
+  paneId,
+  scope,
+  stale,
 }: CardDockProps): ReactNode {
   const promptBlock = blocks.find((b): b is PromptBlock => b.kind === "prompt-select");
   if (promptBlock) {
@@ -106,6 +116,9 @@ function liftedCard({
         prompt={promptBlock.prompt}
         lines={promptBlock.lines}
         disabled={promptDisabled || !onPromptAction}
+        paneId={paneId}
+        scope={scope}
+        stale={stale}
         onAction={(action) => onPromptAction?.(action, promptBlock.prompt) ?? false}
       />
     );

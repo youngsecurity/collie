@@ -5,8 +5,12 @@ import { http, HttpResponse } from "msw";
 
 import { server } from "@/test/setup";
 import { PairedDevices } from "@/components/paired-devices";
-import { getDeviceToken, setDeviceToken, TOKEN_STORAGE_KEY } from "@/lib/pairing";
+import { __resetPairing, getDeviceToken, getPairingExpiry, markExpired, rememberPairingExpiry, setDeviceToken, subscribePairing, PAIRING_EXPIRES_KEY, TOKEN_STORAGE_KEY } from "@/lib/pairing";
+import { __resetStore, getRecord, putRecord } from "@/lib/store";
+import { FakeIDBFactory, uninstallFakeIndexedDB } from "@/test/fake-indexeddb";
 import type { DevicesData } from "@/lib/loaders";
+import { loadDraft, saveDraft } from "@/lib/drafts";
+import { lastWipeReason, wipeDevice } from "@/lib/wipe";
 
 // PairedDevices calls useRevalidator() to re-run the settings loader after a pair/revoke, and
 // useLocation() to see whether it is the fragment the read-only strip linked to. Stub both (hoisted
@@ -48,7 +52,7 @@ const PAIRED: DevicesData = {
 };
 
 beforeEach(() => {
-  revalidate.mockClear();
+  revalidate.mockReset();
   setSearchParams.mockClear();
   hash.current = "";
   search.current = "";
@@ -57,6 +61,7 @@ beforeEach(() => {
 describe("PairedDevices — pairing", () => {
   test("a successful pair stores the token exactly once and revalidates", async () => {
     const user = userEvent.setup();
+    rememberPairingExpiry(Date.now() - 1);
     let body: { code?: string; label?: string } | undefined;
     server.use(
       http.post<never, { code?: string; label?: string }>("/api/pair", async ({ request }) => {
@@ -75,7 +80,65 @@ describe("PairedDevices — pairing", () => {
     await waitFor(() => expect(body).toEqual({ code: "ABCD2345", label: "my phone" }));
     expect(getDeviceToken()).toBe("tok-secret");
     expect(localStorage.getItem(TOKEN_STORAGE_KEY)).toBe("tok-secret");
+    expect(getPairingExpiry()).toBeNull();
+    expect(localStorage.getItem(PAIRING_EXPIRES_KEY)).toBeNull();
     expect(revalidate).toHaveBeenCalled();
+  });
+
+  test("pairing saves its expiry before subscribers or revalidation, and caps writes across reload without devices", async () => {
+    const user = userEvent.setup();
+    const start = Date.now();
+    const expiresAt = start + 60_000;
+    let clock = start;
+    let devicesReads = 0;
+    new FakeIDBFactory().install();
+    __resetStore({ now: () => clock });
+    const observed: (number | null)[] = [];
+    const unsubscribe = subscribePairing(() => observed.push(getPairingExpiry()));
+    const writes: Promise<boolean>[] = [];
+    revalidate.mockImplementation(() => {
+      writes.push(putRecord("snapshot", "lead", "first"));
+      // Model a revalidation that never completes, so no loader supplies the expiry.
+      return new Promise<void>(() => {});
+    });
+    server.use(
+      http.post("/api/pair", () => HttpResponse.json({ token: "expiring-token", label: "phone", expiresAt })),
+      http.get("/api/devices", () => {
+        devicesReads++;
+        return HttpResponse.error();
+      }),
+    );
+    try {
+      const view = render(<PairedDevices data={UNPAIRED} />);
+      await user.type(screen.getByLabelText(/pairing code/i), "ABCD2345");
+      await user.type(screen.getByLabelText(/name for this device/i), "phone");
+      await user.click(screen.getByRole("button", { name: /pair this device/i }));
+      await waitFor(() => expect(revalidate).toHaveBeenCalledOnce());
+      expect(getDeviceToken()).toBe("expiring-token");
+      expect(observed).toEqual([expiresAt]);
+      expect(getPairingExpiry()).toBe(expiresAt);
+      expect(localStorage.getItem(PAIRING_EXPIRES_KEY)).toBe(String(expiresAt));
+      expect(await Promise.all(writes)).toEqual([true]);
+      view.unmount();
+      // Drop page-local state, retaining localStorage and the IndexedDB database.
+      __resetPairing();
+      __resetStore({ now: () => clock });
+      expect(getPairingExpiry()).toBe(expiresAt);
+      expect((await getRecord("snapshot", "lead"))?.value).toBe("first");
+      clock = expiresAt - 1;
+      expect(await putRecord("pane-text", "pane", "later")).toBe(true);
+      __resetStore({ now: () => clock });
+      expect((await getRecord("pane-text", "pane"))?.value).toBe("later");
+      clock = expiresAt;
+      expect(await getRecord("snapshot", "lead")).toBeNull();
+      expect(await getRecord("pane-text", "pane")).toBeNull();
+      expect(await putRecord("snapshot", "lead", "too late")).toBe(false);
+      expect(devicesReads).toBe(0);
+    } finally {
+      unsubscribe();
+      __resetStore();
+      uninstallFakeIndexedDB();
+    }
   });
 
   test("a bad-code failure shows the actionable sentence and stores nothing", async () => {
@@ -124,6 +187,53 @@ describe("PairedDevices — pairing", () => {
     render(<PairedDevices data={{ ...PAIRED, current: null }} />);
 
     expect(screen.getByLabelText(/pairing code/i)).toBeInTheDocument();
+  });
+});
+
+// M46 spec 01: each row shows its expiry, and an expired pairing gets the pair-again form.
+describe("PairedDevices — expiry", () => {
+  const NOW = Date.now();
+  const WITH_EXPIRY: DevicesData = {
+    enforced: true,
+    current: "my phone",
+    devices: [
+      { label: "my phone", createdAt: 1_000, lastSeenAt: 2_000, expiresAt: null, expired: false, current: true },
+      { label: "tablet", createdAt: 1_000, lastSeenAt: 2_000, expiresAt: NOW + 30 * 86_400_000, expired: false, current: false },
+      { label: "old phone", createdAt: 1_000, lastSeenAt: 2_000, expiresAt: NOW - 86_400_000, expired: true, current: false },
+    ],
+    error: false,
+  };
+
+  test("each row shows no expiry, a date ahead, or an expired mark", () => {
+    setDeviceToken("tok-secret");
+    render(<PairedDevices data={WITH_EXPIRY} />);
+    expect(screen.getByText("No expiry")).toBeInTheDocument();
+    expect(screen.getByText(/^Expires /)).toBeInTheDocument();
+    // The expired row carries a badge AND says when it passed.
+    expect(screen.getByText("Expired")).toBeInTheDocument();
+    expect(screen.getByText(/^Expired .+/)).toBeInTheDocument();
+  });
+
+  test("a row from an answer without the field reads as no expiry", () => {
+    setDeviceToken("tok-secret");
+    render(<PairedDevices data={PAIRED} />);
+    expect(screen.getByText("No expiry")).toBeInTheDocument();
+  });
+
+  test("an expired pairing draws the pair-again form, which names the next step", () => {
+    setDeviceToken("tok-old");
+    markExpired();
+    render(<PairedDevices data={{ ...WITH_EXPIRY, current: null }} />);
+    expect(screen.getByText(/pairing expired/i)).toBeInTheDocument();
+    expect(screen.getByText("bin/collie pair")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /pair again/i })).toBeInTheDocument();
+    expect(screen.getByLabelText(/pairing code/i)).toBeInTheDocument();
+  });
+
+  test("without the expired latch the form keeps its first-pair wording", () => {
+    render(<PairedDevices data={UNPAIRED} />);
+    expect(screen.getByRole("button", { name: /pair this device/i })).toBeInTheDocument();
+    expect(screen.queryByText(/pairing expired/i)).not.toBeInTheDocument();
   });
 });
 
@@ -237,6 +347,93 @@ describe("PairedDevices — revoking", () => {
   });
 });
 
+// M46 spec 02: the phone asks before it revokes any device, its own or another, and the armed row
+// names the device and what happens. Cancel revokes nothing.
+describe("PairedDevices — revoke confirm", () => {
+  const TWO: DevicesData = {
+    enforced: true,
+    current: "my phone",
+    devices: [
+      { label: "my phone", createdAt: 1_000, lastSeenAt: 2_000, current: true },
+      { label: "old tablet", createdAt: 500, lastSeenAt: 600, current: false },
+    ],
+    error: false,
+  };
+
+  function countRevokes() {
+    const seen = { calls: 0 };
+    server.use(
+      http.post("/api/devices/revoke", () => {
+        seen.calls += 1;
+        return HttpResponse.json({ enforced: true, current: null, devices: [] });
+      }),
+    );
+    return seen;
+  }
+
+  test("revoke confirm: another device's row names it and says it loses access; cancel revokes nothing", async () => {
+    const user = userEvent.setup();
+    setDeviceToken("tok-secret");
+    const seen = countRevokes();
+    render(<PairedDevices data={TWO} />);
+
+    await user.click(screen.getByRole("button", { name: /revoke old tablet/i }));
+    expect(screen.getByText("Revoke old tablet? It loses access until it is paired again.")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /cancel/i }));
+    expect(screen.queryByText(/loses access/)).not.toBeInTheDocument();
+    expect(seen.calls).toBe(0);
+    expect(getDeviceToken()).toBe("tok-secret");
+  });
+
+  test("revoke confirm: this phone's row says what is cleared and what stays; cancel keeps everything", async () => {
+    const user = userEvent.setup();
+    setDeviceToken("tok-secret");
+    saveDraft(undefined, "w1:p1", "half a reply");
+    const seen = countRevokes();
+    render(<PairedDevices data={TWO} />);
+
+    await user.click(screen.getByRole("button", { name: /revoke my phone/i }));
+    expect(screen.getByText(/drafts, saved pane text and notifications are cleared here/i)).toBeInTheDocument();
+    expect(screen.getByText(/your settings stay/i)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /cancel/i }));
+    expect(seen.calls).toBe(0);
+    expect(getDeviceToken()).toBe("tok-secret");
+    expect(loadDraft(undefined, "w1:p1")).toBe("half a reply");
+  });
+
+  test("revoke confirm: the second tap on this phone revokes, then wipes", async () => {
+    const user = userEvent.setup();
+    setDeviceToken("tok-secret");
+    saveDraft(undefined, "w1:p1", "half a reply");
+    const seen = countRevokes();
+    render(<PairedDevices data={TWO} />);
+
+    await user.click(screen.getByRole("button", { name: /revoke my phone/i }));
+    await user.click(screen.getByRole("button", { name: /unpair this phone/i }));
+
+    await waitFor(() => expect(seen.calls).toBe(1));
+    expect(getDeviceToken()).toBeNull();
+    expect(loadDraft(undefined, "w1:p1")).toBeNull();
+  });
+
+  test("revoke confirm: a refused revoke of this phone wipes nothing", async () => {
+    const user = userEvent.setup();
+    setDeviceToken("tok-secret");
+    saveDraft(undefined, "w1:p1", "half a reply");
+    server.use(http.post("/api/devices/revoke", () => new HttpResponse("boom", { status: 500 })));
+    render(<PairedDevices data={TWO} />);
+
+    await user.click(screen.getByRole("button", { name: /revoke my phone/i }));
+    await user.click(screen.getByRole("button", { name: /unpair this phone/i }));
+
+    expect(await screen.findByText(/couldn.t revoke that device/i)).toBeInTheDocument();
+    expect(getDeviceToken()).toBe("tok-secret");
+    expect(loadDraft(undefined, "w1:p1")).toBe("half a reply");
+  });
+});
+
 describe("PairedDevices — the fragment the read-only strip links to", () => {
   // `read-only-banner.tsx` links to `/settings#paired-devices`. React Router navigates without a
   // document load, so the browser never resolves that fragment itself — this card has to. Settings
@@ -263,5 +460,32 @@ describe("PairedDevices — the fragment the read-only strip links to", () => {
     expect(scrollIntoView).not.toHaveBeenCalled();
     expect(document.activeElement).toBe(document.body);
     scrollIntoView.mockRestore();
+  });
+});
+
+// M46 hardening: the pair screen says why it is there.
+describe("PairedDevices — the pair screen names its cause", () => {
+  test("a browser that never held a token says it has not been paired, and names `collie pair`", () => {
+    render(<PairedDevices data={UNPAIRED} />);
+    expect(screen.getByText(/This browser has not been paired\. Run/)).toBeInTheDocument();
+    expect(screen.getByText("collie pair")).toBeInTheDocument();
+    expect(screen.getByText(/on your machine and enter the code here\./)).toBeInTheDocument();
+  });
+
+  test.each([
+    ["unpair", "Saved data was cleared because this phone was unpaired."],
+    ["expired", "Saved data was cleared because its pairing expired."],
+    ["revoked", "Saved data was cleared because the bridge revoked it."],
+  ] as const)("after a %s wipe it shows one line with the cause, once", async (reason, line) => {
+    setDeviceToken("tok-old");
+    await wipeDevice(reason);
+    const first = render(<PairedDevices data={UNPAIRED} />);
+    expect(screen.getByText(line)).toBeInTheDocument();
+    // A browser that WAS paired is not told it never was.
+    expect(screen.queryByText(/This browser has not been paired/)).not.toBeInTheDocument();
+    expect(lastWipeReason()).toBeNull();
+    first.unmount();
+    render(<PairedDevices data={UNPAIRED} />);
+    expect(screen.queryByText(line)).not.toBeInTheDocument();
   });
 });
