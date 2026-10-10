@@ -171,6 +171,15 @@ export const CONFIG_SETTINGS: readonly ConfigSetting[] = [
     configField: "notifyDelayMs",
   },
   {
+    key: "task_run_level",
+    env: "COLLIE_TASK_RUN_LEVEL",
+    section: "bridge",
+    kind: "enum",
+    values: ["limited", "highest"],
+    default: "limited",
+    doc: "Windows only: the privilege of the Task Scheduler task. highest needs an elevated shell at start.",
+  },
+  {
     key: "read_lines",
     env: "COLLIE_READ_LINES",
     section: "bridge",
@@ -299,7 +308,7 @@ export const CONFIG_SETTINGS: readonly ConfigSetting[] = [
     section: "mux",
     kind: "string",
     default: DEFAULT_MUX,
-    doc: "Which multiplexer this collie mirrors: herdr, tmux or zellij.",
+    doc: "Which multiplexer this collie mirrors: herdr, tern, tmux, zellij or tuios.",
     configField: "mux",
   },
   {
@@ -331,6 +340,15 @@ export const CONFIG_SETTINGS: readonly ConfigSetting[] = [
     configField: "tmuxBin",
   },
   {
+    key: "tern_bin",
+    env: "COLLIE_TERN_BIN",
+    section: "mux",
+    kind: "string",
+    default: "",
+    doc: "Absolute path to the tern binary, when it sits somewhere unusual.",
+    configField: "ternBin",
+  },
+  {
     key: "zellij_bin",
     env: "COLLIE_ZELLIJ_BIN",
     section: "mux",
@@ -357,6 +375,24 @@ export const CONFIG_SETTINGS: readonly ConfigSetting[] = [
     doc: "The zellij session to drive. Empty works only when exactly one is running.",
     configField: "muxEndpoint",
   },
+  {
+    key: "mux_endpoint_tern",
+    env: "COLLIE_MUX_ENDPOINT_TERN",
+    section: "mux",
+    kind: "string",
+    default: "",
+    doc: "The tern daemon socket to drive. Empty takes the socket tern itself uses.",
+    configField: "muxEndpoint",
+  },
+  {
+    key: "mux_endpoint_tuios",
+    env: "COLLIE_MUX_ENDPOINT_TUIOS",
+    section: "mux",
+    kind: "string",
+    default: "",
+    doc: "The tuios daemon socket to drive. Empty takes the socket tuios itself uses.",
+    configField: "muxEndpoint",
+  },
 
   // ── access ─────────────────────────────────────────────────────────────────
   {
@@ -376,6 +412,24 @@ export const CONFIG_SETTINGS: readonly ConfigSetting[] = [
     default: false,
     doc: "Accept a request with no Tailscale-User-Login header. Re-opens the tagged-node gap.",
     configField: "trustedUserOptional",
+  },
+  {
+    key: "access_team",
+    env: "COLLIE_ACCESS_TEAM",
+    section: "access",
+    kind: "string",
+    default: "",
+    doc: "The Cloudflare Access team whose signed token every tunnel request must carry. Needs access_aud.",
+    configField: "accessTeam",
+  },
+  {
+    key: "access_aud",
+    env: "COLLIE_ACCESS_AUD",
+    section: "access",
+    kind: "list",
+    default: [],
+    doc: "The Cloudflare Access application audience tag. Needs access_team.",
+    configField: "accessAud",
   },
   {
     key: "device_header",
@@ -404,6 +458,15 @@ export const CONFIG_SETTINGS: readonly ConfigSetting[] = [
     default: "preview",
     doc: "How much of each value the audit trail keeps.",
     configField: "auditContent",
+  },
+  {
+    key: "redact",
+    env: "COLLIE_REDACT",
+    section: "access",
+    kind: "bool",
+    default: true,
+    doc: "Mask known secret shapes in pane text before it reaches a phone or a push.",
+    configField: "redact",
   },
 
   // ── push ───────────────────────────────────────────────────────────────────
@@ -521,6 +584,15 @@ export const CONFIG_SETTINGS: readonly ConfigSetting[] = [
     kind: "roots",
     default: [],
     doc: "Where Hermes keeps its session logs. Empty takes ~/.hermes.",
+    configField: "journalRoots",
+  },
+  {
+    key: "muse_root",
+    env: "COLLIE_MUSE_ROOT",
+    section: "journal",
+    kind: "roots",
+    default: [],
+    doc: "Where Muse keeps its session logs. Empty takes $XDG_DATA_HOME/muse/sessions.",
     configField: "journalRoots",
   },
 
@@ -662,7 +734,7 @@ export const CONFIG_SETTINGS: readonly ConfigSetting[] = [
     env: "COLLIE_STT_PROVIDER",
     section: "stt",
     kind: "enum",
-    values: ["openai-compatible", "codex"],
+    values: ["openai-compatible", "codex", "local-cli"],
     default: "",
     doc: "Which speech-to-text provider to build. Absent leaves the feature off.",
   },
@@ -714,6 +786,14 @@ export const CONFIG_SETTINGS: readonly ConfigSetting[] = [
     kind: "string",
     default: "codex",
     doc: "The codex binary the codex provider borrows your session from.",
+  },
+  {
+    key: "stt_command",
+    env: "COLLIE_STT_COMMAND",
+    section: "stt",
+    kind: "string",
+    default: "",
+    doc: "The command the local-cli provider runs, an absolute path or a name on PATH.",
   },
 ];
 

@@ -1,7 +1,9 @@
 # Configure
 
-By default, Collie runs in open single-user mode: anyone on your tailnet who can reach the URL has
-full control. This triggers the `TRUSTED_USER` warning. Restrict access:
+By default, Collie answers only a device you paired with `collie pair`. A paired device has full
+control, so anyone on your tailnet who can reach the URL still needs a paired phone first. Without
+`COLLIE_TRUSTED_USER`, the bridge prints a `TRUSTED_USER` warning, because every tailnet login can
+reach the pair screen. Restrict access further:
 
 ```bash
 # in your .env
@@ -93,7 +95,7 @@ The config file groups every setting under a `[section]`. The environment name o
 | `bridge` | poll cadence, how many lines are read, where state lives |
 | `network` | the port, the bind address, allowed hosts and origins |
 | `mux` | which multiplexer this collie mirrors, and where it lives |
-| `access` | the Tailscale identity gate, the device header, the audit trail |
+| `access` | the Tailscale identity gate, the device header, the audit trail, the secret mask |
 | `push` | the three Web Push (VAPID) values |
 | `uploads` | the attachment size cap and the extra text types accepted |
 | `journal` | where each harness keeps its own session log |
@@ -215,8 +217,13 @@ becomes Undo, which puts the text and the attachments back. Undo stays until you
 keystroke, an attachment, a send, a tap on another belt button, or leaving the pane. Scrolling the
 belt keeps it.
 
+Left-handed? Set **Settings → Appearance → Hand** to **Left**. The belt turns round: the Switch button
+and the X move to its left end, still above Send, and Keys becomes the rightmost button, with the rest
+scrolling off toward the left. Send and Attach move to the left of the reply box. The setting is per
+device and applies the next time you open a pane.
+
 To verify, open a pane running Claude Code, Codex, pi or omp; the tinted segment sits at the right
-of the row above the keyboard. Turn that segment off per device in **Settings → Harness shortcuts**;
+of the row above the keyboard. Turn that segment off per device in **Settings → Appearance → Harness shortcuts**;
 Collie's own controls stay.
 
 ## Your own key presets
@@ -270,7 +277,7 @@ items = ["yes", "no"]        # sent verbatim, one per button
 
 When a pane matches your rules, your groups replace the default ones
 ([ADR 0018](../.adr/0018-operator-command-rows-replace-the-catalog.md)). The default phrases are
-English (`yes`, `commit and push`).
+English (`yes`, `commit and push`, `drastically simplify`).
 
 Use this file to run in other languages, or to send words like `approve` to specific harnesses.
 Setting `scope = "shell"` targets standard shell panes, which otherwise only receive `y`/`n`.
@@ -325,7 +332,7 @@ To verify, reload the dashboard and look under the herd. If a row fails to load,
 
 ## Your own typefaces
 
-The interface font is a per-device setting. Under **Settings → Typeface**, you can choose between
+The interface font is a per-device setting. Under **Settings → Appearance → Typeface**, you can choose between
 System, Space Grotesk (the default), and Aldrich. You can add custom fonts in `theme.toml`, the
 fourth configuration file:
 
@@ -358,7 +365,7 @@ Three behaviors to note:
   immediately.
 - **Chrome only.** The selected font applies only to Collie's chrome. The terminal mirror,
   transcript, and rendered markdown retain their own typography (the mirror's own face and, on this
-  fork, its colours are set under **Settings → Terminal font**; see
+  fork, its colours are set under **Settings → Appearance → Terminal font**; see
   [Terminal appearance](#terminal-appearance-young-security-fork) below).
 - **Live on next reload.** Changes do not require a restart, taking effect on the next page reload.
   Invalid configurations log errors visible via `journalctl --user -u collie -n 20`.
@@ -528,6 +535,26 @@ In a [crew](crew.md), each machine keeps the folders that exist on it, and the s
 of the machine you picked. A machine that runs an older Collie has no list, and the sheet then shows
 none for it.
 
+## Secret masking
+
+Collie masks known secret shapes in pane text before it reaches your phone.
+
+```bash
+# in your .env; the default is on
+COLLIE_REDACT=off
+```
+
+| variable | default | what it does |
+| --- | --- | --- |
+| `COLLIE_REDACT` | `on` | Masks API keys, JWTs, PEM private keys, bearer tokens and `password=` values in the mirror, Chat, History, push notifications, file bodies in Files and diffs in Changes. `off` sends them as they are. |
+
+In the config file this is `[access] redact`. The mask keeps the width of what it hides, so the
+mirror's layout holds. It catches high-confidence shapes only; the limits are in
+[Security](security.md#what-leaves-the-machine-is-masked).
+
+In a crew, the lead also masks the text its members send, by its own setting. A member's text
+reaches your phone unmasked only when the lead and that member both set `COLLIE_REDACT=off`.
+
 ## Multi-session
 
 By default, one Collie instance serves every Herdr session it finds.
@@ -541,7 +568,7 @@ sessions. [Security](security.md) lists this behavior as a sharp edge.
 
 > **Note.** Collie follows your phone's appearance by default.
 
-To pin it, open **Settings → Appearance** and pick **System**, **Light** or **Dark**. The setting is
+To pin it, open **Settings → Appearance → Theme** and pick **System**, **Light** or **Dark**. The setting is
 stored **per device** in the browser rather than on the bridge. Your phone can remain on Dark while
 a laptop tracks the OS. The preference persists across reloads and PWA reinstalls on the same
 device.
@@ -566,7 +593,7 @@ This implementation has two practical consequences:
 
 ### Terminal appearance (Young Security fork)
 
-**Settings → Terminal font** also carries the mirror's **colours** on this fork: a default text
+**Settings → Appearance → Terminal font** also carries the mirror's **colours** on this fork: a default text
 colour and a background colour, two native pickers under the font family. They are stored **per
 device** in the browser beside the font, so a phone can run green on black while a laptop keeps the
 dark ground. **Matrix** is the one preset: it picks the MesloLGS NF family with green (`#00ff00`) on
@@ -608,7 +635,7 @@ instead; the choice is stored per device in the browser.
 
 > **Note.** Zen mode is off by default.
 
-Enable it in **Settings → Zen mode** (stored per device in the browser). This adds a **Zen mode**
+Enable it in **Settings → Device → Zen mode** (stored per device in the browser). This adds a **Zen mode**
 option to the pane menu, under the ⋮ beside Find and History. Tapping it hides all Collie UI
 elements: the header, tab and pane strips, agent statusline, and composer docks. Only the terminal
 mirror remains visible. A floating button in the top-right corner or the Escape key restores the
@@ -621,43 +648,120 @@ The terminal mirror continues polling in Zen mode, and interactive buffer elemen
 functional. Prompt buttons, "Load older", and "Show entire history" controls stay available because
 they are part of the content stream rather than chrome.
 
+## Chat view
+
+> **Note.** Chat is the default view of an agent pane since 1.17.0. Terminal is one tap away.
+
+An agent pane opens in **Chat**. Chat draws the agent's own conversation instead of the terminal:
+your turns, its replies, thinking behind a fold and a card per step. The composer,
+the belt and the pane menu stay where they were. To read the terminal instead, open the pane's **⋮**
+menu and tap **Terminal view**. The choice is one setting for the whole device, stored in the
+browser, and a device that already chose the terminal keeps it. **Chat view** in the same menu
+switches back.
+
+When you queue a message while Claude Code works, Chat shows it on a **Waiting to send** card, and
+the card's **Send now** button sends the whole queue to the running turn at once. Only Claude Code
+offers it, because the button presses Ctrl+Enter, the key that agent defines for this. The button is
+hidden on a read-only device and on a saved copy.
+
+One thing in Chat is known to be incomplete. Hermes can remove a turn from its log after Collie
+read it, for example when it compacts. Chat then keeps showing that turn until the session is read
+again. The terminal never has this problem.
+
+Chat reads the agent's session log, not the screen. That means a pane gets Chat only when Collie
+knows which session the pane is running, and the agent has to tell the multiplexer. The pane itself
+cannot work this out.
+
+| Multiplexer | What reports the session | Chat works for |
+| --- | --- | --- |
+| Herdr | The matching Herdr integration for that agent, installed once with `herdr integration install <agent>` (for example `claude`, `codex`, `opencode`, `pi`, `omp`, `grok`, `hermes`), then restart the agent | Every agent that has an integration and a session log Collie reads |
+| tmux, zellij, Tern (experimental) | Collie's [beacon hooks](multiplexers.md#agent-beacons-optional-linux) | Claude Code only, after `collie hooks install claude` |
+| tuios | The tuios daemon | The agents the daemon reports |
+
+`herdr integration status` shows which integrations are installed. A hook is read when the agent
+starts, so an agent that was already running when you installed it needs a restart. Oh My Pi is the
+`omp` integration, not the `pi` one: they are two agents with two hooks, and they share one log
+format.
+
+A new agent pane shows Chat at once, before it has anything to read, with one line: "Send a
+message to start". Codex reports its session only after your first message, and pi writes its log
+only after its first reply, so both start this way. The conversation appears as soon as there is one.
+
+A pane falls back to the terminal when something happens that Chat cannot show: the agent asks you a
+question before there is anything to read, or its first turn ends and it still has no session, or no
+log file to read. The terminal then shows a line that names what is missing, and the **⋮** row says
+why. A first turn that runs for a minute with nothing to read and no other sign also falls back. A pane that was already busy when you first opened it, with no session, shows the terminal at
+once. When the session or the log arrives later, the pane goes back to Chat. Chat never hides the
+row, so you can tell a missing hook from a missing feature. `collie doctor` lists those
+panes under `agent-sessions` and names the integration line (`integration-<agent>`) that fixes each.
+The [troubleshooting page](troubleshooting.md) has the steps, under **a pane has no Chat or History**.
+
+## Reading offline
+
+When the bridge is out of reach, the phone shows the last copy it saved, and you can read it but not act on it.
+
+The phone keeps two things for each pane: the last terminal text it saw, and the newest Chat turns as
+Chat drew them. It never keeps the raw terminal screen as Chat. When you open Collie and the bridge
+does not answer within about a second and a half, the phone draws this saved copy at once, and
+replaces it with live data when the bridge answers.
+
+A saved copy looks different from a live screen:
+
+- The agent list is dimmed, each status is in the past tense ("was working", "needed you"), and the
+  header shows **as of** and the time it was saved.
+- A Chat pane shows "Saved copy from" and the time. The bridge still holds the older turns.
+- Prompt buttons, cards and the send button are off. A tap on a saved copy cannot reach the agent.
+
+The connection bar names one of three causes:
+
+| Bar | Cause | What the phone shows |
+| --- | --- | --- |
+| You are offline | The phone says it has no network | The saved copy, with its time |
+| No connection to the bridge. Check your connection or Tailscale. | Any other read that failed | The saved copy, with its time |
+| Pair screen | The bridge refused this device: not paired, revoked or expired | Nothing saved. The refusal deletes the copy |
+
+A VPN such as Tailscale keeps the phone's network flag on in airplane mode, so the bar cannot always
+tell "no network" from "the bridge is down". It then says only that the bridge does not answer.
+
+While the app is open, the bar and the saved copy appear on the first poll that gets no answer. A
+poll waits at most 6 seconds, one second longer than the bridge waits for the multiplexer. A server
+error (5xx) counts on the second one in a row. What is on screen stays there, and the first live
+answer brings back the live view.
+
+Right after you return to the app, the first poll that gets no answer does not count alone. A
+Tailscale link can need a moment to come back, so the phone asks again half a second later, and
+shows the bar only when that poll gets no answer too.
+
+**Keep chat on this phone**, in **Settings → Device**, sets how long the Chat turns stay on the phone:
+
+| Value | What it does |
+| --- | --- |
+| Off | Keeps no Chat turns, and deletes the ones already kept |
+| 1 day | The default |
+| 7 days | Keeps them for a week |
+
+The terminal text has its own lifetime of 24 hours, and this setting does not change it. In the
+terminal view, the only offline copy is that terminal text.
+
+> **Note.** The phone keeps only text the bridge already masked, and drops a pane's copy while the
+> pane asks for a password. [What the phone keeps](security.md#what-the-phone-keeps) lists every
+> item, its size bound and its lifetime.
+
 ## Changes
 
-The pane menu's **Changes** row shows what changed in the pane's workspace since the last commit.
-
-Open a pane, tap the ⋮, then **Changes**. The list groups the changed files by git repo, with
-added and removed line counts. Tap a file to read its diff, and use **Previous file** and
-**Next file** to step through the list. The refresh button reads the folder again; the list does
-not update on its own.
-
-The diff is against the last commit, so staged and unstaged changes show together. A new file
-shows as all added lines. A binary file shows no lines.
-
-The list covers the pane's whole workspace, so every pane in one workspace shows the same list.
-The header names the workspace and its folder. Collie picks that folder in this order:
-
-| Order | Folder |
-| --- | --- |
-| 1 | The workspace's own folder, when the multiplexer keeps one: herdr's worktree, tmux's session folder |
-| 2 | The deepest folder that holds every pane of the workspace |
-| 3 | The pane's own folder, when the first two would be `/`, your home folder, or above it |
+The [Files screen](changes.md) shows what an agent changed in its workspace's git repos, under its
+**Changes** segment. Two per-device settings decide how far it looks for repos, in **Settings → Device → Changes**:
 
 | Setting | Default | What it does |
 | --- | --- | --- |
 | Look for repos inside this folder | on | Also lists repos in folders below the workspace folder, even ones the parent repo ignores |
 | How deep to look | 2 | How many folder levels below the workspace folder the search goes, 1 to 4 |
 
-Both live in **Settings → Changes** and are stored per device.
-
-> **Note.** Changes only reads. It never stages, commits or edits, and a repo's own hooks, filters
-> and diff programs never run while Collie reads it
-> ([ADR 0065](../.adr/0065-the-changes-view-reads-git-read-only.md)).
-
-zellij panes have no Changes row, because zellij does not report a pane's folder.
+See [Which folder, and which repos](changes.md#which-folder-and-which-repos) for how the search works.
 
 ## Language
 
-Collie's interface is available in six languages. Configure this under **Settings → Language**.
+Collie's interface is available in twelve languages. Configure this under **Settings → Appearance → Language**.
 
 - English
 - Deutsch
@@ -665,10 +769,20 @@ Collie's interface is available in six languages. Configure this under **Setting
 - 한국어
 - 日本語
 - 中文
+- Русский
+- Italiano
+- Français
+- Português
+- Türkçe
 
 The selection is saved locally in the browser per device. The terminal mirror remains untranslated:
 it displays the raw output from the agent, while quick replies, menu labels, and key caps match the
 underlying screen or keyboard names.
+
+A notification's title follows the same choice: "claude needs you" arrives as "claude 입력 대기" on a
+device set to Korean. The device picks up a new choice the next time Collie is open on it, and until
+then its titles stay in the language it had. The body under the title is the pane's own name and
+place, and is never translated ([Web Push](voice-and-push.md#web-push-optional)).
 
 
 ---

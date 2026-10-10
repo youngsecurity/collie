@@ -7,13 +7,16 @@ import { pathToFileURL } from "node:url";
 // The fixture derives its directory from import.meta.url. Load the actual source in a temporary
 // web/e2e/fixtures tree so this test never touches a browser run's real bundles or lock.
 test("only the swap-server owner clears directives, before releasing its lock", async () => {
-  const root = mkdtempSync(join(tmpdir(), "collie-swap-lock-"));
+  const root = mkdtempSync(join(tmpdir(), "collie swap #lock-"));
   try {
     const fixtures = join(root, "web", "e2e", "fixtures");
     mkdirSync(fixtures, { recursive: true });
     const copy = join(fixtures, "builds.ts");
     writeFileSync(copy, readFileSync(join(import.meta.dir, "..", "web", "e2e", "fixtures", "builds.ts")));
     const builds: typeof import("../web/e2e/fixtures/builds.ts") = await import(pathToFileURL(copy).href);
+    // File URLs encode spaces and #; Windows also needs its drive or UNC prefix decoded.
+    expect(builds.WEB_ROOT).toBe(join(root, "web"));
+    expect(builds.BUILDS_DIR).toBe(join(root, "web", "e2e", ".builds"));
     const lock = join(builds.BUILDS_DIR, "lock");
     mkdirSync(builds.BUILDS_DIR, { recursive: true });
     const owner = join(lock, "pid");

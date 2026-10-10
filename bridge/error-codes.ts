@@ -35,7 +35,9 @@
 //     exactly what this change promised not to do.
 //   • Crew-link errors (`bridge/crew/`). That surface is versioned separately (CREW_PROTOCOL.md) and
 //     is guarded at commit time (ADR 0025); it keeps today's bodies in this release.
-//   • Push/OS notification text (`bridge/notifications.ts`). Different surface, different follow-up.
+//   • Push notification titles. Same rule, different surface: `bridge/push-titles.ts` is their catalogue.
+
+import { renderTemplate } from "./template.ts";
 
 /** The values a sentence may need interpolated — named, so a translated sentence can use them too. */
 export type ApiErrorDetail = Readonly<Record<string, string | number>>;
@@ -118,6 +120,11 @@ export const ERROR_CODES = {
   "worktree.branch_required": "branch required",
   /** This space is not in a Git work tree, so it has no worktrees to show. */
   "worktree.not_a_repo": "{reason}",
+  /**
+   * The branch name would read as a flag or is one Git refuses (`bridge/worktree-branch.ts`). Checked
+   * before the multiplexer is touched, so nothing was created (ADR 0089).
+   */
+  "worktree.invalid_branch": "invalid branch",
 
   // ── Attachment upload: POST /api/pane/:id/upload → UploadResponse ──────────────────
   /**
@@ -257,21 +264,3 @@ export function apiError(code: ErrorCode, detail?: ApiErrorDetail): ApiErrorBody
   return body;
 }
 
-/**
- * Fill `{name}` slots from `detail`, in ONE pass.
- *
- * One pass is the load-bearing part: several templates are `{reason}` filled with a multiplexer's
- * own words, and those words are not Collie's to trust. A second pass over the result would let a
- * refusal that happens to contain `{maxBytes}` reach into this table's other values.
- *
- * A slot with no matching field renders empty. That is a programming error, not a runtime condition
- * — `error-codes.test.ts` fails any `apiError` call that names a slotted code without passing a
- * detail object — so it does not throw here, where throwing would turn a wording bug into a 500 on
- * a live phone.
- */
-function renderTemplate(template: string, detail: ApiErrorDetail | undefined): string {
-  return template.replace(/\{(\w+)\}/g, (_match, name: string) => {
-    const value = detail?.[name];
-    return value === undefined ? "" : String(value);
-  });
-}

@@ -242,8 +242,13 @@ the same handlers. There is no second handler set, no second semantic, and no He
 | `GET` | `/crew/v1/snapshot` | `GET /api/snapshot` (`bridge/server.ts:177`) | **merged** — the only merged route |
 | `GET` | `/crew/v1/pane/:id` | `GET /api/pane/:id` (`:276`) | proxied byte-for-byte |
 | `GET` | `/crew/v1/pane/:id/history` | `GET …/history` (`:277`) | proxied byte-for-byte |
+| `GET` | `/crew/v1/pane/:id/chat` | `GET …/chat` | proxied byte-for-byte — additive-optional (§7.1), added 2026-09-30 (M41/08). The live half of `history`: the same session log on the member that owns the pane, asked "anything after this?" rather than "show me this". The query (`after`, `before`, `limit`) rides through untouched, and `if-none-match` is already forwarded (§6), so the peer answers its own 304 and the lead re-emits it. A read, so it is attempted against a stale member rather than refused (§10.3). A lead that predates it never calls it, and a peer that predates it answers **404** to a lead that does — which the phone must read as "update this member", never as an empty session |
 | `GET` | `/crew/v1/pane/:id/changes` | `GET …/changes` | proxied byte-for-byte — additive-optional (§7.1). Read-only git over the folder of the pane's WORKSPACE on the machine that owns it (ADR 0065); the query (`depth`, `nested`, `repo`, `path`, and `view=commit` for the repo's last commit) rides through untouched. A lead that predates it never calls it, and a peer that predates it answers 404 to a lead that does |
 | `GET` | `/crew/v1/workspace/:id/changes` | `GET …/workspace/:id/changes` | proxied byte-for-byte — additive-optional (§7.1). The same list asked by workspace rather than by pane (ADR 0065), with the same query. A lead that predates it never calls it, and a peer that predates it answers 404 to a lead that does |
+| `GET` | `/crew/v1/pane/:id/files` | `GET …/files` | proxied byte-for-byte — additive-optional (§7.1), added 2026-10-05 (M45/03). One folder (`?dir=`) or one text file (`?path=`) under the same root the pane's Changes list reads, off **the member's own disk** (ADR 0083); the query rides through untouched. A READ for forwarding (attempted against a stale member, read budget, audited on neither side), but the member answers it only for a device its **own** device policy authorises, exactly as for a write (§12): `crewGate` takes its write branch for it. A lead that predates it never calls it, and a peer that predates it answers **404** to a lead that does, which the phone must read as "update this member", never as a missing file. A refused path is the member's own `404 { "error": "unknown-path" }`, told apart by its body. A listing row may carry `ignored: true` (additive-optional, added 2026-10-05): git says the entry is ignored in the repository that holds the folder, asked once per listing by the member over its own disk. A member that predates it, one with no repository there, and one whose git did not answer in time all send no field, and the phone then hides nothing for it. The phone hides flagged rows by default; it is a view filter, and an ignored file still reads |
+| `GET` | `/crew/v1/workspace/:id/files` | `GET …/workspace/:id/files` | proxied byte-for-byte — additive-optional (§7.1), added 2026-10-05 (M45/03). The same Files view asked by workspace, with the same query, gate and 404 reading as the pane row above |
+| `GET` | `/crew/v1/pane/:id/files/image` | `GET …/files/image` | proxied byte-for-byte — additive-optional (§7.1), added 2026-10-07 (ADR 0090). One picture (`?path=`) under the same root as the pane's Files read, as its own bytes, off **the member's own disk**; the member reads the type off the bytes (PNG, JPEG, GIF, WebP, AVIF) and answers `413` past 16 MiB and `415` for anything else. The same gate as the Files read (§12, `crewGate`'s write branch), a READ for forwarding, audited on neither side. The lead does not relay the member's cache or security headers: it sets `no-store`, `default-src 'none'; sandbox` and `inline` itself on whatever comes back. It does relay the plain-data `X-Collie-File-Size` and `X-Collie-File-Mtime` the member sends, the picture's version, so the phone can hold the picture in memory; a member that sends neither gets neither. A peer that predates it answers **404**, which the phone reads as "no picture" and shows the file's size instead |
+| `GET` | `/crew/v1/workspace/:id/files/image` | `GET …/workspace/:id/files/image` | proxied byte-for-byte — additive-optional (§7.1), added 2026-10-07 (ADR 0090). The same picture asked by workspace, with the same query, gate, statuses and headers as the pane row above |
 | `POST` | `/crew/v1/pane/:id/reply` | `POST …/reply` (`:279`) | forwarded |
 | `POST` | `/crew/v1/pane/:id/keys` | `POST …/keys` (`:280`) | forwarded |
 | `POST` | `/crew/v1/pane/:id/upload` | `POST …/upload` (`:281`) | forwarded (§13) |
@@ -279,7 +284,7 @@ peers (§4).
 answering build:
 
 ```json
-{ "protocol": 1,
+{ "protocol": 2,
   "member": "peer-7f3a2c",
   "version": "1.0.0-alpha.11",
   "warrantGeneration": 3,
@@ -323,6 +328,11 @@ answering build:
   `crew-ops.json`, which is the pre-amendment behaviour unchanged. **It rides `/crew/v1/snapshot`'s
   response too**, beside the body rather than inside it, for the warrant pair's reason. It names no
   secret: one integer, and one the caller itself issued.
+
+- `machineStats` is **OPTIONAL**, added 2026-10-05 (ADR 0084, §19 "The member's own load"): the
+  answering machine's last host sample, `{ cpu, cores, memUsed, memTotal, load1?, rxBps?, txBps?,
+  disks? }` (`disks` added later the same day: `[{ mount, used, total }]`, at most four, §19). It rides **`/crew/v1/snapshot`'s response only**, beside the body for the warrant pair's reason, and
+  never `hello`. **Absent or malformed means "this member reported no load"**, never "idle" (§7.1).
 
 - `pairingDigest` is **OPTIONAL**, added 2026-08-20 (§18.14): a digest of the synced paired-device
   registry this member holds, and `null`/absent on every member that holds none — which is every peer
@@ -423,7 +433,7 @@ Every request on a crew link, and every response:
 | `Authorization: Bearer <crew-secret>` | request | The crew-wide shared secret (§8). Required on every request including `hello`. |
 | `X-Crew-Protocol: 1` | both | Protocol version. Required on every request **and** every response (§7). |
 | `X-Crew-Member: <member-id>` | both | Who is speaking. On a request, the lead's id; on a response, the peer's. Informational — identity is proven by the pinned certificate, never by this header. |
-| `X-Crew-Device: <device-id>` | request | The operator's device identity, forwarded for the peer's audit trail (§12). Absent when the lead's device gate is off. |
+| `X-Crew-Device: <device-id>` | request | The operator's device identity, forwarded for the peer's audit trail (§12). Absent when the lead's device gate is off. Printable ASCII as itself, any other id in RFC 8187 form (§12). |
 | `X-Crew-Preflight: fresh` | request | **Optional**, added 2026-09-04 (§19). On `GET /crew/v1/snapshot` only: a REQUEST that the answering member re-run its own `collie update --check --local` before it answers. `fresh` is the only value with meaning; anything else reads as absent. A member that ignores it is a **correct member** — its answer is then simply older, and `asOf` says so. Honoured at most once per `PREFLIGHT_TTL_MS` per member. |
 | `X-Crew-Lead-Release: <x.y.z>` | request | **Optional**, added 2026-09-04 (§20). On `GET /crew/v1/snapshot` only: the bare version the LEAD is itself running, sent only while that version is a strict release and the lead's own health gate has settled it. Absent means the lead is on a dev or prerelease build, or is mid-run — and absent means the receiving member does nothing. It is a statement about the sender and carries no ref, no URL and no command. |
 | `X-Crew-Update-Turn: <member-name>;<run-id>` | request | **Optional**, added 2026-09-04 (§20). On `GET /crew/v1/snapshot` only: who may take that release now, and the id of the `UpdateRun` the operator confirmed on the lead. Sent to **at most one member at a time**. A member ignores a turn that does not name itself. Absent means it is not this member's turn. |
@@ -588,6 +598,32 @@ updated machines, so build skew is the steady state (§7), and this section is t
   `expiring` pane, stays quiet on it on either side of the link. The label rides whole because the
   rule catalog is not forwarded (the bullet above). `CREW_PROTOCOL_VERSION` stays `1`, no new route,
   no new verb and no new header.
+
+- **A member's snapshot answer gained an optional `machineStats`** (added 2026-10-05, ADR 0084). It is
+  that machine's own load, read from the sample its sampler already holds, as a sibling of the body.
+  Additive-optional with the closed reading this section requires: **absent or malformed means no
+  load was reported**, which the lead shows as "no sample" and never as zero. An older peer omits it,
+  and an older lead passes it over untouched, so neither side refuses the other over it. The lead
+  drops the whole sample on any field out of range rather than keeping half of one. Nothing in
+  `bridge/crew/merge.ts` reads it, so it never reaches a browser's snapshot. `CREW_PROTOCOL_VERSION`
+  stays `2`, no new route, no new verb and no new header.
+
+- **`machineStats` gained an optional `disks`** (added 2026-10-05, ADR 0084 point 9), the same
+  additive-optional shape one level down: an array of `{ mount, used, total }` in bytes. **Absent or
+  empty means no disk was reported**, never an empty disk; an older member omits it, and an older lead
+  never reads it. A malformed entry (a non-string or empty mount, a control character in it, a
+  `total` that is not positive, a `used` outside `0..total`) drops the whole sample, like any other
+  field out of range. Past four entries the lead keeps the first four rather than refuse a later build
+  that sends more. Unknown keys inside an entry are ignored.
+
+- **A pane gained an optional `gitHead`** (added 2026-10-08). It names what the checkout holding
+  the pane's folder is on: `{ kind: "branch", name }` or `{ kind: "detached", sha }`, the full object
+  name. Additive-optional with the closed reading this section requires: **absent means no branch is
+  known**, which the phone renders as nothing at all, exactly as before the field. It is read on the
+  machine the pane lives on, off that machine's own disk, so a member's panes carry the member's own
+  branch. An older peer omits it, and an older lead passes it through untouched. A kind the phone does
+  not know reads as absent. Nothing in `bridge/crew/merge.ts` changes, for the reason the `cache`
+  bullet gives. `CREW_PROTOCOL_VERSION` stays `2`, no new route, no new verb and no new header.
 
 - **An addition a lead has no reader for is INERT, not merely tolerated — measured, not assumed**
   (2026-09-08, §16's version-skew leg). This section's promise used to rest on a unit test with a
@@ -799,6 +835,13 @@ There is no discovery, no enumeration, and no overlay-network integration — ev
 > from a peer under a one-way tailnet ACL, and nothing in the enrollment names that as the cause. **A peer's
 > own listener address is never taken from `COLLIE_PUBLIC_URL`**: a peer publishes no front door (§3,
 > ADR 0013), and a public URL is a front door by definition.
+>
+> **Amended 2026-10-02.** The derived front door is spelled `https://<name>` when it is published on 443,
+> never the bare name: `collie join` reads a portless, schemeless address as the lead's own listener,
+> `https://<host>:8787`, which a lead behind `tailscale serve` does not answer on. A front door on another
+> port stays `<name>:<port>`. A joiner's `--address` is the other direction and is checked: it must be
+> `host:port` (the same rule `collie crew set-address` applies), because a portless one is dialled on 443.
+> An `https://host:port` override is accepted for compatibility and stored as `host:port`.
 
 > **Amended 2026-08-07 — what actually authenticates an enrollment, stated rather than implied.**
 >
@@ -1081,12 +1124,15 @@ reuse of the four-field one above, for two reasons that are both load-bearing:
 
 ## 9. Reads — what is proxied, what is merged
 
-**Exactly one route is merged. Everything else is proxied byte-for-byte.**
+**Exactly one route is merged. Everything else is proxied byte-for-byte**, except that the lead masks
+the secrets in the text answers it relays (§9.1, "The lead masks a member's text").
 
 ### 9.1 Proxied reads (pane mirror, history)
 
 The lead forwards the request to the owning peer and returns the peer's response **unmodified**:
-status, body bytes, `content-type`, and — critically — **`etag`**.
+status, body bytes, `content-type`, and — critically — **`etag`**. The one change it may make to a
+body is the secret mask below, and that change keeps the status and salts the ETag with the mask's
+version.
 
 - `If-None-Match` from the phone is passed through to the peer.
 - **Compression is hop-local: the peer hop is `Accept-Encoding: identity`, and the peer's
@@ -1095,8 +1141,8 @@ status, body bytes, `content-type`, and — critically — **`etag`**.
   anyway, it does *not* strip the stale `content-encoding` from the response headers, and re-emitting
   that header describes bytes that no longer exist.
 - **The lead→phone hop is compressed by the lead itself**, on the phone's own `Accept-Encoding`, as a
-  **stream transform** over the identity bytes (`CompressionStream("gzip")`) — never a buffer, so a
-  400-turn history is still never held whole. It applies to JSON and text bodies with a body to send;
+  **stream transform** over the identity bytes (`CompressionStream("gzip")`) — the transform itself
+  never buffers (a text answer the lead masks is held once, for the mask, below). It applies to JSON and text bodies with a body to send;
   a `304`/`204` and a non-compressible type stream through untouched. When it applies, the lead sets
   `content-encoding: gzip` and merges `accept-encoding` into the peer's `Vary` (setting it when the
   peer sent none) — the same negotiation, and the same `Vary`, a local route already declares
@@ -1114,6 +1160,50 @@ status, body bytes, `content-type`, and — critically — **`etag`**.
   silently-different value across a version skew at worst.
 - The 304-skips-the-transfer win (`bridge/server.ts:460-462`) is preserved end to end, which is the
   entire reason proxying is byte-for-byte rather than parse-and-re-emit.
+
+**The lead masks a member's text** *(added 2026-10-08, 1.18.0)*. Every collie masks known secret
+shapes in the text it sends a phone (`bridge/redact.ts`, `COLLIE_REDACT`, on by default), and a
+member does so for its own answers. A member one release behind does not, so a lead with the mask on
+masks five answers again before the phone reads them: the mirror (`pane/:id`), `history`, `chat`,
+and `changes` and `files`, asked by pane or by workspace. It uses the functions its own routes use
+for the same answers (`bridge/answer-mask.ts`, through `bridge/crew/mask.ts`), so a member's answer
+is masked exactly as the lead's own would be, whatever the member's version. Nothing changes on the
+peer surface, and `CREW_PROTOCOL_VERSION` does not move.
+
+- **Only a `2xx` with a body is read.** A `304` has none, and an error answer carries no session text
+  on either side, so both stream on as themselves. Every other route, `files/image` and `blobs`
+  included, is never read on the lead: a picture is bytes, not text.
+- **The mask is idempotent.** A masked span becomes `•` marks, which no pattern matches, so masking a
+  masked body changes nothing. A body a 1.18 member already masked is re-serialised with
+  `JSON.stringify`, the member's own serialiser, and comes back byte for byte. An answer with nothing
+  to mask (`available: false`, a listing, a commit list) is passed on as the member's bytes, unparsed
+  past its shape check.
+- **The member's ETag rides on, salted with the mask's version.** The lead appends `~m<N>` inside the
+  quotes (`"abc"` becomes `"abc~m1"`), where `N` is `MASK_VERSION` in `bridge/redact.ts`, bumped
+  whenever a pattern is added. The mask is a function of the member's bytes and that version alone,
+  so the salted tag still names exactly one body the phone can hold. On the way in, the lead passes the
+  member only the phone's tags that carry the current salt, unsalted, and the member keeps answering
+  them with its own `304` (salted on the way out, like a `200`). Any other tag is dropped, so a copy
+  masked under an older list, or one a 1.17 lead passed on in clear, is fetched again and masked now.
+  A tag hashed over the masked body would never match on the member, and every Chat and mirror poll
+  would cost a full body. A route the lead does not mask, and every route while its mask is off,
+  passes the tag through untouched. `content-length` is never copied, as above, so the new body is
+  framed by its own length.
+- **It fails closed.** A `2xx` body that is not the answer its route makes (not JSON, or a field the
+  mask walks of the wrong type) is never passed on raw: the lead answers `502 answer_unmaskable`
+  naming the member (§10.3). A body the link loses mid-read is `503 host_unreachable`.
+- **It costs one parse per changed body.** Unchanged polls are `304`s and read nothing. A changed
+  body is held whole while it is masked, about 1 ms for a 128 KB mirror and 2 ms for a 200-turn
+  History page (measured 2026-10-08), then compressed for the phone as above.
+- **Either switch masks.** The lead masks by its own `COLLIE_REDACT`, and the member by its own. Text
+  reaches the phone in clear only when both are off.
+- **The merged snapshot masks its titles too.** A pane's program-set `terminalTitle` is masked in the
+  lead's own snapshot, so the lead masks it on its members' panes in the merged body (§9.2) as well.
+
+A prompt answer bound to the mirror (`expected`, `verifyPromptBinding` in `bridge/server.ts`) is
+read off the masked text, and a member compares it with its own mask applied. A member that does not mask therefore refuses such a send as
+`prompt_changed` when a secret sits inside the compared lines. That refusal is the safe side, and it
+ends when the member updates.
 
 **A blob read is proxied byte for byte, exactly like `history`** *(added 2026-09-09)*. `GET
 /api/blobs/<hash>` serves one content-addressed image out of a pi/omp journal's blob store, and that
@@ -1191,6 +1281,11 @@ never crosses a crew link.
   is decided by a probe on its own budget, never by this one.
 - The peer sweep is a *part of* the existing poll, not a second timer. A solo lead runs no sweep at
   all (§11).
+- **An input makes the poll hot on both machines.** *(added 2026-10-05)* A `/reply` or `/keys` that
+  lands tightens the owning engine to `COLLIE_POLL_MS` for `HOT_POLLS` polls (`ARCHITECTURE.md` §5).
+  Forwarded to a member, it lands through the member's own dispatch, so the member goes hot there;
+  and the lead tightens its own primary engine too, because the sweep that brings the member's
+  answer back rides that tick. Still one interval per engine, re-armed, never a second one.
 - **A forwarded WRITE is not a poll, and gets its own budget.** *(added 2026-09-08)* The budget above
   bounds the **sweep**, where a slow peer stalls the lead's own snapshot for every phone watching.
   A write forwarded to a member (§5, §10.3) is one operator's one request, awaited on that request's
@@ -1298,7 +1393,8 @@ bytes may already be in the terminal, and a retry types them twice. Concretely:
 **On the wire** (what the phone renders on — `bridge/crew/forward.ts`): every lead-generated refusal
 is JSON with `{ok: false, code, error, host}` and a distinct status — `host_unreachable` (503),
 `host_incompatible` (503), `write_outcome_unknown` (504), `upload_too_large` (413),
-`route_not_federated` (501, for a route outside §5's table). Never a bare 500,
+`route_not_federated` (501, for a route outside §5's table), `answer_unmaskable` (502, a member's
+text answer the lead could not read to mask, §9.1). Never a bare 500,
 and never a silent success. A peer's *own* answer is never given one of these: it is passed through
 as itself (§9.1), including its 403 when the peer's write gate refuses.
 
@@ -1410,7 +1506,7 @@ federation code exists to break it.
 
 | Surface | Solo behaviour | Decided at |
 |---|---|---|
-| Routes served to a browser | unchanged; **zero** routes added, zero status codes changed | `bridge/server.ts:165-390` |
+| Routes served to a browser | unchanged; **zero** routes added, zero status codes changed. Amended on purpose 2026-10-05 (ADR 0084): `GET /api/machines`, `GET /api/machines/:id/history` and `POST /api/machines/:id/alerts` answer on a solo collie for its one machine, id `local`; they name no crew state and are pinned in `bridge/solo-baseline.test.ts` | `bridge/server.ts:165-390` |
 | `/crew/v1/*` | **not routed at all** — no crew prefix is registered with zero peers | §5 |
 | Snapshot bytes | unchanged — `servers` is **omitted**, and no `host` field is added to sessions or panes | `bridge/types.ts:164-186` |
 | Snapshot ETag | **unchanged.** Follows from the row above: no added field, no shifted hash | `bridge/http-cache.ts:16-19` |
@@ -1418,9 +1514,9 @@ federation code exists to break it.
 | `?h=` | never emitted by the client, never present in a URL | `web/src/lib/session.ts:28-31` |
 | Notification tags | unchanged — the primary keeps the bare `collie:herd` | `bridge/sessions.ts:33-35` |
 | Push payload | unchanged — no `host` field, mirroring how `session` is stamped only for non-primary | `bridge/push.ts:124-131` |
-| Poll cadence | unchanged — **no second timer, no peer sweep**, same idle relaxation | `bridge/event-poker.ts`, `bridge/config.ts:212-213` |
+| Poll cadence | unchanged — **no second timer, no peer sweep**, same idle relaxation. Amended on purpose 2026-10-05: the one interval runs at the fast cadence for `HOT_POLLS` polls after an input or a new agent pane with no session (`ARCHITECTURE.md` §5), solo or not, and names no crew state | `bridge/event-poker.ts`, `bridge/config.ts:212-213` |
 | Audit line bytes | unchanged — `host` is omitted, not null, exactly as `session`/`device` are today | `bridge/audit.ts:55-61` |
-| Files written | **exactly today's set**: `uploads/`, `audit.log`, `push-subscriptions.json`, `snooze.json`, `notify-prefs.json`, `activity.json`, `update-state.json`. **No key, no certificate, no trust store, no roster.** Amended on purpose 2026-09-27 (M40/02, #289): `folders.json` joins the set as a file written **only after the first space created with a folder or the first star** — an instance that never does either writes nothing new, and it names no crew state | `bridge/server.ts:1075`, `bridge/audit.ts:65`, `bridge/push.ts:86`, `bridge/snooze.ts:19`, `bridge/notify-prefs.ts:45`, `bridge/activity.ts:100`, `bridge/update.ts:147`, `bridge/folders.ts` |
+| Files written | **exactly today's set**: `uploads/`, `audit.log`, `push-subscriptions.json`, `snooze.json`, `notify-prefs.json`, `activity.json`, `update-state.json`. **No key, no certificate, no trust store, no roster.** Amended on purpose 2026-09-27 (M40/02, #289): `folders.json` joins the set as a file written **only after the first space created with a folder or the first star** — an instance that never does either writes nothing new, and it names no crew state. Amended on purpose 2026-10-05 (ADR 0084): `machine-history.json` is written from the tick at most once every five minutes once a minute is recorded, and `machine-alerts.json` only after the operator sets the first rule | `bridge/server.ts:1075`, `bridge/audit.ts:65`, `bridge/push.ts:86`, `bridge/snooze.ts:19`, `bridge/notify-prefs.ts:45`, `bridge/activity.ts:100`, `bridge/update.ts:147`, `bridge/folders.ts`, `bridge/machine-history.ts`, `bridge/machine-alerts.ts` |
 | Ports opened | exactly one, loopback, as today. The standby door's second listener (§18.15) is bound only when `COLLIE_STANDBY_PORT` is set **and** a trust store exists, which a solo instance has neither of | `bridge/config.ts:210-211`, `bridge/crew/standby.ts` |
 
 **Why `servers` is optional-and-absent rather than always-present.** An always-present field — even a
@@ -1449,7 +1545,7 @@ bound port count**, **the absence of a second timer / peer sweep at runtime**, a
 payload** for a primary-session alert. Those four are the integration harness's charter; everything
 else in the table is covered by the unit baseline today.
 
-> **Status 2026-08-07 — the harness landed (`bridge/crew/harness.test.ts`); three of the four rows
+> **Status 2026-08-07 — the harness landed (`integration/crew-harness.test.ts`, moved there 2026-10-01); three of the four rows
 > are now measured.**
 >
 > - **Status codes per route** — measured on a live solo instance: `/api/snapshot`, `/api/config` and
@@ -1476,6 +1572,14 @@ happened on the peer's terminals.
 - The lead forwards `X-Crew-Device: <device-id>` — the operator's device identity as the lead resolved
   it via `deviceAuth()` (`bridge/server.ts:1216-1223`). Absent when the lead's device gate is off,
   matching how the field is omitted rather than nulled today (`bridge/audit.ts:55-61`).
+- **The value's encoding** (#324). A device id of printable ASCII travels as itself, byte for byte.
+  Any other id (a pairing label like `폰`) travels in RFC 8187's ext-value form, `UTF-8''` followed
+  by the percent-encoded UTF-8, and the peer decodes it before its allowlist and its audit line see
+  it (`encodeDeviceHeader` / `decodeDeviceHeader`, `bridge/crew/admission.ts`). An ASCII id that
+  itself starts with `UTF-8''` is sent encoded, so the form never reads two ways. Additive inside
+  protocol version 2: no value that crossed the link before changes, and a peer that predates the
+  form reads it as an unknown device, the closed case. Before this, such an id never left the lead,
+  because a header value must be a ByteString.
 - **The header is trusted because the crew link authenticated it**, not because it was sent. It is
   meaningful only on an admitted crew request (§8.1) — exactly the trust basis `COLLIE_DEVICE_HEADER`
   already rests on for a co-located proxy (`bridge/server.ts:1216-1223`).
@@ -1488,6 +1592,12 @@ happened on the peer's terminals.
   depends on the other's disk to answer "what happened here".
 - **A peer is never asked to trust the lead's authorisation decision in place of its own.** The peer
   applies its own write-level checks to a crew request; the lead's gate does not stand in for them.
+- **One read borrows the write's device check** (added 2026-10-05, ADR 0083): `files` on the pane and
+  workspace routes, and `files/image` beside them (added 2026-10-07, ADR 0090). It is still a read
+  on the link (forwarded on the read budget, audited on neither side), but the peer answers it only
+  when `X-Crew-Device` names a device its own allowlist holds, the same branch of `crewGate` a write
+  takes. Additive inside protocol version 2: the routes are new, so no request that crossed the link
+  before is gated differently.
 
 ---
 
@@ -2460,8 +2570,8 @@ token the *lead* minted, so the lead pushes its registry.
 |---|---|
 | **Route** | `POST /crew/v1/pairing`, lead → **deputy only** |
 | **Gate** | the crew's two factors (§8.1), plus a role check: the caller must be *this collie's own lead*, **and this collie must hold a verified warrant naming itself**. Every other peer that ever receives one refuses it. |
-| **Body** | `{ crewId, leadMemberId, devices: [{ label, tokenHash, createdAt }] }` — every field required, because the route is new and a new route may require its own fields (§7.1). |
-| **Sent** | at designation and on every change — a `pair`, a `devices revoke`, nothing else. |
+| **Body** | `{ crewId, leadMemberId, devices: [{ label, tokenHash, createdAt, expiresAt? }] }`. Every field is required except `expiresAt`, because the route is new and a new route may require its own fields (§7.1). `expiresAt` *(added 2026-10-06, M46)* is additive-optional: sent only for a device paired with `collie pair --expires` or given one by `devices set-expiry`, and folded into `pairingDigest` only then, so a registry without expiries digests exactly as before. A non-numeric value refuses the body. The standby door refuses a token past its `expiresAt`, and a takeover adopts the field with the device. A deputy one release behind ignores it and honours the token until it updates. |
+| **Sent** | at designation and on every change: a `pair`, a `devices revoke`, a `devices set-expiry` or `clear-expiry`, nothing else. |
 | **Absent (404)** | no credential to verify ⇒ **the standby door refuses to arm.** Closed. |
 
 - **Only hashes cross.** The token was shown once, at claim time, and is not recoverable
@@ -2486,10 +2596,11 @@ token the *lead* minted, so the lead pushes its registry.
   *remove* a device on the deputy.
 - **It lands in `standby-devices.json`** — its own file, its own version integer, 0600 in a 0700
   directory, temp-then-rename — and is **NEVER merged into the deputy's own `paired-devices.json`.**
-  This is not tidiness. `PairingStore.enforced()` is *the registry is non-empty*, so a merge would
-  silently switch on the deputy's **own** write gate for its **own** operator, on a machine where
-  nobody ran `collie pair`. A gate the operator did not arm is a lockout waiting for the day they use
-  that machine directly. The synced entries are adopted into the deputy's own registry **at takeover
+  This is not tidiness. The deputy's own registry decides who may use the deputy's **own** front
+  door, and pairing is always on (ADR 0086, amended 2026-10-07: before it, *the registry is
+  non-empty* armed the gate, so a merge would have armed it). A merge would silently let every phone
+  paired with the lead read and drive the deputy directly, on a machine where its operator never ran
+  `collie pair` for them. The synced entries are adopted into the deputy's own registry **at takeover
   commit and only then** (§18.16), because after the commit that machine *is* the lead and the phone
   must keep working against the credential it already holds.
 - **A label collision is a FINDING, and it never refuses the sync** *(amended 2026-08-20, after a
@@ -2817,6 +2928,47 @@ never marked done.
   §20's business, on the lead's side, from the string the member sent.
 - No new route, no new dial, no new budget. The field rides an answer §10.1 already collects, so a
   crew of any size pays nothing for it.
+
+### The member's own load, in the same seat *(added 2026-10-05, ADR 0084)*
+
+`GET /crew/v1/snapshot`'s response also carries an optional **`machineStats`**: the answering
+machine's last host sample. Same seat as `version`, `updatePreflight` and `updateRun`, same reason,
+same protocol integer: `X-Crew-Protocol` stays `2`.
+
+```json
+{ "machineStats": { "cpu": 0.42, "cores": 8, "memUsed": 6000000000, "memTotal": 16000000000, "load1": 2.5, "rxBps": 100000, "txBps": 20000,
+  "disks": [{ "mount": "/var/home", "used": 635751247872, "total": 966259671040 }] } }
+```
+
+- `cpu` is the busy share of all cores, `0..1`, since the sample before. `memUsed` and `memTotal` are
+  bytes. `load1` is absent where the OS has none (Windows). `rxBps` and `txBps` are bytes per second
+  over the physical interfaces (loopback, bridges, veth and tap ends, tunnels and bonds are left out,
+  because their bytes cross a physical interface too), absent where they cannot be read (every OS
+  but Linux today).
+- `disks` (optional) is the filesystems holding the member's home folder, its root (the system drive
+  on Windows) and its Collie state folder: one entry per device, at most four. `used` is `df`'s Used
+  and `total` is `used` plus the space an unprivileged process can still write, so `used / total` is
+  `df`'s Use%. `mount` is the label to show (`/var/home`, `/`, `C:`). A filesystem under 1 GiB, or one
+  that is read-only with no free block (a composefs or squashfs root image), is left out. The member
+  reads them with `statfs`, async, at most once a minute, started from its tick and never awaited, so
+  a hung network mount cannot hold the tick or the answer; a path whose last answer is over three
+  minutes old is left out rather than served stale. No child process.
+- The member **reads what its sampler already holds**. The answer does no disk read and no system
+  call, and the sampler itself rides the member's own `StateEngine.onTick` at most once every 15
+  seconds (§10.1: no second timer; on the 12 s idle tick that is every 24 s, never less than once a
+  minute). Only the lead samples faster, every 5 s, while a phone reads its machine list. Before
+  its second reading there is no sample, and the field is omitted.
+- The lead **stamps it on receipt**, on its own clock (§10.2), and folds it into that machine's
+  minute history. A malformed field drops the whole sample. An unknown key inside it is ignored. A
+  sample equal in every field to the last one the lead took from that member is the same reading
+  served again (the lead swept faster than the member samples, or the member's sampler stopped), so
+  the lead neither records it nor stamps it: the minutes stay empty and the reading ages. `disks` is
+  part of that comparison: a healthy member repeats its disks for a minute by design, but its CPU and
+  memory still move, so only a sampler that stopped repeats every field.
+- **What the lead keeps is the lead's.** The day of minutes (`machine-history.json`) and the alert
+  rules (`machine-alerts.json`) live on the lead only. A peer writes neither, and none of the three
+  `/api/machines*` routes is forwarded with `?host=` (§9.1): a peer answers them `404 crew.not_lead`.
+- No new route, no new dial, no new budget. The field rides an answer §10.1 already collects.
 
 ### The header
 

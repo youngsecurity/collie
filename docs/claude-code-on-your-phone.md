@@ -65,12 +65,23 @@ On Herdr, give each agent its own workspace while Herdr runs:
 herdr workspace create --label review --cwd ~/src/app-review
 ```
 
-Running multiple sessions creates multiple waiting prompts. Collie keeps panes grouped by workspace
-in place order; a status change highlights a row without moving it. The summary counts panes needing
-input and jumps to one, and Focus filters the list to panes needing attention. Hold a row to open
-its actions and pin it above the workspace groups.
+On Herdr you can also do both steps from the phone. Open a pane's **⋯** menu and tap **New agent
+on a branch**. Collie creates a worktree of that pane's repo on a new branch, opens it as its own
+workspace, and starts the agent you pick in it. The branch is named `worktree/<word>-<word>-<hex>`,
+and you can change the name before you tap Create.
 
-On tmux and zellij, agent and status detection require the beacon hooks from
+The agent list is your [launchers](configure.md#your-own-launchers), plus a plain shell. Collie
+remembers the last one you picked. A create can take up to a minute on a large repo. If the phone
+loses the reply, tap Create again: Collie answers with the worktree it already made, and does not
+make a second one. The row shows only on Herdr, and only for a pane on the lead machine.
+
+Running multiple sessions creates multiple waiting prompts. Collie groups panes by workspace in
+Place order and marks the ones that need input. The summary count jumps to one, and the needs-you
+switch filters the list. Hold a row to open its actions and pin it above the workspace groups.
+
+The clock and hourglass beside the count order the list by recent activity or by the cache that
+goes cold first. The order is held, so a status change highlights a row without moving it. On tmux,
+zellij and tern, agent and status detection require the beacon hooks from
 [step 3](#3-run-claude-code-in-a-pane), not a different sort order.
 
 ## Drive it from your phone with Collie
@@ -92,8 +103,8 @@ changes.
 ## What you need
 
 - A Linux or macOS host with Claude Code installed.
-- A terminal multiplexer: Herdr, tmux, or zellij. Herdr detects agents directly. On tmux and zellij,
-  Collie uses beacon hooks, which require Linux.
+- A terminal multiplexer: Herdr, tmux, zellij, tuios or tern. Herdr and tuios detect agents directly. On tmux, zellij
+  and tern, Collie uses beacon hooks, which require Linux.
 - Tailscale installed on the host and phone, with HTTPS enabled on your tailnet. For other setups,
   see [Deployment](deployment.md).
 - An iPhone or an Android phone.
@@ -161,15 +172,17 @@ settings](multiplexers.md#collie-writes-hooks-into-claudes-own-settings).
 Run `collie qr` on the host to scan the code, or open the link from `collie url`. Keep the phone on
 the same tailnet.
 
-1. **Pair the phone.** Run `collie pair` on the host and scan the QR code. Pairing grants the phone
-   write access to your panes ([Pair a device](security.md#pair-a-device--the-write-credential)).
+1. **Pair the phone.** Run `collie pair` on the host and scan the QR code. Collie answers no device
+   until it is paired ([Pair a device](security.md#pair-a-device--the-write-credential)).
 2. **Put it on your home screen.** On Android, tap **Install** at the top of Settings. On an iPhone,
    tap Safari's share sheet.
 
 ## 5. Answer Claude Code
 
-- Tap the summary to jump to a pane needing input, or use Focus to filter the list. Tap a pane to
-  open it; status changes do not reorder the rows.
+- Tap the summary to jump to a pane needing input, or use the needs-you switch to filter the list.
+  Tap a pane to open it; status changes do not reorder the rows.
+- Each dashboard row and the pane header show the git branch the pane's folder is on, or
+  `detached @abc1234` on a detached head. A pane outside a git repo shows none.
 - The composer uses a standard text field, so phone dictation works in it.
 - Tap **Keys** on the actions row above the keyboard. The tray includes Esc, arrow keys, Enter, Tab,
   Space, modifiers, digits, and F1 to F12. Esc and Ctrl chords do not depend on the phone keyboard.

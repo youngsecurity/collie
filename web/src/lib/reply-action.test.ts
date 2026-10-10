@@ -5,7 +5,16 @@ import { http, HttpResponse } from "msw";
 
 import { server } from "@/test/setup";
 import * as registry from "./harness/registry";
-import { draftCarriesSend, sendGuardedReply } from "./reply-action";
+import { bracketPaste, draftCarriesSend, sendGuardedReply } from "./reply-action";
+
+// M46 spec 11 turns every send off for a pane the bridge has not answered lately (lib/liveness.ts).
+// These suites drive sends against a mocked network and never poll first, so they pin the pane live;
+// the gating itself is covered by liveness.test.ts and the *-offline suites.
+vi.mock("@/lib/liveness", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/liveness")>()),
+  isLive: () => true,
+  useLive: () => true,
+}));
 
 // The regression suite for #34: a free-text reply must never fire the submit key until the text is
 // verifiably sitting in the harness's input box. Before this, the reply path typed and then submitted
@@ -162,6 +171,20 @@ describe("draftCarriesSend", () => {
     expect(draftCarriesSend(`prefix ${family.repeat(8)} suffix`, family.repeat(8))).toBe(true);
   });
 
+  // M46: the bridge masks a known secret shape on screen (bridge/redact.ts) but never the operator's
+  // own send, so a reply carrying a key reads back from the box as the key's mask. Placeholder only.
+  it("reads the bridge's secret mask as one printable character per mark", () => {
+    const key = "sk-or-v1-your-key-here-0000000000";
+    const masked = `sk-o${"•".repeat(key.length - 4)}`;
+    expect(draftCarriesSend(`use ${key} now`, `use ${masked} now`)).toBe(true);
+    // One mark too many or too few is a different text.
+    expect(draftCarriesSend(`use ${key} now`, `use ${masked}• now`)).toBe(false);
+    expect(draftCarriesSend(`use ${key} now`, `use ${masked.slice(0, -1)} now`)).toBe(false);
+    // A mark never stands for whitespace, and a literal bullet still verifies itself.
+    expect(draftCarriesSend("password: a b c d e f", "password: a•b c d e f")).toBe(false);
+    expect(draftCarriesSend("• first item in a list", "• first item in a list")).toBe(true);
+  });
+
   it("treats regex metacharacters in the draft as literal text", () => {
     expect(draftCarriesSend("run a.*b now", "run a.*b now")).toBe(true);
     expect(draftCarriesSend("run axxb now", "run a.*b now")).toBe(false);
@@ -191,6 +214,42 @@ describe("draftCarriesSend", () => {
 });
 
 describe("sendGuardedReply", () => {
+  it("verifies a long Grok draft without treating the input scrollbar as message text", async () => {
+    const text = Array.from(
+      { length: 40 },
+      (_, i) => `Collie Grok probe line ${String(i + 1).padStart(2, "0")}: 繁體中文測試，不執行任何工具。`,
+    ).join("\n");
+    const calls = harness(() =>
+      fixtureText(calls.length === 0 ? "grok--fresh-idle.txt" : "grok--draft-scrollbar.txt"),
+    );
+
+    const out = await sendGuardedReply({ paneId: "w1:p1", text, agent: "grok", ...instant });
+
+    expect(out).toEqual({ status: "sent" });
+    expect(calls).toEqual([
+      { text, submit: false },
+      { text: "", submit: true },
+    ]);
+  });
+
+  it("verifies a long Grok draft with a fractional scrollbar thumb", async () => {
+    const text = Array.from(
+      { length: 40 },
+      (_, i) => `GB_LONG_${String(i + 1).padStart(2, "0")}：繁體中文測試。`,
+    ).join("\n") + "\n不要使用工具。請只回覆 GB_LONG_CONFIRMED_40。";
+    const calls = harness(() =>
+      fixtureText(calls.length === 0 ? "grok--fresh-idle.txt" : "grok--draft-scrollbar-partial.txt"),
+    );
+
+    const out = await sendGuardedReply({ paneId: "w1:p1", text, agent: "grok", ...instant });
+
+    expect(out).toEqual({ status: "sent" });
+    expect(calls).toEqual([
+      { text, submit: false },
+      { text: "", submit: true },
+    ]);
+  });
+
   // RED-FIRST regression: the visible Codex composer used to be classified as absent when its queue
   // hint and context percentage shared one raw terminal row. This must still verify before submit.
   it("types, verifies, and submits on Codex's inline queue/context footer", async () => {
@@ -279,6 +338,20 @@ describe("sendGuardedReply", () => {
     // sends nothing but its configured submitKeys.
     expect(calls).toEqual([
       { text: "ship it please", submit: false },
+      { text: "", submit: true },
+    ]);
+  });
+
+  it("submits a reply whose key the bridge masks on screen (M46)", async () => {
+    const key = "sk-or-v1-your-key-here-0000000000";
+    const sent = `set OPENROUTER_API_KEY=${key}`;
+    const calls = harness(() => paneWithDraft(`set OPENROUTER_API_KEY=sk-o${"•".repeat(key.length - 4)}`));
+
+    const out = await sendGuardedReply({ paneId: "w1:p1", text: sent, agent: "claude", ...instant });
+
+    expect(out).toEqual({ status: "sent" });
+    expect(calls).toEqual([
+      { text: sent, submit: false },
       { text: "", submit: true },
     ]);
   });
@@ -382,6 +455,105 @@ describe("sendGuardedReply", () => {
       { text: "ship it please", submit: false },
       { text: "", submit: true, expected_prompt: "╰─ ship it please to the deploy host    ─╯" },
     ]);
+  });
+
+  // omp's `ask` tool swaps its composer for an answer editor when the operator picks `Other` or
+  // presses `n` for a note. Before omp/answer-editor.ts the pre-flight saw no composer and refused,
+  // and the only way through ("type anyway") typed the answer but could never verify it — so Enter
+  // was withheld and the draft stayed on the phone.
+  describe("omp's answer editor", () => {
+    const empty = fixtureText("omp--answer-editor-empty.txt");
+    const typed = fixtureText("omp--answer-editor-typed.txt");
+    const composer = fixtureText("omp--fresh-idle.txt");
+
+    it("types the answer, verifies it in the editor, then submits bound to its row", async () => {
+      const calls = harness(() => (calls.length === 0 ? empty : typed));
+
+      const out = await sendGuardedReply({
+        paneId: "w1:p1",
+        text: "a deep teal, like the sea at dusk",
+        agent: "omp",
+        ...instant,
+      });
+
+      expect(out).toEqual({ status: "sent" });
+      expect(calls).toEqual([
+        { text: "a deep teal, like the sea at dusk", submit: false },
+        { text: "", submit: true, expected_prompt: expect.stringMatching(/^│ > a deep teal, like the sea at dusk +│$/) },
+      ]);
+    });
+
+    // Live-probed: a raw newline SUBMITS this editor, so `line one\nline two` answered `line one` and
+    // typed the rest into the composer behind it. No override can make that safe.
+    it("refuses a multi-line answer before typing anything, force or not", async () => {
+      const calls = harness(() => empty);
+
+      const out = await sendGuardedReply({
+        paneId: "w1:p1",
+        text: "line one\nline two",
+        agent: "omp",
+        force: true,
+        ...instant,
+      });
+
+      expect(out).toMatchObject({ status: "error", error: expect.stringMatching(/one line/i) });
+      expect(calls).toEqual([]);
+    });
+
+    // The first read can see omp's composer, where a newline is fine, and a later read the answer
+    // editor, if the operator opened it on the desktop in between. Every read that clears the text
+    // to go out asks again.
+    it("asks again on the read after the pre-clear sweep", async () => {
+      let reads = 0;
+      const calls = harness(() => (reads++ === 0 ? composer : empty));
+
+      const out = await sendGuardedReply({
+        paneId: "w1:p1",
+        text: "line one\nline two",
+        agent: "omp",
+        onComposerSeen: async () => ({ ok: true as const, keysSent: true }),
+        ...instant,
+      });
+
+      expect(reads).toBe(2);
+      expect(out).toMatchObject({ status: "error", error: expect.stringMatching(/one line/i) });
+      expect(calls).toEqual([]);
+    });
+
+    it("asks again on the read before a chunked send", async () => {
+      let reads = 0;
+      const calls = harness(() => (reads++ === 0 ? composer : empty));
+
+      const out = await sendGuardedReply({
+        paneId: "w1:p1",
+        // Five newlines: omp's transport plan splits this into two pastes (omp/reply-chunks.ts).
+        text: "one\ntwo\nthree\nfour\nfive\nsix",
+        agent: "omp",
+        ...instant,
+      });
+
+      expect(reads).toBe(2);
+      expect(out).toMatchObject({ status: "error", error: expect.stringMatching(/one line/i) });
+      expect(calls).toEqual([]);
+    });
+
+    it("asks again on every read between chunks, and says the first one landed", async () => {
+      let reads = 0;
+      // The composer for the pre-flight and the chunk plan's own read, then the answer editor:
+      // the operator opened it on the desktop while the first paste was in flight.
+      const calls = harness(() => (reads++ < 2 ? composer : empty));
+
+      const out = await sendGuardedReply({
+        paneId: "w1:p1",
+        text: "one\ntwo\nthree\nfour\nfive\nsix",
+        agent: "omp",
+        ...instant,
+      });
+
+      expect(out).toMatchObject({ status: "error", error: expect.stringMatching(/already in the pane/i), textDelivered: true });
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toMatchObject({ submit: false });
+    });
   });
 
   // The PRE-FLIGHT (.adr/0009). The verify-after guard below already kept Enter from answering a
@@ -538,6 +710,67 @@ describe("sendGuardedReply", () => {
     ]);
   });
 
+  // Bare, a send this long reached Claude as ~1 KB reads and only the last one survived; that tail
+  // verified, so Enter submitted it (claude/paste.ts → collapsesAsPaste). It now goes as ONE paste.
+  it("types a long Claude send as one bracketed paste, then submits on its placeholder", async () => {
+    const long = "a long voice note that goes on and on ".repeat(30);
+    const calls = harness(() => paneWithDraft("[Pasted text #4]"));
+
+    const out = await sendGuardedReply({ paneId: "w1:p1", text: long, agent: "claude", ...instant });
+
+    expect(out).toEqual({ status: "sent" });
+    expect(calls).toEqual([
+      { text: `\x1b[200~${long}\x1b[201~`, submit: false },
+      { text: "", submit: true },
+    ]);
+  });
+
+  it("drops a paste marker already inside the text, so it cannot end the paste early", () => {
+    expect(bracketPaste("a\x1b[201~\nb\x1b[200~")).toBe("\x1b[200~a\nb\x1b[201~");
+  });
+
+  it("strips until stable: removing an inner marker cannot assemble a new one", () => {
+    expect(bracketPaste("\x1b[2\x1b[201~01~tail\nrm -rf")).toBe("\x1b[200~tail\nrm -rf\x1b[201~");
+  });
+
+  it("strips a start marker nested inside a start marker", () => {
+    expect(bracketPaste("\x1b[20\x1b[200~0~body")).toBe("\x1b[200~body\x1b[201~");
+  });
+
+  it("strips the 8-bit CSI form, alone and mixed with the 7-bit form", () => {
+    expect(bracketPaste("a\x9b201~b\x9b200~c")).toBe("\x1b[200~abc\x1b[201~");
+    expect(bracketPaste("\x9b2\x1b[201~01~x")).toBe("\x1b[200~x\x1b[201~");
+    expect(bracketPaste("\x1b[2\x9b201~01~x")).toBe("\x1b[200~x\x1b[201~");
+  });
+
+  it("frames an empty body when the text is only markers", () => {
+    expect(bracketPaste("\x1b[200~\x1b[201~\x9b200~\x9b201~")).toBe("\x1b[200~\x1b[201~");
+    expect(bracketPaste("\x1b[20\x1b[201~0~")).toBe("\x1b[200~\x1b[201~");
+  });
+
+  it("leaves every other byte alone, other escape sequences and newlines included", () => {
+    const text = "line\n\x1b[31mred\x1b[0m\t\x1b[202~ \x9b1m end\r\n";
+    expect(bracketPaste(text)).toBe(`\x1b[200~${text}\x1b[201~`);
+  });
+
+  it("never lets a marker survive between the outer pair, over random interleavings", () => {
+    const fragments = ["\x1b", "\x1b[", "\x1b[2", "\x1b[20", "\x1b[200", "\x1b[201", "\x1b[200~", "\x1b[201~", "\x9b", "\x9b2", "\x9b20", "\x9b200", "\x9b201", "\x9b200~", "\x9b201~", "2", "0", "1", "~", "[", "x", "\n"];
+    let seed = 0x2f6e2b1;
+    const rand = (n: number): number => {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      return seed % n;
+    };
+    for (let i = 0; i < 400; i++) {
+      let text = "";
+      for (let k = 1 + rand(14); k > 0; k--) text += fragments[rand(fragments.length)]!;
+      const framed = bracketPaste(text);
+      expect(framed.startsWith("\x1b[200~")).toBe(true);
+      expect(framed.endsWith("\x1b[201~")).toBe(true);
+      const inner = framed.slice("\x1b[200~".length, framed.length - "\x1b[201~".length);
+      for (const marker of ["\x1b[200~", "\x1b[201~", "\x9b200~", "\x9b201~"]) expect(inner).not.toContain(marker);
+    }
+  });
+
   it("stalls on a placeholder inconsistent with what we sent — no submit key", async () => {
     // `#N` is a session counter we cannot predict, so somebody else's leftover token looks exactly
     // like ours; the line count is the only thing tying it to THIS send. 9 lines were never typed.
@@ -617,6 +850,34 @@ describe("sendGuardedReply", () => {
 
     expect(out.status).toBe("error");
     expect(out).toMatchObject({ textDelivered: true });
+  });
+
+  // The partial-echo stall (live audit trail, 2026-09-27): the first verify read after typing
+  // caught the echo one character short ("…why" without the "?"), the substring matcher accepted
+  // the prefix, and the submit bound that partial row — which the bridge's exact binding check
+  // then refused as not_found. Three taps, three stalls, while the text sat delivered in the box.
+  // The guard must wait for the echo's tail before it binds, exactly as the per-chunk loop does.
+  it("waits for the complete echo on a single-chunk send instead of binding a prefix", async () => {
+    const idle = fixtureText("muse--done.txt");
+    const TIP = "Start a message with ! to run a shell command yourself";
+    expect(idle).toContain(TIP);
+    const screen = (draft: string) => idle.replace(TIP, draft);
+    const reads = [idle, screen("actually this works... why"), screen("actually this works... why?")];
+    let n = 0;
+    const calls = harness(() => reads[Math.min(n++, reads.length - 1)]!);
+
+    const out = await sendGuardedReply({
+      paneId: "w1:p1",
+      text: "actually this works... why?",
+      agent: "muse",
+      ...instant,
+    });
+
+    expect(out).toEqual({ status: "sent" });
+    expect(calls).toEqual([
+      { text: "actually this works... why?", submit: false },
+      { text: "", submit: true, expected_prompt: "❯ actually this works... why?" },
+    ]);
   });
 });
 

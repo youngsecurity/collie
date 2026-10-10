@@ -88,8 +88,8 @@ describe("AgentList — two axes, urgency then workspace", () => {
     const slot = counts?.parentElement;
     expect(slot).toHaveClass("min-w-0", "max-w-[60%]", "shrink");
     expect(slot).not.toHaveClass("shrink-0");
-    expect(counts).toHaveClass("min-w-0", "justify-end");
-    expect(counts).not.toHaveClass("shrink-0");
+    expect(counts).toHaveClass("min-w-0", "justify-end", "flex-wrap", "overflow-visible");
+    expect(counts).not.toHaveClass("shrink-0", "flex-nowrap", "overflow-hidden");
     expect(count).toHaveClass("whitespace-nowrap");
   });
 
@@ -305,9 +305,11 @@ describe("AgentList — the workspace headings", () => {
     expect(within(headerRow()).getByLabelText("1 needs you")).toBeInTheDocument();
     expect(within(headerRow()).getByLabelText("2 idle")).toBeInTheDocument();
     expect(within(headerRow()).queryByText(/needs you|idle/)).not.toBeInTheDocument();
-    // The one summary slot at the top spells the very same counts in words.
+    // The one summary slot at the top spells every count in words while the line has the room (jsdom
+    // has no layout, so it always has), and its button names every count in words.
     expect(screen.getByText("1 needs you")).toBeInTheDocument();
     expect(screen.getByText("2 idle")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^1 needs you\s*2 idle$/ })).toBeInTheDocument();
   });
 
   // A workspace whose every pane is blocked used to earn no heading at all — the group WAS the
@@ -491,18 +493,35 @@ describe("AgentList — an older bridge with no timestamps", () => {
 // The key a device remembers a workspace by: machine, session and NAME, never Herdr's restart-unstable id.
 const prefKeyOf = (p: AgentView) => workspacePrefKey(groupPanesByWorkspace([p])[0]!);
 
-describe("AgentList — the Spaces filter strip", () => {
+describe("AgentList — the workspace select", () => {
   const two = [
     agent("a", "idle", { workspaceId: "w1", workspaceLabel: "one", workspaceNumber: 1, tabId: "w1:t1" }),
     agent("b", "idle", { workspaceId: "w2", workspaceLabel: "two", workspaceNumber: 2, tabId: "w2:t1" }),
   ];
 
-  // A chip's accessible name is its status word run straight into its label ("idleone", no space) —
-  // never an exact "one" — so every chip lookup below is a Spaces-strip-scoped substring match.
-  const chip = (label: string) =>
-    within(screen.getByRole("navigation", { name: /spaces/i })).getByRole("button", {
-      name: new RegExp(label),
-    });
+  // An option's name is the workspace, then its state in words when it has one: "one · needs you".
+  const select = () => screen.getByRole("combobox", { name: "Workspace" });
+  const option = (label: RegExp | string) => within(select()).getByRole("option", { name: label });
+  const optionNames = () => within(select()).getAllByRole("option").map((o) => o.textContent);
+
+  it("is one select named Workspace: All workspaces, then one option per workspace in the list's order", () => {
+    render(<AgentList agents={two} onOpen={vi.fn()} />);
+    expect(optionNames()).toEqual(["All workspaces", "one", "two"]);
+    expect(select()).toHaveValue("all");
+    // No chip strip any more: the filter is this select alone.
+    expect(screen.queryByRole("navigation", { name: /spaces/i })).toBeNull();
+  });
+
+  it("says a workspace's state in words on its option, where a native list cannot draw a dot", () => {
+    const states = [
+      agent("a", "blocked", { workspaceId: "w1", workspaceLabel: "one", workspaceNumber: 1, tabId: "w1:t1" }),
+      agent("b", "working", { workspaceId: "w2", workspaceLabel: "two", workspaceNumber: 2, tabId: "w2:t1" }),
+      agent("c", "done", { workspaceId: "w3", workspaceLabel: "three", workspaceNumber: 3, tabId: "w3:t1", lastActiveAt: 200, lastSeenAt: 100 }),
+      agent("d", "idle", { workspaceId: "w4", workspaceLabel: "four", workspaceNumber: 4, tabId: "w4:t1" }),
+    ];
+    render(<AgentList agents={states} onOpen={vi.fn()} />);
+    expect(optionNames()).toEqual(["All workspaces", "one · needs you", "two · working", "three · unseen", "four"]);
+  });
 
   it("keeps a hidden workspace hidden when Herdr renumbers its id", () => {
     const key = prefKeyOf(two[0]!);
@@ -511,40 +530,54 @@ describe("AgentList — the Spaces filter strip", () => {
     expect(headings()).not.toContain("one");
   });
 
-  it("isolates a workspace on a chip tap; tapping it again returns to all", async () => {
+  it("isolates a workspace on a pick; All workspaces returns to all", async () => {
     const user = userEvent.setup();
     const onIsolate = vi.fn();
     const key = prefKeyOf(two[0]!);
     const { rerender } = render(<AgentList agents={two} onOpen={vi.fn()} onIsolate={onIsolate} />);
-    await user.click(chip("one"));
+    await user.selectOptions(select(), option("one"));
     expect(onIsolate).toHaveBeenCalledExactlyOnceWith(key);
 
     rerender(<AgentList agents={two} onOpen={vi.fn()} isolated={key} onIsolate={onIsolate} />);
-    // Isolated: only "one"'s group is left on screen.
+    // Isolated: only "one"'s group is left on screen, and the select shows it.
     expect(headings()).toEqual(["one"]);
-    expect(chip("one")).toHaveAttribute("aria-current", "true");
+    expect(option("one")).toHaveProperty("selected", true);
 
-    await user.click(chip("one"));
+    await user.selectOptions(select(), option("All workspaces"));
     expect(onIsolate).toHaveBeenLastCalledWith(null);
   });
 
-  it("hides a workspace via long-press (contextmenu), calling onToggleHidden with its key", () => {
-    const onToggleHidden = vi.fn();
-    render(<AgentList agents={two} onOpen={vi.fn()} onToggleHidden={onToggleHidden} />);
-    // A long-press reaches the DOM as a `contextmenu` event (Android Chrome / right-click) —
-    // components/ui/chip.tsx wires it through `useLongPress`.
-    fireEvent.contextMenu(chip("one"));
-    expect(onToggleHidden).toHaveBeenCalledExactlyOnceWith(prefKeyOf(two[0]!));
+  it("has no way to hide a workspace (a native list has no long press), and offers none when none is hidden", () => {
+    render(<AgentList agents={two} onOpen={vi.fn()} onToggleHidden={vi.fn()} />);
+    expect(optionNames()).not.toContain("Show hidden workspaces");
   });
 
-  it("keeps a hidden chip in the strip, dimmed and marked hidden — the group itself drops", () => {
+  it("keeps a hidden workspace in the select, marked hidden, with its group dropped from the list", () => {
     const key = prefKeyOf(two[0]!);
     render(<AgentList agents={two} onOpen={vi.fn()} hidden={[key]} />);
     // "one" no longer has a heading — its rows are gone from the list.
     expect(headings()).toEqual(["two"]);
-    // Its chip is still in the strip, and says so for screen readers.
-    const hiddenChip = screen.getByRole("button", { name: /one/ });
-    expect(within(hiddenChip).getByText(/hidden/i)).toBeInTheDocument();
+    // Its option is still there, and says so.
+    expect(optionNames()).toEqual(["All workspaces", "one · hidden", "two"]);
+  });
+
+  it("brings every hidden workspace back from one option, and leaves the choice on what it was", async () => {
+    const user = userEvent.setup();
+    const onToggleHidden = vi.fn();
+    const hidden = two.map(prefKeyOf);
+    render(<AgentList agents={two} onOpen={vi.fn()} hidden={hidden} onToggleHidden={onToggleHidden} />);
+    await user.selectOptions(select(), option("Show hidden workspaces"));
+    expect(onToggleHidden.mock.calls.map((c) => c[0])).toEqual(hidden);
+    expect(select()).toHaveValue("all");
+  });
+
+  it("picks a hidden workspace to see it alone: isolate wins over hide", async () => {
+    const user = userEvent.setup();
+    const onIsolate = vi.fn();
+    const key = prefKeyOf(two[0]!);
+    render(<AgentList agents={two} onOpen={vi.fn()} hidden={[key]} onIsolate={onIsolate} />);
+    await user.selectOptions(select(), option(/^one/));
+    expect(onIsolate).toHaveBeenCalledExactlyOnceWith(key);
   });
 
   it("keeps the fixed order when a pane's status changes", () => {
@@ -568,7 +601,7 @@ describe("AgentList — the Spaces filter strip", () => {
 });
 
 // PINNED PANES (ADR 0070): a Pinned group under the summary line on every tab, drawn from every
-// workspace before isolate and hide, deaf to the Focus filter, and each pinned pane listed once.
+// workspace before isolate and hide, deaf to the needs-you switch, and each pinned pane listed once.
 describe("AgentList — pinned panes", () => {
   it("interleaves pinned shells and agents by position, never status or pin time", () => {
     const sh = agent("shell", "unknown", { ...UI_WORK, kind: "shell", agent: "shell", paneLabel: "shell-first", tabPosition: 0 });
@@ -633,10 +666,10 @@ describe("AgentList — pinned panes", () => {
     expect(rowNames(pinnedRegion())).toEqual(["stuck"]);
   });
 
-  it("drops a workspace group left with no rows, and keeps its chip in the strip", () => {
+  it("drops a workspace group left with no rows, and keeps its option in the select", () => {
     render(<AgentList agents={herd} onOpen={vi.fn()} pins={pinned("builder", "quiet")} />);
     expect(headings()).toEqual(["pinned", "one"]);
-    expect(within(screen.getByRole("navigation", { name: /spaces/i })).getByRole("button", { name: /two/ })).toBeInTheDocument();
+    expect(within(screen.getByRole("combobox", { name: "Workspace" })).getByRole("option", { name: /^two/ })).toBeInTheDocument();
   });
 
   it("puts the place on line 2 of a pinned row, because no workspace heading says it", () => {
@@ -668,14 +701,14 @@ describe("AgentList — pinned panes", () => {
     expect(headings()).toEqual(["pinned"]);
   });
 
-  it("ignores the Focus filter: an idle pinned pane leads, and the groups keep only what needs you", () => {
+  it("ignores the needs-you switch: an idle pinned pane leads, and the groups keep only what needs you", () => {
     render(<AgentList agents={herd} onOpen={vi.fn()} pins={pinned("orchestrator")} needsYouOnly />);
     expect(rowNames(pinnedRegion())).toEqual(["orchestrator"]);
     expect(headings()).toEqual(["pinned", "one"]);
     expect(rowNames(groupSection("one"))).toEqual(["stuck"]);
   });
 
-  it("shows only the Pinned group under an all-clear Focus when every urgent pane is pinned", () => {
+  it("shows only the Pinned group under an all-clear needs-you switch when every urgent pane is pinned", () => {
     render(<AgentList agents={herd} onOpen={vi.fn()} pins={pinned("stuck")} needsYouOnly />);
     expect(headings()).toEqual(["pinned"]);
   });
@@ -724,7 +757,7 @@ describe("AgentList — pinned panes", () => {
       <AgentList agents={herd} onOpen={vi.fn()} pins={pins} reveal={{ rowKey: paneRowKey(byName("orchestrator")) }} />,
     );
     expect(within(pinnedRegion()).getByRole("button")).toHaveFocus();
-    // Unpinned on Focus: an idle pane leaves the list, and focus goes to the summary line.
+    // Unpinned with the switch on: an idle pane leaves the list, and focus goes to the summary line.
     setPinned(byName("orchestrator"), false, herd);
     rerender(
       <AgentList
@@ -751,7 +784,7 @@ describe("AgentList — pinned panes", () => {
 });
 
 // HIDING A MACHINE (issue #288, M40/01): a crew's dashboard can leave a machine out. Its workspace
-// groups leave Panes, Focus and Changes, its chips give way to one dimmed stand-in chip with its worst
+// groups leave the Dashboard, Crew and Changes, its chips give way to one dimmed stand-in chip with its worst
 // dot, pins and isolate still win, the addressed machine always shows, and solo renders as before.
 describe("AgentList — hiding a machine", () => {
   const member = (id: string, isLead = false): ServerSummary => ({
@@ -773,9 +806,9 @@ describe("AgentList — hiding a machine", () => {
     agent("w1:p1", "working", { ...on("attic", "w1", "attic-ws", 1), sessionName: "attic-busy" }),
   ];
   const byName = (name: string) => herd.find((a) => a.sessionName === name)!;
-  const strip = () => within(screen.getByRole("navigation", { name: /spaces/i }));
-  const chipNames = () => strip().getAllByRole("button").map((b) => b.getAttribute("aria-label") ?? b.textContent);
-  const standIn = (name: string) => strip().getByRole("button", { name: `Show ${name}'s panes` });
+  const select = () => screen.getByRole("combobox", { name: "Workspace" });
+  const optionNames = () => within(select()).getAllByRole("option").map((o) => o.textContent);
+  const standIn = (name: string) => within(select()).getByRole("option", { name: `Show ${name}'s panes` });
   const summaryLine = () => screen.getByRole("button", { name: /^\d+ needs you/ });
 
   it("leaves a hidden machine's workspaces out of Panes, and the summary line still counts them", () => {
@@ -785,7 +818,7 @@ describe("AgentList — hiding a machine", () => {
     expect(summaryLine()).toHaveAccessibleName(/^2 needs you/);
   });
 
-  it("leaves a hidden machine out of Focus too", () => {
+  it("leaves a hidden machine out of the needs-you list too", () => {
     render(<AgentList agents={herd} servers={servers} hiddenMachines={["workshop"]} needsYouOnly onOpen={vi.fn()} />);
     expect(headings()).toEqual(["collie"]);
     expect(rowButtons()).toHaveLength(1);
@@ -809,14 +842,14 @@ describe("AgentList — hiding a machine", () => {
     expect(within(pinned).getByText("peer-idle")).toBeInTheDocument();
   });
 
-  it("lets isolate win: an isolated workspace on a hidden machine shows, its chip right after the machine's", () => {
+  it("lets isolate win: an isolated workspace on a hidden machine shows, its option right after the machine's", () => {
     const isolated = prefKeyOf(byName("peer-idle"));
     render(
       <AgentList agents={herd} servers={servers} hiddenMachines={["workshop"]} isolated={isolated} onOpen={vi.fn()} />,
     );
     expect(headings()).toEqual(["docs"]);
-    expect(chipNames()).toEqual(["All", "collie", "Show workshop's panes", "docs", "attic-ws"].map((n) => expect.stringContaining(n)));
-    expect(strip().getByRole("button", { name: /docs/ })).toHaveAttribute("aria-current", "true");
+    expect(optionNames()).toEqual(["All workspaces", "collie · needs you", "Show workshop's panes", "docs", "attic-ws · working"]);
+    expect(within(select()).getByRole("option", { name: "docs" })).toHaveProperty("selected", true);
   });
 
   it("jumps the summary line to an urgent pane on a hidden machine by isolating its workspace", async () => {
@@ -862,32 +895,26 @@ describe("AgentList — hiding a machine", () => {
     expect(container.innerHTML).toBe(before);
   });
 
-  it("swaps a hidden machine's chips for one dimmed stand-in chip, at its place, with its worst dot", () => {
+  it("swaps a hidden machine's workspaces for one \"Show <machine>'s panes\" option, at their place", () => {
     render(<AgentList agents={herd} servers={servers} hiddenMachines={["workshop"]} onOpen={vi.fn()} />);
-    expect(chipNames()).toEqual(["All", "collie", "Show workshop's panes", "attic-ws"].map((n) => expect.stringContaining(n)));
-    const chip = standIn("workshop");
-    // The machine's name for the eye, its worst status for the ear, and the server glyph in its tint.
-    expect(chip).toHaveTextContent("workshop");
-    expect(chip).toHaveAccessibleDescription("needs you");
-    expect(chip.querySelector("svg")?.getAttribute("class")).toMatch(/text-host-\d/);
-    // Drawn dimmed, like a hidden workspace's chip.
-    expect(chip.className).toContain("border-dashed");
-    expect(chip).not.toHaveAttribute("aria-current");
+    expect(optionNames()).toEqual(["All workspaces", "collie · needs you", "Show workshop's panes", "attic-ws · working"]);
+    // It is an action, not a place: the select stays on All workspaces.
+    expect(select()).toHaveValue("all");
   });
 
-  it("draws no stand-in chip for a hidden machine with no panes", () => {
+  it("draws no such option for a hidden machine with no panes", () => {
     const leadOnly = herd.filter((a) => a.host !== "attic");
     render(<AgentList agents={leadOnly} servers={servers} hiddenMachines={["attic"]} onOpen={vi.fn()} />);
-    expect(strip().queryByRole("button", { name: /^Show attic/ })).toBeNull();
+    expect(within(select()).queryByRole("option", { name: /^Show attic/ })).toBeNull();
   });
 
-  it("keeps the stand-in chip of a hidden machine that is down, with its last good dot", () => {
+  it("keeps the option of a hidden machine that is down", () => {
     const down = servers.map((s) => (s.id === "workshop" ? { ...s, reachable: false } : s));
     render(<AgentList agents={herd} servers={down} hiddenMachines={["workshop"]} onOpen={vi.fn()} />);
-    expect(standIn("workshop")).toHaveAccessibleDescription("needs you");
+    expect(standIn("workshop")).toBeInTheDocument();
   });
 
-  it("a tap on the stand-in chip shows the machine again, and focus lands on the chip in its place", async () => {
+  it("a pick of the option shows the machine again, and the select stays on what it was", async () => {
     const user = userEvent.setup();
     function Dashboard() {
       const hidden = useHiddenMachines(true);
@@ -905,11 +932,10 @@ describe("AgentList — hiding a machine", () => {
     render(<Dashboard />);
     expect(headings()).toEqual(["collie", "attic-ws"]);
 
-    await user.click(standIn("workshop"));
+    await user.selectOptions(select(), standIn("workshop"));
     expect(headings()).toEqual(["collie", "moonward", "docs", "attic-ws"]);
-    expect(strip().queryByRole("button", { name: /^Show workshop/ })).toBeNull();
-    // The machine's first workspace chip took the stand-in's place, and focus with it.
-    expect(strip().getByRole("button", { name: /moonward/ })).toHaveFocus();
+    expect(within(select()).queryByRole("option", { name: /^Show workshop/ })).toBeNull();
+    expect(select()).toHaveValue("all");
   });
 });
 
@@ -1136,7 +1162,7 @@ describe("AgentList — the pin hint", () => {
     expect(line.closest('[data-slot="collapse"]')).not.toBeNull();
   });
 
-  it("hint: never on Focus or Changes", () => {
+  it("hint: never with the needs-you switch on, or on Changes and Crew", () => {
     const { container, rerender } = render(<AgentList agents={herd} onOpen={vi.fn()} onHold={vi.fn()} needsYouOnly />);
     expect(hint(container)).toBeNull();
     rerender(<AgentList agents={herd} onOpen={vi.fn()} onHold={vi.fn()} renderBody={() => <p>changes body</p>} />);
@@ -1220,5 +1246,204 @@ describe("AgentList — the pin hint", () => {
     const { container } = render(<AgentList agents={herd} onOpen={vi.fn()} onHold={vi.fn()} />);
     expect(hint(container)).toHaveTextContent(RIGHT_CLICK);
     expect(screen.queryByText(HOLD)).toBeNull();
+  });
+});
+
+// THE ORDER TOGGLE (ADR 0071, "The dashboard takes the setting"): Place is the dashboard as it was,
+// byte for byte; Activity and Cache fold the workspace groups into one list under one heading. The
+// reading is frozen: a poll repaints a row where it stands, and only the operator's tap, the page
+// coming back to the foreground, or a changed order takes a new one.
+describe("AgentList — the order select", () => {
+  // Two workspaces, and activity order disagrees with place order on every row, so a pass cannot be
+  // an accident of the arrival order. Place order: alpha (one), beta (one), gamma (two), delta (two).
+  // `lastSeenAt` equal to the clock: the pane is seen, so only `beta` (blocked) needs you.
+  const timed = (a: AgentView, lastActiveAt: number): AgentView => ({ ...a, lastActiveAt, lastSeenAt: lastActiveAt });
+  const summaryLine = () => document.getElementById("dash-summary-line")!;
+  const ws = (n: 1 | 2) =>
+    n === 1
+      ? { workspaceId: "w1", workspaceLabel: "one", workspaceNumber: 1, tabId: "w1:t1" }
+      : { workspaceId: "w2", workspaceLabel: "two", workspaceNumber: 2, tabId: "w2:t1" };
+  const herd = [
+    timed(agent("a", "idle", { ...ws(1), sessionName: "alpha" }), 100),
+    timed(agent("b", "blocked", { ...ws(1), sessionName: "beta" }), 400),
+    timed(agent("c", "working", { ...ws(2), sessionName: "gamma" }), 300),
+    timed(agent("d", "idle", { ...ws(2), sessionName: "delta" }), 200),
+  ];
+  const names = () =>
+    rowButtons().map((b) => ["alpha", "beta", "gamma", "delta"].find((n) => within(b).queryByText(n) !== null));
+  const props = { onOpen: vi.fn(), onOrderChange: vi.fn() };
+
+  it("order: place keeps the workspace groups, and offers the select beside the workspace select", () => {
+    render(<AgentList agents={herd} {...props} order="place" />);
+    expect(headings()).toEqual(["one", "two"]);
+    expect(names()).toEqual(["alpha", "beta", "gamma", "delta"]);
+    const select = screen.getByRole("combobox", { name: "Pane order" });
+    expect(select).toHaveValue("place");
+    expect(within(select).getAllByRole("option").map((o) => o.textContent)).toEqual(["Place", "Activity", "Cache"]);
+    // The two selects share one row, the workspace filter first; the alarm has the row above.
+    const row = select.closest('[data-slot="select"]')!.parentElement!.parentElement!;
+    expect(row).toContainElement(screen.getByRole("combobox", { name: "Workspace" }));
+    expect(row).not.toContainElement(summaryLine());
+  });
+
+  it("order: draws no control, and the summary line keeps its place, when nothing can store the answer", () => {
+    render(<AgentList agents={herd} onOpen={vi.fn()} />);
+    expect(screen.queryByRole("combobox", { name: "Pane order" })).toBeNull();
+  });
+
+  it("order: reports a pick and changes nothing itself", async () => {
+    const user = userEvent.setup();
+    const onOrderChange = vi.fn();
+    render(<AgentList agents={herd} onOpen={vi.fn()} order="place" onOrderChange={onOrderChange} />);
+    await user.selectOptions(screen.getByRole("combobox", { name: "Pane order" }), "activity");
+    expect(onOrderChange).toHaveBeenCalledWith("activity");
+    expect(headings()).toEqual(["one", "two"]);
+  });
+
+  it("order: activity is ONE flat list under one heading, newest first, with no workspace heading and no '+'", async () => {
+    render(
+      <AgentList
+        agents={herd}
+        {...props}
+        order="activity"
+        newTab={{ scope: {}, creating: new Set(), onNewTab: vi.fn() }}
+      />,
+    );
+    expect(headings()).toEqual(["newest first(4)"]);
+    expect(names()).toEqual(["beta", "gamma", "delta", "alpha"]);
+    expect(screen.queryByRole("button", { name: /^New tab in / })).toBeNull();
+    // Each row still names its workspace, on line 2, since no heading above it does.
+    const rows = rowButtons();
+    expect(within(rows[0]!).getByText("one")).toBeInTheDocument();
+    expect(within(rows[1]!).getByText("two")).toBeInTheDocument();
+    // The workspace select keeps its options.
+    expect(within(screen.getByRole("combobox", { name: "Workspace" })).getByRole("option", { name: /^two/ })).toBeInTheDocument();
+  });
+
+  it("order: cache runs soonest-to-go-cold first, with the pane that has no cache last", () => {
+    const now = Date.now();
+    const warm = (a: AgentView, msLeft: number): AgentView => ({
+      ...a,
+      cache: { state: "warm", ttlSeconds: 300, ruleId: "r", confidence: "documented", expiresAt: now + msLeft },
+    });
+    render(
+      <AgentList
+        agents={[warm(herd[0]!, 600_000), herd[1]!, warm(herd[2]!, 60_000), warm(herd[3]!, 120_000)]}
+        {...props}
+        order="cache"
+      />,
+    );
+    expect(headings()).toEqual(["going cold first(4)"]);
+    expect(names()).toEqual(["gamma", "delta", "alpha", "beta"]);
+  });
+
+  it("order: pins lead and are ranked inside themselves", () => {
+    let now = 0;
+    setPinned(herd[0]!, true, herd, ++now);
+    setPinned(herd[3]!, true, herd, ++now);
+    render(<AgentList agents={herd} {...props} order="activity" pins={currentPins()} />);
+    expect(headings()).toEqual(["pinned", "newest first(2)"]);
+    const pinnedRegion = screen.getByRole("region", { name: "Pinned" });
+    // delta (200) outranks alpha (100) inside Pinned, though alpha comes first in place order.
+    const inPinned = within(pinnedRegion)
+      .getAllByRole("button")
+      .map((b) => ["alpha", "delta"].find((n) => within(b).queryByText(n) !== null));
+    expect(inPinned).toEqual(["delta", "alpha"]);
+    // Listed once: the rest are the ranked list.
+    expect(names().slice(-2)).toEqual(["beta", "gamma"]);
+  });
+
+  it("order: the filters run first and never sort", () => {
+    // The switch keeps only the pane that needs you; isolate keeps one workspace; the ranking then runs
+    // over what is left.
+    const { rerender } = render(<AgentList agents={herd} {...props} order="activity" needsYouOnly />);
+    expect(names()).toEqual(["beta"]);
+    rerender(<AgentList agents={herd} {...props} order="activity" isolated={workspacePrefKey(groupPanesByWorkspace(herd, [], { order: "fixed" })[1]!)} />);
+    expect(names()).toEqual(["gamma", "delta"]);
+    rerender(<AgentList agents={herd} {...props} order="activity" hidden={[workspacePrefKey(groupPanesByWorkspace(herd, [], { order: "fixed" })[0]!)]} />);
+    expect(names()).toEqual(["gamma", "delta"]);
+  });
+
+  it("order: holds its order while a pane's clock moves under it (the freeze)", () => {
+    const { rerender } = render(<AgentList agents={herd} {...props} order="activity" />);
+    const before = names();
+    rerender(<AgentList agents={[timed(herd[0]!, 9_000), herd[1]!, herd[2]!, herd[3]!]} {...props} order="activity" />);
+    expect(names()).toEqual(before);
+    // A status change is a poll too: it repaints, it does not move.
+    rerender(<AgentList agents={[herd[0]!, { ...herd[1]!, status: "idle" }, herd[2]!, herd[3]!]} {...props} order="activity" />);
+    expect(names()).toEqual(before);
+  });
+
+  it("order: a pane that arrives after the reading ranks last, not first", () => {
+    const { rerender } = render(<AgentList agents={herd} {...props} order="activity" />);
+    const newest = timed(agent("e", "idle", { ...ws(1), sessionName: "epsilon" }), 99_999);
+    rerender(<AgentList agents={[...herd, newest]} {...props} order="activity" />);
+    const last = rowButtons().at(-1)!;
+    expect(within(last).getByText("epsilon")).toBeInTheDocument();
+  });
+
+  it("order: changing the order takes a new reading", () => {
+    const { rerender } = render(<AgentList agents={herd} {...props} order="place" />);
+    rerender(<AgentList agents={herd} {...props} order="activity" />);
+    expect(names()).toEqual(["beta", "gamma", "delta", "alpha"]);
+  });
+
+  it("order: the page coming back to the foreground takes a new reading", () => {
+    const { rerender } = render(<AgentList agents={herd} {...props} order="activity" />);
+    rerender(<AgentList agents={[timed(herd[0]!, 9_000), herd[1]!, herd[2]!, herd[3]!]} {...props} order="activity" />);
+    expect(names()[0]).toBe("beta");
+    act(() => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    expect(names()[0]).toBe("alpha");
+  });
+
+  it("order: the summary line jumps to the first urgent row in the ranked list", async () => {
+    const user = userEvent.setup();
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    render(<AgentList agents={herd} {...props} order="activity" />);
+    await user.click(summaryLine());
+    expect(scrollIntoView).toHaveBeenCalled();
+    expect(within(rowButtons()[0]!).getByText("beta")).toBeInTheDocument();
+  });
+
+  it("order: the Changes tab draws no order select, and keeps its own body and the row's height", () => {
+    render(<AgentList agents={herd} {...props} order="activity" renderBody={() => <p>changes body</p>} />);
+    expect(screen.queryByRole("combobox", { name: "Pane order" })).toBeNull();
+    // The workspace select stays: it narrows the workspaces Changes lists.
+    expect(screen.getByRole("combobox", { name: "Workspace" })).toBeInTheDocument();
+    expect(screen.getByText("changes body")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: /newest first/i })).toBeNull();
+    expect(summaryLine().parentElement).toHaveClass("min-h-11");
+  });
+
+  it("needs-you switch: drawn at the end of the summary line only when given a way to flip, and reports a tap", async () => {
+    const user = userEvent.setup();
+    const onNeedsYouOnlyChange = vi.fn();
+    const { rerender } = render(<AgentList agents={herd} {...props} />);
+    expect(screen.queryByRole("button", { name: "Show only panes that need you" })).toBeNull();
+    rerender(<AgentList agents={herd} {...props} onNeedsYouOnlyChange={onNeedsYouOnlyChange} />);
+    const sw = screen.getByRole("button", { name: "Show only panes that need you" });
+    expect(sw).toHaveAttribute("aria-pressed", "false");
+    // One row with the summary line, the switch at its right end.
+    expect(sw.parentElement!.parentElement).toBe(summaryLine().parentElement);
+    await user.click(sw);
+    expect(onNeedsYouOnlyChange).toHaveBeenCalledWith(true);
+    rerender(<AgentList agents={herd} {...props} needsYouOnly onNeedsYouOnlyChange={onNeedsYouOnlyChange} />);
+    expect(screen.getByRole("button", { name: "Show only panes that need you" })).toHaveAttribute("aria-pressed", "true");
+    // Pressed again, it asks for off.
+    await user.click(screen.getByRole("button", { name: "Show only panes that need you" }));
+    expect(onNeedsYouOnlyChange).toHaveBeenLastCalledWith(false);
+  });
+
+  it("needs-you switch: a tab with its own body hides the switch and the order select, and keeps both slots", () => {
+    render(<AgentList agents={herd} {...props} onNeedsYouOnlyChange={vi.fn()} renderBody={() => <p>crew body</p>} />);
+    expect(screen.queryByRole("button", { name: "Show only panes that need you" })).toBeNull();
+    expect(screen.queryByRole("combobox", { name: "Pane order" })).toBeNull();
+    expect(summaryLine().parentElement).toHaveClass("min-h-11");
+    expect(summaryLine().parentElement!.querySelector(".invisible")).not.toBeNull();
+    const selectRow = screen.getByRole("combobox", { name: "Workspace" }).closest('[data-slot="select"]')!.parentElement!;
+    expect(selectRow.querySelector(".invisible")).not.toBeNull();
   });
 });

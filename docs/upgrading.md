@@ -319,6 +319,28 @@ Expect the newest tag.
 within about a minute, and it holds that reload for the length of an update run. If you are mid-task
 it shows a "tap to update" banner and waits for your tap.
 
+### On Windows
+
+The fork requires manual source updates; binary updates belong to upstream only.
+
+> **Note.** For `youngsecurity/collie`, fetch and select a reviewed `+ys` tag, rebuild, then
+> restart. The migration below installs upstream `AltanS/collie` and leaves the fork. There is
+> no fork Windows zip. See [Windows source builds](windows.md#build-from-source).
+
+**A source checkout never updates itself on Windows; an upstream zip install does.** `collie update` and
+the phone's Update button say so in one sentence on a source checkout and change nothing. Moving to
+the zip install is a one-time manual step:
+
+```powershell
+collie uninstall
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+After that, `collie update` works from the terminal and from the phone. That chain was rehearsed
+on a Windows 11 VM against a local copy of the release files, and the move itself was not.
+Releases up to and including v1.15.0 also could not swap a running `collie.exe`. See
+[Collie on Windows](windows.md#update).
+
 ### If the version did not move
 
 `collie update` asks GitHub directly on every run, `git ls-remote` for a checkout, the GitHub tags
@@ -412,7 +434,7 @@ collie crew update --all
 ```
 
 That is the terminal path, for a peer the phone cannot level. From the phone, update the whole crew
-with one tap and one confirmation: open **Settings → Updates** on the lead and select
+with one tap and one confirmation: open **Settings → System → Updates** on the lead and select
 **Update crew to `<version>`**. The preflight above the button covers every member, not just the
 lead. If a check is red anywhere, the button is disabled and names the failing machine and the
 reason.
@@ -622,6 +644,35 @@ To return to stable releases:
 herdr plugin install AltanS/collie --yes
 herdr plugin action invoke restart --plugin herdr.collie
 ```
+
+## Upgrading to 1.18.0
+
+Version 1.18.0 makes pairing mandatory for reads as well as writes
+([ADR 0086](../.adr/0086-reads-need-the-pairing-token.md)). What changes on upgrade day:
+
+- **Paired phones keep working.** Their stored token already satisfies the new rule. Nothing to do.
+- **Unpaired browsers see the pair screen.** A desktop browser that never paired, which could read
+  before, now gets `403 device not paired`. Run `collie pair` on the host, then enter the code in
+  Settings on that browser ([Pair a device](security.md#pair-a-device--the-write-credential)).
+- **Scripts must pair once.** A script that read the API without a token gets `403` now. Run
+  `collie pair --expires 30d`, then claim the code with a POST to `/api/pair` that carries
+  `{"code": "...", "label": "script"}` and a same-origin `Origin` header. The token comes back once,
+  in that answer. Send it as `Authorization: Bearer <token>` on every later call. Store it like a
+  password.
+- **Host CLIs need nothing.** `collie doctor`, `collie history` and the crew update sweep read their
+  own bridge with a local credential the bridge writes to the state directory.
+- **Rolling back below 1.18.0 ignores token expiries.** An older bridge does not know the
+  `expiresAt` field, so an expired device works again until the bridge is updated. Revoke it with
+  `collie devices revoke <label>` if that matters
+  ([Give a device an expiry](security.md#give-a-device-an-expiry)).
+- **Old audit files may hold typed characters.** Files written before 1.18.0 can list characters
+  typed on the phone. Rotate or delete `audit.log` files from before the update.
+- **Masking may get in the way.** File bodies in Files and diffs in Changes now pass through the
+  same secret mask as pane text. If it hides something you need, set `COLLIE_REDACT=off` in your
+  `.env` and restart ([configure](configure.md)).
+- **A 1.18.0 lead masks its members' text too.** A member still on 1.17.x does not mask, so the
+  lead masks that member's text before your phone gets it. To see a member's text unmasked, set
+  `COLLIE_REDACT=off` on the lead as well as on the member.
 
 ## Upgrading from 0.x to 1.0
 

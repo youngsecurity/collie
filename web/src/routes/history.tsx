@@ -79,10 +79,19 @@ export function HistoryRoute() {
   const [older, setOlder] = useState<TranscriptEntry[]>([]);
   const [hasMore, setHasMore] = useState(data.hasMore);
   const [loading, setLoading] = useState(false);
-  const entries = useMemo(
-    () => (older.length ? [...older, ...data.entries] : data.entries),
-    [older, data.entries],
-  );
+  const entries = useMemo(() => {
+    const all = older.length ? [...older, ...data.entries] : data.entries;
+    // A turn the agent REWOUND PAST is not part of this conversation any more, so it is not part of
+    // this view, this find or this jump either. Only pi can say so (`abandoned`, set by its reader
+    // when a row's parent is not the row before it), and the journal KEEPS the turn rather than
+    // dropping it, because a `?before=` cursor still has to resolve its uuid on the bridge. So hiding
+    // is the reader's job, and it belongs here: this is the one array the view, `matchingEntries`,
+    // `userTurnIndices`, the render window and the paging cursor all read.
+    //
+    // The `some` guard keeps the array IDENTITY for every session that never forked, which is almost
+    // all of them, and this value is a dependency of five memos below.
+    return all.some((e) => e.abandoned === true) ? all.filter((e) => e.abandoned !== true) : all;
+  }, [older, data.entries]);
 
   // How many of the NEWEST turns are rendered. Everything else is held in memory, unrendered.
   const [renderCount, setRenderCount] = useState(INITIAL_RENDER);
@@ -269,7 +278,7 @@ export function HistoryRoute() {
       </RouteHeader>
 
       <div className={cn("relative min-h-0 min-w-0 flex-1", mirrorFace.className)} style={mirrorFace.style}>
-        <ChatMessageList ref={listRef} className="px-3 py-3">
+        <ChatMessageList ref={listRef} clearBand={12} className="px-3 py-3">
           {entries.length === 0 ? (
             <div className="px-2 py-16 text-center text-sm leading-relaxed text-muted-foreground">
               {/* The route is reachable by URL — a bookmark, a back button, an older cached bundle

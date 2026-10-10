@@ -6,6 +6,10 @@
 - **Amended in scope by:** [ADR 0070](./0070-a-pin-is-a-place-the-operator-chose.md): a Pinned
   group sits under the summary line on all three tabs, so Focus is no longer empty under its
   all-clear when pins exist; the footer, the filter and the Changes rows stand.
+- **Amended in scope by:** [ADR 0085](./0085-the-dashboards-tabs-are-dashboard-crew-and-changes.md):
+  the first tab is renamed Dashboard, the Focus tab becomes a switch in the summary line (stored as
+  `needsYouOnly`) and a Crew tab joins while a crew is configured; the filter's rules, the corner
+  mark's rule (now on the Dashboard tab) and Changes stand.
 - **Date:** 2026-09-23
 - **Shipped in:** pending
 - **Trail:** GitHub issue 270 (@simplysoft: a `Needs you` chip on the workspace strip, persisted as
@@ -87,3 +91,17 @@ Attention, Changes.**
   the bridge's read-only path from ADR 0065, bounded by the concurrency limit and by visibility.
 - **Revisit** if a fourth list earns a tab: the row holds three words comfortably at 375px, and a
   fourth would crowd the translations.
+
+## Amended 2026-10-08: the strip is a select
+
+The **workspace strip** that points 2 and 3 name, the chips along the top of the Dashboard, is gone.
+A **Workspace select** replaced it, in a row under the summary line ([ADR 0085](./0085-the-dashboards-tabs-are-dashboard-crew-and-changes.md),
+amended the same day). Where this ADR says "the strip", read "the Workspace select". "All workspaces"
+shows everything, and a chosen workspace shows alone. The rules stand: Attention (now the needs-you
+switch) is a filter and never a sort, every heading still counts its whole workspace, the summary line
+still counts every pane, and the Changes tab lists the workspaces the select leaves shown, in the
+list's order. The reason is the one the operator gave on 2026-10-07 when he picked option 2, "one
+control bar": the strip and the order toggle took two rows and a scroller to say two things, and a
+native select draws the phone's own picker with no sheet of ours. The strip's tap-to-isolate is the
+select's choice, its long-press hide is gone because a native select has no long press, and a hide
+stored on a device still applies.

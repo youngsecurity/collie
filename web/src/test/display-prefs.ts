@@ -10,6 +10,7 @@ const BASE: DisplayPrefs = {
   wrap: true,
   fontSize: 11,
   draftFontSize: 14,
+  chatFontSize: 14,
   fontFamily: "system",
   terminalForeground: "",
   terminalBackground: "",

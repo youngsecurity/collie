@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { JsonValue } from "../bridge/json.ts";
 import { jsonRecord, jsonStringField } from "../bridge/stt/json.ts";
 
@@ -21,13 +23,29 @@ function runStep(name: string, job: string, step: string) {
 }
 
 function shell(script: string, env: NodeJS.ProcessEnv = {}) {
-	// Actions writes output and summaries to appendable files. FD 3 is a real pipe, unlike
-	// Bun's captured stdout socket, so the workflow's append redirections work unchanged.
-	const result = Bun.spawnSync(["bash", "-e", "-c", `exec 3> >(cat)\n${script}`], {
-		env: { ...process.env, GITHUB_OUTPUT: "/dev/fd/3", GITHUB_STEP_SUMMARY: "/dev/fd/3", ...env },
-	});
-	return { code: result.exitCode, stdout: result.stdout.toString(), stderr: result.stderr.toString() };
+	// Actions uses appendable files. Git Bash has no /dev/fd/3, and Bun's captured
+	// stdout socket cannot be reopened for appending on POSIX either.
+	const root = mkdtempSync(join(tmpdir(), "collie workflow output-"));
+	const output = join(root, "output");
+	writeFileSync(output, "");
+	try {
+		// Git Bash accepts drive paths with forward slashes, including paths with spaces.
+		const shellPath = output.replaceAll("\\", "/");
+		const result = Bun.spawnSync(["bash", "-e", "-c", script], {
+			env: { ...process.env, GITHUB_OUTPUT: shellPath, GITHUB_STEP_SUMMARY: shellPath, ...env },
+		});
+		return { code: result.exitCode, stdout: result.stdout.toString() + readFileSync(output, "utf8"), stderr: result.stderr.toString() };
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
 }
+
+test("workflow outputs and summaries support append redirection", () => {
+	const result = shell('printf "first\\n" >> "$GITHUB_OUTPUT"\nprintf "second\\n" >> "$GITHUB_STEP_SUMMARY"');
+	expect(result.stderr).toBe("");
+	expect(result.code).toBe(0);
+	expect(result.stdout).toBe("first\nsecond\n");
+});
 
 test("release verification has no publishing permission and can retry an explicit tag", () => {
 	expect(workflow("release")).toMatchObject({

@@ -5,6 +5,7 @@ import type { SnapshotResponse } from "@/lib/types";
 import { fixtureSnapshot } from "@/test/handlers";
 
 import { installApiStub } from "./fixtures/api";
+import { bottomBack, headerBack } from "./fixtures/back";
 
 // BACK GOES UP ONE LEVEL (ADR 0067). On an iPhone the edge swipe IS browser history back, so every
 // case here drives `page.goBack()` as the swipe and asserts it lands one level up: never on the
@@ -93,11 +94,14 @@ test("settings, its back arrow, then back does not reopen settings", async ({ pa
 
 test("C: the dashboard's Changes tab, a workspace's Changes, then the header back is the dashboard", async ({ page }) => {
   await page.goto("/");
-  await dashboard(page).getByRole("button", { name: new RegExp(`^${en["changes.title"]}$`, "u") }).click();
+  await dashboard(page).getByRole("button", { name: new RegExp(`^${en["files.title"]}$`, "u") }).click();
   await page.getByRole("list", { name: en["home.changes.listAria"] }).getByRole("button").first().click();
   await landed(page, "/space/w1/changes");
 
-  await page.getByRole("button", { name: en["changes.backAria.dashboard"] }).click();
+  // The phone also draws a bottom Back with the arrow's name and the same move; the case is about
+  // the HEADER's arrow, so it addresses that one.
+  await expect(bottomBack(page, en["changes.backAria.dashboard"])).toHaveCount(1);
+  await headerBack(page, en["changes.backAria.dashboard"]).click();
   await landed(page, "/");
   await expect(dashboard(page)).toBeVisible();
   await page.goBack().catch(() => null);

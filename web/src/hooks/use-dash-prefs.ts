@@ -2,7 +2,9 @@ import { useCallback, useState } from "react";
 import { asJsonBoolean, asJsonObject, asJsonString, type JsonValue } from "@/lib/json";
 
 import type { ChangesLayout } from "@/lib/changes-tree";
-import { coerceDashView, type DashView } from "@/lib/dash-view";
+import { coerceDashView, isLegacyDashView, wasFocusView, type DashView } from "@/lib/dash-view";
+import { coercePaneOrder, type PaneOrder } from "@/lib/pane-order";
+import { coercePaneView, type PaneView } from "@/lib/pane-view";
 import type { RecentDir } from "@/lib/triage";
 
 // Dashboard layout preferences, persisted in localStorage. Deliberately separate from
@@ -44,14 +46,74 @@ export interface DashPrefs {
   /** The Changes list drawn flat, one row per file, or as a folder tree. */
   changesLayout: ChangesLayout;
   /**
+   * Whether the Files view lists the entries git ignores (ADR 0083). OFF by default: `node_modules`,
+   * build output and logs bury the files an operator came to read. Per device, and it outlives the
+   * folder: the name filter resets with each folder, this choice does not.
+   */
+  filesShowIgnored: boolean;
+  /**
+   * Whether the Changes screen shows the changed files only, as a flat list or a tree of them, rather
+   * than the root folder with each change marked on its row (ADR 0083, 2026-10-06). OFF by default:
+   * the folder with its marks shows both what changed and what sits beside it. Per device, beside
+   * {@link filesShowIgnored}.
+   */
+  changesOnly: boolean;
+  /**
    * The composer's action belt size, one factor for the whole belt: band, pills, icons and words
    * all grow from it together (`--belt-scale`, `components/actions-row.tsx`). One of
    * {@link BELT_SCALES}. 1.15 is the baseline Altan asked for on 2026-09-23 ("slightly higher and
    * the icons slightly larger, like 15%"); the other two are the Settings row's way up from there.
    */
   beltScale: BeltScale;
-  /** The dashboard's footer tab: Panes, Focus or Changes (ADR 0066, renamed by ADR 0068). Panes by default. */
+  /** The dashboard's footer tab: Dashboard, Crew or Changes (ADR 0085). Dashboard by default. */
   dashView: DashView;
+  /**
+   * The Dashboard's "needs you" switch (ADR 0085, the old Focus tab): on, each workspace shows only
+   * its panes that need you. Per device, off by default. A device that had the Focus tab selected
+   * reads as on, once (see {@link coerceDashPrefs}).
+   */
+  needsYouOnly: boolean;
+  /**
+   * Whether a session view draws the agent's tool calls: the reads, the searches, the commands and
+   * the edits it ran between saying things.
+   *
+   * OFF by default, and that is the decision rather than an accident. A working session is mostly
+   * tool calls — a single turn can be forty reads and a grep — so a transcript that draws them all
+   * is a transcript you scroll past to find the one paragraph you came for. What the agent SAID is
+   * what the page is for; what it DID is available in one tap.
+   *
+   * Read by the History page today (components/transcript-view.tsx) and by the Chat stream when it
+   * lands. One pref for both: two settings for one idea is how they drift apart.
+   */
+  showToolCalls: boolean;
+  /**
+   * Whether a session view keeps the recap the agent writes when it compacts its own context.
+   *
+   * OFF by default, for the reason Claude Code's own UI folds it: the recap is thousands of
+   * characters the agent wrote for ITSELF, and a phone has no use for it. Off draws one marker line
+   * where the compaction happened and never builds the text; on folds the recap behind that marker.
+   * Read by the Chat stream and the History page, as {@link showToolCalls} is.
+   */
+  showCompactions: boolean;
+  /**
+   * The order a pane list runs in: `place` (machine, space, tab, position) or `activity` (whatever
+   * happened last, first). PLACE by default, which is the order ADR 0063 gave every surface.
+   *
+   * The operator's own request is the only thing that turns this on, and ADR 0071 holds the reason
+   * the list does not then re-sort itself on a poll: the reading is taken when the list opens and
+   * held while it is on screen. See lib/pane-order.ts, which owns both halves.
+   *
+   * Read by the pane switcher today (components/agent-sidebar.tsx).
+   */
+  paneOrder: PaneOrder;
+  /**
+   * Which body a pane with a session draws: the chat stream or the terminal mirror. One standing
+   * value for the whole device, written from the pane's ⋮ menu alone. `chat` by default since 1.17.0
+   * (ADR 0082); a device that chose the terminal keeps it.
+   *
+   * See lib/pane-view.ts for why it is one per-device value and not a per-pane override.
+   */
+  paneView: PaneView;
 }
 
 const STORAGE_KEY = "collie:dash-prefs:v1";
@@ -76,8 +138,15 @@ const DEFAULTS: DashPrefs = {
   changesNested: true,
   changesDepth: 2,
   changesLayout: "list",
+  filesShowIgnored: false,
+  changesOnly: false,
   beltScale: 1.15,
-  dashView: "panes",
+  dashView: "dashboard",
+  needsYouOnly: false,
+  showToolCalls: false,
+  showCompactions: false,
+  paneOrder: "place",
+  paneView: "chat",
 };
 
 function coerceDepth(raw: JsonValue | undefined): number {
@@ -124,8 +193,17 @@ export function coerceDashPrefs(raw: JsonValue | undefined): DashPrefs {
     changesNested: asJsonBoolean(p.changesNested) ?? DEFAULTS.changesNested,
     changesDepth: coerceDepth(p.changesDepth),
     changesLayout: p.changesLayout === "tree" ? "tree" : DEFAULTS.changesLayout,
+    filesShowIgnored: asJsonBoolean(p.filesShowIgnored) ?? DEFAULTS.filesShowIgnored,
+    changesOnly: asJsonBoolean(p.changesOnly) ?? DEFAULTS.changesOnly,
     beltScale: coerceBeltScale(p.beltScale),
     dashView: coerceDashView(p.dashView),
+    // THE FOCUS MIGRATION (ADR 0085): a stored Focus tab turns the switch on, so no one loses the
+    // view they had. An explicit stored value wins otherwise.
+    needsYouOnly: wasFocusView(p.dashView) ? true : (asJsonBoolean(p.needsYouOnly) ?? DEFAULTS.needsYouOnly),
+    showToolCalls: asJsonBoolean(p.showToolCalls) ?? DEFAULTS.showToolCalls,
+    showCompactions: asJsonBoolean(p.showCompactions) ?? DEFAULTS.showCompactions,
+    paneOrder: coercePaneOrder(p.paneOrder),
+    paneView: coercePaneView(p.paneView),
   };
 }
 
@@ -133,7 +211,13 @@ function loadPrefs(): DashPrefs {
   try {
     const raw = typeof localStorage !== "undefined" ? localStorage.getItem(STORAGE_KEY) : null;
     if (!raw) return { ...DEFAULTS };
-    return coerceDashPrefs(JSON.parse(raw));
+    const parsed: JsonValue = JSON.parse(raw);
+    const prefs = coerceDashPrefs(parsed);
+    // A retired tab name is written back migrated, so the Focus migration happens once: the switch is
+    // then stored as its own value and the old name is gone.
+    const stored = asJsonObject(parsed);
+    if (stored && isLegacyDashView(stored.dashView)) savePrefs(prefs);
+    return prefs;
   } catch {
     return { ...DEFAULTS };
   }
@@ -160,8 +244,15 @@ export interface UseDashPrefsReturn {
   setChangesNested: (nested: boolean) => void;
   setChangesDepth: (depth: number) => void;
   setChangesLayout: (layout: ChangesLayout) => void;
+  setFilesShowIgnored: (show: boolean) => void;
+  setChangesOnly: (only: boolean) => void;
   setBeltScale: (scale: number) => void;
   setDashView: (view: DashView) => void;
+  setNeedsYouOnly: (on: boolean) => void;
+  setShowToolCalls: (show: boolean) => void;
+  setShowCompactions: (show: boolean) => void;
+  setPaneOrder: (order: PaneOrder) => void;
+  setPaneView: (view: PaneView) => void;
 }
 
 export function useDashPrefs(): UseDashPrefsReturn {
@@ -187,6 +278,12 @@ export function useDashPrefs(): UseDashPrefsReturn {
   );
 
   const setChangesLayout = useCallback((changesLayout: ChangesLayout) => update({ changesLayout }), [update]);
+  const setFilesShowIgnored = useCallback((filesShowIgnored: boolean) => update({ filesShowIgnored }), [update]);
+  const setChangesOnly = useCallback((changesOnly: boolean) => update({ changesOnly }), [update]);
+  const setShowToolCalls = useCallback((showToolCalls: boolean) => update({ showToolCalls }), [update]);
+  const setShowCompactions = useCallback((showCompactions: boolean) => update({ showCompactions }), [update]);
+  const setPaneOrder = useCallback((paneOrder: PaneOrder) => update({ paneOrder }), [update]);
+  const setPaneView = useCallback((paneView: PaneView) => update({ paneView }), [update]);
 
   const setBeltScale = useCallback(
     (scale: number) => update({ beltScale: coerceBeltScale(scale) }),
@@ -194,6 +291,7 @@ export function useDashPrefs(): UseDashPrefsReturn {
   );
 
   const setDashView = useCallback((dashView: DashView) => update({ dashView }), [update]);
+  const setNeedsYouOnly = useCallback((needsYouOnly: boolean) => update({ needsYouOnly }), [update]);
 
   const setIsolatedSpace = useCallback((isolatedSpace: string | null) => update({ isolatedSpace }), [update]);
   const toggleHiddenSpace = useCallback((key: string) => {
@@ -218,7 +316,14 @@ export function useDashPrefs(): UseDashPrefsReturn {
     setChangesNested,
     setChangesDepth,
     setChangesLayout,
+    setFilesShowIgnored,
+    setChangesOnly,
     setBeltScale,
     setDashView,
+    setNeedsYouOnly,
+    setShowToolCalls,
+    setShowCompactions,
+    setPaneOrder,
+    setPaneView,
   };
 }

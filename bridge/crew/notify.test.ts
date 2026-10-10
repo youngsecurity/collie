@@ -128,6 +128,8 @@ describe("PeerNotifier — a peer's alerts on the lead's phone", () => {
     expect(push.sent).toHaveLength(1);
     expect(push.sent[0]).toEqual({
       title: "claude needs you",
+      titleCode: "agent.blocked",
+      titleDetail: { agent: "claude" },
       body: "laptop · collie",
       tag: "collie:herd@laptop",
       paneId: "p1",
@@ -165,15 +167,15 @@ describe("PeerNotifier — a peer's alerts on the lead's phone", () => {
     peer.observe(
       "laptop",
       body([
-        pane("p1", "blocked", "claude", { terminalTitle: "api" }),
-        pane("p2", "blocked", "codex", { terminalTitle: "web" }),
-        pane("p3", "blocked", "pi", { terminalTitle: "worker" }),
+        pane("p1", "blocked", "claude", { paneLabel: "api" }),
+        pane("p2", "blocked", "codex", { paneLabel: "web" }),
+        pane("p3", "blocked", "pi", { paneLabel: "worker" }),
       ]),
     );
     clock.fireAll();
 
     // One slot, and its final state is the digest — the existing "one summary, not three races".
-    // Named by the one name rule (bridge/pane-name.ts), not by agent kind — three panes, three words.
+    // Named by the push name rule (notifications.ts § pushName), not by agent kind — three panes, three words.
     expect(new Set(push.tags)).toEqual(new Set(["collie:herd@laptop"]));
     expect(push.sent.at(-1)).toMatchObject({
       title: "3 agents need you",
@@ -198,6 +200,19 @@ describe("PeerNotifier — a peer's alerts on the lead's phone", () => {
     clock.fireAll();
     peer.observe("laptop", body([pane("p1", "working")]));
     expect(push.sent.at(-1)).toEqual({ type: "clear", tag: "collie:herd@laptop" });
+  });
+
+  test("a peer's working → idle is a finished turn and pushes once, naming the host (#345)", () => {
+    const { clock, push, peer } = notifier();
+    peer.observe("laptop", body([pane("p1", "working")]));
+    peer.observe("laptop", body([pane("p1", "idle")]));
+    clock.fireAll();
+    for (let i = 0; i < 10; i++) peer.observe("laptop", body([pane("p1", "idle")]));
+    clock.fireAll();
+    expect(push.sent).toHaveLength(1);
+    expect(push.sent[0]?.title).toBe("claude is done");
+    expect(push.sent[0]?.titleCode).toBe("agent.done");
+    expect(push.sent[0]?.host).toBe("laptop");
   });
 
   test("a pane closing on the peer retracts it too", () => {

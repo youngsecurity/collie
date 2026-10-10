@@ -56,8 +56,10 @@ import {
 } from "./crew.ts";
 import {
   cmdDevices,
+  cmdDevicesClearExpiry,
   cmdDevicesList,
   cmdDevicesRevoke,
+  cmdDevicesSetExpiry,
   cmdPair,
   DEVICES_SUBCOMMANDS,
   type PairingDeps,
@@ -87,6 +89,7 @@ import {
   type SttDeps,
 } from "./stt.ts";
 import { realExec, realFiles } from "./sys.ts";
+import { cmdSupervise, realSuperviseDeps } from "./task-scheduler.ts";
 import { cmdApplyUpdate, cmdUpdate } from "./update.ts";
 import { cmdUpdateCheck, updateCheckDeps, wantsCheck } from "./update-check.ts";
 
@@ -269,15 +272,16 @@ function lifecycleCommand(
   name: string,
   summary: string,
   body: (deps: LifecycleDeps, args: readonly string[]) => number | Promise<number>,
-  opts: { internal?: boolean; rich?: boolean } = {},
+  opts: { internal?: boolean; rich?: boolean; repairAcl?: boolean } = {},
 ): Command {
   return {
     name,
     summary,
     internal: opts.internal === true,
     // `rich` is what marks a verb as having a terminal surface. Without it the renderer is never
-    // even loaded — see `Session.ui`.
-    run: async (args, s) => body(lifecycleDeps(s.io, opts.rich === true ? await s.ui() : null), args),
+    // even loaded — see `Session.ui`. `repairAcl` is the bridge process's alone (M43 spec 04).
+    run: async (args, s) =>
+      body(lifecycleDeps(s.io, opts.rich === true ? await s.ui() : null, { repairAcl: opts.repairAcl === true }), args),
   };
 }
 
@@ -398,7 +402,7 @@ export function crewAliasRow(sub: Subcommand): AliasRow {
 export const COMMANDS: readonly Command[] = [
   // `start` and `status` share one banner (`statusBanner`), so they share its surface too.
   lifecycleCommand("start", "start the bridge service (and publish the front door)", cmdStart, { rich: true }),
-  lifecycleCommand("stop", "stop the bridge service", cmdStop),
+  lifecycleCommand("stop", "stop the bridge service", (deps) => cmdStop(deps)),
   lifecycleCommand("restart", "stop then start", cmdRestart),
   lifecycleCommand(
     "uninstall",
@@ -438,8 +442,18 @@ export const COMMANDS: readonly Command[] = [
     "_exec-bridge",
     "internal: the process the supervisor watches",
     cmdExecBridge,
-    { internal: true },
+    // The bridge itself: the one process that may repair a secret file's access list on Windows.
+    { internal: true, repairAcl: true },
   ),
+  // The Windows launcher (cli/task-scheduler.ts): Task Scheduler runs it, and it runs and relaunches
+  // `_exec-bridge`. Not a lifecycle command: everything it needs is on its own command line, so it
+  // resolves no context, reads no `.env` and asks Herdr nothing at logon, before Herdr is up.
+  {
+    name: "_supervise",
+    summary: "internal: the Windows launcher Task Scheduler runs",
+    internal: true,
+    run: (args, s) => cmdSupervise(realSuperviseDeps(s.io, realFiles), args),
+  },
   lifecycleCommand(
     "build",
     "typecheck both sides, compile the binary and build the PWA (staged, atomic swap)",
@@ -554,8 +568,9 @@ export const COMMANDS: readonly Command[] = [
   // re-reads per request, so neither restarts anything.
   {
     name: "pair",
-    summary: "mint a one-time code and a QR for a phone to pair with (scan it, or enter the code in Settings)",
-    run: (_args, s) => cmdPair(pairingDeps(s.io)),
+    summary:
+      "mint a one-time code and a QR for a phone to pair with (scan it, or enter the code in Settings); `--expires 30d` limits its lifetime",
+    run: (args, s) => cmdPair(pairingDeps(s.io), args),
   },
   {
     name: "devices",
@@ -563,13 +578,23 @@ export const COMMANDS: readonly Command[] = [
     subcommands: [
       {
         name: "list",
-        summary: "the paired devices, with when each was paired and last seen",
+        summary: "the paired devices, with when each was paired, last seen, and expires",
         run: (_args, s) => cmdDevicesList(pairingDeps(s.io)),
       },
       {
         name: "revoke",
         summary: "drop one device by label: `devices revoke <label>`",
         run: (args, s) => cmdDevicesRevoke(pairingDeps(s.io), args),
+      },
+      {
+        name: "set-expiry",
+        summary: "give a device a lifetime from now: `devices set-expiry <label> 30d`",
+        run: (args, s) => cmdDevicesSetExpiry(pairingDeps(s.io), args),
+      },
+      {
+        name: "clear-expiry",
+        summary: "remove a device's expiry: `devices clear-expiry <label>`",
+        run: (args, s) => cmdDevicesClearExpiry(pairingDeps(s.io), args),
       },
     ],
     // Bare or misspelt lands here, and `cmdDevices` owns that message — as `cmdCrew` does.

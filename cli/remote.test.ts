@@ -18,13 +18,12 @@ import {
   HOME,
   ROOT,
   type SeededFiles,
-  type SeededOps,
-} from "./fakes.ts";
+  type SeededOps, probeDefaults, probeOutput, type ProbeField } from "./fakes.ts";
 import { sshResolveArgs } from "./candidates.ts";
 import type { Environment } from "./context.ts";
 import type { InstallKind } from "./install-kind.ts";
 import { EXIT } from "./io.ts";
-import { cmdCrew, type CrewDeps } from "./crew.ts";
+import { cmdCrew, enrollUrl, type CrewDeps } from "./crew.ts";
 import {
   bindOverwriteConfirmation,
   cmdCrewAdd,
@@ -56,6 +55,7 @@ import {
 import { INSTALLER_SH } from "./installer-embed.ts";
 import type { MuxProbeReport } from "./mux-probe.ts";
 import { realExec } from "./sys.ts";
+import { hostFor } from "../bridge/host.ts";
 
 // `collie crew add` against fakes for every seam. Nothing here reaches a real SSH host or network.
 // The sshRunner tests spawn a local launcher fixture; the verb tests use a transport that
@@ -80,10 +80,11 @@ describe("sshRunner child environment", () => {
   for (const polluted of [true, false]) {
     for (const variant of ["run", "close"] as const) {
       test(`${variant} preserves ${polluted ? "filtered" : "clean"} environment through a launcher`, async () => {
-        const dir = mkdtempSync(join(tmpdir(), "collie-ssh-env-"));
-        const report = join(dir, "environment");
+        const { findTool } = await import("./tools.ts");
+        const dir = mkdtempSync(join(tmpdir(), "collie ssh env "));
+        const report = join(dir, "environment.json");
         const kept = {
-          PATH: `${dir}:/usr/bin:/bin`,
+          PATH: dir,
           HOME: dir,
           SSH_AUTH_SOCK: "/operator/agent.sock",
           GIT_SSH_COMMAND: "ssh -i /operator/key",
@@ -99,8 +100,25 @@ describe("sshRunner child environment", () => {
         const env = polluted ? { ...kept, ...relocators } : kept;
         const original = { ...env };
         // A local SSH stand-in launches another child, just as a wrapper/ProxyCommand can.
-        // No OpenSSH binary is invoked and no network connection is possible.
-        writeFileSync(join(dir, "ssh"), '#!/bin/sh\nexec /bin/sh -c \'env > "$SSH_TEST_REPORT"\'\n', { mode: 0o700 });
+        // Absolute Bun paths keep PATH fake-only; neither process invokes SSH or a remote shell.
+        const source = `
+import { writeFileSync } from "node:fs";
+writeFileSync(process.env.SSH_TEST_REPORT + ".launcher", JSON.stringify(process.env));
+const child = Bun.spawnSync([process.execPath, "-e", ${JSON.stringify(`
+import { writeFileSync } from "node:fs";
+writeFileSync(process.env.SSH_TEST_REPORT, JSON.stringify(process.env));
+`)}], { env: process.env });
+process.exit(child.exitCode);
+`;
+        const launcher = join(dir, process.platform === "win32" ? "ssh.cmd" : "ssh");
+        if (process.platform === "win32") {
+          writeFileSync(join(dir, "ssh.js"), source);
+          writeFileSync(launcher, `@echo off\r\n"${process.execPath}" "%~dp0ssh.js" %*\r\n`);
+        } else {
+          writeFileSync(launcher, `#!${process.execPath}\n${source}`, { mode: 0o700 });
+        }
+        // Fail before constructing the runner if lookup would fall back to any real SSH.
+        expect(findTool("ssh", env, dir)?.toLowerCase()).toBe(launcher.toLowerCase());
         const runner = sshRunner("unused.invalid", env, dir);
         try {
           if (variant === "run") {
@@ -110,12 +128,14 @@ describe("sshRunner child environment", () => {
           } else {
             runner.close();
           }
-          const inherited = readFileSync(report, "utf8").trim().split("\n");
-          for (const name of Object.keys(relocators)) {
-            expect(inherited.some((line) => line.startsWith(`${name}=`))).toBe(false);
-          }
-          for (const [name, value] of Object.entries(original)) {
-            if (!(name in relocators)) expect(inherited).toContain(`${name}=${value}`);
+          for (const path of [report + ".launcher", report]) {
+            const inherited: Record<string, string> = JSON.parse(readFileSync(path, "utf8"));
+            for (const name of Object.keys(relocators)) {
+              expect(inherited).not.toHaveProperty(name);
+            }
+            for (const [name, value] of Object.entries(original)) {
+              if (!(name in relocators)) expect(inherited[name]).toBe(value);
+            }
           }
           expect(env).toEqual(original);
         } finally {
@@ -155,7 +175,12 @@ const REMOTE_HOME = "/home/pat";
 const REMOTE_CHECKOUT = `${REMOTE_HOME}/.collie`;
 const TAILSCALE_JSON = JSON.stringify({ Self: { DNSName: "desk.tail.ts.net." } });
 
+// `probeDefaults()` FIRST, then this suite's own values. The shared table is the one place the
+// field list lives (`cli/fakes.ts`, held against the golden script by `cli/probe-contract.test.ts`),
+// so this cannot be short a field the way it was until 2026-10-01. What stays here is the VALUES,
+// which are this suite's subject: a fresh member, nothing installed yet.
 const PROBE_DEFAULTS = {
+  ...probeDefaults(),
   home: REMOTE_HOME,
   git: "/usr/bin/git",
   bun: "/home/pat/.bun/bin/bun",
@@ -184,10 +209,8 @@ const PROBE_DEFAULTS = {
 } satisfies Record<string, string>;
 
 /** Leg 1's stdout, as the remote would print it. */
-function probeOut(over: Record<string, string> = {}): string {
-  const all = { ...PROBE_DEFAULTS, ...over };
-  const lines = Object.entries(all).map(([k, v]) => `collie-probe:${k}=${v}`);
-  return [...lines, "collie-probe:probe=ok", ""].join("\n");
+function probeOut(over: Partial<Record<ProbeField, string>> = {}): string {
+  return probeOutput({ ...PROBE_DEFAULTS, ...over });
 }
 
 /**
@@ -246,6 +269,8 @@ interface HarnessOptions {
   resolve?: Readonly<Record<string, string>>;
   /** This lead's install kind. Absent ⇒ a linked clone, the kind every earlier test assumed. */
   installKind?: InstallKind;
+  /** `COLLIE_SERVE_PORT`'s resolved value — the front door's port, when it is not 443. */
+  servePort?: number;
 }
 
 function harness(opts: HarnessOptions = {}): Harness {
@@ -287,9 +312,13 @@ function harness(opts: HarnessOptions = {}): Harness {
   });
 
   const deps: CrewAddDeps = {
+    host: hostFor("linux"),
     // The same reason `cli/crew.test.ts` sets this: the real `setTimeout` in `PeerClient` must never
     // fire and report a fake peer as unreachable.
-    ctx: context({ COLLIE_CREW_TIMEOUT_MS: "60000", ...opts.env }),
+    ctx: context(
+      { COLLIE_CREW_TIMEOUT_MS: "60000", ...opts.env },
+      opts.servePort === undefined ? {} : { servePort: opts.servePort },
+    ),
     io: out,
     exec,
     files: fakeFiles(seeded),
@@ -452,7 +481,10 @@ const GOLDEN: [file: string, script: string][] = [
 describe("the leg scripts", () => {
   for (const [file, script] of GOLDEN) {
     test(`${file} matches its golden file`, () => {
-      expect(script).toBe(readFileSync(join(import.meta.dir, "testdata", file), "utf8"));
+      // The generated script is LF text (a template literal normalises its line breaks). A Windows
+      // checkout may translate the golden file to CRLF, which is the checkout's doing, not the script's.
+      const golden = readFileSync(join(import.meta.dir, "testdata", file), "utf8").replaceAll("\r\n", "\n");
+      expect(script).toBe(golden);
     });
   }
 
@@ -997,6 +1029,27 @@ describe("collie crew add", () => {
     expect(h.calls.find((c) => c.leg === "enroll")!.script).toContain("'https://collie.example.com'");
   });
 
+  // Issue 334: the derived front door was the BARE tailnet name, which `collie join` reads as the lead's
+  // own listener (`https://<name>:8787`). A lead behind `tailscale serve` is on 127.0.0.1 there, so the
+  // peer saw "Unable to connect". The string handed to the remote join must dial 443 on its own.
+  test("the lead address handed to the remote join dials 443, not the listener port", async () => {
+    const h = harness();
+    expect(await run(h)).toBe(EXIT.OK);
+    const script = h.calls.find((c) => c.leg === "enroll")!.script;
+    expect(script).toContain("'https://desk.tail.ts.net'");
+    expect(script).not.toContain("'desk.tail.ts.net'");
+    // What `join` actually dials for that string: no :8787 anywhere.
+    expect(enrollUrl("https://desk.tail.ts.net")).toBe("https://desk.tail.ts.net/crew/v1/enroll");
+  });
+
+  test("a front door moved off 443 keeps its port, and the scheme stays out of it", async () => {
+    const h = harness({ servePort: 8443 });
+    expect(await run(h)).toBe(EXIT.OK);
+    const script = h.calls.find((c) => c.leg === "enroll")!.script;
+    expect(script).toContain("'desk.tail.ts.net:8443'");
+    expect(enrollUrl("desk.tail.ts.net:8443")).toBe("https://desk.tail.ts.net:8443/crew/v1/enroll");
+  });
+
   test("the control socket is torn down on every exit path, including a failure", async () => {
     const ok = harness();
     await run(ok);
@@ -1348,7 +1401,7 @@ describe("the mux decision", () => {
     expect(h.calls).toHaveLength(0);
     expect(h.restarts).toBe(0);
     expect(text(h.io)).toContain("--mux screen is not a multiplexer this build drives");
-    expect(text(h.io)).toContain("herdr, tmux, zellij");
+    expect(text(h.io)).toContain("herdr, tern, tmux, tuios, zellij");
   });
 
   test("--mux writes the name, over one the member already carries, without reading its machine", async () => {
@@ -1950,6 +2003,7 @@ function gitEnv(): Environment {
 function minimalCrewDeps(root: string): RepoCrewDeps {
   const storeIo: TrustStoreIo = { read: async () => null, write: async () => {} };
   return {
+    host: hostFor("linux"),
     ctx: context(gitEnv(), { root }),
     io: capture(),
     exec: realExec(gitEnv(), root),

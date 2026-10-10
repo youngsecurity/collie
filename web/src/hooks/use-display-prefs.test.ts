@@ -8,6 +8,7 @@ import {
   FONT_FAMILIES,
   FONT_STACKS,
   fontStack,
+  handOf,
   inputFocusZoomsPage,
   IOS_NO_ZOOM_FONT_PX,
   MATRIX_TERMINAL_COLORS,
@@ -25,7 +26,7 @@ describe("useDisplayPrefs", () => {
 
   it("returns defaults when localStorage is empty", () => {
     const { result } = renderHook(() => useDisplayPrefs());
-    expect(result.current.prefs).toEqual({ wrap: false, fontSize: 10, draftFontSize: 14, fontFamily: "system", terminalForeground: "", terminalBackground: "", rawTerminal: false, tapToFocus: true, expandClippedReply: true });
+    expect(result.current.prefs).toEqual(displayPrefs({ wrap: false, fontSize: 10, keepChat: "1d" }));
   });
 
   it("persists wrap=true and reloads it on mount", () => {
@@ -48,7 +49,7 @@ describe("useDisplayPrefs", () => {
       JSON.stringify({ wrap: false, fontSize: 14, rawTerminal: true, tapToFocus: false, expandClippedReply: false }),
     );
     const { result } = renderHook(() => useDisplayPrefs());
-    expect(result.current.prefs).toEqual({ wrap: false, fontSize: 14, draftFontSize: 14, fontFamily: "system", terminalForeground: "", terminalBackground: "", rawTerminal: true, tapToFocus: false, expandClippedReply: false });
+    expect(result.current.prefs).toEqual(displayPrefs({ wrap: false, fontSize: 14, rawTerminal: true, tapToFocus: false, expandClippedReply: false, keepChat: "1d" }));
   });
 
   it("persists rawTerminal and reloads it on mount (the escape hatch survives a reload)", () => {
@@ -75,7 +76,7 @@ describe("useDisplayPrefs", () => {
   it("reads a pre-tapToFocus payload without discarding the prefs it does have", () => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ wrap: false, fontSize: 15, rawTerminal: true }));
     const { result } = renderHook(() => useDisplayPrefs());
-    expect(result.current.prefs).toEqual({ wrap: false, fontSize: 15, draftFontSize: 14, fontFamily: "system", terminalForeground: "", terminalBackground: "", rawTerminal: true, tapToFocus: true, expandClippedReply: true });
+    expect(result.current.prefs).toEqual(displayPrefs({ wrap: false, fontSize: 15, rawTerminal: true, keepChat: "1d" }));
   });
 
   it("persists fontFamily and reloads it on mount", () => {
@@ -204,12 +205,14 @@ describe("useDisplayPrefs", () => {
       wrap: false,
       fontSize: 13,
       draftFontSize: 14,
+      chatFontSize: 14,
       fontFamily: "meslo",
       terminalForeground: "#00ff00",
       terminalBackground: "#000000",
       rawTerminal: true,
       tapToFocus: true,
       expandClippedReply: true,
+      keepChat: "1d",
     });
     // The first save writes the 1.1.0 shape and the legacy object is gone.
     act(() => result.current.setWrap(true));
@@ -217,6 +220,28 @@ describe("useDisplayPrefs", () => {
     expect(stored.terminal).toBeUndefined();
     expect(stored.fontFamily).toBe("meslo");
     expect(stored.terminalForeground).toBe("#00ff00");
+  });
+
+  it("keeps migrated colors and terminal choices when saving hand and chat retention", () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      wrap: false,
+      rawTerminal: true,
+      terminal: { fontFamily: "MesloLGS NF", foreground: "#00FF00", background: "#000000" },
+    }));
+    const { result } = renderHook(() => useDisplayPrefs());
+    act(() => result.current.setHand("left"));
+    act(() => result.current.setKeepChat("7d"));
+    const { result: reloaded } = renderHook(() => useDisplayPrefs());
+    expect(reloaded.current.prefs).toMatchObject({
+      wrap: false,
+      rawTerminal: true,
+      fontFamily: "meslo",
+      terminalForeground: "#00ff00",
+      terminalBackground: "#000000",
+      hand: "left",
+      keepChat: "7d",
+    });
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEY)!)).not.toHaveProperty("terminal");
   });
 
   it("maps every fork font name the closed list can honour, case-insensitively, else system", () => {
@@ -411,15 +436,86 @@ describe("applyDraftFontSize — the iOS zoom floor", () => {
 describe("useDisplayPrefs — the rest", () => {
   beforeEach(() => localStorage.clear());
 
+  it("the chat stream's size is its own number, clamped to its own range", () => {
+    localStorage.setItem(
+      "collie:display-prefs:v4",
+      JSON.stringify({ fontSize: 10, chatFontSize: 99 }),
+    );
+    const { result } = renderHook(() => useDisplayPrefs());
+    expect(result.current.prefs.chatFontSize).toBe(20);
+    // The mirror's own size is untouched by the chat stepper, and the other way round.
+    act(() => result.current.stepChatFontSize(-3));
+    expect(result.current.prefs.chatFontSize).toBe(17);
+    expect(result.current.prefs.fontSize).toBe(10);
+    act(() => result.current.stepFontSize(1));
+    expect(result.current.prefs.chatFontSize).toBe(17);
+    expect(result.current.prefs.fontSize).toBe(11);
+  });
+
+  it("a payload written before Chat existed reads the size the stream already had", () => {
+    localStorage.setItem("collie:display-prefs:v4", JSON.stringify({ wrap: false, fontSize: 12 }));
+    const { result } = renderHook(() => useDisplayPrefs());
+    expect(result.current.prefs.chatFontSize).toBe(14);
+    expect(result.current.prefs.fontSize).toBe(12);
+  });
+
   it("falls back to defaults on malformed JSON", () => {
     localStorage.setItem(STORAGE_KEY, "not-json{{{");
     const { result } = renderHook(() => useDisplayPrefs());
-    expect(result.current.prefs).toEqual({ wrap: false, fontSize: 10, draftFontSize: 14, fontFamily: "system", terminalForeground: "", terminalBackground: "", rawTerminal: false, tapToFocus: true, expandClippedReply: true });
+    expect(result.current.prefs).toEqual(displayPrefs({ wrap: false, fontSize: 10, keepChat: "1d" }));
   });
 
   it("falls back to defaults when stored value is not an object", () => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(42));
     const { result } = renderHook(() => useDisplayPrefs());
-    expect(result.current.prefs).toEqual({ wrap: false, fontSize: 10, draftFontSize: 14, fontFamily: "system", terminalForeground: "", terminalBackground: "", rawTerminal: false, tapToFocus: true, expandClippedReply: true });
+    expect(result.current.prefs).toEqual(displayPrefs({ wrap: false, fontSize: 10, keepChat: "1d" }));
+  });
+});
+
+// ── "Keep chat on this phone" (M46 spec 09, lib/chat-tail.ts) ─────────────────
+describe("useDisplayPrefs — keepChat", () => {
+  it("defaults to 1 day, and a payload written before the setting existed reads the default", () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ wrap: false }));
+    const { result } = renderHook(() => useDisplayPrefs());
+    expect(result.current.prefs.keepChat).toBe("1d");
+  });
+
+  it("persists a choice and reads it back on mount", () => {
+    const { result } = renderHook(() => useDisplayPrefs());
+    act(() => result.current.setKeepChat("7d"));
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEY)!).keepChat).toBe("7d");
+    const { result: reloaded } = renderHook(() => useDisplayPrefs());
+    expect(reloaded.current.prefs.keepChat).toBe("7d");
+  });
+
+  it("reads an unknown stored value as the default", () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ keepChat: "forever" }));
+    const { result } = renderHook(() => useDisplayPrefs());
+    expect(result.current.prefs.keepChat).toBe("1d");
+  });
+});
+
+// ── "Hand" (Settings -> Appearance): which thumb the pane screen is laid out for ──────────────
+describe("useDisplayPrefs — hand", () => {
+  it("reads the right hand by default, and a payload written before the setting existed reads it too", () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ wrap: false }));
+    const { result } = renderHook(() => useDisplayPrefs());
+    expect(handOf(result.current.prefs)).toBe("right");
+  });
+
+  it("persists a choice under the display prefs and reads it back on mount", () => {
+    const { result } = renderHook(() => useDisplayPrefs());
+    act(() => result.current.setHand("left"));
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEY)!).hand).toBe("left");
+    const { result: reloaded } = renderHook(() => useDisplayPrefs());
+    expect(handOf(reloaded.current.prefs)).toBe("left");
+    act(() => reloaded.current.setHand("right"));
+    expect(handOf(renderHook(() => useDisplayPrefs()).result.current.prefs)).toBe("right");
+  });
+
+  it("reads an unknown stored value as the right hand", () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ hand: "both" }));
+    const { result } = renderHook(() => useDisplayPrefs());
+    expect(handOf(result.current.prefs)).toBe("right");
   });
 });

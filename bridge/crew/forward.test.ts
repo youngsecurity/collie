@@ -18,6 +18,7 @@ import {
   type ForwardErrorCode,
   type ForwardTransport,
 } from "./forward.ts";
+import { crewDeviceOf } from "./peer-gate.ts";
 import { crewTimeoutBudget, WRITE_BUDGET_MS, type CrewLink, type PeerOutcome } from "./peer-client.ts";
 import type { PeerState } from "./registry.ts";
 
@@ -180,6 +181,10 @@ describe("which routes cross a link", () => {
       "/api/notifications/snooze",
       "/api/notifications/prefs",
       "/api/update/check",
+      // ADR 0084: the lead holds every machine's history and rules, so `?host=` addresses nothing.
+      "/api/machines",
+      "/api/machines/laptop/history",
+      "/api/machines/laptop/alerts",
       "/api/config",
       "/api/snapshot",
       "/api/pane/w1:p1/nonsense",
@@ -207,7 +212,11 @@ describe("which routes cross a link", () => {
     const tab = server.match(/^const TAB_ACTION_ROUTE = (.+);$/m)![1]!;
     const alternation = /\(([a-z]+(?:\|[a-z]+)+)\)/;
     const paneActions = pane.match(alternation)![1]!.split("|").toSorted();
-    expect(paneActions).toEqual(["changes", "close", "focus", "history", "keys", "rename", "reply", "upload"]);
+    // The list IS the inventory of what crosses a link; `chat` joined it with the live window, and
+    // `files` with the Files view (ADR 0083).
+    expect(paneActions).toEqual([
+      "changes", "chat", "close", "files", "focus", "history", "keys", "rename", "reply", "upload",
+    ]);
     for (const action of paneActions) expect(crewRouteFor(`/api/pane/x/${action}`)).toBe(`pane/x/${action}`);
     const tabActions = tab.match(alternation)![1]!.split("|").toSorted();
     expect(tabActions).toEqual(["close", "rename"]);
@@ -227,11 +236,32 @@ describe("which routes cross a link", () => {
     expect(crewRouteFor("/api/workspace/w1/changes/x")).toBeNull();
     expect(crewRouteFor("/api/workspace/w1/worktrees")).toBeNull();
     expect(apiPathFor("workspace/w1/changes")).toBe("/api/workspace/w1/changes");
+    // The workspace Files route (ADR 0083): the same shape with the literal `files`.
+    const wsFiles = server.match(/^const WORKSPACE_FILES_ROUTE = (.+);$/m)![1]!;
+    expect(wsFiles).toBe("/^\\/api\\/workspace\\/([^/]+)\\/files$/");
+    expect(crewRouteFor("/api/workspace/w1/files")).toBe("workspace/w1/files");
+    expect(crewRouteFor("/api/workspace/w1/files/x")).toBeNull();
+    expect(crewRouteFor("/api/pane/w1:p1/files")).toBe("pane/w1:p1/files");
+    expect(apiPathFor("workspace/w1/files")).toBe("/api/workspace/w1/files");
+    // The Files image read (ADR 0090): both forms, the literal `files/image`, nothing under it.
+    const paneImage = server.match(/^const PANE_FILES_IMAGE_ROUTE = (.+);$/m)![1]!;
+    const wsImage = server.match(/^const WORKSPACE_FILES_IMAGE_ROUTE = (.+);$/m)![1]!;
+    expect(paneImage).toBe("/^\\/api\\/pane\\/([^/]+)\\/files\\/image$/");
+    expect(wsImage).toBe("/^\\/api\\/workspace\\/([^/]+)\\/files\\/image$/");
+    expect(crewRouteFor("/api/pane/w1:p1/files/image")).toBe("pane/w1:p1/files/image");
+    expect(crewRouteFor("/api/workspace/w1/files/image")).toBe("workspace/w1/files/image");
+    expect(crewRouteFor("/api/pane/w1:p1/files/image/x")).toBeNull();
+    expect(crewRouteFor("/api/workspace/w1/files/exist")).toBeNull();
+    expect(apiPathFor("pane/w1:p1/files/image")).toBe("/api/pane/w1:p1/files/image");
+    expect(apiPathFor("workspace/w1/files/image")).toBe("/api/workspace/w1/files/image");
   });
 
   test("read vs write is decided exactly as server.ts decides it — history is a READ", () => {
     expect(forwardKind("pane/w1:p1")).toBe("read");
     expect(forwardKind("pane/w1:p1/history")).toBe("read");
+    // `chat` is the same log read at its newest end, and it is the one READ on the poll path — so it
+    // must be attempted against a stale member rather than refused before it is tried (§10.3).
+    expect(forwardKind("pane/w1:p1/chat")).toBe("read");
     expect(forwardKind("pane/w1:p1/changes")).toBe("read");
     for (const action of ["reply", "keys", "upload", "close", "rename"]) {
       expect(forwardKind(`pane/w1:p1/${action}`)).toBe("write");
@@ -239,6 +269,13 @@ describe("which routes cross a link", () => {
     expect(forwardKind("tab")).toBe("write");
     expect(forwardKind("workspace")).toBe("write");
     expect(forwardKind("workspace/w1/changes")).toBe("read");
+    // Files needs an authorised device on the member, but it changes nothing: a READ for forwarding,
+    // attempted against a stale member and never given the write budget (ADR 0083).
+    expect(forwardKind("pane/w1:p1/files")).toBe("read");
+    expect(forwardKind("workspace/w1/files")).toBe("read");
+    // The image read is the same read on another cap (ADR 0090).
+    expect(forwardKind("pane/w1:p1/files/image")).toBe("read");
+    expect(forwardKind("workspace/w1/files/image")).toBe("read");
   });
 
   test("the audit action a forward records is the one the peer will write", () => {
@@ -256,6 +293,10 @@ describe("which routes cross a link", () => {
     expect(forwardAuditAction("pane/w1:p1/history")).toBeNull();
     expect(forwardAuditAction("pane/w1:p1/changes")).toBeNull();
     expect(forwardAuditAction("workspace/w1/changes")).toBeNull();
+    expect(forwardAuditAction("pane/w1:p1/files")).toBeNull();
+    expect(forwardAuditAction("workspace/w1/files")).toBeNull();
+    expect(forwardAuditAction("pane/w1:p1/files/image")).toBeNull();
+    expect(forwardAuditAction("workspace/w1/files/image")).toBeNull();
   });
 });
 
@@ -291,6 +332,35 @@ describe("a proxied read is the peer's response, unmodified (§9.1)", () => {
     expect(res.headers.get("cache-control")).toBe("no-store");
     expect(res.headers.get("vary")).toBe("accept-encoding");
     expect(res.headers.get("x-crew-member")).toBeNull();
+  });
+
+  test("a member's picture keeps its size and mtime headers, so the phone can hold it (ADR 0090)", async () => {
+    const { transport } = transportOf(() =>
+      ok(
+        new Response(new Uint8Array([0x89, 0x50, 0x4e, 0x47]), {
+          status: 200,
+          headers: {
+            "content-type": "image/png",
+            "x-collie-file-size": "4",
+            "x-collie-file-mtime": "1760000000000.5",
+            "x-crew-member": "laptop",
+          },
+        }),
+      ),
+    );
+    const [req, url] = get("/api/pane/w1:p1/files/image?host=laptop&path=a.png");
+    const res = await forward(req, url, { transport });
+    expect(res.headers.get("x-collie-file-size")).toBe("4");
+    expect(res.headers.get("x-collie-file-mtime")).toBe("1760000000000.5");
+    expect(res.headers.get("x-crew-member")).toBeNull();
+  });
+
+  test("a member that sends no size or mtime header gets none made up", async () => {
+    const { transport } = transportOf(() => ok(new Response("x", { status: 200, headers: { "content-type": "image/png" } })));
+    const [req, url] = get("/api/pane/w1:p1/files/image?host=laptop&path=a.png");
+    const res = await forward(req, url, { transport });
+    expect(res.headers.get("x-collie-file-size")).toBeNull();
+    expect(res.headers.get("x-collie-file-mtime")).toBeNull();
   });
 
   test("the lead never recomputes an ETag — the peer's is the peer's assertion about its own body", async () => {
@@ -499,6 +569,16 @@ describe("request shaping", () => {
     // Identity bytes only, and ASKED FOR rather than merely not-forwarded: Bun's `fetch` supplies its
     // own `accept-encoding: gzip, …` when the init carries none, so an absent header is a gzipped hop.
     expect(headers.get("accept-encoding")).toBe("identity");
+  });
+
+  test("a device name outside ASCII is forwarded, not thrown on (#324)", () => {
+    // `Headers.set` throws on a value that is not a ByteString, so a phone paired as `폰` turned every
+    // forwarded call into a 500. The name travels percent-encoded and the peer reads it back whole.
+    const req = new Request("https://lead.example/api/pane/w1:p9/reply", { method: "POST" });
+    const headers = forwardHeaders(req, "폰");
+    expect(headers.get("x-crew-device")).toBe("UTF-8''%ED%8F%B0");
+    const atPeer = new Request("https://peer.example/api/pane/w1:p9/reply", { headers });
+    expect(crewDeviceOf(atPeer)).toBe("폰");
   });
 
   test("no device header at all when the lead's device gate is off", () => {

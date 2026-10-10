@@ -980,8 +980,11 @@ describe("the action row while an update is being asked for and driven", () => {
   it("keeps the button on screen — disabled — for the whole run, instead of unmounting it", async () => {
     renderCard(info({ run: runAt("restarting") }));
     const button = await screen.findByRole("button", { name: "Update to 1.4.0" });
+    // The button's label can arrive before the snapshot effect publishes the run to the store.
+    // Wait for the run itself, then check that the original button stayed mounted and is inert.
+    expect(await screen.findByText("Restarting. This is not an outage.")).toBeInTheDocument();
+    expect(button).toBeInTheDocument();
     expect(button).toBeDisabled();
-    expect(screen.getByText("Restarting. This is not an outage.")).toBeInTheDocument();
   });
 
   it("the preflight arrives inside a Collapse, so the button does not teleport when doctor lands", async () => {

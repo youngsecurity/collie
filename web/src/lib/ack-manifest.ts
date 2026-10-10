@@ -80,6 +80,10 @@ export const ACK_MANIFEST = {
     channel: "silent",
     why: "It cannot fail in a way the operator could act on: it swallows its own throw by design (see its doc in lib/api.ts), and the revalidation that every caller runs immediately after is what reports the herd as it actually is.",
   },
+  fetchFilesExist: {
+    channel: "silent",
+    why: "A read that POSTs only because its paths ride in the body (ADR 0088): it changes nothing, so there is nothing to acknowledge. Its whole answer is which printed paths become links, and a failure draws them as plain text.",
+  },
   closePane: {
     channel: "echo",
     why: "The pane VANISHING from the strip is the outcome, so the echo carries only the acceptance — a success status would announce a fact the screen is already making, and the pane sheet closes before it could be read anyway.",
@@ -143,6 +147,10 @@ export const ACK_MANIFEST = {
   setNotifyPrefs: {
     channel: "echo",
     why: "The switch flips optimistically under the thumb; the server's merged view then reconciles it, and a REVERT is paired with an error status because a switch that moves back in silence misinforms anyone who has stopped looking (hooks/use-notify-prefs.ts).",
+  },
+  setMachineAlerts: {
+    channel: "inline",
+    why: "The alert card shows Saving, Saved or Could not save in its own header and keeps the last stored rules on screen after a failure, because a rule that did not land has to stay visible next to the control that tried to set it (components/machine-alerts-control.tsx).",
   },
   setCacheWatch: {
     channel: "echo",

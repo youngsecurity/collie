@@ -89,3 +89,30 @@ describe("flake.nix and MIN_BUN", () => {
     expect(compare("1.4", "1.4.0")).toBe(0);
   });
 });
+
+describe("CI runs the flake's Bun", () => {
+  for (const [name, count] of [["ci", 3], ["windows", 1], ["release", 1]] as const) {
+    test(`${name}.yml pins every setup-bun to flake.nix's bunVersion`, () => {
+      const workflow = readFileSync(join(ROOT, ".github", "workflows", `${name}.yml`), "utf8");
+      // SAFETY: `Bun.YAML.parse` answers plain data; each field read is compared against a string.
+      const parsed = Bun.YAML.parse(workflow) as { jobs: Record<string, { steps: { uses?: string; with?: Record<string, string> }[] }> };
+      const steps = Object.values(parsed.jobs).flatMap((j) => j.steps);
+      const setup = steps.filter((s) => s.uses?.startsWith("oven-sh/setup-bun@") === true);
+      expect(setup).toHaveLength(count);
+      for (const step of setup) expect(String(step.with?.["bun-version"])).toBe(flakeBunVersion());
+    });
+  }
+
+  test("windows-suites.ps1 gives each suite its own skip budget, 28 in all, each skip named", () => {
+    const script = readFileSync(join(ROOT, "scripts", "windows-suites.ps1"), "utf8");
+    const budget = (suite: string): number => Number(new RegExp(`\\[int\\]\\$MaxSkips${suite} = (\\d+)`).exec(script)?.[1] ?? Number.NaN);
+    expect([budget("Bridge"), budget("Cli"), budget("Scripts")]).toEqual([4, 1, 23]);
+    // The bridge allowance is exactly the local-cli tests that stay POSIX-only, and the comment names them.
+    const localCli = readFileSync(join(ROOT, "bridge", "stt", "local-cli.test.ts"), "utf8");
+    const posixOnly = [...localCli.matchAll(/test\.if\(posix\)\("([^"]+)"/g)].map((m) => m[1]!);
+    expect(posixOnly).toHaveLength(budget("Bridge"));
+    for (const name of posixOnly) expect(script).toContain(name);
+    expect(script).not.toContain("[int]$MaxSkips = ");
+    expect(script).toContain("if ($skip -gt $skipBudget[$name])");
+  });
+});

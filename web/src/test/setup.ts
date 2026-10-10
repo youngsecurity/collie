@@ -1,20 +1,25 @@
 import "@testing-library/jest-dom/vitest";
-import { afterAll, afterEach, beforeAll, beforeEach, vi } from "vitest";
+import { afterEach, beforeEach, vi } from "vitest";
 import { cleanup } from "@testing-library/react";
-import { setupServer } from "msw/node";
 
-import { handlers, resetTypedDraft } from "./handlers";
+import { server } from "./msw";
 import { __resetConnectionHealth } from "@/lib/connection-health";
 import { __resetPairing } from "@/lib/pairing";
 import { __resetDraftPrune } from "@/lib/drafts";
 import { __resetPins } from "@/lib/pins";
 import { __resetPinHint } from "@/lib/pin-hint";
 import { __resetHiddenMachines } from "@/lib/hidden-machines";
+import { __resetAuthedUrls } from "@/lib/authed-url";
+import { __resetStore } from "@/lib/store";
+import { __resetChatTail } from "@/lib/chat-tail";
+import { resetFoldersCacheForTests } from "@/lib/folders";
 
-// One MSW server for all tests; tests add per-case overrides with `server.use(...)`.
-export const server = setupServer(...handlers);
+// One MSW server for all tests; tests add per-case overrides with `server.use(...)`. It LIVES in
+// `./msw.ts`, which touches no document, so the pure-logic project can load it without this file
+// (see that file's header). Re-exported here because 300-odd tests already import it from this path
+// and the split is not about them.
+export { server };
 
-beforeAll(() => server.listen({ onUnhandledRequest: "warn" }));
 // The connection-health store is module-scoped and initialises its anchor to module-load time. Pin it
 // to "now" before every test so a component rendered minutes after the file loaded never reads a stale
 // anchor as an escalated outage. Fake-timer escalation suites re-pin AFTER vi.useFakeTimers() so the
@@ -44,13 +49,30 @@ beforeEach(() => {
   // The hidden-machines store too (lib/hidden-machines.ts): one case's hidden peer would otherwise
   // leave the next case's crew dashboard short a machine.
   __resetHiddenMachines();
+  // The on-device store falls back to a memory map in jsdom (no IndexedDB), and that map lives in
+  // module scope: one case's saved snapshot or Chat tail would otherwise draw in the next case's cold
+  // open (lib/store.ts, ADR 0087). The Chat tail's password holds sit beside it (lib/chat-tail.ts).
+  __resetStore();
+  __resetChatTail();
 });
-afterEach(() => {
-  cleanup();
-  server.resetHandlers();
-  resetTypedDraft(); // the fake pane's input line, so a draft can't leak into the next test
+// `server.resetHandlers()` and the typed-draft reset went with the server to `./msw.ts`, so both
+// projects get them. This one keeps the half that needs a document.
+afterEach(() => cleanup());
+
+// jsdom has no object URLs, and a journal picture, the multiplexer's mark and an operator font are
+// now loaded with the pairing token and drawn from one (lib/authed-url.ts, ADR 0086). A stub that
+// names the bytes is enough to render, and it is installed unconditionally so every run sees the
+// same `blob:` shape; a test that asserts revocation defines its own.
+let nextObjectUrl = 0;
+Object.defineProperty(URL, "createObjectURL", {
+  configurable: true,
+  writable: true,
+  value: () => `blob:collie-test/${String(++nextObjectUrl)}`,
 });
-afterAll(() => server.close());
+Object.defineProperty(URL, "revokeObjectURL", { configurable: true, writable: true, value: () => undefined });
+beforeEach(() => __resetAuthedUrls());
+// The new-space sheet's folder cache is module-scoped: one test's list must not open the next test's sheet.
+beforeEach(() => resetFoldersCacheForTests());
 
 // jsdom gaps that the terminal mirror / sheets touch.
 if (!Element.prototype.scrollIntoView) {

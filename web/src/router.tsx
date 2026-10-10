@@ -1,6 +1,7 @@
 import { createBrowserRouter, replace } from "react-router";
 
 import { basePath } from "@/lib/base-path";
+import { pairLandingPath } from "@/lib/nav";
 import { listenForInAppOpen, markBooted, openPendingTarget, probeStandalone, seedColdEntry, type OpenGate } from "@/lib/nav-entry";
 import { isReloadInFlight } from "@/lib/pwa";
 import { UPDATE_MODE_HOLD, isReloadHeldBy, subscribeReloadHeld } from "@/lib/reload-guard";
@@ -12,12 +13,23 @@ import { DetailRoute } from "@/routes/detail";
 import { HistoryRoute } from "@/routes/history";
 import { ChangesRoute } from "@/routes/changes";
 import { SettingsRoute } from "@/routes/settings";
+import {
+  SettingsAlertsRoute,
+  SettingsAppearanceRoute,
+  SettingsExperimentsRoute,
+  SettingsDeviceRoute,
+  SettingsSystemRoute,
+} from "@/routes/settings-sections";
 import { CrewRoute } from "@/routes/crew";
+import { MachineRoute } from "@/routes/machine";
+import { MachinesRoute } from "@/routes/machines";
 import { UpdatesRoute } from "@/routes/updates";
 import {
   devicesLoader,
   historyLoader,
   crewLoader,
+  machinesListLoader,
+  machinesLoader,
   rootLoader,
   paneLoader,
   PANE_ROUTE_ID,
@@ -70,9 +82,30 @@ export const router = createBrowserRouter([
     children: [
       { index: true, element: <HomeRoute /> },
       { path: "space/:spaceId", element: <SpaceRoute /> },
-      // Settings carries the paired-device registry, so it gets its own loader — a revoke or a pair
-      // is then the app's standard mutation shape (api call → revalidate), with no second data path.
-      { path: "settings", loader: devicesLoader, element: <SettingsRoute /> },
+      // Settings is an INDEX of four sections (routes/settings.tsx). Its only loader is the pairing
+      // forward: the QR `collie pair` prints still names `/settings?pair=<code>`, and the form now
+      // lives on System. `replace`, as for `/pack` below, so Back does not land on the index and
+      // bounce forward again. No `pair`, no redirect, and the registry stays on System's loader.
+      {
+        path: "settings",
+        loader: ({ request }) => {
+          const target = pairLandingPath(new URL(request.url).search);
+          return target === null ? null : replace(target);
+        },
+        element: <SettingsRoute />,
+      },
+      { path: "settings/appearance", element: <SettingsAppearanceRoute /> },
+      { path: "settings/device", element: <SettingsDeviceRoute /> },
+      { path: "settings/alerts", element: <SettingsAlertsRoute /> },
+      // The fifth section. It is routable whether or not the index offers a row for it — a page
+      // reachable only by URL is the ordinary case for a section that comes and goes, and it is
+      // what an operator who bookmarked it gets after the last experiment graduates: an empty page
+      // rather than a 404.
+      { path: "settings/experiments", element: <SettingsExperimentsRoute /> },
+      // The System section carries the paired-device registry, so it gets the loader Settings used
+      // to hold — a revoke or a pair is then the app's standard mutation shape (api call →
+      // revalidate), with no second data path.
+      { path: "settings/system", loader: devicesLoader, element: <SettingsSystemRoute /> },
       // The Updates page, a sibling of settings and crew. No loader of its own: everything on it is
       // either the snapshot (root loader) or the card's own read of /api/update/check. It is
       // deliberately ON the poll loop for `crew`'s stated reason — a run in progress and a member
@@ -82,6 +115,12 @@ export const router = createBrowserRouter([
       // is one small object per machine, and the whole point of the page is that a member going
       // quiet shows up here without the operator reloading. (History opts out; this one wants in.)
       { path: "crew", loader: crewLoader, element: <CrewRoute /> },
+      // The machines list and one machine's page. Both read the census through the same loader and
+      // both stay ON the poll loop: a value moving and an alert firing should show without a reload.
+      // The detail page's history is its own timed read (hooks/use-machine-history.ts), because every
+      // active loader is refetched on each tick and 1440 points a tick would be pure waste.
+      { path: "machines", loader: machinesListLoader, element: <MachinesRoute /> },
+      { path: "machines/:id", loader: machinesLoader, element: <MachineRoute /> },
       // The path was `crew` until 1.7.0 (M24 renamed the word a person reads). The service worker
       // caches the app shell, so a client sitting on /crew when the new bundle arrives, a bookmark
       // and an installed PWA's start URL all still ask for the old spelling. `replace` rather than
@@ -110,7 +149,8 @@ export const router = createBrowserRouter([
         // loop's revalidate() fetches nothing for it. `shouldRevalidate` states the same opt-out as
         // History's, should a loader ever be added.
         // `/*` so the commit view below the list (`changes/commit`, ADR 0065) is the same route
-        // and the same mounted component: the list keeps its state under the commit.
+        // and the same mounted component: the list keeps its state under the commit. A folder or a
+        // file of the folder tree (`changes/files`, ADR 0083) is matched here too, the same screen.
         path: "pane/:paneId/changes/*",
         element: <ChangesRoute />,
         shouldRevalidate: () => false,

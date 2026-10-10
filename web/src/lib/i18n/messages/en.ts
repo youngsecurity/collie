@@ -8,7 +8,8 @@
 //     different VALUES for the same keys, so they are typed `Record<MessageKey, string>`.
 //   * `{name}` marks an interpolation slot; `t()` fills it. Slots are named, never positional,
 //     because a translator re-orders a sentence and positions do not survive that.
-//   * A plural comes as a `.one` / `.other` PAIR and is read through `tn()`, never `t()`.
+//   * A plural comes as a `.one` / `.other` PAIR and is read through `tn()`, never `t()`. A language
+//     with more categories (Russian: `.few`, `.many`) adds them in its own file only.
 //
 // Seeded with the language-selector copy only — the full string sweep lands separately.
 
@@ -18,10 +19,41 @@ export const en = {
 
   // --- settings (page chrome) ---
   "settings.title": "Settings",
+  // The handoff when a bare shell pane becomes an agent pane (components/agent-start.tsx).
+  // `{agent}` is the harness's own name and is never translated.
+  "pane.agentStart.handed": "Handed to {agent}",
+  // The stand-in for the steps a turn took, when tool calls are off (Settings → Appearance). Per
+  // TURN, not per call: one line where forty cards were.
+  "transcript.tools.hidden.one": "{count} step hidden — tap to show",
+  "transcript.tools.hidden.other": "{count} steps hidden — tap to show",
+  "settings.tools.title": "Tool calls",
+  "settings.tools.description": "Draw the reads, searches, commands and edits an agent ran. Off keeps the thread to what it said.",
+  "settings.compactions.title": "Compaction summaries",
+  "settings.compactions.description": "Keep the recap an agent writes when it compacts its context. Off leaves one marker line where it happened.",
+  // --- settings.experiments (the fifth section) ---
+  // The contract is the SECTION'S, said once at the top rather than repeated on every card.
+  "settings.experiments.contract": "Anything here may change, lose settings, or be withdrawn in a patch release.",
+  // --- settings sections (the index's four rows) ---
+  // The blurb names the three or four cards a person is most likely to be hunting for, so the row
+  // answers "is it in here?" without being opened. Keep it short: it truncates on a narrow phone.
+  "settings.section.appearance.title": "Appearance",
+  "settings.section.appearance.blurb": "Theme, language, fonts",
+  "settings.section.device.title": "Device",
+  "settings.section.device.blurb": "Haptics, voice, zen mode",
+  "settings.section.alerts.title": "Alerts",
+  "settings.section.alerts.blurb": "Notifications, quiet hours",
+  "settings.section.system.title": "System",
+  "settings.section.system.blurb": "Updates, devices, crew",
+  // The fifth section, and the only one that can be absent: it renders while `lib/experiments.ts`
+  // holds something and disappears when the last experiment graduates (that file says why).
+  "settings.section.experiments.title": "Experiments",
+  "settings.section.experiments.blurb": "Features still being tested",
+  "settings.section.machines.title": "Machines",
+  "settings.section.machines.blurb": "CPU, memory, disk, network, alert rules",
   "settings.nav.back": "Back",
 
   // --- settings.theme ---
-  "settings.theme.title": "Appearance",
+  "settings.theme.title": "Theme",
   "settings.theme.description": "Follow your phone, or pin one.",
   "settings.theme.option.system": "System",
   "settings.theme.option.light": "Light",
@@ -45,6 +77,10 @@ export const en = {
   "settings.beltSize.option.default": "Default",
   "settings.beltSize.option.large": "Large",
   "settings.beltSize.option.larger": "Larger",
+  "settings.hand.title": "Hand",
+  "settings.hand.description": "Moves Send and the belt's Switch to the side of your thumb.",
+  "settings.hand.right": "Right",
+  "settings.hand.left": "Left",
   "settings.zen.title": "Zen mode",
   "settings.zen.description": "Adds a row to the pane menu that hides everything but the terminal.",
   "settings.zen.auto.label": "Enter on landscape",
@@ -84,6 +120,8 @@ export const en = {
   "settings.notify.done.hint": "an agent completes its task",
   "settings.notify.updates.label": "App updates",
   "settings.notify.updates.hint": "a new Collie version is available",
+  "settings.notify.machines.label": "Machine load stays high",
+  "settings.notify.machines.hint": "CPU or memory stays above a rule you set on a machine",
   "settings.notify.cache.label": "Cache about to go cold",
   // The second clause is the whole point of this hint: the rule is global OR per-pane, with no per-pane
   // off, so a watched list keeps working under this switch and the operator is told once, here.
@@ -105,21 +143,31 @@ export const en = {
 
   // --- settings.devices ---
   "settings.devices.title": "Paired devices",
-  "settings.devices.description.enforced": "Every write needs a paired device. Reading stays open.",
-  "settings.devices.description.open":
-    "Nothing is paired, so writes are ungated. Pair a device to require a credential.",
+  "settings.devices.description.enforced": "Every read and every write needs a paired device.",
   "settings.devices.pairedAs": "This device is paired as {device}.",
   "settings.devices.loadError": "Couldn’t load the paired devices from the bridge.",
   "settings.devices.thisDevice": "This device",
   "settings.devices.row.meta": "Paired {paired} · last seen {lastSeen}",
+  "settings.devices.row.expires": "Expires {date}",
+  "settings.devices.row.noExpiry": "No expiry",
+  "settings.devices.row.expired": "Expired",
+  "settings.devices.row.expiredOn": "Expired {date}",
   "settings.devices.revokeError": "Couldn’t revoke that device.",
   "settings.devices.cancel": "Cancel",
   "settings.devices.unpairSelf": "Unpair this phone",
   "settings.devices.revoke": "Revoke",
   "settings.devices.revokeAria": "Revoke {label}",
+  "settings.devices.confirm.self": "Unpair this phone? Its drafts, saved pane text and notifications are cleared here. Your settings stay.",
+  "settings.devices.confirm.other": "Revoke {label}? It loses access until it is paired again.",
   "settings.devices.pair.title": "Pair this device",
   "settings.devices.pair.hint":
     "Run {command} on the host, then scan the code it prints or type it here.",
+  "settings.devices.pair.againTitle": "Pair again",
+  "settings.devices.pair.expired": "This device’s pairing expired. Run {command} on the host, then enter the new code here.",
+  "settings.devices.pair.never": "This browser has not been paired. Run {command} on your machine and enter the code here.",
+  "settings.devices.pair.cleared.unpair": "Saved data was cleared because this phone was unpaired.",
+  "settings.devices.pair.cleared.expired": "Saved data was cleared because its pairing expired.",
+  "settings.devices.pair.cleared.revoked": "Saved data was cleared because the bridge revoked it.",
   "settings.devices.pair.codeLabel": "Pairing code",
   "settings.devices.pair.codePlaceholder": "8 characters",
   "settings.devices.pair.nameLabel": "Name for this device",
@@ -147,12 +195,17 @@ export const en = {
   "settings.connection.row.bridge": "Bridge",
   "settings.connection.row.deviceAccess": "Device access",
   "settings.connection.row.serverBuild": "Server build",
+  "settings.connection.row.secretMasking": "Secret masking",
+  "settings.connection.masking.on": "On, set on the bridge",
+  "settings.connection.masking.off": "Off, set on the bridge",
   "settings.connection.secure.yes": "Yes",
   "settings.connection.secure.no": "No (plain HTTP)",
   "settings.connection.bridge.connected": "Connected",
   "settings.connection.bridge.offline": "Herdr offline",
   "settings.connection.bridge.connecting": "Connecting…",
-  "settings.connection.device.notEnforced": "Not enforced",
+  "settings.connection.bridge.notPaired": "Reachable, not paired",
+  "settings.connection.device.notPaired": "Enforced, this device is not paired",
+  "settings.connection.device.paired": "Enforced, this device is paired",
   "settings.connection.device.fullAccessNamed": "Full access · {device}",
   "settings.connection.device.fullAccessLocal": "Full access (local)",
   "settings.connection.device.readOnlyNamed": "Read-only · {device}",
@@ -273,8 +326,10 @@ export const en = {
   "composer.send.reallySend": "Really send?",
   "composer.send.stopTypingAria": "Stop typing into terminal",
   "composer.send.sendAria": "Send",
+  "composer.send.reconnect": "Reconnect to send",
   "composer.draft.tooLong":
     "Too long to keep as a saved draft — it survives switching panes, but not closing the app.",
+  "composer.draft.holdsMask": "This reply holds masked text (••••). The pane gets the dots, not the secret.",
   "composer.status.dialogWaiting": "A dialog is waiting — answer it first, then send.",
   "composer.status.unreadDialog":
     "Collie cannot read this dialog. {key} is on the card. Tap Send again to type anyway.",
@@ -302,6 +357,8 @@ export const en = {
     "Send confirms what it typed, and this prompt shows nothing to confirm. Type sends your keys straight through, Enter included.",
   "composer.noEcho.useType": "Use Type",
   "composer.noEcho.dismissAria": "Dismiss password-prompt notice",
+  "composer.offline.draftNote": "The draft stays on this phone and is never sent by itself.",
+  "composer.offline.draftNote.dismissAria": "Dismiss the offline draft note",
   "composer.draftPreview.title": "Draft in terminal",
   "composer.draftPreview.takeOver": "Take over",
   "composer.draftPreview.dismissAria": "Dismiss the terminal draft notice",
@@ -328,9 +385,13 @@ export const en = {
   "chat.strips.show.panes": "Show panes. {panes} hidden.",
   "chat.find.label": "Find in output",
   "chat.history.label": "Conversation history",
+  "chat.copyOutput.label": "Copy output",
+  "chat.copyOutput.done": "Copied output to clipboard",
+  "chat.copyOutput.failed": "Couldn't copy output",
   // The header's ⋮ — the glyph names nothing, so the accessible name has to say what it OPENS.
   "chat.paneMenu.aria": "Pane actions",
   "chat.header.openOverviewAria": "Open {workspace} overview{status}",
+  "chat.header.openPaneSettingsAria": "Pane settings for {name}",
   "chat.header.statusAria": " — {label}",
   "chat.header.agentGone": "(agent gone)",
   "chat.scrollback.showHistory": "Show entire history",
@@ -340,14 +401,38 @@ export const en = {
     "{agent} has not reported a session to Herdr. Install or update the Herdr integration for it, then restart the agent in this pane.",
   "chat.scrollback.noSessionYet":
     "{agent} reports its session to Herdr only after its first message, so there is no history yet. If this note stays after {agent} has replied, review its hooks with /hooks in {agent}, or update the Herdr integration and restart the agent.",
+  // A 404 on the live-session route, and it is NOT "this pane has nothing to show" (ADR 0073 point
+  // 7). The route is additive-optional over a crew link, so a machine one release behind has no
+  // route at all. Say the remedy, because there is exactly one and waiting is not it.
+  "chat.stale.member": "This machine runs an older Collie. Update it to follow the conversation here.",
+  "chat.savedCopy": "Saved copy from {time}. Older text is on the bridge.",
   "chat.fullReply.title": "Full reply",
   "chat.fullReply.fromTranscript": "from transcript",
   "chat.fullReply.showingTerminal": "showing the terminal",
   "chat.output.empty": "(no recent output)",
+  // The pane page with the bridge away and nothing kept for this pane: what the phone can say
+  // without a live answer. Never "gone", which only a live answer can state (M46 spec 10).
+  "pane.saved.none": "No saved copy of this pane on this phone.",
   "chat.switcher.aria": "Switch pane",
   "chat.switcher.ariaNeedsYou": "Switch pane, another pane needs you",
   "chat.switcher.title": "Switch pane",
   "chat.switcher.launch.here": "here",
+  // --- pane order (the switcher's toggle and the Settings row write one value, ADR 0071) ---
+  "paneOrder.aria": "Pane order",
+  "paneOrder.place": "Place",
+  "paneOrder.activity": "Activity",
+  "paneOrder.recent": "Newest first",
+  "paneOrder.cache": "Cache",
+  "paneOrder.coldest": "Going cold first",
+  "settings.keepChat.title": "Keep chat on this phone",
+  "settings.keepChat.description": "Keeps the newest Chat turns of each pane, so you can read them when the bridge is out of reach. Off keeps nothing and deletes what is kept.",
+  "settings.keepChat.off": "Off",
+  "settings.keepChat.day": "1 day",
+  "settings.keepChat.week": "7 days",
+  "settings.keepChat.clearNow": "Clear saved copies now",
+  "settings.keepChat.cleared": "Saved copies cleared. Live panes are saved again as you read them.",
+  "settings.paneOrder.description":
+    "Activity puts the pane where something last happened at the top of the dashboard and the switcher. Cache puts the one whose prompt cache dies soonest there. Place keeps the order your terminal has.",
   "chat.status.feedbackSent": "Feedback sent",
   "chat.status.sent": "Sent",
   "chat.status.menuChanged": "Menu changed — refreshing",
@@ -360,12 +445,105 @@ export const en = {
   "chat.status.screenChanged": "The screen changed — refreshing",
   "chat.status.readOnly": "Read-only — device not authorised",
 
+  // --- chat.mode (the pane menu's body switch, ADR 0071's shape) ---
+  // The row names WHERE IT TAKES YOU, the way "Find in output" and "Conversation history" beside it
+  // do. Deliberately not "Show as terminal": "Focus in the terminal" is already a row in this sheet
+  // and moves the operator's own screen, which this never does.
+  "chat.mode.view.label": "View",
+  "chat.mode.option.terminal": "Terminal",
+  "chat.mode.option.chat": "Chat",
+  "chat.mode.chat": "Chat view",
+  "chat.mode.terminal": "Terminal view",
+  // The row EXPLAINS rather than hides (M41/11): a control that disappears on some panes is how an
+  // operator concludes the app is broken, and it would be worst for the person whose standing mode
+  // is Chat. So the row stays and carries the reason this pane keeps the terminal. The FACT comes
+  // first and the consequence after, the shape `paneActions.hostBlockSuffix` already uses, because
+  // `{reason}` is a whole sentence of its own and leading with a clause would read as one sentence
+  // interrupted by another.
+  "chat.mode.noChat": "{reason} The terminal stays here.",
+
+  // --- chat.stream (the chat body itself) ---
+  "chat.stream.empty": "Send a message to start.",
+  "chat.stream.working": "Still working…",
+  "chat.stream.queued": "Waiting to send",
+  "chat.stream.sendNow": "Send now",
+  "chat.stream.sendNowAria": "Send now, the waiting messages",
+  "chat.stream.loadOlderFailed": "Couldn't load older turns",
+  // --- chat.card (the blocks of the stream: turns, steps, notices) ---
+  // A card's LABEL is the kind of step, a chrome word. What the step acted on — a path, a command,
+  // a query, an agent's own name — is the agent's or the machine's and never goes through here.
+  "chat.card.create": "Create",
+  "chat.card.edit": "Edit",
+  "chat.card.run": "Run",
+  "chat.card.read": "Read",
+  "chat.card.search": "Search",
+  "chat.card.fetch": "Fetch",
+  "chat.card.delete": "Delete",
+  "chat.card.move": "Move",
+  // `{agent}` is the sub-agent's own name, so it is not translated.
+  "chat.card.agent": "Agent · {agent}",
+  "chat.card.thinking": "Thinking",
+  "chat.card.lines": "lines {from}–{to}",
+  // Where a search ran, after the query it ran for. `{where}` is a folder, shown verbatim.
+  "chat.card.searchIn": "in {where}",
+  // The state at the end of a card's head row. `running` is a dot's accessible name, the other
+  // three are drawn as words in a chip.
+  "chat.card.status.running": "running",
+  "chat.card.status.failed": "failed",
+  "chat.card.status.denied": "denied",
+  "chat.card.status.exit": "exit {code}",
+  // A question tool call's card. The agent's own `header` names the card when it sent one; the
+  // dialog the reader answers in lives in the dock below the stream, never on the card.
+  "chat.tool.question": "Question",
+  "chat.question.waiting": "Waiting for an answer",
+  "chat.question.answerBelow": "Answer in the card below",
+  "chat.question.dismissed": "Dismissed",
+  "chat.question.multiple": "Pick any that apply",
+  "chat.card.output.hide": "Hide output",
+  "chat.card.output.show.one": "Output · {count} line",
+  "chat.card.output.show.other": "Output · {count} lines",
+  "chat.card.output.showLast": "Show the last {count}",
+  "chat.card.output.showAll.one": "Show all {count} line",
+  "chat.card.output.showAll.other": "Show all {count} lines",
+  "chat.card.diff.less": "Show less",
+  // One journal part that is a picture, drawn as a notice because there is no image block in the
+  // stream. `{url}` is the journal's own reference and is shown as it stands.
+  "chat.card.image": "Image: {url}",
+  // --- chat.run (a fold over several steps) ---
+  // Each pair is counted on its own and the parts are joined with a comma, so each one has to read
+  // as a standalone noun phrase.
+  "chat.run.commands.one": "{count} command",
+  "chat.run.commands.other": "{count} commands",
+  "chat.run.edits.one": "{count} edit",
+  "chat.run.edits.other": "{count} edits",
+  "chat.run.reads.one": "{count} read",
+  "chat.run.reads.other": "{count} reads",
+  "chat.run.searches.one": "{count} search",
+  "chat.run.searches.other": "{count} searches",
+  "chat.run.agents.one": "{count} agent",
+  "chat.run.agents.other": "{count} agents",
+  "chat.run.others.one": "{count} other step",
+  "chat.run.others.other": "{count} other steps",
+  "chat.run.earlier.one": "{count} earlier step · {summary}",
+  "chat.run.earlier.other": "{count} earlier steps · {summary}",
+  "chat.run.failed.one": "{count} failed",
+  "chat.run.failed.other": "{count} failed",
+  // --- chat.step (one step in a few words, on a folded run) ---
+  "chat.step.created": "Created",
+  "chat.step.edited": "Edited",
+  "chat.step.read": "Read",
+  "chat.step.searched": "Searched",
+  "chat.step.fetched": "Fetched",
+  "chat.step.deleted": "Deleted",
+  "chat.step.moved": "Moved",
+
   // --- prompt (the native prompt-select / plan-feedback block) ---
   "prompt.family.select": "Choose an option",
   "prompt.family.permission": "Permission required",
   "prompt.family.trust": "Trust this folder?",
   "prompt.family.plan": "Review the plan",
   "prompt.sendingAria": "Sending",
+  "prompt.reconnectNote": "Reconnect to answer.",
   "prompt.feedback.cancel": "Cancel",
   "prompt.feedback.typedAria": "Feedback in the terminal",
   "prompt.feedback.planChange.offer": "Tell Claude what to change",
@@ -407,6 +585,7 @@ export const en = {
   "paneActions.focus.done": "Focused in the terminal",
   "paneActions.focus.failed": "Couldn't focus in the terminal",
   "paneActions.pin.label": "Pin to top",
+  "paneActions.branchOff.label": "New agent on a branch",
   "paneActions.unpin.label": "Unpin",
   "paneActions.pin.done": "Pinned to the top",
   "paneActions.unpin.done": "Unpinned",
@@ -430,6 +609,7 @@ export const en = {
   "nav.settings.aria": "Settings",
   "nav.home.aria.default": "Collie home",
   "nav.home.aria.lost": "Collie home — not connected",
+  "nav.home.aria.lostAt": "Collie home, not connected. Showing what was saved at {time}.",
   "nav.home.aria.reconnecting": "Collie home — reconnecting",
   "nav.mux.onPrefix": "on",
   "nav.prereleaseTitle": "Pre-release build — {version}",
@@ -445,18 +625,23 @@ export const en = {
   "home.workspace.paneCount.other": "{count} panes",
   "home.workspace.hidden": "hidden",
   "home.machineHidden.show": "Show {name}'s panes",
+  "home.workspaceFilter.aria": "Workspace",
+  "home.workspaceFilter.all": "All workspaces",
+  "home.workspaceFilter.showHidden": "Show hidden workspaces",
   "home.sidebar.shells": "Shells",
   "home.pinned.title": "Pinned",
   "home.pinHint.hold": "Hold a pane to pin it here.",
   "home.pinHint.rightClick": "Right-click a pane to pin it here.",
   "home.pinHint.dismiss": "Dismiss hint",
+  "pane.maskedHint.body": "Some secrets on this screen are masked. Read them on the machine.",
+  "pane.maskedHint.dismiss": "Dismiss hint",
   "home.group.newTab": "New tab in {name}",
   "home.sidebar.paneActionsTitle": "Tap for pane actions",
   "home.row.tabPosition": "tab {n}",
   "home.row.unseen": "unseen",
   "home.tabs.aria": "Dashboard views",
-  "home.tabs.panes": "Panes",
-  "home.tabs.focus": "Focus",
+  "home.tabs.dashboard": "Dashboard",
+  "home.needsYouOnly": "Show only panes that need you",
   "home.tabs.blocked.one": "{count} blocked",
   "home.tabs.blocked.other": "{count} blocked",
   "home.tabs.unseen": "finished panes unseen",
@@ -478,6 +663,11 @@ export const en = {
   "status.label.idle": "idle",
   "status.label.done": "done",
   "status.label.unknown": "unknown",
+  "status.past.blocked": "needed you",
+  "status.past.working": "was working",
+  "status.past.idle": "was idle",
+  "status.past.done": "was done",
+  "status.past.unknown": "was unknown",
   "status.count.needsYou.one": "{count} needs you",
   "status.count.needsYou.other": "{count} needs you",
   "status.count.working.one": "{count} working",
@@ -538,7 +728,9 @@ export const en = {
   "space.tab.closeFailed": "Close failed",
   "space.tab.closed": "Tab closed",
   "space.readOnly.notPaired": "Not paired — pair this device in Settings",
+  "space.readOnly.expired": "Pairing expired. Pair again in Settings",
   "space.readOnly.deviceUnauthorised": "Read-only — device not authorised",
+  "space.readOnly.savedCopy": "Saved copy. Reconnect to make changes.",
   "space.create.ready": "New {what} ready — launch your agent",
   "space.noun.tab": "tab",
   "space.noun.space": "space",
@@ -584,6 +776,7 @@ export const en = {
   "connection.auth.signIn": "Sign in",
   "connection.reload.aria": "Reload",
   "connection.retry": "Retry",
+  "connection.dismiss.aria": "Hide this notice",
   "common.closeAria": "Close",
   "common.scrollToLatestAria": "Scroll to latest",
   "connection.connected": "Connected",
@@ -592,6 +785,9 @@ export const en = {
   "connection.offlineCantReach": "Offline — can't reach Collie",
   "connection.cantReach": "Can't reach Collie",
   "connection.withLastSeen": "{cause} — last seen {time}",
+  "connection.saved.offline": "You are offline. Showing what was saved at {time}.",
+  "connection.saved.noBridge": "No connection to the bridge. Showing what was saved at {time}.",
+  "connection.saved.hint": "Check your connection or Tailscale.",
   "connection.readOnly.notPaired": "Not paired — pair this device in Settings to type into agents.",
   "connection.readOnly.device": "Read-only — this device isn’t authorised to type into agents{deviceSuffix}.",
   "connection.host.lastSeen": "last seen {time}",
@@ -640,6 +836,78 @@ export const en = {
   "connection.server.showLocked": "The machine you are on is always shown",
 
   // --- crew (the read-only /crew census; role names stay English, ADR 0030) ---
+  "machines.title": "Machines",
+  "machines.view.label": "Machine view",
+  "machines.view.status": "Status",
+  "machines.view.alerts": "Alerts",
+  "machines.view.firing": "alert firing",
+  "machines.nav.back": "Back",
+  "machines.entry.title": "Machines",
+  "machines.entry.description": "CPU, memory, disk and network of every machine.",
+  "machines.memberSheet.link": "Load and alerts",
+  "machines.metric.cpu": "CPU",
+  "machines.metric.mem": "Memory",
+  "machines.metric.disk": "Disk",
+  "machines.metric.net": "Network",
+  "machines.cores.one": "{count} core",
+  "machines.cores.other": "{count} cores",
+  "machines.net.down": "Down",
+  "machines.net.up": "Up",
+  "machines.load": "Load",
+  "machines.noSample": "Update this machine to see its load",
+  "machines.lastReading": "Last reading {time}",
+  "machines.lastReading.never": "No reading yet",
+  "machines.spark.label": "{metric}, last {minutes} minutes: now {now}, peak {peak}.",
+  "machines.tab.aria": "Machines",
+  "machines.tab.loading": "Loading machines",
+  "machines.tab.failed": "Could not refresh. These are the last numbers Collie read.",
+  "machines.firing": "Alert firing: {metrics}",
+  "machines.unavailable.title": "No machine list here",
+  "machines.unavailable.description": "Only a collie that leads a crew, or runs on its own, keeps this list. Open it on the lead.",
+  "machines.error.title": "Could not load machines",
+  "machines.error.description": "The bridge did not answer. Collie tries again on the next poll.",
+  "machines.unknown.title": "No such machine",
+  "machines.unknown.description": "This list has no machine with that name. Go back and pick one.",
+  "machines.range.label": "Time range",
+  "machines.range.hour": "1 h",
+  "machines.range.day": "24 h",
+  "machines.range.hour.long": "last hour",
+  "machines.range.day.long": "last 24 hours",
+  "machines.axis.now": "now",
+  "machines.axis.minutesAgo": "{count} min ago",
+  "machines.axis.hoursAgo": "{count} h ago",
+  "machines.history.loading": "Loading history",
+  "machines.history.error": "Could not load the history. Collie tries again in a minute.",
+  "machines.history.empty": "No readings in this range yet.",
+  "machines.net.none": "This machine reports no network counters.",
+  "machines.disk.none": "This machine reports no disk usage.",
+  "machines.disk.label": "Disk {mount}",
+  "machines.summary.percent": "{metric}, {range}: now {latest}, average {mean}, peak {peak}.",
+  "machines.summary.threshold": "Alert line at {percent}.",
+  "machines.summary.net": "{metric}, {range}: down now {down}, peak {downPeak}; up now {up}, peak {upPeak}.",
+  "machines.legend.avg": "Average",
+  "machines.legend.peak": "Peak",
+  "machines.legend.used": "Used",
+  "machines.legend.fullest": "Fullest disk",
+  "machines.legend.down": "Down",
+  "machines.legend.up": "Up",
+  "machines.legend.threshold": "Alert at {percent}",
+  "machines.alerts.title": "Alerts",
+  "machines.alerts.description": "Push when a value stays high.",
+  "machines.alerts.cpu": "CPU alert",
+  "machines.alerts.mem": "Memory alert",
+  "machines.alerts.disk": "Disk alert",
+  "machines.alerts.firingNow": "Firing now",
+  "machines.alerts.above": "{metric} threshold",
+  "machines.alerts.for": "{metric} duration",
+  "machines.alerts.minutes": "{count} min",
+  "machines.alerts.saving": "Saving",
+  "machines.alerts.saved": "Saved",
+  "machines.alerts.failed": "Could not save. The rules are unchanged.",
+  "machines.alerts.notPaired": "Pair this device to change alerts",
+  "machines.alerts.needsUpdate": "Alerts need this machine to be updated. It does not report its load yet.",
+  "machines.alerts.push": "The push goes to every device subscribed to this Collie.",
+  "machines.alerts.pushLink": "Settings, Alerts",
   "crew.title": "Crew",
   "crew.nav.back": "Back",
   "crew.entry.title": "Crew overview",
@@ -766,6 +1034,7 @@ export const en = {
   "dialog.incomplete": "You have not answered all questions",
   "dialog.submitAnswers": "Submit answers",
   "dialog.cancel": "Cancel",
+  "dialog.backToOptions": "Back to the options",
   "dialog.endsQuestionsSuffix": "— ends the questions",
   "dialog.autocomplete.title": "Slash commands",
   "dialog.menu.moveUp": "Move up",
@@ -777,6 +1046,9 @@ export const en = {
   "dialog.menu.levelAria": "{verb} to {label}",
   "dialog.menu.levelCurrentAria": "{label}, current",
   "unreadDialog.caption": "Collie cannot read this dialog",
+  // Second-tap wording (#339): the first tap arms the key, the second sends it.
+  "unreadDialog.confirmKey": "Tap again to send {key}",
+  "unreadDialog.confirmDismiss": "Tap again to dismiss",
   "dialog.preview.currentAnswerAria": "Current answer",
   "dialog.preview.previewedBelowAria": "Previewed below",
   "dialog.preview.previewLabel": "Preview · {label}",
@@ -797,6 +1069,10 @@ export const en = {
     "That's a password prompt — it shows nothing as you type, so Send can never confirm the text arrived. Nothing was typed.",
   "reply.blocked.composerLeft":
     "The agent's input box left the screen while its input line was being cleared — a menu or dialog is probably up. Your message wasn't typed.",
+  "reply.refused.multiline":
+    "This input submits on a new line, so a multi-line message would be cut at the first break. Put it on one line. Nothing was typed.",
+  "reply.refused.multilineMidway":
+    "This input submits on a new line, so a multi-line message was cut at its first break. The part before it is already in the pane. Put the message on one line.",
   "reply.stalled.noEcho":
     "That's a password prompt — it shows nothing as you type, so the text can't be confirmed and nothing was submitted. What you typed is already in the pane.",
   "reply.stalled.generic":
@@ -834,6 +1110,8 @@ export const en = {
   "directTyping.status.draftPending": "Send or clear the draft before typing into the terminal.",
   "directTyping.status.armed": "Typing into the terminal — keys send as you type.",
   "directTyping.status.disarmed": "Back to sending replies",
+  "directTyping.status.agentChanged": "Type mode off — the pane's agent changed.",
+  "directTyping.status.idleTimeout": "Type mode off — no key for 60 seconds.",
   "directTyping.status.interrupted":
     "Stopped typing into the terminal — the pane view was interrupted.",
   "directTyping.status.backgrounded":
@@ -901,12 +1179,16 @@ export const en = {
   "apiError.worktree.ambiguous_branch": "That branch name matches more than one thing: {reason}",
   "apiError.worktree.branch_required": "Type a branch name first.",
   "apiError.worktree.not_a_repo": "This space isn't in a Git repository.",
+  "apiError.worktree.invalid_branch": "That branch name is not allowed. Use letters, digits, dashes and slashes.",
   "worktree.section": "Worktrees",
   "worktree.new": "New worktree",
   "worktree.branchLabel": "Branch name",
   "worktree.branchPlaceholder": "feature/my-change",
   "worktree.branchesFrom": "Branches from {branch}",
   "worktree.create": "Create",
+  "branchOff.agentLabel": "Agent",
+  "branchOff.shell": "Shell",
+  "branchOff.launcherFailed": "The worktree is ready, but the agent did not start. Start it in the new shell.",
   "worktree.creating": "Creating…",
   "worktree.open": "Open",
   "worktree.opening": "Opening…",
@@ -1378,8 +1660,13 @@ export const en = {
   "updateScreen.startUnreported": "Progress for the update you started is unavailable. Check its log before trying again.",
 
   // --- changes (ADR 0065) ---
-  "chat.changes.label": "Changes",
-  "changes.title": "Changes",
+  "chat.changes.label": "Files",
+  "files.title": "Files",
+  // --- the branch a pane's folder is on (components/ui/branch-label.tsx) ---
+  "branch.aria": "Branch {name}",
+  "branch.detachedAria": "Detached at {sha}",
+  "branch.detached": "detached @{sha}",
+  "files.back": "Back",
   "changes.backAria.dashboard": "Back to the dashboard",
   "changes.backAria.workspace": "Back to the workspace",
   "changes.backAria.pane": "Back to the pane",
@@ -1416,9 +1703,7 @@ export const en = {
   "changes.file.renamedFrom": "Renamed from {path}",
   "changes.file.prev": "Previous file",
   "changes.file.next": "Next file",
-  "changes.layout.aria": "Layout",
-  "changes.layout.list": "List",
-  "changes.layout.tree": "Tree",
+  "changes.layout.tree": "Show as a tree",
   "changes.tree.folderAria.one": "{name}, {count} file",
   "changes.tree.folderAria.other": "{name}, {count} files",
   "changes.filter.button": "Filter files",
@@ -1442,6 +1727,67 @@ export const en = {
   "changes.commit.newer": "A newer commit exists",
   "changes.commit.uncommitted": "New uncommitted changes",
   "changes.commit.fileNewer": "The repo has a newer commit. Go back and load it to read this file.",
+  "changes.file.preview": "Preview",
+  "changes.file.previewAria": "Preview this file",
+  "files.loading": "Reading files…",
+  "files.error": "Couldn't read this folder. Tap refresh to try again.",
+  "files.file.error": "Couldn't read this file. Tap refresh to try again.",
+  "files.backAria.folder": "Back to the folder",
+  "files.backAria.parent": "Up one folder",
+  "files.breadcrumb.aria": "Folder path",
+  "files.root": "Root",
+  "files.empty": "This folder is empty.",
+  "files.truncated": "The list hit a limit, so some entries are missing.",
+  "files.filter.placeholder": "Filter by name",
+  "files.filter.shown": "{shown} of {total} items",
+  "files.ignored.hidden": "{count} ignored hidden",
+  "files.ignored.show": "Show",
+  "files.ignored.showAria": "Show ignored entries",
+  "files.ignored.shown": "{count} ignored shown",
+  "files.ignored.hide": "Hide",
+  "files.ignored.hideAria": "Hide ignored entries",
+  "files.ignored.toggleAria": "Show files git ignores",
+  "files.ignored.stateHidden": "Ignored hidden",
+  "files.ignored.stateShown": "Ignored shown",
+  "files.ignored.allHidden": "Everything here is ignored by git.",
+  "files.ignored.word": "ignored",
+  "files.kind.dir": "folder",
+  "files.kind.file": "file",
+  "files.kind.link": "link",
+  "files.unknown.file": "This file is not available",
+  "files.unknown.folder": "This folder is not available",
+  "files.stale.member": "This machine runs an older Collie. Update this machine to browse its files.",
+  "files.notPaired": "This device is not paired, so it cannot browse files. Pair it in Settings.",
+  "files.pairLink": "Pair this device",
+  "files.notAuthorised": "This device is not authorised to browse files.",
+  "files.binary": "Binary file, {size}",
+  "files.fileEmpty": "This file is empty.",
+  "files.fileTruncated": "The file stops here. It is too long to show in full.",
+  "files.linesCapped": "Showing the first 5,000 lines.",
+  "files.view.aria": "View",
+  "files.view.source": "Source",
+  "files.view.preview": "Preview",
+  "files.view.diff": "Diff",
+  "files.mode.aria": "Which files to show",
+  "files.mode.all": "All files",
+  "files.mode.changes": "Changes",
+  "files.changed.one": "{count} changed file",
+  "files.changed.other": "{count} changed files",
+  "files.noFolder": "Collie can't browse the files of this folder. The Changes view still lists what changed in it.",
+  "files.showChangesOnly": "Show changes",
+  "files.json.error": "Not valid JSON: {message}",
+  "files.json.tooBig": "Too large to draw as a tree, so the source is shown.",
+  "files.json.items.one": "{count} item",
+  "files.json.items.other": "{count} items",
+  "files.json.keys.one": "{count} key",
+  "files.json.keys.other": "{count} keys",
+  "files.json.empty": "Empty",
+  "files.html.caption": "Scripts, forms and remote files are off",
+  "files.html.frameTitle": "HTML preview",
+  "files.image.tooLarge": "Too large to show here. Pictures up to 16 MB are drawn.",
+  "files.image.notImage": "Not a picture Collie can draw.",
+  "files.image.failed": "The picture did not load. Tap refresh to try again.",
+  "files.image.undrawable": "This browser cannot draw this picture.",
   "settings.changes.title": "Changes",
   "settings.changes.description": "How a pane's Changes view finds git repos.",
   "settings.changes.nested.label": "Look for repos inside this folder",
@@ -1450,6 +1796,23 @@ export const en = {
   "settings.changes.depth.hint": "Folder levels below the pane's folder.",
   "settings.changes.depth.levels.one": "{count} level",
   "settings.changes.depth.levels.other": "{count} levels",
+
+  // --- pushTitle (a notification's headline, keyed by the code on the push) ---
+  //
+  // ONE KEY PER CODE in `lib/push-title-codes.ts`, spelled `pushTitle.<code>`. The bridge sends the
+  // English beside the code (bridge/push-titles.ts); the service worker shows THIS translation
+  // instead when the device has one (ADR 0074). `{agent}` is the agent's kind ("claude"), never
+  // translated. `{count}` in a `herd.*` title is always 2 or more, so these are not plural pairs.
+  "pushTitle.agent.blocked": "{agent} needs you",
+  "pushTitle.agent.done": "{agent} is done",
+  "pushTitle.herd.blocked": "{count} agents need you",
+  "pushTitle.herd.done": "{count} agents done",
+  "pushTitle.herd.mixed": "{count} agents need attention",
+  "pushTitle.update.available": "Collie update available",
+  "pushTitle.cache.cold_soon": "Cache goes cold in about {minutes} min",
+  "pushTitle.machine.cpu": "CPU stays high on {machine}",
+  "pushTitle.machine.mem": "Memory stays high on {machine}",
+  "pushTitle.machine.disk": "Disk stays full on {machine}",
 } as const;
 
 /** Every key that exists, as a union of string literals. The completeness contract. */
@@ -1461,4 +1824,17 @@ export type Messages = typeof en;
 /** What a translated bundle must be: every key, any string. `Record` over a finite union of
  *  literals is complete in BOTH directions — a missing key fails the assignment, an extra one is
  *  caught as an excess property. That is the entire enforcement mechanism; don't loosen it. */
-export type Dictionary = Record<MessageKey, string>;
+export type Dictionary = Record<MessageKey, string> & Partial<Record<ExtraPluralKey, string>>;
+
+/** The base of every `.one`/`.other` pair English has. */
+type PluralBaseOf<K> = K extends `${infer Base}.one`
+  ? `${Base}.other` extends MessageKey
+    ? Base
+    : never
+  : never;
+
+/** The plural forms a language may add beyond `.one`/`.other`, for a base English has a pair for:
+ *  `.few` and `.many` for Russian (1 файл, 2 файла, 5 файлов). Optional here, because a language
+ *  with no such category carries none; `tn()` falls back to `.other` for a category with no key.
+ *  The parity test requires them in `ru`. */
+export type ExtraPluralKey = `${PluralBaseOf<MessageKey>}.${"few" | "many"}`;

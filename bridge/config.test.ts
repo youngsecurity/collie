@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+import { hostFor } from "./host.ts";
 import {
   defaultSocketPath,
   envBool,
@@ -27,6 +28,7 @@ const KEYS = [
   "COLLIE_READ_LINES",
   "COLLIE_TRANSCRIPT",
   "COLLIE_TRANSCRIPT_ROOT",
+  "COLLIE_REDACT",
   "COLLIE_CODEX_ROOT",
   "COLLIE_PI_ROOT",
   "COLLIE_OPENCODE_ROOT",
@@ -92,7 +94,7 @@ describe("loadConfig", () => {
     expect(cfg.transcript).toBe(true);
     // One root by default, and it is a list of one rather than a special case (issue #92).
     expect(cfg.journalRoots.claude).toHaveLength(1);
-    expect(cfg.journalRoots.claude[0]).toEndWith("/.claude/projects");
+    expect(cfg.journalRoots.claude[0]).toBe(join(homedir(), ".claude", "projects"));
     // OpenCode keeps ONE sqlite database at the top of its XDG data dir — no per-session files.
     expect(cfg.journalRoots.opencode).toEqual([join(homedir(), ".local", "share", "opencode")]);
     expect(cfg.journalRoots.grok).toEqual([join(homedir(), ".grok", "sessions")]);
@@ -166,6 +168,19 @@ describe("loadConfig", () => {
     expect(loadConfig().transcript).toBe(true);
   });
 
+  test("COLLIE_REDACT masks secrets by default and turns off with off/0/false/no", () => {
+    expect(loadConfig().redact).toBe(true);
+    for (const off of ["off", "0", "false", "no", "OFF"]) {
+      process.env.COLLIE_REDACT = off;
+      expect(loadConfig().redact).toBe(false);
+    }
+    process.env.COLLIE_REDACT = "on";
+    expect(loadConfig().redact).toBe(true);
+    // A typo must not quietly turn the mask off.
+    process.env.COLLIE_REDACT = "banana";
+    expect(loadConfig().redact).toBe(true);
+  });
+
   // COLLIE_TRANSCRIPT_ROOT predates the per-harness split and meant Claude's root — it keeps meaning
   // exactly that, so an existing deployment's env survives the change untouched.
   test("COLLIE_TRANSCRIPT_ROOT relocates the CLAUDE journal root", () => {
@@ -213,10 +228,10 @@ describe("loadConfig", () => {
     process.env.XDG_DATA_HOME = "/srv/share";
     process.env.GROK_HOME = "/srv/grok";
     const cfg = loadConfig();
-    expect(cfg.journalRoots.codex).toEqual(["/srv/codex/sessions"]);
-    expect(cfg.journalRoots.pi).toEqual(["/srv/pi/sessions"]);
-    expect(cfg.journalRoots.opencode).toEqual(["/srv/share/opencode"]);
-    expect(cfg.journalRoots.grok).toEqual(["/srv/grok/sessions"]);
+    expect(cfg.journalRoots.codex).toEqual([join("/srv/codex", "sessions")]);
+    expect(cfg.journalRoots.pi).toEqual([join("/srv/pi", "sessions")]);
+    expect(cfg.journalRoots.opencode).toEqual([join("/srv/share", "opencode")]);
+    expect(cfg.journalRoots.grok).toEqual([join("/srv/grok", "sessions")]);
   });
 
   test("an explicit COLLIE_* root beats the harness's home var", () => {
@@ -422,19 +437,19 @@ describe("isLoopbackBindHost", () => {
 
 describe("defaultSocketPath", () => {
   test("unix default lives under ~/.config/herdr", () => {
-    expect(defaultSocketPath("linux", {}, "/home/u")).toBe(join("/home/u", ".config", "herdr", "herdr.sock"));
-    expect(defaultSocketPath("darwin", {}, "/Users/u")).toBe(join("/Users/u", ".config", "herdr", "herdr.sock"));
+    expect(defaultSocketPath(hostFor("linux"), {}, "/home/u")).toBe("/home/u/.config/herdr/herdr.sock");
+    expect(defaultSocketPath(hostFor("darwin"), {}, "/Users/u")).toBe("/Users/u/.config/herdr/herdr.sock");
   });
 
   test("win32 default honours APPDATA", () => {
-    expect(defaultSocketPath("win32", { APPDATA: "C:\\Users\\u\\AppData\\Roaming" }, "C:\\Users\\u")).toBe(
-      join("C:\\Users\\u\\AppData\\Roaming", "herdr", "herdr.sock"),
+    expect(defaultSocketPath(hostFor("win32"), { APPDATA: "C:\\Users\\u\\AppData\\Roaming" }, "C:\\Users\\u")).toBe(
+      "C:\\Users\\u\\AppData\\Roaming\\herdr\\herdr.sock",
     );
   });
 
   test("win32 falls back to <home>/AppData/Roaming when APPDATA is unset", () => {
-    expect(defaultSocketPath("win32", {}, "C:\\Users\\u")).toBe(
-      join("C:\\Users\\u", "AppData", "Roaming", "herdr", "herdr.sock"),
+    expect(defaultSocketPath(hostFor("win32"), {}, "C:\\Users\\u")).toBe(
+      "C:\\Users\\u\\AppData\\Roaming\\herdr\\herdr.sock",
     );
   });
 });

@@ -143,6 +143,19 @@ describe("stripChrome — trims the input box off the tail", () => {
     expect(kept).not.toContain("soft-wraps it onto several"); // wrapped continuation gone
     expect(kept).not.toContain("worker:scout"); // footer gone
   });
+
+  // Claude Code 2.1.293 paints "❯" on the ACTIVE agent's footer row. Step 1 of the locator stepped
+  // over that row (it is the lowest "❯"-led line) and the ownership check refused it for sitting
+  // below the statusline run — so the whole box vanished: no draft, and a send from the phone typed
+  // its text and then never submitted. The pointed row must strip with the rest of the footer.
+  it("footer variant (pointed agent row): strips the box and the pointed footer row", () => {
+    const lines = fixtureLines("claude--footer-pointed-agent.txt");
+    const kept = joined(stripChrome(lines));
+    expect(kept).not.toContain("● main"); // footer header gone
+    expect(kept).not.toContain("worker:scout"); // first agent row gone
+    expect(kept).not.toContain("worker:fix"); // the POINTED agent row went with the footer
+    expect(kept).not.toContain("auto mode on"); // statusline gone
+  });
 });
 
 describe("stripChrome — conservative: leaves non-chrome untouched", () => {
@@ -288,6 +301,16 @@ describe("extractAgentsFooter — the background-agents block under the statusli
     },
   );
 
+  it("footer-pointed-agent: the pointed active-agent row is part of the block", () => {
+    const rows = footerText(fixtureLines("claude--footer-pointed-agent.txt"));
+    expect(rows).toHaveLength(3);
+    expect(rows[0]).toBe("● main");
+    expect(rows[1]).toContain("worker:scout");
+    expect(rows[2]!.startsWith("❯ ◯ worker:fix")).toBe(true);
+    expect(rows[2]).toContain("Chasing the footer pointer");
+    expect(rows.join("\n")).not.toContain("auto mode on"); // the statusline above stays out
+  });
+
   it("keeps each row styled, as the pane painted it", () => {
     const [header] = extractAgentsFooter(fixtureLines("claude--draft-footer-single.txt"));
     expect(header!.segments.some((s) => s.bold)).toBe(true);
@@ -424,6 +447,16 @@ describe("extractInputDraft — recovers a stranded prompt-line draft", () => {
     );
   });
 
+  // The fixture the 2026-10-08 regression was captured for: the pointer on the active agent's footer
+  // row (`❯ ◯ worker:fix …`) is the lowest frame mark, step 1 of the locator stepped over it, and the
+  // ownership check refused it for sitting below the statusline run — `hasInputBox` answered false,
+  // no draft surfaced, and a guarded send typed the text and then withheld its submit forever.
+  it("footer variant (pointed agent row): the box survives the pointer on the footer", () => {
+    const lines = fixtureLines("claude--footer-pointed-agent.txt");
+    expect(hasInputBox(lines)).toBe(true);
+    expect(extractInputDraft(lines)).toBe("the agents footer hides the input box");
+  });
+
   it("folds a WRAPPED draft back into one line (real capture)", () => {
     // A long draft the TUI soft-wrapped across the box — the continuation lines are stitched back on.
     const draft = extractInputDraft(fixtureLines("claude--draft-wrapped.txt"));
@@ -442,7 +475,7 @@ describe("extractInputDraft — recovers a stranded prompt-line draft", () => {
   // Bug #76 fix: the wrapped-draft scan used to be bounded by MAX_DRAFT_LINES (12), so a draft long
   // enough to wrap past that many continuation rows made locateInputBox return null — the send guard
   // then saw no draft at all and stalled forever even though the text had landed. The bound is now
-  // 100 (defense-in-depth, not a correctness bound — see the comment on MAX_DRAFT_LINES in chrome.ts),
+  // 100 (defense-in-depth, not a correctness bound — see the comment on MAX_DRAFT_LINES in markers.ts),
   // comfortably above real wraps, so a draft this long is still found.
   it("matches a box whose draft wraps past the old 12-line bound", () => {
     const many = Array.from({ length: 20 }, (_, i) => `  continuation ${i}`);
@@ -809,9 +842,11 @@ describe("real corpus — pinned so any change to the walk shows up as a diff", 
     { fixture: "done", statusRows: 2, draft: null, stripped: 28 },
     { fixture: "ghost-suggestion", statusRows: 4, draft: null, stripped: 21 },
     { fixture: "ghost-typed-over", statusRows: 4, draft: "hello real draft text", stripped: 21 },
+    { fixture: "idle-background-shell", statusRows: 1, draft: null, stripped: 5 },
     { fixture: "draft-footer-empty", statusRows: 2, draft: null, stripped: 9 },
     { fixture: "draft-footer-single", statusRows: 2, draft: "remember to update the changelo", stripped: 9 },
     { fixture: "draft-footer-wrapped", statusRows: 2, draft: "this stranded draft is long eno", stripped: 11 },
+    { fixture: "footer-pointed-agent", statusRows: 1, draft: "the agents footer hides the input", stripped: 8 },
     { fixture: "draft-paste-placeholder", statusRows: 2, draft: "[Pasted text #3 +3 lines]", stripped: 7 },
     // The split shape (#110): a token plus the literal tail beside it, captured complete and
     // half-arrived. Three status rows here — the sandbox pane also carries a transcript warning.
@@ -943,6 +978,11 @@ describe("real corpus — pinned so any change to the walk shows up as a diff", 
     { fixture: "v2283-plugin-marketplaces-updated--w120", statusRows: 1, draft: null, stripped: 5 },
     { fixture: "v2283-plugin-marketplaces-updated--w40", statusRows: 1, draft: null, stripped: 5 },
     { fixture: "v2283-plugin-marketplaces-updated--w82", statusRows: 1, draft: null, stripped: 5 },
+    { fixture: "v2289-switch-model-no", statusRows: 0, draft: null, stripped: 1 },
+    { fixture: "v2289-switch-model-no--w50", statusRows: 0, draft: null, stripped: 1 },
+    { fixture: "v2289-switch-model-yes", statusRows: 0, draft: null, stripped: 1 },
+    { fixture: "v2289-switch-model-yes--w50", statusRows: 0, draft: null, stripped: 1 },
+    { fixture: "v2291-permission-bash-subagent", statusRows: 0, draft: null, stripped: 0 },
     { fixture: "wizard-multiselect-checked", statusRows: 0, draft: null, stripped: 0 },
     { fixture: "wizard-multiselect-final", statusRows: 0, draft: null, stripped: 0 },
     { fixture: "wizard-multiselect-pointer-next", statusRows: 0, draft: null, stripped: 0 },
@@ -955,7 +995,12 @@ describe("real corpus — pinned so any change to the walk shows up as a diff", 
     { fixture: "wizard-q2", statusRows: 0, draft: null, stripped: 0 },
     { fixture: "wizard-submit", statusRows: 0, draft: null, stripped: 0 },
     { fixture: "wizard-submit-unanswered", statusRows: 0, draft: null, stripped: 3 },
+    // The dynamic-workflow view (discussion #301, ADR 0072). A full-screen TUI: no statusline, no
+    // input box and nothing to strip, because the view replaces the whole screen rather than sitting
+    // under it. All three zeros are the honest reading, not a gap.
+    { fixture: "workflow-view", statusRows: 0, draft: null, stripped: 0 },
     { fixture: "working", statusRows: 2, draft: null, stripped: 6 },
+    { fixture: "working-esc-to-interrupt", statusRows: 1, draft: null, stripped: 5 },
   ];
 
   it("pins every claude fixture on disk, so a new capture can't slip past this table", () => {

@@ -2,20 +2,31 @@ import { http, HttpResponse } from "msw";
 
 import { server } from "@/test/setup";
 import { fixtureCrewSnapshot, fixtureSnapshot } from "@/test/handlers";
-import { __resetConnectionHealth, isLostLatched, lastHealthyAt } from "./connection-health";
+import { __resetConnectionHealth, isLostLatched, lastHealthyAt, markWake } from "./connection-health";
 import { isConnecting } from "./connection";
+import { DEAD_DEBOUNCE_MS, isLive, resetLiveness } from "./liveness";
 import { resetBasePathForTests } from "./base-path";
+import { setDeviceToken } from "./pairing";
+import { burstPaneId, resetPollIntent, sendCount } from "./poll-intent";
 import {
   checkForUpdates,
   createTab,
+  fetchAuthedBytes,
+  fetchChat,
   fetchConfig,
+  fetchFileImage,
+  fetchHistory,
   fetchPane,
   fetchSnapshot,
+  filesImagePath,
   getNotifyPrefs,
+  POLL_TIMEOUT_MS,
+  readFailureKind,
   imageSrc,
   refreshNow,
   sendKeys,
   sendReply,
+  textBeforeLastSend,
   uploadFile,
   sttTimeoutFor,
   transcribeAudio,
@@ -64,6 +75,24 @@ describe("api client", () => {
     ]);
   });
 
+  it("adds expected_styled to a keys body only when supplied, beside expected_prompt", async () => {
+    const bodies: unknown[] = [];
+    server.use(
+      http.post(/\/api\/pane\/[^/]+\/keys$/, async ({ request }) => {
+        bodies.push(await request.json());
+        return HttpResponse.json({ ok: true });
+      }),
+    );
+
+    await sendKeys("w1:p1", ["Enter"], undefined, "Approve?", "styled lines");
+    await sendKeys("w1:p1", ["Enter"], undefined, "Approve?");
+
+    expect(bodies).toEqual([
+      { keys: ["Enter"], expected_prompt: "Approve?", expected_styled: "styled lines" },
+      { keys: ["Enter"], expected_prompt: "Approve?" },
+    ]);
+  });
+
   it("returns the structured prompt_changed result instead of throwing on 409", async () => {
     server.use(
       http.post(/\/api\/pane\/[^/]+\/keys$/, () =>
@@ -73,6 +102,31 @@ describe("api client", () => {
         ),
       ),
     );
+    await expect(sendKeys("w1:p1", ["1"], undefined, "Approve?")).resolves.toEqual({
+      ok: false,
+      error: "prompt changed",
+      code: "prompt_changed",
+    });
+  });
+
+  it("keeps the bridge's reason code on the 409 result, and drops one that is not a plain code", async () => {
+    const respond = (reason: string) =>
+      server.use(
+        http.post(/\/api\/pane\/[^/]+\/keys$/, () =>
+          HttpResponse.json(
+            { ok: false, error: "prompt changed", code: "prompt_changed", reason },
+            { status: 409 },
+          ),
+        ),
+      );
+    respond("style_misaligned");
+    await expect(sendKeys("w1:p1", ["1"], undefined, "Approve?")).resolves.toEqual({
+      ok: false,
+      error: "prompt changed",
+      code: "prompt_changed",
+      reason: "style_misaligned",
+    });
+    respond("Approve this command? 1. Yes");
     await expect(sendKeys("w1:p1", ["1"], undefined, "Approve?")).resolves.toEqual({
       ok: false,
       error: "prompt changed",
@@ -97,6 +151,67 @@ describe("api client", () => {
       ok: false,
       error: "prompt changed",
       code: "prompt_changed",
+    });
+  });
+
+  // The burst starts at this one chokepoint, so a dialog tap, the key bar and the composer's typed
+  // text never have to remember to start it (a card that waited for the idle poll kept a stale
+  // highlight for up to 6 s).
+  describe("the poll burst", () => {
+    beforeEach(() => resetPollIntent());
+    afterEach(() => resetPollIntent());
+
+    it("a successful sendKeys starts a burst for that pane, on issue and again on the ok answer", async () => {
+      expect(burstPaneId()).toBeNull();
+      const pending = sendKeys("w1:p1", ["Up"]);
+      // Issued, not yet answered: the operator is already watching.
+      expect(burstPaneId()).toBe("w1:p1");
+      expect(sendCount()).toBe(1);
+      await pending;
+      expect(burstPaneId()).toBe("w1:p1");
+      expect(sendCount()).toBe(2);
+    });
+
+    it("a successful sendReply starts a burst for that pane", async () => {
+      await sendReply("w1:p2", "hi");
+      expect(burstPaneId()).toBe("w1:p2");
+      expect(sendCount()).toBe(2);
+    });
+
+    // The rule: stamp on issue, and again only on an ok answer. A write that fails leaves the one
+    // issue stamp, which is harmless because a burst ends itself after its minimum polls and two quiet
+    // ones (poll-intent.ts); nothing here can keep the fast gap running.
+    it("a failed sendKeys leaves only the stamp from the issue, never a second one", async () => {
+      server.use(
+        http.post(/\/api\/pane\/[^/]+\/keys$/, () => new HttpResponse("herdr down", { status: 502 })),
+      );
+      await expect(sendKeys("w1:p1", ["Up"])).rejects.toThrow(/502/);
+      expect(sendCount()).toBe(1);
+      server.use(
+        http.post(/\/api\/pane\/[^/]+\/keys$/, () =>
+          HttpResponse.json(
+            { ok: false, error: "prompt changed", code: "prompt_changed" },
+            { status: 409 },
+          ),
+        ),
+      );
+      await sendKeys("w1:p1", ["Up"], undefined, "Approve?");
+      expect(sendCount()).toBe(2); // one more issue stamp, no ok stamp
+    });
+
+    it("remembers what the pane showed when the latest key was sent, not what it shows after", async () => {
+      let text = "before";
+      server.use(
+        http.get(/\/api\/pane\/[^/]+$/, () =>
+          HttpResponse.json({ paneId: "w9:p9", text, truncated: false, revision: 0 }, { headers: { etag: `"${text}"` } }),
+        ),
+      );
+      expect(textBeforeLastSend("w9:p9")).toBeUndefined();
+      await fetchPane("w9:p9");
+      await sendKeys("w9:p9", ["Up"]);
+      text = "after";
+      await fetchPane("w9:p9");
+      expect(textBeforeLastSend("w9:p9")).toBe("before");
     });
   });
 
@@ -152,13 +267,24 @@ describe("api client", () => {
 describe("api client — request timeouts", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it("applies GET_TIMEOUT_MS (10s) to snapshot and pane reads", async () => {
+  // M46 pass 3: the poll reads get 6s, one second above the bridge's own 5s mux timeout. A request
+  // into a VPN with the radio off hangs instead of failing, and the old 10s leash made the phone slow
+  // to admit the network was gone.
+  it("applies POLL_TIMEOUT_MS (6s) to the four poll reads: herd, pane, Chat window, config", async () => {
+    expect(POLL_TIMEOUT_MS).toBe(6_000);
     const spy = vi.spyOn(AbortSignal, "timeout");
     await fetchSnapshot();
     await fetchPane("w1:p1");
-    expect(spy).toHaveBeenCalledWith(10_000);
-    // Both are GET reads, so the only budget requested is the GET one.
-    expect(spy.mock.calls.every(([ms]) => ms === 10_000)).toBe(true);
+    await fetchChat("w1:p1");
+    await fetchConfig();
+    expect(spy.mock.calls.map(([ms]) => ms)).toEqual([6_000, 6_000, 6_000, 6_000]);
+  });
+
+  it("keeps the 10s leash on the long reads: a `?before=` page and the History page", async () => {
+    const spy = vi.spyOn(AbortSignal, "timeout");
+    await fetchChat("w1:p1", { limit: 40, before: { seq: 1, uuid: "a" } }).catch(() => {});
+    await fetchHistory("w1:p1", { limit: 5000 }).catch(() => {});
+    expect(spy.mock.calls.map(([ms]) => ms)).toEqual([10_000, 10_000]);
   });
 
   it("applies MUTATION_TIMEOUT_MS (20s) to mutations", async () => {
@@ -211,6 +337,132 @@ describe("api client — request timeouts", () => {
         signal!.addEventListener("abort", () => reject(signal!.reason));
       }),
     ).rejects.toMatchObject({ name: "TimeoutError" });
+  });
+});
+
+// ── WHAT A FAILED READ SAYS ABOUT THE CONNECTION (M46 pass 3) ───────────────
+describe("api client — failed reads and the outage latch", () => {
+  beforeEach(() => __resetConnectionHealth());
+  afterEach(() => vi.restoreAllMocks());
+
+  // jsdom's DOMException is not an Error subclass, a browser's is; the stand-ins below are what a
+  // browser hands the catch.
+  const named = (name: string) => Object.assign(new Error(name), { name });
+
+  it("classifies a thrown fetch and a deadline as network, a 5xx as server, the rest as other", () => {
+    expect(readFailureKind(new TypeError("Failed to fetch"))).toBe("network");
+    expect(readFailureKind(named("TimeoutError"))).toBe("network");
+    // A superseded poll is the app's own abort, not the bridge failing.
+    expect(readFailureKind(named("AbortError"))).toBe("other");
+    expect(readFailureKind(new Error("anything"))).toBe("other");
+  });
+
+  it("classifies the bridge's own answers: a 5xx is server, a 4xx refusal is other", async () => {
+    server.use(http.get("/api/snapshot", () => new HttpResponse("bad gateway", { status: 502 })));
+    const server502 = await fetchSnapshot().then(() => null, (e: Error) => e);
+    expect(readFailureKind(server502)).toBe("server");
+    server.use(http.get("/api/snapshot", () => new HttpResponse("nope", { status: 404 })));
+    const refused = await fetchSnapshot().then(() => null, (e: Error) => e);
+    expect(readFailureKind(refused)).toBe("other");
+  });
+
+  it("a herd read that gets no answer latches the outage on the first failure", async () => {
+    server.use(http.get("/api/snapshot", () => HttpResponse.error()));
+    await expect(fetchSnapshot()).rejects.toBeInstanceOf(TypeError);
+    expect(isLostLatched()).toBe(true);
+  });
+
+  it("a herd read that runs out of time latches the outage too", async () => {
+    vi.spyOn(AbortSignal, "timeout").mockImplementation(() => AbortSignal.abort(named("TimeoutError")));
+    await expect(fetchSnapshot()).rejects.toMatchObject({ name: "TimeoutError" });
+    expect(isLostLatched()).toBe(true);
+  });
+
+  // WebKit rejects ANY aborted fetch with a generic AbortError ("Fetch is aborted"), a deadline
+  // included. The signal still carries its own reason, and the client reads it back.
+  const webkitFetch = () =>
+    vi.spyOn(globalThis, "fetch").mockImplementation((_url, init) => {
+      const signal = init?.signal;
+      return new Promise((_resolve, reject) => {
+        const fail = () => reject(named("AbortError"));
+        if (signal?.aborted) fail();
+        else signal?.addEventListener("abort", fail);
+      });
+    });
+
+  it("a deadline WebKit reports as an AbortError is still a TimeoutError, and latches the outage", async () => {
+    webkitFetch();
+    vi.spyOn(AbortSignal, "timeout").mockImplementation(() => AbortSignal.abort(named("TimeoutError")));
+    await expect(fetchSnapshot()).rejects.toMatchObject({ name: "TimeoutError" });
+    expect(isLostLatched()).toBe(true);
+  });
+
+  it("the app's own abort stays an AbortError on that engine and latches nothing", async () => {
+    webkitFetch();
+    const controller = new AbortController();
+    controller.abort(named("AbortError"));
+    await expect(fetchSnapshot(undefined, controller.signal)).rejects.toMatchObject({ name: "AbortError" });
+    expect(isLostLatched()).toBe(false);
+  });
+
+  it("the two-failure rule: one 5xx latches nothing, the second in a row does, and a live answer clears it", async () => {
+    server.use(http.get("/api/snapshot", () => new HttpResponse("bad gateway", { status: 502 })));
+    await fetchSnapshot().catch(() => {});
+    expect(isLostLatched()).toBe(false);
+    await fetchSnapshot().catch(() => {});
+    expect(isLostLatched()).toBe(true);
+    server.use(http.get("/api/snapshot", () => HttpResponse.json(fixtureSnapshot)));
+    await fetchSnapshot();
+    expect(isLostLatched()).toBe(false);
+  });
+
+  it("a live answer between two 5xx resets the count", async () => {
+    let status = 502;
+    server.use(
+      http.get("/api/snapshot", () =>
+        status === 200 ? HttpResponse.json(fixtureSnapshot) : new HttpResponse("bad gateway", { status }),
+      ),
+    );
+    await fetchSnapshot().catch(() => {});
+    status = 200;
+    await fetchSnapshot();
+    status = 502;
+    await fetchSnapshot().catch(() => {});
+    expect(isLostLatched()).toBe(false);
+  });
+
+  it("a read the app aborted itself counts nothing", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    await fetchSnapshot(undefined, controller.signal).catch(() => {});
+    expect(isLostLatched()).toBe(false);
+  });
+
+  // 2026-10-08: the herd read stamps its own start, so the store can tell the wake's first read from
+  // an ordinary one (lib/connection-health.ts `noteReadStart`).
+  it("right after a wake, the first herd read with no answer is one strike, the second latches", async () => {
+    server.use(http.get("/api/snapshot", () => HttpResponse.error()));
+    markWake();
+    await expect(fetchSnapshot()).rejects.toBeInstanceOf(TypeError);
+    expect(isLostLatched()).toBe(false);
+    await expect(fetchSnapshot()).rejects.toBeInstanceOf(TypeError);
+    expect(isLostLatched()).toBe(true);
+  });
+
+  it("a herd read started while the page was hidden is one strike when it fails after the return", async () => {
+    server.use(http.get("/api/snapshot", () => HttpResponse.error()));
+    const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    const read = fetchSnapshot();
+    visibility.mockReturnValue("visible");
+    await expect(read).rejects.toBeInstanceOf(TypeError);
+    expect(isLostLatched()).toBe(false);
+  });
+
+  it("a refusal latches nothing: the bridge answered", async () => {
+    server.use(http.get("/api/snapshot", () => new HttpResponse("nope", { status: 404 })));
+    await fetchSnapshot().catch(() => {});
+    await fetchSnapshot().catch(() => {});
+    expect(isLostLatched()).toBe(false);
   });
 });
 
@@ -430,14 +682,28 @@ describe.each(["/collie/", "/tools/collie/"])("journal image URLs mounted at %s"
     resetBasePathForTests();
   });
 
-  it("puts direct image requests under the mount and preserves encoded pane scope", () => {
-    expect(imageSrc(`/api/blobs/${hash}`)).toBe(`${mount}api/blobs/${hash}`);
-    expect(imageSrc(`/api/blobs/${hash}`, { host: "badger" })).toBe(
+  it("mounts authenticated image requests once and preserves encoded pane scope", async () => {
+    setDeviceToken("image-test-token");
+    const requests: Request[] = [];
+    server.use(http.get(`${mount}api/blobs/${hash}`, ({ request }) => {
+      requests.push(request);
+      return new HttpResponse("picture", { headers: { "content-type": "image/png" } });
+    }));
+    for (const scope of [undefined, { host: "badger" }, { host: "badger & co", session: "demo/one" }]) {
+      const path = imageSrc(`/api/blobs/${hash}`, scope);
+      if (path === null) throw new Error("valid blob reference was refused");
+      const blob = await fetchAuthedBytes(path);
+      expect(await blob.text()).toBe("picture");
+    }
+    expect(requests.map((request) => {
+      const url = new URL(request.url);
+      expect(request.headers.get("authorization")).toBe("Bearer image-test-token");
+      return url.pathname + url.search;
+    })).toEqual([
+      `${mount}api/blobs/${hash}`,
       `${mount}api/blobs/${hash}?host=badger`,
-    );
-    expect(imageSrc(`/api/blobs/${hash}`, { host: "badger & co", session: "demo/one" })).toBe(
       `${mount}api/blobs/${hash}?host=badger%20%26%20co&session=demo%2Fone`,
-    );
+    ]);
   });
 
   it("leaves inline image bytes unchanged even with pane scope", () => {
@@ -636,5 +902,206 @@ describe("api client under a mount", () => {
     );
     await fetchSnapshot();
     expect(asked).toEqual(["/collie/api/snapshot"]);
+  });
+});
+
+// ── THE LIVE SESSION READ (ADR 0073) ────────────────────────────────────────────────────────────
+// The transport half of spec 09: which query it builds, and the three outcomes a caller must tell
+// apart. The merge itself is `lib/chat-window.test.ts` and has no fetch in it at all.
+describe("fetchChat", () => {
+  const liveBody = (paneId: string) => ({
+    paneId,
+    available: true,
+    page: "live",
+    gen: 7,
+    rev: 3,
+    head: 1_000_002,
+    oldest: 1_000_000,
+    hasOlder: false,
+    upserts: [],
+  });
+
+  function captureChat(paneId: string, etag?: string) {
+    const asked: string[] = [];
+    const seen: Headers[] = [];
+    server.use(
+      http.get(`/api/pane/${paneId}/chat`, ({ request }) => {
+        const url = new URL(request.url);
+        asked.push(url.search);
+        seen.push(request.headers);
+        return HttpResponse.json(liveBody(paneId), etag ? { headers: { etag } } : undefined);
+      }),
+    );
+    return { asked, seen };
+  }
+
+  it("asks with no query at all when the caller holds nothing", async () => {
+    const { asked } = captureChat("chat-plain");
+    await fetchChat("chat-plain");
+    expect(asked).toEqual([""]);
+  });
+
+  it("spells the two cursors the way the bridge parses them", async () => {
+    const after = captureChat("chat-after");
+    await fetchChat("chat-after", { limit: 40, after: { gen: 7, rev: 3 } });
+    expect(after.asked).toEqual(["?limit=40&after=7%3A3"]);
+
+    const before = captureChat("chat-before");
+    await fetchChat("chat-before", { before: { seq: 1_000_000, uuid: "u-1" } });
+    expect(before.asked).toEqual(["?before=1000000%3Au-1"]);
+  });
+
+  it("marks the pane seen — watching a session is looking at the pane", async () => {
+    const { seen } = captureChat("chat-seen");
+    await fetchChat("chat-seen");
+    expect(seen[0]?.get("x-collie-seen")).toBe("1");
+  });
+
+  it("returns the bridge's own body on a 200", async () => {
+    captureChat("chat-body");
+    await expect(fetchChat("chat-body")).resolves.toEqual({
+      outcome: "body",
+      body: liveBody("chat-body"),
+    });
+  });
+
+  it("returns `available: false` as a body — a pane with no session is not a failure", async () => {
+    server.use(
+      http.get("/api/pane/chat-none/chat", () =>
+        HttpResponse.json({ paneId: "chat-none", available: false, reason: "no-session" }),
+      ),
+    );
+    await expect(fetchChat("chat-none")).resolves.toEqual({
+      outcome: "body",
+      body: { paneId: "chat-none", available: false, reason: "no-session" },
+    });
+  });
+
+  it("validates the LIVE page with the ETag it was given, and reads the 304 as no change", async () => {
+    let asks = 0;
+    server.use(
+      http.get("/api/pane/chat-etag/chat", ({ request }) => {
+        asks += 1;
+        if (request.headers.get("if-none-match") === 'W/"c1"') {
+          return new HttpResponse(null, { status: 304, headers: { etag: 'W/"c1"' } });
+        }
+        return HttpResponse.json(liveBody("chat-etag"), { headers: { etag: 'W/"c1"' } });
+      }),
+    );
+    await expect(fetchChat("chat-etag")).resolves.toMatchObject({ outcome: "body" });
+    await expect(fetchChat("chat-etag", { after: { gen: 7, rev: 3 } })).resolves.toEqual({
+      outcome: "unchanged",
+    });
+    expect(asks).toBe(2);
+  });
+
+  it("never validates a read that holds nothing, so a remounted view gets the body and not a 304", async () => {
+    // The tag outlives the view. A first read was answered with this body, nothing moved, the view
+    // left for the Files screen and came back with an empty window: the same read with no cursor
+    // would hash to the same tag and be answered 304 into a window with nothing in it.
+    const { seen } = captureChat("chat-remount", 'W/"c3"');
+    await fetchChat("chat-remount");
+    await fetchChat("chat-remount");
+    expect(seen[1]?.get("if-none-match")).toBeNull();
+  });
+
+  it("does not validate a `?before=` page — a one-shot tap has no repeat fetch to save", async () => {
+    const { seen } = captureChat("chat-older", 'W/"c2"');
+    await fetchChat("chat-older");
+    await fetchChat("chat-older", { before: { seq: 1_000_000, uuid: "u-1" } });
+    expect(seen[0]?.get("if-none-match")).toBeNull();
+    expect(seen[1]?.get("if-none-match")).toBeNull();
+  });
+
+  it("reads a 404 as a machine a release behind, never as an empty session", async () => {
+    server.use(
+      http.get("/api/pane/chat-404/chat", () => new HttpResponse("not found", { status: 404 })),
+    );
+    await expect(fetchChat("chat-404")).resolves.toEqual({
+      outcome: "stale",
+    });
+  });
+
+  it("still throws on anything else — a stale member is not a refusal", async () => {
+    server.use(
+      http.get("/api/pane/chat-502/chat", () => new HttpResponse("herdr down", { status: 502 })),
+    );
+    await expect(fetchChat("chat-502")).rejects.toThrow(/502/);
+  });
+});
+
+// M46 hardening: a pane is live while its LAST read succeeded (lib/liveness.ts). fetchPane is the
+// one writer: a success marks it, a failure takes it down after the debounce, an abort does neither.
+describe("fetchPane drives the pane's liveness", () => {
+  beforeEach(() => resetLiveness());
+
+  it("a 200 marks the pane live, and a failed read takes it down after the debounce", async () => {
+    await fetchPane("w1:p1");
+    expect(isLive("w1:p1")).toBe(true);
+    server.use(http.get(/\/api\/pane\/[^/]+$/, () => new HttpResponse("boom", { status: 500 })));
+    await expect(fetchPane("w1:p1")).rejects.toThrow(/500/);
+    expect(isLive("w1:p1")).toBe(true); // debounced: one dropped poll does not flicker
+    await new Promise((resolve) => setTimeout(resolve, DEAD_DEBOUNCE_MS + 50));
+    expect(isLive("w1:p1")).toBe(false);
+  });
+
+  it("a network error counts as a failed read", async () => {
+    await fetchPane("w1:p1");
+    server.use(http.get(/\/api\/pane\/[^/]+$/, () => HttpResponse.error()));
+    await expect(fetchPane("w1:p1")).rejects.toThrow();
+    await new Promise((resolve) => setTimeout(resolve, DEAD_DEBOUNCE_MS + 50));
+    expect(isLive("w1:p1")).toBe(false);
+  });
+
+  it("a read the caller aborted says nothing about the bridge", async () => {
+    await fetchPane("w1:p1");
+    const controller = new AbortController();
+    controller.abort();
+    await expect(fetchPane("w1:p1", undefined, undefined, controller.signal)).rejects.toThrow();
+    await new Promise((resolve) => setTimeout(resolve, DEAD_DEBOUNCE_MS + 50));
+    expect(isLive("w1:p1")).toBe(true);
+  });
+});
+
+describe("the Files image read (ADR 0090)", () => {
+  it("addresses files/image beside the Files read, in both forms, with the scope", () => {
+    expect(filesImagePath({ kind: "pane", paneId: "w1:p1" }, "img/a b.png")).toBe("/api/pane/w1%3Ap1/files/image?path=img%2Fa+b.png");
+    expect(filesImagePath({ kind: "space", spaceId: "w2" }, "logo.png", { host: "laptop", session: "s1" })).toBe(
+      "/api/workspace/w2/files/image?path=logo.png&host=laptop&session=s1",
+    );
+  });
+
+  it("answers the bytes, and turns 413, 415 and any other failure into an outcome", async () => {
+    const got = await fetchFileImage({ kind: "pane", paneId: "w1:p1" }, "logo.png");
+    if (got.outcome !== "image") throw new Error(got.outcome);
+    expect(got.blob.type).toBe("image/png");
+    // The version the bridge sent with the bytes is the size and mtime, joined as the text read's are.
+    expect(got.version).toMatch(/^\d+:\d+$/);
+    server.use(http.get(/\/files\/image$/, () => new HttpResponse(new Uint8Array(3), { headers: { "content-type": "image/png" } })));
+    const bare = await fetchFileImage({ kind: "pane", paneId: "w1:p1" }, "logo.png");
+    // Not `expect.any(Blob)`: the fetch polyfill's Blob and jsdom's are different classes on some
+    // Node versions (CI's), so the class check fails there while the answer is right.
+    if (bare.outcome !== "image") throw new Error(bare.outcome);
+    expect(bare.blob.type).toBe("image/png");
+    expect(bare.blob.size).toBe(3);
+    expect(Object.keys(bare).toSorted()).toEqual(["blob", "outcome"]);
+    server.resetHandlers();
+    for (const [status, outcome] of [
+      [413, "too-large"],
+      [415, "not-image"],
+      [404, "failed"],
+      [500, "failed"],
+    ] as const) {
+      server.use(http.get(/\/files\/image$/, () => new HttpResponse("no", { status })));
+      expect(await fetchFileImage({ kind: "space", spaceId: "w1" }, "a.png")).toEqual({ outcome });
+    }
+    server.use(http.get(/\/files\/image$/, () => HttpResponse.error()));
+    expect(await fetchFileImage({ kind: "pane", paneId: "w1:p1" }, "a.png")).toEqual({ outcome: "failed" });
+  });
+
+  it("an abort rethrows, so a screen that moved on hears nothing", async () => {
+    const abort = new AbortController();
+    abort.abort();
+    await expect(fetchFileImage({ kind: "pane", paneId: "w1:p1" }, "logo.png", undefined, abort.signal)).rejects.toBeTruthy();
   });
 });

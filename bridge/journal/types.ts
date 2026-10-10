@@ -9,6 +9,9 @@
 // rather than a fork of the reader.
 
 import type { CacheProbe } from "../cache/engine.ts";
+import type { Cursor, ReadSince } from "./cursor.ts";
+import type { RowReducer } from "./reduce.ts";
+import type { ToolCall } from "./tool-call.ts";
 
 /**
  * How an agent named its session, straight off Herdr's `agent_session` record.
@@ -42,7 +45,29 @@ export type TranscriptPart =
       name: string;
       /** One-line gist of the call's input (the file read, the command run) — never the whole input. */
       summary: string;
-      result?: { text: string; truncated?: boolean; isError?: boolean; imageUrl?: string };
+      /**
+       * The harness's own id for this call, where it has one (Claude's `tool_use_id`, pi's call id).
+       * Kept so a view can match a call to a permission dialog about it, and so a result arriving
+       * later addresses one call rather than the newest one.
+       */
+      id?: string;
+      /**
+       * The same call, structured (see tool-call.ts). ADDITIVE and OPTIONAL: `name` and `summary`
+       * stay authoritative for anything that already reads them, and an adapter not yet taught to
+       * fill this leaves it absent.
+       */
+      call?: ToolCall;
+      result?: {
+        text: string;
+        truncated?: boolean;
+        isError?: boolean;
+        imageUrl?: string;
+        /**
+         * The person refused the call. NOT the same as `isError`: nothing went wrong, somebody said
+         * no, and a view that draws the two alike tells the reader a lie about their own session.
+         */
+        denied?: boolean;
+      };
     };
 
 /**
@@ -66,6 +91,24 @@ export interface TranscriptEntry {
   ts: string;
   role: "user" | "assistant" | "summary" | "note";
   parts: TranscriptPart[];
+  /**
+   * The agent rewound past this turn: it is not on the session's current branch. Views hide it.
+   *
+   * ABSENT when false, never `false`, which is this module's convention everywhere.
+   *
+   * One harness needs it. pi keeps every branch in ONE append-only log and every row names its
+   * parent, so a rewind is ANNOUNCED by the row that arrives rather than hidden in a flag that flips
+   * on disk. That is what makes it expressible here at all, and it is the distinction ADR 0073's
+   * addendum turns on: `Reduction` still has no `removed`, because nothing is removed. A turn that
+   * left the branch is a turn that CHANGED, reported through `changed` like any other in-place edit,
+   * and a rewind back onto it clears the mark the same way.
+   *
+   * It is a flag and not a filter on purpose. `?before=` pages come off the store and `pageEntries`
+   * resolves the client's cursor by finding its uuid, so a hidden turn's uuid must still resolve;
+   * dropping it in `parse` would break that and make the live path and the History path disagree
+   * about one session. Both paths carry the flag, and the VIEWS hide it.
+   */
+  abandoned?: true;
 }
 
 /** What the history endpoint answers with, minus the pane id the route adds. */
@@ -98,6 +141,26 @@ export interface TranscriptSource {
   stat(path: string): Promise<{ size: number; mtimeMs: number } | null>;
   /** Tail-read a log. `complete` is false when the byte cap clipped the head. */
   load(path: string): Promise<{ text: string; complete: boolean; size: number; mtimeMs: number }>;
+  /**
+   * What is new since `cursor` — the LIVE read, beside `load`'s whole-window one.
+   *
+   * The two are not alternatives. `load` answers "show me this conversation", pays a bounded
+   * whole-window read, and is what a History tap drives. `readSince` answers "what changed since I
+   * last looked", and a session that gained one row must cost one row: the reason this method
+   * exists at all is that `load` + `parse` on every mtime move costs a 32 MB read and a full
+   * re-parse per new turn.
+   *
+   * EACH SOURCE ANSWERS IN ITS OWN LANGUAGE. A file harness counts bytes; opencode counts
+   * `max(time_updated)`, because it mutates a row in place while a reply streams; hermes counts
+   * `max(id)`. The {@link Cursor} that carries the number is OPAQUE above this seam — nothing over
+   * it may read a byte offset, or know there is one — so a harness can change how it counts without
+   * a caller changing at all.
+   *
+   * `lines` are complete rows, never a fragment, and `reset` says the answer REPLACES what the
+   * caller holds rather than extending it (see {@link ReadSince}). `stat` stays the cheap
+   * pre-check: a tick where size and mtime did not move needs no call here at all.
+   */
+  readSince(key: string, cursor: Cursor): Promise<ReadSince>;
 }
 
 /**
@@ -114,6 +177,38 @@ export interface JournalAdapter {
   readonly source: TranscriptSource;
   parse(text: string): TranscriptEntry[];
   /**
+   * A fresh folder for ONE session, fed a row at a time (journal/reduce.ts).
+   *
+   * `parse` and this are the same grammar seen from two ends, not two implementations: every adapter
+   * builds a reducer and `parse` is `parseWith(reducer, text)` over it, so a row cannot be read one
+   * way by a History page and another way by a live window.
+   *
+   * REQUIRED, not optional, and that is the point. Spec 02 built the six reducers and deliberately
+   * left this seam out, because a seam with no caller is a guess at what a caller needs; the live
+   * window (journal/live.ts) is the caller, and it needs exactly this. Optional would have meant
+   * every call site writing `adapter.reducer?.()` with a fallback nothing can reach.
+   *
+   * A reducer is STATEFUL and single-use: it remembers the tool calls it is still waiting on. One per
+   * window, never shared, and never reused after a reset — a reset means the rows before it are not
+   * this window's any more, and a call waiting from before them will never be answered.
+   */
+  reducer(): RowReducer;
+  /**
+   * Find the session running in `cwd` without a reported ref — or null when none matches.
+   *
+   * OPTIONAL, and absent everywhere but the harness whose panes carry no `agentSession`:
+   * custom-source session reports never surface in the pane record, and Muse has no integration
+   * of its own (see journal/muse.ts). The history and chat routes call this when the
+   * pane names no session, and `toPaneWire` offers the History affordance on its presence, so a
+   * discoverable pane reads exactly like a reporting one.
+   *
+   * The returned ref is an ordinary id ref: it goes through the same `resolve`, containment and
+   * caching as a reported one, so discovery widens WHICH panes answer, never how an answer is
+   * read. It must be cheap enough to run per tap — bounded walk, early exit — because the chat
+   * route calls it on every poll that finds no ref.
+   */
+  discover?(cwd: string): Promise<AgentSessionRef | null>;
+  /**
    * The prompt-cache reading for one session, off the same log `parse` reads — or null when there is
    * nothing to read yet.
    *
@@ -127,4 +222,19 @@ export interface JournalAdapter {
    * `containedRealpath` like every other journal read.
    */
   cacheProbe?(ref: AgentSessionRef): Promise<CacheProbe | null>;
+  /**
+   * The keys that make this harness take its queued messages NOW instead of at its next turn
+   * boundary, in the neutral spelling (`bridge/mux/keys.ts`) — or absent when it has no such key.
+   *
+   * OPTIONAL, and absent everywhere but Claude Code: it prints "ctrl+enter to send now" under a
+   * queued message, and Ctrl+Enter hands the whole queue to the running turn at its next tool
+   * boundary. The list rides the live window's answer beside `queued` (journal/live.ts), so the phone
+   * learns it as DATA from the bridge and its code names no harness. It sits on this adapter because
+   * this is where a harness already declares what its queue is; nothing here sends a key.
+   *
+   * The harness names the key; the MULTIPLEXER decides whether it can be pressed. The chat route drops
+   * the list where the pane's multiplexer declares one of its keys unsupported (`keysDeliverable`,
+   * mux/capabilities.ts), because tmux and zellij deliver `ctrl+Enter` as a plain Enter.
+   */
+  readonly sendQueuedNow?: readonly string[];
 }
