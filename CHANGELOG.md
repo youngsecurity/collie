@@ -37,15 +37,17 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 ## [Unreleased]
 
+## [1.18.1+ys.1] - 2026-10-10
+
 ### Changed
 
-- **Collie adopts upstream 1.18.1 while preserving the fork's safeguards.** Include 1.17.1 through 1.18.1: mandatory read pairing, expiring credentials, secret masking, offline saved sessions, file links and image previews, branch displays, left-hand layout, and harness fixes. Previously unpaired browsers must pair from the host with `bin/collie pair` before reading or writing. Preserve registry locking, peer-aware authorization, scoped pins, terminal preferences, the Herdr 0.8.0 minimum, and manual source-only releases. Thanks @AltanS (youngsecurity/collie#77, youngsecurity/collie#78, youngsecurity/collie#79).
+- **Collie adopts upstream 1.18.1 while preserving the fork's safeguards.** Include 1.17.1 through 1.18.1: mandatory read pairing, expiring credentials, secret masking, offline saved sessions, file links and image previews, branch displays, left-hand layout, and harness fixes. Previously unpaired browsers must pair from the host with `bin/collie pair` before reading or writing. Preserve registry locking, peer-aware authorization, scoped pins, terminal preferences, the Herdr 0.8.0 minimum, and manual source-only releases. Thanks @AltanS (youngsecurity/collie#77, youngsecurity/collie#78, youngsecurity/collie#79). ([5039ba86](https://github.com/youngsecurity/collie/commit/5039ba86))
 
 ### Fixed
 
-- **Pairing failures and cache expiry keep their intended boundaries.** Treat malformed registry objects as outages rather than device revocations, deliver credential expiry with the pairing response before saving offline data, and clear authenticated journal image URLs and pending reads on wipe or credential change.
+- **Pairing failures and cache expiry keep their intended boundaries.** Treat malformed registry objects as outages rather than device revocations, deliver credential expiry with the pairing response before saving offline data, and clear authenticated journal image URLs and pending reads on wipe or credential change. ([5039ba86](https://github.com/youngsecurity/collie/commit/5039ba86))
 
-- **Other open tabs clear journal images when pairing changes.** Reuse browser storage events and the existing wipe broadcast to retire cached image URLs and mounted links, abort pending reads, and prevent late responses from restoring them. Shared credentials and preferences are left to the initiating tab.
+- **Other open tabs clear journal images when pairing changes.** Reuse browser storage events and the existing wipe broadcast to retire cached image URLs and mounted links, abort pending reads, and prevent late responses from restoring them. Shared credentials and preferences are left to the initiating tab. ([5039ba86](https://github.com/youngsecurity/collie/commit/5039ba86))
 
 ## [1.17.0+ys.1] - 2026-10-06
 
