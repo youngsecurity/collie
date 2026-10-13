@@ -573,9 +573,13 @@ allowlist still guards writes and Files reads; filesystem containment and maskin
 Crew and standby credentials remain independent. Off does not delete devices or credentials;
 `COLLIE_PAIRING=on` and a restart restore checks against the same registry, including expiry.
 
-Missing, stale and expired browser tokens do not block live use while off. The browser does not
-write new offline session records in this mode, even if it still holds a token. After re-enabling
-pairing, reload the page to resume offline caching. Existing records keep their expiry and wipe rules. See [Security](security.md#disable-browser-pairing-on-a-trusted-host).
+Missing, stale and expired browser tokens do not block live use while off.
+
+The browser does not write new offline session records in this mode, even if
+it still holds a token. After re-enabling pairing, reload the page to resume
+offline caching. Existing records keep their expiry and wipe rules.
+
+See [Security](security.md#disable-browser-pairing-on-a-trusted-host).
 
 ## Secret masking
 

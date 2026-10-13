@@ -84,6 +84,53 @@ describe("the on-device store", () => {
     clock = T0 + 1001;
     expect(await getRecord("snapshot", "paired")).toBeNull();
   });
+  describe.each(["get", "list"] as const)("opt-out during a %s read", (method) => {
+    const read = () => method === "get" ? getRecord("snapshot", "lead") : listRecords("snapshot");
+    const empty = method === "get" ? null : [];
+
+    it.each(["indexeddb", "memory"] as const)("refuses a queued %s read without deleting its record", async (mode) => {
+      if (mode === "memory") uninstallFakeIndexedDB();
+      expect(await putRecord("snapshot", "lead", "paired record")).toBe(true);
+      expect(storeStatus().mode).toBe(mode);
+      const pending = read();
+      observePairingPolicy("off");
+      observePairingPolicy("on");
+      // Re-enabling does not undo this page's live-only policy.
+      expect(await pending).toEqual(empty);
+      expect(await read()).toEqual(empty);
+      __resetPairing();
+      // Reset only page policy so the memory fallback, too, proves its record was retained.
+      expect((await getRecord("snapshot", "lead"))?.value).toBe("paired record");
+    });
+
+    it("discards an in-flight IndexedDB result if opt-out arrives before completion", async () => {
+      expect(await putRecord("snapshot", "lead", "paired record")).toBe(true);
+      const db = fake.connections[0]!;
+      const transaction = db.transaction.bind(db);
+      let completed = false;
+      const spy = vi.spyOn(db, "transaction").mockImplementation((names, mode) => {
+        const tx = transaction(names, mode);
+        if (mode === "readonly") {
+          tx.addEventListener("complete", () => {
+            completed = true;
+            observePairingPolicy("off");
+          }, { once: true });
+        }
+        return tx;
+      });
+      try {
+        const result = await read();
+        expect(completed).toBe(true);
+        expect(result).toEqual(empty);
+      } finally {
+        spy.mockRestore();
+      }
+      newPage();
+      __resetPairing();
+      expect((await getRecord("snapshot", "lead"))?.value).toBe("paired record");
+    });
+  });
+
   it("opens on IndexedDB and gives a record back with its fetch time", async () => {
     expect(await openStore()).toBe("indexeddb");
     expect(await putRecord("snapshot", "lead", { agents: [1, 2] }, { fetchedAt: T0 - 5000 })).toBe(true);
