@@ -41,7 +41,7 @@ until explicitly configured.
 - **Output search** and full conversation history beyond standard terminal scrollback
 - **Files screen**: the files of an agent's workspace folder with the changes marked, and a Changes segment with what it changed in its git repos, as diffs with syntax colour, and its last commit, read-only
 - **File attachments**: images from the camera roll, and markdown, text and code files
-- **Device pairing** always on: a device needs its token for every request, reads and writes, and an unpaired browser sees only the pair screen
+- **Device pairing** on by default: protected reads and writes need a token. The explicit host opt-out `COLLIE_PAIRING=off` permits tokenless access through the remaining gates, including remote shell access. See [pairing policy](./docs/security.md#pair-a-device--the-write-credential).
 - **Crews**: several machines' Collies behind one URL, with operator-triggered failover
 - **Twelve UI languages** and a per-device typeface setting
 - **Herdr session switching** managed from the web interface
@@ -151,7 +151,7 @@ and that is the only way to install it on a phone.
 | --- | --- |
 | [**Install**](./docs/install.md) | The front door you need, then the install for your system: Linux, Arch and Omarchy, Nix, macOS, Windows, or as a Herdr plugin. Covers first run, setup on an iPhone or Android phone, updates, and uninstallation |
 | [**Windows**](./docs/windows.md) | Windows 11 with Herdr: what is supported, installing with `install.ps1`, the unsigned binary, updating, long paths, and what is not tested |
-| [**Security**](./docs/security.md) | What a Collie exposes, the defenses, and pairing a device, the credential for every request |
+| [**Security**](./docs/security.md) | What a Collie exposes, the defenses, and default-on device pairing with an explicit host opt-out |
 | [**Configure**](./docs/configure.md) | The `.env`, your own slash commands, keys, quick replies and typefaces; appearance, Zen mode, language |
 | [**Changes**](./docs/changes.md) | The Files screen: a workspace's folder with its changes marked, the changed files and their diffs, and the last commit, from the pane or the dashboard's Files tab. Read-only git, nested repos, and the two settings that decide how far it looks |
 | [**Deployment**](./docs/deployment.md) | Front doors other than the default: an identity-aware proxy, a reverse proxy with no Tailscale, an off-host ingress, several Collies on one host (one per user, or several instances for one user), and a crew's standby door |

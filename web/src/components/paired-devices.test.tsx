@@ -8,7 +8,7 @@ import { PairedDevices } from "@/components/paired-devices";
 import { __resetPairing, getDeviceToken, getPairingExpiry, markExpired, rememberPairingExpiry, setDeviceToken, subscribePairing, PAIRING_EXPIRES_KEY, TOKEN_STORAGE_KEY } from "@/lib/pairing";
 import { __resetStore, getRecord, putRecord } from "@/lib/store";
 import { FakeIDBFactory, uninstallFakeIndexedDB } from "@/test/fake-indexeddb";
-import type { DevicesData } from "@/lib/loaders";
+import { devicesLoader, type DevicesData } from "@/lib/loaders";
 import { loadDraft, saveDraft } from "@/lib/drafts";
 import { lastWipeReason, wipeDevice } from "@/lib/wipe";
 
@@ -43,7 +43,7 @@ vi.mock("react-router", () => ({
   ],
 }));
 
-const UNPAIRED: DevicesData = { enforced: false, current: null, devices: [], error: false };
+const UNPAIRED: DevicesData = { enforced: true, current: null, devices: [], error: false };
 const PAIRED: DevicesData = {
   enforced: true,
   current: "my phone",
@@ -56,6 +56,55 @@ beforeEach(() => {
   setSearchParams.mockClear();
   hash.current = "";
   search.current = "";
+});
+
+describe("optional pairing UI", () => {
+  test("off warns about exposure instead of requiring pairing, including with an expired token", () => {
+    setDeviceToken("expired", 1);
+    markExpired();
+    const { container } = render(<PairedDevices data={{ ...UNPAIRED, enforced: false }} />);
+    expect(container.textContent).toContain("pairing is disabled");
+    expect(container.textContent).toContain("read transcripts and control terminals without a token");
+    expect(container.textContent).toContain("offline session caching is off");
+    expect(container.textContent).not.toContain("Every read and every write needs a paired device");
+    expect(container.querySelector("form")).toBeNull();
+    expect(getDeviceToken()).toBe("expired");
+  });
+
+  test("an unreadable registry does not turn a known opt-out into mandatory pairing", async () => {
+    server.use(http.get("/api/devices", () => new HttpResponse("pairing unavailable", {
+      status: 503, headers: { "X-Collie-Pairing": "off" },
+    })));
+    const data = await devicesLoader();
+    expect(data.error).toBe(true);
+    expect(data.enforced).toBe(false);
+    const { container } = render(<PairedDevices data={data} />);
+    expect(container.textContent).toContain("pairing is disabled");
+    expect(container.querySelector("form")).toBeNull();
+  });
+
+  test("off still permits optional enrolment from a host-issued QR", () => {
+    search.current = "?pair=abcd2345";
+    render(<PairedDevices data={{ ...UNPAIRED, enforced: false }} />);
+    expect(screen.getByLabelText(/pairing code/i)).toHaveValue("ABCD2345");
+  });
+
+  test("revocation while off does not promise to block tokenless access", async () => {
+    const user = userEvent.setup();
+    const { container } = render(<PairedDevices data={{
+      ...PAIRED, enforced: false, current: null,
+      devices: PAIRED.devices.map((device) => ({ ...device, current: false })),
+    }} />);
+    await user.click(screen.getByRole("button", { name: "Revoke my phone" }));
+    expect(container.textContent).toContain("Access remains available while pairing is disabled");
+    expect(container.textContent).not.toContain("It loses access until it is paired again");
+  });
+
+  test("off still lists retained devices", () => {
+    const { container } = render(<PairedDevices data={{ ...PAIRED, enforced: false }} />);
+    expect(container.textContent).toContain("my phone");
+    expect(container.textContent).toContain("pairing is disabled");
+  });
 });
 
 describe("PairedDevices — pairing", () => {

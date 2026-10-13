@@ -730,12 +730,16 @@ a web form, for the reason pairing is.
 
 **Two device gates guard writes, independently, and compose by AND.** `COLLIE_DEVICE_HEADER` trusts
 a name a proxy injects; **pairing** (`bridge/pairing.ts`, `collie pair` / `collie devices`) requires a
-bearer credential the device holds, and is always on, reads included
-([ADR 0086](./.adr/0086-reads-need-the-pairing-token.md)). Every `/api/*` route except `/api/health`
-and `/api/pair` needs a valid token, and an empty registry answers `403 device not paired`. The
-header gate still covers writes only, with one exception: the Files view asks for both as a
-`device-read` ([ADR 0083](./.adr/0083-the-files-view-reads-the-changes-root.md)). Neither applies to `/crew/v1/*`, which has its own two factors. The reasoning sits in
-`bridge/pairing.ts`'s header; don't collapse the two gates into one.
+bearer credential the device holds, and defaults on for reads and writes, including an empty
+registry ([ADR 0086](./.adr/0086-reads-need-the-pairing-token.md)). The explicit host opt-out
+`COLLIE_PAIRING=off` or `[access] pairing=false` skips only browser token enforcement
+([ADR 0091](./.adr/0091-browser-pairing-has-an-explicit-host-opt-out.md)). Invalid settings must not
+silently disable it. Preserve the registry, credentials, expiry and wipe rules, and never persist
+anonymous opt-out session content. Host, Origin, TCP-peer, trusted-user, Cloudflare Access,
+containment and masking remain independent. The header gate still covers writes and the Files
+view's `device-read` ([ADR 0083](./.adr/0083-the-files-view-reads-the-changes-root.md)). Neither
+browser gate applies to `/crew/v1/*`; crew and standby keep their own credentials. Warn clearly
+when opting out, and report the effective browser policy rather than the registry's size.
 
 **Collie manages exactly one front door: `tailscale serve`** — the CLI (`cli/serve.ts`) publishes it,
 records the mapping in `tailscale-managed-handler`, and only ever tears down a mapping matching that

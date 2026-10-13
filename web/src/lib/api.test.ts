@@ -6,8 +6,12 @@ import { __resetConnectionHealth, isLostLatched, lastHealthyAt, markWake } from 
 import { isConnecting } from "./connection";
 import { DEAD_DEBOUNCE_MS, isLive, resetLiveness } from "./liveness";
 import { resetBasePathForTests } from "./base-path";
-import { setDeviceToken } from "./pairing";
+import {
+  getDeviceToken, getPairingExpiry, isBrowserPairingEnforced, isNotPaired, isPairingExpired,
+  markExpired, sessionCacheAllowed, setDeviceToken,
+} from "./pairing";
 import { burstPaneId, resetPollIntent, sendCount } from "./poll-intent";
+import { __refusalSettled, WIPE_LAST_KEY } from "./wipe";
 import {
   checkForUpdates,
   createTab,
@@ -38,6 +42,159 @@ import {
 // The default happy-path handlers live in test/handlers.ts; here we focus on the write paths and the
 // ApiError-on-non-2xx contract that every mutation depends on (and uploadFile's separate code path).
 describe("api client", () => {
+  it("a live opt-out read clears stale expiry UI without erasing credentials or enabling offline caching", async () => {
+    setDeviceToken("expired-token", 1);
+    markExpired();
+    server.use(http.get("/api/snapshot", () => HttpResponse.json(fixtureSnapshot, {
+      headers: { "X-Collie-Pairing": "off" },
+    })));
+    await fetchSnapshot();
+    expect(isNotPaired()).toBe(false);
+    expect(getDeviceToken()).toBe("expired-token");
+    expect(getPairingExpiry()).toBe(1);
+    expect(sessionCacheAllowed()).toBe(false);
+    await expect(sendReply("w1:p1", "hello")).resolves.toEqual({ ok: true });
+    // A missing policy header never undoes the known opt-out.
+    expect(sessionCacheAllowed()).toBe(false);
+    server.use(http.get(/\/api\/(snapshot|devices)$/, () => new HttpResponse("device expired", {
+      status: 403, headers: { "X-Collie-Pairing": "on" },
+    })));
+    await expect(fetchSnapshot()).rejects.toThrow();
+    await __refusalSettled();
+    expect(isBrowserPairingEnforced()).toBe(true);
+    expect(isNotPaired()).toBe(true);
+    expect(isPairingExpired()).toBe(true);
+    expect(getDeviceToken()).toBeNull();
+  });
+
+  describe("pairing policy from protected responses", () => {
+    const transports = [
+      { name: "JSON read", request: () => fetchSnapshot() },
+      { name: "mutation", request: () => sendReply("w1:p1", "hello") },
+      { name: "bytes", request: () => fetchAuthedBytes("/api/policy-test.png") },
+    ];
+    const credentials = [
+      { name: "missing", token: null, expiresAt: undefined, body: "device not paired", wipe: null },
+      { name: "stale", token: "stale-token", expiresAt: undefined, body: "device not paired", wipe: "revoked" },
+      { name: "expired", token: "expired-token", expiresAt: 1, body: "device expired", wipe: "expired" },
+    ];
+
+    for (const transport of transports) {
+      for (const credential of credentials) {
+        it(`${transport.name}: a 403/on restores enforcement with a ${credential.name} credential`, async () => {
+          if (credential.token) setDeviceToken(credential.token, credential.expiresAt);
+          server.use(http.get("/api/snapshot", () => HttpResponse.json(fixtureSnapshot, {
+            headers: { "X-Collie-Pairing": "off" },
+          })));
+          await fetchSnapshot();
+          expect(isBrowserPairingEnforced()).toBe(false);
+          expect(getDeviceToken()).toBe(credential.token);
+          expect(isNotPaired()).toBe(false);
+
+          let confirmations = 0;
+          server.use(http.all("/api/*", ({ request }) => {
+            expect(request.headers.get("Authorization")).toBe(credential.token ? `Bearer ${credential.token}` : null);
+            if (new URL(request.url).pathname === "/api/devices") confirmations++;
+            return new HttpResponse(credential.body, { status: 403, headers: { "X-Collie-Pairing": "on" } });
+          }));
+          await expect(transport.request()).rejects.toThrow(`403 ${credential.body}`);
+          expect(isBrowserPairingEnforced()).toBe(true);
+          await __refusalSettled();
+          expect(isNotPaired()).toBe(true);
+          expect(isPairingExpired()).toBe(credential.name === "expired");
+          expect(confirmations).toBe(credential.token ? 1 : 0);
+          expect(getDeviceToken()).toBeNull();
+          expect(getPairingExpiry()).toBeNull();
+          expect(localStorage.getItem(WIPE_LAST_KEY)).toBe(credential.wipe);
+          expect(sessionCacheAllowed()).toBe(false);
+        });
+      }
+    }
+
+    it("restores enforcement without wiping an unconfirmed expired credential", async () => {
+      setDeviceToken("expired-token", 1);
+      server.use(http.get("/api/snapshot", () => HttpResponse.json(fixtureSnapshot, {
+        headers: { "X-Collie-Pairing": "off" },
+      })));
+      await fetchSnapshot();
+      server.use(
+        http.get("/api/snapshot", () => new HttpResponse("device expired", {
+          status: 403, headers: { "X-Collie-Pairing": "on" },
+        })),
+        http.get("/api/devices", () => HttpResponse.error()),
+      );
+      await expect(fetchSnapshot()).rejects.toThrow("403 device expired");
+      await __refusalSettled();
+      expect(isBrowserPairingEnforced()).toBe(true);
+      expect(isNotPaired()).toBe(true);
+      expect(isPairingExpired()).toBe(true);
+      expect(getDeviceToken()).toBe("expired-token");
+      expect(getPairingExpiry()).toBe(1);
+      expect(localStorage.getItem(WIPE_LAST_KEY)).toBeNull();
+    });
+
+    for (const policy of ["off", "on"]) {
+      it(`a network failure preserves the observed ${policy} policy`, async () => {
+        server.use(http.get("/api/snapshot", () => HttpResponse.json(fixtureSnapshot, {
+          headers: { "X-Collie-Pairing": policy },
+        })));
+        await fetchSnapshot();
+        server.use(http.get("/api/snapshot", () => HttpResponse.error()));
+        await expect(fetchSnapshot()).rejects.toThrow();
+        expect(isBrowserPairingEnforced()).toBe(policy === "on");
+        expect(isNotPaired()).toBe(false);
+      });
+
+      for (const header of [null, "invalid"]) {
+        for (const status of [200, 304, 403]) {
+          it(`${status} with a ${header ?? "missing"} header preserves the observed ${policy} policy`, async () => {
+            server.use(http.get("/api/snapshot", () => HttpResponse.json(fixtureSnapshot, {
+              headers: { "X-Collie-Pairing": policy },
+            })));
+            await fetchSnapshot();
+            const headers = new Headers();
+            if (header !== null) headers.set("X-Collie-Pairing", header);
+            server.use(http.get("/api/pane/:id/chat", () => new HttpResponse(
+              status === 304 ? null : status === 403 ? "device not paired" : "{}",
+              { status, headers },
+            )));
+            if (status === 403) await expect(fetchChat("w1:p1")).rejects.toThrow("403 device not paired");
+            else await fetchChat("w1:p1");
+            expect(isBrowserPairingEnforced()).toBe(policy === "on");
+            expect(isNotPaired()).toBe(status === 403);
+          });
+        }
+      }
+    }
+
+    for (const status of [200, 304]) {
+      it(`${status}/on still restores enforcement without discarding a retained credential`, async () => {
+        setDeviceToken("valid-token");
+        server.use(http.get("/api/snapshot", () => HttpResponse.json(fixtureSnapshot, {
+          headers: { "X-Collie-Pairing": "off" },
+        })));
+        await fetchSnapshot();
+        server.use(http.get("/api/pane/:id/chat", () => new HttpResponse(status === 304 ? null : "{}", {
+          status, headers: { "X-Collie-Pairing": "on" },
+        })));
+        await fetchChat("w1:p1");
+        expect(isBrowserPairingEnforced()).toBe(true);
+        expect(isNotPaired()).toBe(false);
+        expect(getDeviceToken()).toBe("valid-token");
+        expect(sessionCacheAllowed()).toBe(false);
+      });
+    }
+  });
+
+  it("an anonymous opt-out read needs no Authorization and remains live-only", async () => {
+    server.use(http.get("/api/snapshot", ({ request }) => {
+      expect(request.headers.has("Authorization")).toBe(false);
+      return HttpResponse.json(fixtureSnapshot, { headers: { "X-Collie-Pairing": "off" } });
+    }));
+    await fetchSnapshot();
+    expect(sessionCacheAllowed()).toBe(false);
+    expect(isNotPaired()).toBe(false);
+  });
   it("sendReply returns the bridge's ok result on success", async () => {
     await expect(sendReply("w1:p1", "hi")).resolves.toEqual({ ok: true });
   });

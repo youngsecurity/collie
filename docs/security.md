@@ -3,8 +3,9 @@
 **Collie provides remote shell access to your machine by design.** A single Collie API call sends
 arbitrary keystrokes directly to a live terminal pane. Any device you paired can read every pane
 (source code, secrets, environment variables, agent output) and execute commands as your user.
-Since 1.18.0 every API request needs a paired device's token, reads included, so the door is
-pairing itself: anyone who can reach the URL and holds a valid pairing code gets the same access.
+By default every protected API request needs a paired device's token, reads included. Anyone who
+passes the front door and holds a valid pairing code can claim the same access. This fork permits
+an explicit host-side opt-out, described below; it never opts out because the registry is empty.
 Before 1.18.0, anyone who could reach the URL could read every pane.
 
 There is no sandbox and no command allow-list, as filtering commands would defeat the purpose of
@@ -14,16 +15,16 @@ remove it, so keep the URL on a private network such as a tailnet, never on the 
 
 ## Pair a device — the write credential
 
-Since 1.18.0 this is the credential for every request, reads included, not for writes alone.
+By default this is the credential for every protected request, reads included, not for writes alone.
 
 ```bash
 # on the host — prints an 8-character code and a QR code, good for 10 minutes
 bin/collie pair
 ```
 
-Pairing is always on, and reads need the pairing token as well as writes. Until a device is
-paired, Collie answers every phone and browser with `403 device not paired`. Run `collie pair`
-first, on the host, before you open Collie on the phone.
+Pairing is on by default, and reads need the pairing token as well as writes. Unless the host
+explicitly disables browser pairing, an unpaired phone gets `403 device not paired`. Run
+`collie pair` first, on the host, before opening Collie on the phone.
 
 Open Collie on the phone, go to **Settings** → **Paired devices**, and enter the code with a label
 for the device, or scan the QR code printed by the command to open directly to that screen with
@@ -41,7 +42,7 @@ The two device gates answer different questions, and you can run either, both, o
 Pairing requires no extra infrastructure. It fits a direct `tailscale serve` setup where no proxy
 exists to inject headers.
 
-Pairing gates every `/api` route, reads included. Only two routes stay open: `/api/health`, which
+When enabled, pairing gates every `/api` route, reads included. Only two routes stay open: `/api/health`, which
 a monitor or a load balancer asks, and `/api/pair`, which a device needs before it holds a token.
 The device header gates writes and one read, the [Files view](changes.md#files), which can show
 every file under a workspace's folder
@@ -52,7 +53,7 @@ bin/collie devices list             # what holds a credential, and when each was
 bin/collie devices revoke old-phone # effective immediately, no restart
 ```
 
-A fresh install has no paired device, so Collie answers no phone until you run `collie pair`.
+With the default policy, a fresh install has no paired device and answers no phone until you run `collie pair`.
 Revoking the final device does not open Collie again: every device then gets
 `device not paired`. To recover, run `collie pair` on the host and pair the phone again.
 `collie doctor` warns while no device is paired.
@@ -66,6 +67,45 @@ that, the bridge refuses more than ten pairing attempts per source address per m
 `Retry-After: 60`. Behind a front door on the same machine, the source address is the last
 `X-Forwarded-For` entry, the one the front door adds. From any other peer, that header is ignored. The
 counters live in memory and reset when the bridge restarts.
+
+### Disable browser pairing on a trusted host
+
+```bash
+# In the host's .env; restart the bridge to apply
+COLLIE_PAIRING=off
+```
+
+Alternatively set `[access] pairing = false` in `config.toml`. Environment takes precedence.
+Only `off`, `0`, `false` and `no` disable it, ignoring case and surrounding whitespace. Empty,
+missing and invalid values default on; invalid values warn. TOML accepts booleans only.
+[Configuration](configure.md#optional-browser-pairing) describes precedence and restart commands.
+
+> **Warning.** This removes the browser credential boundary for both reading transcripts and
+> remote shell access. Anyone who passes the remaining gates, including other local users able
+> to reach the port, can use Collie without a token. Device revocation cannot block tokenless access.
+
+This is a host decision, not a UI switch. Host, Origin, actual TCP-peer, trusted-user and Cloudflare
+Access checks remain intact. The device-header allowlist still gates writes and Files reads.
+Filesystem containment and masking still apply. Crew mutual TLS and secrets, and the standby
+door's pairing credentials, do not become optional.
+
+Off ignores missing, stale and expired browser tokens for live admission and audit attribution.
+Attribution uses only the configured device header, or no device label. The registry remains intact,
+including hashes and expiries; the device list still shows which token belongs to a retained device.
+Set `COLLIE_PAIRING=on` and restart to require those same credentials again. A registry failure
+still prevents listing or managing devices, but does not block normal tokenless live use.
+
+The API reports `enforced: false` in device-list and revoke responses and `X-Collie-Pairing: off`
+on API responses. Settings warns instead of requiring pairing; scanning a host-issued QR code
+still permits optional enrolment. Startup, status and doctor warn about the exposure.
+
+Successful opt-out responses disable new offline session caching, even for a browser holding a
+stale token. That page stays live-only until reload, even after pairing is enabled again, so late
+saves cannot persist anonymous content. Existing records retain their lifetime caps; a confirmed credential refusal after
+re-enabling pairing still triggers the normal wipe. Turning pairing off alone erases neither the
+registry nor browser credentials and does not extend any expiry. Draft and preference behavior
+is unchanged. This changes only ADR 0086's mandatory browser-policy scope
+([ADR 0091](../.adr/0091-browser-pairing-has-an-explicit-host-opt-out.md)).
 
 ### The CLI's own reads
 
@@ -90,8 +130,8 @@ bin/collie devices clear-expiry pixel     # no expiry again
 ```
 
 The lifetime counts from the moment the phone claims the code. Without `--expires`, a token never
-expires, exactly as before, and no existing token changes. After the expiry, the bridge refuses the
-token with `device expired` instead of `device not paired`. The phone then
+expires, exactly as before, and no existing token changes. With pairing enabled, after the expiry
+the bridge refuses the token with `device expired` instead of `device not paired`. The phone then
 [clears what the pairing left](#what-unpair-clears-on-the-phone) and shows **Pair again** in
 Settings, so run `collie pair` for a new code. `collie devices list` and the Settings screen show
 each device's expiry. An expired device stays in the list until you revoke it or give it a new
@@ -117,8 +157,8 @@ The phone's own wipe is the only one. The bridge sends no `Clear-Site-Data` head
 header would also clear your settings and the offline app, and on a shared host name it would
 reach the other apps there too.
 
-If the bridge cannot read its list of paired devices, for example a half-written file, it answers
-`503 pairing unavailable` instead. The phone then keeps its token and everything it stored, and
+With pairing enabled, if the bridge cannot read its list of paired devices, for example a
+half-written file, it answers `503 pairing unavailable` instead. The phone then keeps its token and everything it stored, and
 tries again.
 
 ### What the phone keeps
@@ -165,9 +205,10 @@ Key security boundaries and risks:
   ([ADR 0007](../.adr/0007-the-idle-lock-is-a-pause-not-a-gate.md)).
 - **All local system users can reach the port.** Standard terminal multiplexer sockets (`tmux`,
   `zellij`, `herdr`) use filesystem permissions to restrict access to other local users. Collie
-  listens on a local TCP port, which exposes it to every local UID. Reads need the pairing token,
-  so another local user who holds no token reads nothing but `/api/health`. The token is the
-  boundary: a local user who can read your browser profile can read the token too
+  listens on a local TCP port, which exposes it to every local UID. With the default pairing policy,
+  another local user who holds no token reads nothing but `/api/health`. With pairing off, the
+  remaining gates alone decide access, so local users may read transcripts and control terminals.
+  Even with pairing enabled, a local user who can read your browser profile can read the token too
   ([ARCHITECTURE.md §6](../ARCHITECTURE.md#6-security-model)).
 - **The Files view reads files off your disk.** It shows any file under a workspace's folder, except
   a `.git` folder, Collie's own state and config folders, and files named like a Collie state
@@ -220,6 +261,7 @@ Key security boundaries and risks:
 | `COLLIE_ACCESS_TEAM` + `COLLIE_ACCESS_AUD` | Cloudflare Tunnel only. Rejects every remote request unless its `Cf-Access-Jwt-Assertion` verifies for this Access app. Only a local process on loopback, `/api/health` and the crew links skip it, and pairing still applies. Other front doors, such as `tailscale serve`, are refused too ([Cloudflare Tunnel](deployment.md#cloudflare-tunnel)). |
 | `COLLIE_DEVICE_HEADER` | Name of the header your proxy injects with a device id. |
 | `COLLIE_DEVICE_ALLOWLIST` | Comma-separated device ids allowed to write; every other device stays read-only ([`docs/deployment.md`](deployment.md)). |
+| `COLLIE_PAIRING=off` | Disables browser token enforcement for reads and writes, without deleting credentials. On by default, regardless of registry contents. Other gates remain intact. |
 | `COLLIE_REDACT=off` | Turns off the secret mask on pane text, diffs and file text ([below](#what-leaves-the-machine-is-masked)). On by default. |
 
 > 🚫 **Never use `tailscale funnel` with Collie.** Funnel routes traffic to the public internet,

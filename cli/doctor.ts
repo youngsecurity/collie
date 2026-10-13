@@ -872,6 +872,13 @@ function pairedDevices(deps: DoctorDeps, mode: string): Finding {
   if (mode === "peer") {
     return skipped("pairing", "a peer is read through its lead — pair devices on the lead", "`collie pair` on the lead");
   }
+  if (!envBool("COLLIE_PAIRING", true, deps.ctx.env)) {
+    return warn(
+      "pairing",
+      "browser pairing is OFF in host config (restart to apply): callers passing the remaining gates can read transcripts and use remote shell access without a token; devices are retained",
+      "set COLLIE_PAIRING=on (or [access] pairing=true) and restart to require pairing again",
+    );
+  }
   // A file that is THERE and not a registry is its own finding, before the count: `pairedRegistryOf`
   // reads it as empty, while the bridge answers every phone `503 pairing unavailable` until it can
   // read it (bridge/pairing.ts, RegistryUnreadableError). Saying "no device paired" would send the
@@ -945,20 +952,19 @@ function acl(deps: DoctorDeps): Finding {
  */
 const tailscaleServeByHand = (port: number): string => `\`tailscale serve --bg --set-path=/ ${port}\``;
 
-/**
- * Pairing is always on (ADR 0086): a published Collie answers no phone until one is paired. The
- * remedies that publish say so, because a door that opens onto a pair screen looks broken otherwise.
- */
-const WINDOWS_PAIR_NOW = "run `collie pair` to pair a device";
+/** Publication advice follows host policy; opting out still exposes remote shell access. */
+const windowsPairingHint = (pairing: boolean): string => pairing
+  ? "run `collie pair` to pair a device after you publish: until then Collie answers no device"
+  : "browser pairing is OFF: callers passing the remaining gates get remote shell access without a token";
 
-const windowsPublishRemedy = (port: number): string =>
-  `run ${tailscaleServeByHand(port)} in PowerShell, then ${WINDOWS_PAIR_NOW}: until then Collie` +
-  " answers no device (docs/windows.md); or set COLLIE_SKIP_SERVE=1 if you own the ingress";
+const windowsPublishRemedy = (port: number, pairing: boolean): string =>
+  `run ${tailscaleServeByHand(port)} in PowerShell; ${windowsPairingHint(pairing)}` +
+  " (docs/windows.md); or set COLLIE_SKIP_SERVE=1 if you own the ingress";
 
-const windowsHttpsDisabledHint = (port: number): string =>
+const windowsHttpsDisabledHint = (port: number, pairing: boolean): string =>
   'enable HTTPS in the admin console (https://login.tailscale.com/admin/dns, "Enable HTTPS"), then run' +
   ` ${tailscaleServeByHand(port)} again; on a Headscale tailnet (a self-hosted Tailscale server) use` +
-  ` \`tailscale serve --bg --http=80 --set-path=/ ${port}\`; ${WINDOWS_PAIR_NOW} after you publish (docs/windows.md)`;
+  ` \`tailscale serve --bg --http=80 --set-path=/ ${port}\`; ${windowsPairingHint(pairing)} (docs/windows.md)`;
 
 const windowsStatusUnreadableRemedy = (port: number): string =>
   `run \`tailscale serve status\` by hand; if no / mapping to port ${port} shows, run` +
@@ -1049,7 +1055,7 @@ function frontDoor(deps: DoctorDeps, mode: string): Finding {
     return warn(
       "front-door",
       "this tailnet has no HTTPS certificates, so an https front door cannot be published",
-      windows ? windowsHttpsDisabledHint(deps.ctx.port) : HTTPS_DISABLED_HINT,
+      windows ? windowsHttpsDisabledHint(deps.ctx.port, envBool("COLLIE_PAIRING", true, deps.ctx.env)) : HTTPS_DISABLED_HINT,
     );
   }
   const status = liveServeStatus(deps);
@@ -1093,7 +1099,7 @@ function frontDoor(deps: DoctorDeps, mode: string): Finding {
     }
     const detail = `no Collie-managed mapping is recorded and nothing of ours is published on :${listener}`;
     const publishRemedy = windows
-      ? windowsPublishRemedy(deps.ctx.port)
+      ? windowsPublishRemedy(deps.ctx.port, envBool("COLLIE_PAIRING", true, deps.ctx.env))
       : "`collie serve` here (or COLLIE_SKIP_SERVE=1 if you own the ingress)";
     return mode === "lead"
       ? bad(

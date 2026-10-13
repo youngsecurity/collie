@@ -79,7 +79,7 @@ export function PairedDevices({ data }: { data: DevicesData }) {
   // token, its token was rejected by a write, or the registry itself says it authenticated as
   // nobody while pairing is on. Deliberately NOT shown on a failed load — an unreachable bridge is
   // not evidence that this device is unpaired.
-  const unpaired = !token || refused || (data.enforced && data.current === null && !data.error);
+  const unpaired = (data.enforced || fromQr) && (!token || refused || (data.current === null && !data.error));
 
   const pairedAsMessage = data.current
     ? t("settings.devices.pairedAs", { device: data.current })
@@ -93,8 +93,9 @@ export function PairedDevices({ data }: { data: DevicesData }) {
         <KeyRound className="mt-0.5 size-5 shrink-0 text-muted-foreground" />
         <div className="min-w-0">
           <div className="font-medium">{t("settings.devices.title")}</div>
-          {/* Pairing is always on (ADR 0086): there is no "open" bridge left to describe. */}
-          <p className="text-sm text-muted-foreground">{t("settings.devices.description.enforced")}</p>
+          <p className="text-sm text-muted-foreground">
+            {t(data.enforced ? "settings.devices.description.enforced" : "settings.devices.description.disabled")}
+          </p>
         </div>
       </div>
 
@@ -123,6 +124,7 @@ export function PairedDevices({ data }: { data: DevicesData }) {
               expiresAt={d.expiresAt ?? null}
               expired={d.expired === true}
               current={d.current}
+              enforced={data.enforced}
               onRevoked={() => {
                 // Revoking yourself is allowed and self-unpairs: the token we still hold now
                 // authenticates as nobody, and the pairing it stood for is over. The one wipe
@@ -163,6 +165,7 @@ function DeviceRow({
   expiresAt,
   expired,
   current,
+  enforced,
   onRevoked,
 }: {
   label: string;
@@ -173,6 +176,7 @@ function DeviceRow({
   /** The bridge's verdict that `expiresAt` has passed — not re-derived from this phone's clock. */
   expired: boolean;
   current: boolean;
+  enforced: boolean;
   onRevoked: () => void;
 }) {
   useLocale();
@@ -230,7 +234,7 @@ function DeviceRow({
         </p>
         {confirming && (
           <p className="mt-1 text-xs text-foreground">
-            {current ? t("settings.devices.confirm.self") : t("settings.devices.confirm.other", { label })}
+            {current ? t("settings.devices.confirm.self") : t(enforced ? "settings.devices.confirm.other" : "settings.devices.confirm.otherDisabled", { label })}
           </p>
         )}
         {error && <p className="mt-0.5 text-xs text-status-blocked">{error}</p>}

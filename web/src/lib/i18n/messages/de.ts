@@ -122,6 +122,7 @@ export const de: Dictionary = {
 
   // --- settings.devices ---
   "settings.devices.title": "Gekoppelte Geräte",
+  "settings.devices.description.disabled": "Warnung: Kopplung ist auf diesem Host deaktiviert. Wer die übrigen Prüfungen besteht, kann ohne Token Transkripte lesen und Terminals steuern. Geräte bleiben gespeichert; Offline-Sitzungsspeicherung ist aus.",
   "settings.devices.description.enforced":
     "Jeder Lese- und Schreibzugriff erfordert ein gekoppeltes Gerät.",
   "settings.devices.pairedAs": "Dieses Gerät ist gekoppelt als {device}.",
@@ -138,6 +139,7 @@ export const de: Dictionary = {
   "settings.devices.revoke": "Widerrufen",
   "settings.devices.revokeAria": "{label} widerrufen",
   "settings.devices.confirm.self": "Dieses Gerät entkoppeln? Entwürfe, gespeicherter Pane-Text und Mitteilungen werden hier gelöscht. Deine Einstellungen bleiben.",
+  "settings.devices.confirm.otherDisabled": "Zugangsdaten von {label} widerrufen? Der Zugriff bleibt bei deaktivierter Kopplung möglich.",
   "settings.devices.confirm.other": "{label} widerrufen? Das Gerät verliert den Zugriff, bis es erneut gekoppelt wird.",
   "settings.devices.pair.title": "Dieses Gerät koppeln",
   "settings.devices.pair.hint":
@@ -184,6 +186,7 @@ export const de: Dictionary = {
   "settings.connection.bridge.offline": "Herdr offline",
   "settings.connection.bridge.connecting": "Verbindung wird hergestellt…",
   "settings.connection.bridge.notPaired": "Erreichbar, nicht gekoppelt",
+  "settings.connection.device.pairingOff": "Kopplung auf diesem Host aus",
   "settings.connection.device.notPaired": "Erzwungen, dieses Gerät ist nicht gekoppelt",
   "settings.connection.device.paired": "Erzwungen, dieses Gerät ist gekoppelt",
   "settings.connection.device.fullAccessNamed": "Vollzugriff · {device}",

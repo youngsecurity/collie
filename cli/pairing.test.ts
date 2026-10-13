@@ -72,6 +72,20 @@ const registryFile = (...devices: PairedDevice[]): SeededFiles => ({
   [REGISTRY]: JSON.stringify({ devices }),
 });
 
+describe("browser opt-out reporting", () => {
+  test("devices list is not a mandatory pair prompt and preserves registered devices", () => {
+    for (const seed of [{}, registryFile(device())]) {
+      const d = deps(seed);
+      d.ctx = context({ COLLIE_PAIRING: "off" });
+      const before = d.files.read(REGISTRY);
+      expect(cmdDevicesList(d)).toBe(EXIT.OK);
+      expect(d.io.stdout.join("\n")).toContain("browser pairing is OFF");
+      expect(d.io.stdout.join("\n")).not.toContain("Run `collie pair`");
+      expect(d.files.read(REGISTRY)).toBe(before);
+    }
+  });
+});
+
 describe("collie pair", () => {
   test("writes the pending file the bridge reads — owner-only, hash only, never the code", async () => {
     const d = deps();
@@ -231,7 +245,7 @@ describe("collie devices list", () => {
     expect(cmdDevicesList(d)).toBe(EXIT.OK);
     const out = d.io.stdout.join("\n");
     expect(out).toContain("no devices paired");
-    expect(out).toContain("always on");
+    expect(out).toContain("pairing is on");
     expect(out).not.toContain("not enforced");
     expect(out).toContain("collie pair");
   });

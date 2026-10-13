@@ -37,6 +37,10 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 ## [Unreleased]
 
+### Added
+
+- **Trusted hosts can explicitly disable browser pairing again.** Set `COLLIE_PAIRING=off` or `[access] pairing=false` and restart to allow tokenless reads and writes past the remaining gates. Pairing stays on by default; invalid values do not disable it. Devices, independent access checks and crew credentials remain intact, warnings name the transcript and remote shell exposure, and opt-out reads do not populate offline session storage.
+
 ## [1.18.1+ys.1] - 2026-10-10
 
 ### Changed

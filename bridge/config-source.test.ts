@@ -4,6 +4,7 @@ import { basename, join } from "node:path";
 import { loadConfig } from "./config.ts";
 import {
   CONFIG_FILENAME,
+  applyConfigLayer,
   configFilePaths,
   HOME_CONFIG_DIRNAME,
   overlayConfig,
@@ -51,6 +52,32 @@ const paths: readonly ConfigFilePath[] = [
 async function read(files: Record<string, string>, lines: string[] = []): Promise<ConfigFileLayer> {
   return readConfigFiles(fakeIo(files), paths, (m) => lines.push(m), { home: HOME });
 }
+
+describe("pairing policy through config files", () => {
+  test("a TOML boolean opts out; environment still wins in bridge and CLI", async () => {
+    const layer = await read({ [HOME_FILE]: "[access]\npairing = false\n" });
+    expect(loadConfig(overlayConfig({}, layer)).pairing).toBe(false);
+    expect(layer.problems).toEqual([]);
+    for (const raw of ["on", "", "typo"]) {
+      const env: Environment = { COLLIE_PAIRING: raw };
+      applyConfigLayer(layer, env);
+      expect(loadConfig(env).pairing).toBe(true);
+      expect(sourceOf(settingByEnv("COLLIE_PAIRING")!, env, layer)).toBe("env");
+      expect(loadConfig(overlayConfig({ COLLIE_PAIRING: raw }, layer)).pairing).toBe(true);
+    }
+  });
+
+  test("a malformed boolean cannot disable or inherit a lower file's opt-out", async () => {
+    for (const value of ['"off"', '"false"', "0", "[]"]) {
+      const layer = await read({
+        [HOME_FILE]: "[access]\npairing = false\n",
+        [INSTANCE_FILE]: `[access]\npairing = ${value}\n`,
+      });
+      expect(layer.problems).toHaveLength(1);
+      expect(loadConfig(overlayConfig({}, layer)).pairing).toBe(true);
+    }
+  });
+});
 
 describe("where the two files are", () => {
   test("exactly two entries, the machine's base first and the instance's second", () => {

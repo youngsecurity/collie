@@ -117,6 +117,7 @@ export const zh: Dictionary = {
 
   // --- settings.devices ---
   "settings.devices.title": "已配对设备",
+  "settings.devices.description.disabled": "警告：此主机已禁用配对。通过其他访问检查的客户端无需令牌即可读取记录并控制终端。设备记录会保留；离线会话缓存已关闭。",
   "settings.devices.description.enforced": "所有读取和写入操作都需要已配对设备。",
   "settings.devices.pairedAs": "当前设备配对身份为 {device}。",
   "settings.devices.loadError": "无法从网桥读取已配对设备列表。",
@@ -132,6 +133,7 @@ export const zh: Dictionary = {
   "settings.devices.revoke": "吊销",
   "settings.devices.revokeAria": "吊销 {label}",
   "settings.devices.confirm.self": "解除当前设备的配对？此设备上的草稿、已保存的窗格文本和通知将被清除。你的设置会保留。",
+  "settings.devices.confirm.otherDisabled": "撤销 {label} 的凭据？配对禁用期间仍可访问。",
   "settings.devices.confirm.other": "吊销 {label}？在重新配对之前，它将无法访问。",
   "settings.devices.pair.title": "配对此设备",
   "settings.devices.pair.hint": "在主机上运行 {command}，然后扫描其输出的代码或在此输入。",
@@ -171,6 +173,7 @@ export const zh: Dictionary = {
   "settings.connection.bridge.offline": "Herdr 离线",
   "settings.connection.bridge.connecting": "正在连接…",
   "settings.connection.bridge.notPaired": "可访问，未配对",
+  "settings.connection.device.pairingOff": "此主机已关闭配对",
   "settings.connection.device.notPaired": "已强制，此设备未配对",
   "settings.connection.device.paired": "已强制，此设备已配对",
   "settings.connection.device.fullAccessNamed": "完整权限 · {device}",

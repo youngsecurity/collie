@@ -39,6 +39,31 @@ export const NOT_PAIRED_BODY = "device not paired";
  */
 export const EXPIRED_BODY = "device expired";
 
+// Page-local only. An opt-out allows live use, never anonymous offline session storage.
+let pairingRequired = true;
+let anonymousSession = false;
+
+/** Observe the bridge's explicit policy, never infer it from a missing header. */
+export function observePairingPolicy(value: string | null): void {
+  if (value !== "on" && value !== "off") return;
+  const changed = pairingRequired !== (value === "on");
+  pairingRequired = value === "on";
+  if (!pairingRequired) {
+    anonymousSession = true;
+    clearNotPaired();
+  }
+  if (changed) emit();
+}
+
+export function isBrowserPairingEnforced(): boolean {
+  return pairingRequired;
+}
+
+/** Once this page receives anonymous content, keep it live-only until reload, including late writes. */
+export function sessionCacheAllowed(): boolean {
+  return !anonymousSession;
+}
+
 let refused = false;
 /** Set alongside `refused` when the reason was an expired token. Cleared with it. */
 let expired = false;
@@ -202,11 +227,17 @@ export function subscribePairing(cb: () => void): () => void {
  * it honest in the other direction: a reset that changes nothing emits nothing.
  */
 export function __resetPairing(): void {
+  const policyChanged = !pairingRequired;
+  pairingRequired = true;
+  anonymousSession = false;
   pairingExpiresAt = undefined;
   clearNotPaired();
+  if (policyChanged) emit();
 }
 
 export interface PairingStatus {
+  /** Effective browser policy, defaulting on until the bridge explicitly says otherwise. */
+  enforced: boolean;
   /** This device's stored token, or null. */
   token: string | null;
   /** True once a write came back "device not paired" — i.e. the token is missing or rejected. */
@@ -218,12 +249,12 @@ export interface PairingStatus {
 // One string snapshot rather than a fresh object per read: useSyncExternalStore compares with
 // Object.is, and an object built in getSnapshot would differ every call and loop forever.
 function snapshot(): string {
-  return `${refused ? "1" : "0"}${expired ? "1" : "0"} ${getDeviceToken() ?? ""}`;
+  return `${refused ? "1" : "0"}${expired ? "1" : "0"}${pairingRequired ? "1" : "0"} ${getDeviceToken() ?? ""}`;
 }
 
-/** Reactive read of the token + refusal latch. */
+/** Reactive read of the policy, token and refusal latch. */
 export function usePairing(): PairingStatus {
   const snap = useSyncExternalStore(subscribePairing, snapshot, snapshot);
-  const token = snap.slice(3);
-  return { token: token || null, refused: snap[0] === "1", expired: snap[1] === "1" };
+  const token = snap.slice(4);
+  return { token: token || null, refused: snap[0] === "1", expired: snap[1] === "1", enforced: snap[2] === "1" };
 }

@@ -120,6 +120,7 @@ export const ko: Dictionary = {
 
   // --- settings.devices ---
   "settings.devices.title": "페어링된 기기",
+  "settings.devices.description.disabled": "경고: 이 호스트에서 페어링이 비활성화되었습니다. 다른 검사를 통과하면 토큰 없이 기록을 읽고 터미널을 제어할 수 있습니다. 기기는 유지되며 오프라인 세션 캐시는 꺼집니다.",
   "settings.devices.description.enforced": "모든 읽기와 쓰기 작업에 페어링된 기기가 필요합니다.",
   "settings.devices.pairedAs": "이 기기는 현재 {device}(으)로 페어링되어 있습니다.",
   "settings.devices.loadError": "브리지 서버에서 페어링된 기기 목록을 가져오지 못했습니다.",
@@ -135,6 +136,7 @@ export const ko: Dictionary = {
   "settings.devices.revoke": "연결 해제",
   "settings.devices.revokeAria": "{label} 연결 해제",
   "settings.devices.confirm.self": "현재 기기 페어링을 해제할까요? 이 기기의 초안, 저장된 패인 텍스트, 알림이 삭제됩니다. 설정은 유지됩니다.",
+  "settings.devices.confirm.otherDisabled": "{label}의 자격 증명을 취소할까요? 페어링이 비활성화된 동안에는 계속 접근할 수 있습니다.",
   "settings.devices.confirm.other": "{label} 연결을 해제할까요? 다시 페어링할 때까지 접근할 수 없습니다.",
   "settings.devices.pair.title": "기기 등록",
   "settings.devices.pair.hint":
@@ -179,6 +181,7 @@ export const ko: Dictionary = {
   "settings.connection.bridge.offline": "Herdr 오프라인",
   "settings.connection.bridge.connecting": "연결 중...",
   "settings.connection.bridge.notPaired": "연결 가능, 페어링 안 됨",
+  "settings.connection.device.pairingOff": "이 호스트에서 페어링 꺼짐",
   "settings.connection.device.notPaired": "적용됨, 이 기기는 페어링되지 않았습니다",
   "settings.connection.device.paired": "적용됨, 이 기기는 페어링되었습니다",
   "settings.connection.device.fullAccessNamed": "전체 접근 ({device})",

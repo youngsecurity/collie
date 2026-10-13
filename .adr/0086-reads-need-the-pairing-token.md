@@ -1,6 +1,7 @@
 # 0086 — Reads need the pairing token
 
 - **Status:** Accepted
+- **Amended in scope by:** [0091](./0091-browser-pairing-has-an-explicit-host-opt-out.md), explicit host opt-out for browser pairing only.
 - **Date:** 2026-10-07
 - **Shipped in:** pending
 - **Amends:** [ADR 0083](./0083-the-files-view-reads-the-changes-root.md), whose context named reads

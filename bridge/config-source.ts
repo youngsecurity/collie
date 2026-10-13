@@ -358,7 +358,8 @@ export function applyConfigLayer(
   for (const [name, value] of Object.entries(layer.env)) {
     if (value === undefined) continue;
     const already = target[name];
-    if (already !== undefined && already !== "") continue;
+    // An explicit empty pairing override means the secure default, not a file's opt-out.
+    if (already !== undefined && (already !== "" || name === "COLLIE_PAIRING")) continue;
     target[name] = value;
     set.push(name);
   }
@@ -401,6 +402,7 @@ export function sourceOf(
   layer: ConfigFileLayer,
 ): ConfigSource {
   const fromFile = layer.sources.get(setting.env);
+  if (setting.env === "COLLIE_PAIRING" && effective[setting.env] === "") return "env";
   if (fromFile === "file:blocked") return "file:blocked";
   const names = setting.alias === undefined ? [setting.env] : [setting.env, setting.alias];
   for (const name of names) {
@@ -499,6 +501,8 @@ function collect(
       const value = convert(setting, raw ?? null, home);
       if (isRefusal(value)) {
         problems.push({ file, section: sectionName, key, message: `${file}: [${sectionName}] ${key} ${value.why}` });
+        // A malformed pairing setting must not inherit an opt-out from a lower file.
+        if (setting.env === "COLLIE_PAIRING") out.push({ setting, value: "1" });
         continue;
       }
       out.push({ setting, value });
