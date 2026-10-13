@@ -1,7 +1,11 @@
 import { act, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it } from "vitest";
+import { http, HttpResponse } from "msw";
 
-import { markNotPaired, setDeviceToken } from "@/lib/pairing";
+import { fetchSnapshot } from "@/lib/api";
+import { fixtureSnapshot } from "@/test/handlers";
+import { server } from "@/test/setup";
+import { getDeviceToken, markNotPaired, observePairingPolicy, setDeviceToken } from "@/lib/pairing";
 import { ConnectionInfo } from "./connection-info";
 
 // The diagnostics panel translates the polled snapshot into a read-only "why isn't X working" view.
@@ -22,6 +26,65 @@ describe("ConnectionInfo — device access row", () => {
     localStorage.clear();
     render(<ConnectionInfo bridge={undefined} device={undefined} />);
     expect(screen.getByText("Enforced, this device is not paired")).toBeInTheDocument();
+  });
+
+  it("replaces the off label when a protected request is refused after re-enabling pairing", async () => {
+    localStorage.clear();
+    render(<ConnectionInfo bridge={undefined} device={undefined} />);
+    server.use(http.get("/api/snapshot", () => HttpResponse.json(fixtureSnapshot, {
+      headers: { "X-Collie-Pairing": "off" },
+    })));
+    await act(async () => { await fetchSnapshot(); });
+    expect(screen.getByText("Pairing off on this host")).toBeInTheDocument();
+    server.use(http.get("/api/snapshot", () => new HttpResponse("device not paired", {
+      status: 403, headers: { "X-Collie-Pairing": "on" },
+    })));
+    await act(async () => {
+      await expect(fetchSnapshot()).rejects.toThrow("403 device not paired");
+    });
+    expect(screen.queryByText("Pairing off on this host")).toBeNull();
+    expect(screen.getByText("Enforced, this device is not paired")).toBeInTheDocument();
+    expect(screen.getByText("Reachable, not paired")).toBeInTheDocument();
+  });
+
+  for (const token of [null, "retained-token"]) {
+    it(`reports the effective policy reactively with token=${token}, including re-enforcement`, () => {
+      localStorage.clear();
+      if (token) setDeviceToken(token);
+      const { container } = render(<ConnectionInfo bridge={undefined} device={undefined} />);
+      const rows = container.querySelectorAll("dl > div").length;
+      act(() => observePairingPolicy("off"));
+      expect(screen.getByText("Pairing off on this host")).toHaveClass("text-status-working");
+      expect(screen.queryByText(/Enforced,/)).toBeNull();
+      expect(screen.queryByText("Reachable, not paired")).toBeNull();
+      expect(screen.getByText("Connecting…")).toBeInTheDocument();
+      expect(getDeviceToken()).toBe(token);
+      expect(container.querySelectorAll("dl > div")).toHaveLength(rows);
+      act(() => observePairingPolicy("on"));
+      expect(screen.queryByText("Pairing off on this host")).toBeNull();
+      expect(screen.getByText(token ? "Enforced, this device is paired" : "Enforced, this device is not paired"))
+        .toBeInTheDocument();
+    });
+  }
+
+  for (const authorized of [true, false]) {
+    it(`keeps the independent header gate visible while pairing is off, authorized=${authorized}`, () => {
+      localStorage.clear();
+      observePairingPolicy("off");
+      render(<ConnectionInfo bridge="connected" device={{ enforced: true, device: "proxy-phone", authorized }} />);
+      expect(screen.getByText(`Pairing off on this host; ${authorized ? "Full access" : "Read-only"} · proxy-phone`))
+        .toBeInTheDocument();
+      expect(screen.queryByText(/Enforced,/)).toBeNull();
+      expect(screen.getByText("Connected")).toBeInTheDocument();
+    });
+  }
+
+  it("ignores a retained refusal when the host explicitly disables pairing", () => {
+    markNotPaired();
+    render(<ConnectionInfo bridge="connected" device={{ enforced: false, device: null, authorized: true }} />);
+    act(() => observePairingPolicy("off"));
+    expect(screen.getByText("Pairing off on this host")).toBeInTheDocument();
+    expect(screen.queryByText(/Enforced,/)).toBeNull();
   });
 
   it("a refusal latched after a self-unpair or revoke reads as not paired, even with a token", () => {

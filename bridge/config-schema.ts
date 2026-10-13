@@ -460,6 +460,15 @@ export const CONFIG_SETTINGS: readonly ConfigSetting[] = [
     configField: "auditContent",
   },
   {
+    key: "pairing",
+    section: "access",
+    env: "COLLIE_PAIRING",
+    kind: "bool",
+    default: true,
+    doc: "Require browser pairing for reads and writes. Off exposes transcripts and remote shell access to callers passing the remaining gates.",
+    configField: "pairing",
+  },
+  {
     key: "redact",
     env: "COLLIE_REDACT",
     section: "access",

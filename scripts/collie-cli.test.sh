@@ -2025,7 +2025,7 @@ pair_env() {
 # nothing is answered until `collie pair` runs (ADR 0086) — and materialises no file by asking.
 pair_env devices list || fail "\`collie devices list\` failed on an unpaired machine: ${STDERR}"
 assert_contains "$STDOUT" "no devices paired"
-assert_contains "$STDOUT" "always on"
+assert_contains "$STDOUT" "pairing is on"
 [ -z "$(ls -A "$PAIR_STATE")" ] || fail "\`devices list\` wrote into the state dir with nothing paired"
 
 # `pair` mints the code and writes the pending file the bridge reads at request time.

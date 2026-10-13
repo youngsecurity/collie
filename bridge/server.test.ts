@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { updateStartVerdict, type CrewUpdateRow } from "./update-action.ts";
+import { createAccessGate } from "./access-jwt.ts";
 import { MAX_EXPECTED_PROMPT_CHARS } from "./prompt-binding.ts";
 import { encodeStyledRegion, styledRegionLines } from "../web/src/lib/styled-region.ts";
 
@@ -26,6 +27,7 @@ import {
   marksPaneSeen,
   SEEN_HEADER,
   deviceAuth,
+  devicesResponseBody,
   guard,
   apiFrontGate,
   browserPairingGate,
@@ -65,6 +67,7 @@ import {
   stripMount,
   mountIndexHtml,
   withHsts,
+  withPairingPolicy,
   arrivedOverHttps,
   chatBodyForMux,
 } from "./server.ts";
@@ -80,7 +83,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { AuditLog, type AuditEntry } from "./audit.ts";
-import { PairingStore, sha256Hex, type PairingIo } from "./pairing.ts";
+import { PairingStore, sha256Hex, type PairingIo, type PairedRegistry } from "./pairing.ts";
 import { localCredentialOf, mintLocalSecret } from "./local-secret.ts";
 import { FolderStore, MAX_FAVOURITES, MAX_FOLDER_CHARS } from "./folders.ts";
 import type { SessionRuntime } from "./sessions.ts";
@@ -1874,6 +1877,168 @@ describe("guard — no pairing refusal carries Clear-Site-Data", () => {
   });
 });
 
+describe("explicit browser pairing opt-out", () => {
+  const headers = { host: "collie.ts.net", origin: "https://collie.ts.net" };
+  const broken: PairingGate = { resolve: () => { throw new Error("unreadable registry"); } };
+
+  test("off admits reads, writes and device-reads without consulting even a broken registry", () => {
+    for (const authorization of ["", "Bearer stale", "Bearer expired", "Basic invalid"]) {
+      const request = req({ ...headers, authorization });
+      for (const level of ["read", "write", "device-read"] as const) {
+        expect(guard(request, cfg({ pairing: false }), level, broken)).toBeNull();
+      }
+      expect(apiFrontGate(request, "/api/snapshot", cfg({ pairing: false }), broken)).toBeNull();
+      expect(requestDevice(request, cfg({ pairing: false }), broken)).toEqual({
+        enforced: false, device: null, authorized: true,
+      });
+    }
+  });
+
+  test("off preserves Host, Origin, trusted-user and Files device-header checks", async () => {
+    const c = cfg({ pairing: false });
+    expect(guard(req({ ...headers, host: "evil.example" }), c, "read", broken)?.status).toBe(403);
+    expect(await guard(req({ ...headers, origin: "https://evil.example" }), c, "write", broken)!.text()).toBe("cross-origin rejected");
+    expect(guard(req({ host: headers.host }), c, "write", broken)?.status).toBe(403);
+    const trusted = cfg({ pairing: false, trustedUser: "operator@example.com" });
+    expect(guard(req(headers), trusted, "read", broken)?.status).toBe(403);
+    expect(guard(req({ ...headers, "Tailscale-User-Login": "wrong" }), trusted, "read", broken)?.status).toBe(403);
+    const device = cfg({ pairing: false, deviceHeader: "x-device-id", deviceAllowlist: ["phone"] });
+    expect(guard(req(headers), device, "read", broken)).toBeNull();
+    for (const level of ["write", "device-read"] as const) {
+      expect(await guard(req(headers), device, level, broken)!.text()).toBe("device not authorised");
+      expect(guard(req({ ...headers, "x-device-id": "other" }), device, level, broken)?.status).toBe(403);
+      expect(guard(req({ ...headers, "x-device-id": "phone" }), device, level, broken)).toBeNull();
+    }
+    expect(requestDevice(req(headers), device, broken)).toEqual({ enforced: true, device: null, authorized: false });
+    expect(requestDevice(req({ ...headers, "x-device-id": "phone", authorization: "Bearer stale" }), device, broken))
+      .toEqual({ enforced: true, device: "phone", authorized: true });
+  });
+
+  test("off cannot bypass a configured Cloudflare gate or move admission ahead of TCP-peer checks", async () => {
+    const c = cfg({ pairing: false, accessTeam: "team", accessAud: ["app"] });
+    const access = createAccessGate(c, {
+      fetch: async () => new Response("unavailable", { status: 503 }),
+      schedule: () => {}, log: () => {},
+    });
+    expect(access).not.toBeNull();
+    const denied = await access!.admit(req({ ...headers, "cf-connecting-ip": "203.0.113.1" }), "/api/snapshot");
+    expect(denied?.status).toBe(503);
+    // The real request dispatcher takes the peer from Bun, not a forwarded header. These checks
+    // precede the browser token guard and carry no pairing exception.
+    const src = readFileSync(join(import.meta.dir, "server.ts"), "utf8");
+    const peer = src.indexOf('if (!cfg.allowNonLoopbackBind && !isLoopbackPeer(peerAddress))');
+    const accessAt = src.indexOf('const denied = await accessGate.admit(req, pathname)');
+    const front = src.indexOf('const frontDenied = apiFrontGate(req, pathname, cfg, pairingGate, peerAddress)');
+    expect(peer).toBeGreaterThan(0);
+    expect(accessAt).toBeGreaterThan(peer);
+    expect(front).toBeGreaterThan(accessAt);
+    expect(src.slice(peer, accessAt)).not.toContain("cfg.pairing");
+    expect(src).toContain('const peerAddress = server.requestIP(req)?.address ?? null');
+    expect(guard(req({ host: "localhost", "x-forwarded-for": "127.0.0.1" }), c, "read", broken, "203.0.113.1")?.status).toBe(403);
+  });
+
+  test("off never deletes devices, and enabling again restores the same credential and expiry checks", async () => {
+    const registry = { devices: [
+      { label: "phone", tokenHash: sha256Hex("live"), createdAt: 1, lastSeenAt: 1 },
+      { label: "old", tokenHash: sha256Hex("expired"), createdAt: 1, lastSeenAt: 1, expiresAt: 1000 },
+    ] };
+    const before = JSON.stringify(registry);
+    let writes = 0;
+    const io: PairingIo = {
+      readPending: async () => null, writePending: async () => {}, deletePending: async () => {},
+      readRegistry: async () => registry, readRegistrySync: () => registry,
+      writeRegistry: async () => { writes++; },
+      lockRegistry: async () => ({ assertHeld: async () => {}, release: async () => {} }),
+    };
+    const store = new PairingStore(io, () => 2000);
+    for (const token of ["", "stale", "expired", "live"]) {
+      const request = req({ ...headers, authorization: `Bearer ${token}` });
+      for (const level of ["read", "write", "device-read"] as const) {
+        expect(guard(request, cfg({ pairing: false }), level, store)).toBeNull();
+        const restored = guard(request, cfg({ pairing: true }), level, store);
+        if (token === "live") expect(restored).toBeNull();
+        else expect(await restored!.text()).toBe(token === "expired" ? "device expired" : "device not paired");
+      }
+    }
+    const off = devicesResponseBody(store, cfg({ pairing: false }), "expired");
+    expect(off.enforced).toBe(false);
+    expect(off.current).toBeNull();
+    expect(off.currentExpired).toBe(false);
+    expect(off.devices).toHaveLength(2);
+    const on = devicesResponseBody(store, cfg(), "live");
+    expect(on.enforced).toBe(true);
+    expect(on.current).toBe("phone");
+    expect(on.devices).toHaveLength(2);
+    expect(JSON.stringify(registry)).toBe(before);
+    expect(writes).toBe(0);
+    expect(store.enforced()).toBe(true); // Standby/store semantics never inherit browser policy.
+  });
+
+  test("off-mode device lists ignore retained tokens beyond the last-seen throttle; on restores identity", async () => {
+    const now = 100_000;
+    let registry: PairedRegistry = { devices: [
+      { label: "phone", tokenHash: sha256Hex("live"), createdAt: 1, lastSeenAt: 1 },
+      { label: "old", tokenHash: sha256Hex("expired"), createdAt: 1, lastSeenAt: 1, expiresAt: 1000 },
+    ] };
+    const before = JSON.stringify(registry);
+    let writes = 0;
+    let locks = 0;
+    const io: PairingIo = {
+      readPending: async () => null, writePending: async () => {}, deletePending: async () => {},
+      readRegistry: async () => registry, readRegistrySync: () => registry,
+      writeRegistry: async (next) => { registry = next; writes++; },
+      lockRegistry: async () => {
+        locks++;
+        return { assertHeld: async () => {}, release: async () => {} };
+      },
+    };
+    const store = new PairingStore(io, () => now);
+    for (const token of [null, "stale", "expired", "live"]) {
+      const off = devicesResponseBody(store, cfg({ pairing: false }), token);
+      expect(off.enforced).toBe(false);
+      expect(off.current).toBeNull();
+      expect(off.currentExpired).toBe(false);
+      expect(off.devices.map((device) => device.current)).toEqual([false, false]);
+      expect(off.devices.map((device) => device.lastSeenAt)).toEqual([1, 1]);
+      await store.idle();
+      expect(JSON.stringify(registry)).toBe(before);
+      expect(writes).toBe(0);
+      expect(locks).toBe(0);
+    }
+    const on = devicesResponseBody(store, cfg({ pairing: true }), "live");
+    expect(on.enforced).toBe(true);
+    expect(on.current).toBe("phone");
+    expect(on.currentExpired).toBe(false);
+    expect(on.devices.map((device) => device.current)).toEqual([true, false]);
+    await store.idle();
+    expect(writes).toBe(1);
+    expect(registry.devices[0]?.lastSeenAt).toBe(now);
+    expect(registry.devices[0]?.tokenHash).toBe(sha256Hex("live"));
+    expect(registry.devices[1]?.lastSeenAt).toBe(1);
+    const expired = devicesResponseBody(store, cfg(), "expired");
+    expect(expired.current).toBeNull();
+    expect(expired.currentExpired).toBe(true);
+  });
+
+  test("policy metadata is effective, mount-aware and browser-only; startup warns", async () => {
+    for (const pairing of [undefined, true, false]) {
+      const c = cfg({ pairing, basePath: "/collie/" });
+      const handler = withPairingPolicy(async () => new Response("ok"), c);
+      for (const path of ["/api/snapshot", "/collie/api/devices", "/api/devices/revoke"]) {
+        const res = await handler(new Request(`http://localhost${path}`));
+        expect(res.headers.get("X-Collie-Pairing")).toBe(pairing === false ? "off" : "on");
+      }
+      expect((await handler(new Request("http://localhost/crew/v1/snapshot"))).headers.has("X-Collie-Pairing")).toBe(false);
+      expect(startupWarnings(c).some((line) => line.includes("browser pairing is OFF"))).toBe(pairing === false);
+      if (pairing === false) {
+        expect(startupWarnings(c).join("\n")).not.toContain("checked by its pairing token alone");
+        expect(startupWarnings({ ...c, trustedUser: "operator", trustedUserOptional: true }).join("\n"))
+          .not.toContain("checked by its pairing token alone");
+      }
+    }
+  });
+});
+
 describe("requestDevice — attribution across both gates", () => {
   const HDR = "x-device-id";
   const gateOf = (tokens: Record<string, string>) => ({
@@ -3256,7 +3421,7 @@ describe("the update write gate — POST api/update rides the pane path's own ga
     expect(handler).toContain("started = true;");
     // One gate per SERVER, not per request: a request-scoped flag would guard nothing.
     expect(src).toContain("const updateConfirm = new UpdateConfirmGate();");
-    const fetchAt = src.indexOf("fetch: withHsts(async (req: Request) => {");
+    const fetchAt = src.indexOf("fetch: withHsts(withPairingPolicy(async (req: Request) => {");
     expect(fetchAt).toBeGreaterThan(0);
     expect(src.indexOf("const updateConfirm = new UpdateConfirmGate();")).toBeLessThan(fetchAt);
   });

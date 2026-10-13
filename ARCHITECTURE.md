@@ -380,8 +380,8 @@ door (tailnet-only by default; one per **crew** — §2.1). These four are genui
   `sudo -u agent-review` to contain it — cannot open your herdr socket but **can** open
   `127.0.0.1:$COLLIE_PORT` and drive any pane in the herd. Installing Collie removes that uid
   boundary; if it is the containment you were relying on, pairing below is the gate that doesn't
-  rest on "local means trusted". Since ADR 0086 it gates reads as well as writes, so that uid reads
-  nothing but `/api/health` unless it holds a token. The token is then the boundary: a uid that can
+  rest on "local means trusted". With default-on pairing, protected reads as well as writes need
+  a token (ADR 0086). Opting out removes that credential boundary for local users too. A uid that can
   read your browser profile can read the token too. Keeping the port unshared (its own network
   namespace, or a uid owner-match filter such as nftables `meta skuid`) still closes even that; a
   plain port firewall rule won't stop a same-host peer (raised in
@@ -408,13 +408,19 @@ door (tailnet-only by default; one per **crew** — §2.1). These four are genui
   **Device pairing (`bridge/pairing.ts`) is the second, independent factor**, and the one that
   needs no proxy at all: `collie pair` mints a one-time code out of band (the operator's own
   terminal), the phone trades it at `POST /api/pair` for a 256-bit bearer token, and the bridge keeps
-  only its SHA-256. It is always on, and reads need the pairing token as well as writes: every
+  only its SHA-256. It is on by default, and reads need the pairing token as well as writes: every
   `/api/*` route but `/api/health` and `/api/pair` answers `403 device not paired` without a valid
-  token, so an install that has paired nothing answers no device
-  ([ADR 0086](./.adr/0086-reads-need-the-pairing-token.md)). Revocation (`collie devices revoke`)
+  token, so a default install that has paired nothing answers no device
+  ([ADR 0086](./.adr/0086-reads-need-the-pairing-token.md)). The explicit host opt-out
+  `COLLIE_PAIRING=off` or `[access] pairing=false` skips browser token enforcement and attribution
+  ([ADR 0091](./.adr/0091-browser-pairing-has-an-explicit-host-opt-out.md)). Callers passing the
+  remaining gates can then read transcripts and control terminals without a token. Records and
+  credentials are retained for re-enforcement, and anonymous sessions cannot persist offline content.
+  Host, Origin, TCP-peer, identity, header, containment and masking checks remain independent;
+  crew and standby credentials are unchanged. Revocation (`collie devices revoke`)
   lands on the running service without a restart because the registry is re-read per request. The
-  header gate stays write-only (plus the Files view's `device-read`). The two gates compose by AND —
-  neither weakens or replaces the other — and neither touches `/crew/v1/*`, whose two factors are its
+  header gate stays write-only (plus the Files view's `device-read`). When pairing is enabled,
+  the two gates compose by AND. Neither touches `/crew/v1/*`, whose two factors are its
   own. Where the header gate answers *is this device on the operator's list*, pairing answers *does
   this device hold a credential I issued*: a claim no proxy, DNS name or tailnet identity can forge.
 - **The `Host` header is validated, on by default, and fails closed.** A request whose `Host` is not

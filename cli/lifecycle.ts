@@ -1,6 +1,7 @@
 import { join } from "node:path";
 
 import type { Host } from "../bridge/host.ts";
+import { envBool } from "../bridge/config.ts";
 import { ensureBuild } from "./build.ts";
 import { collieVersion, type CliContext, type Environment, type EnvVars } from "./context.ts";
 import { binaryLayout, publishedRoot } from "./install-kind.ts";
@@ -1300,11 +1301,13 @@ export async function statusView(deps: LifecycleDeps): Promise<StatusView> {
   } else {
     rows.push({ label: "tailnet", value: bridgeUrl(deps.exec, deps.ctx) });
   }
-  // Pairing is always on (ADR 0086): with nothing paired the URL above opens onto a pair screen and
-  // nothing else, so the first start says what to run. Only then: a paired install's banner is
-  // unchanged, and a peer has no door of its own to pair against.
-  if (crewModeOnDisk(deps) !== "peer" && pairedRegistryOf(deps.files, deps.ctx.stateDir).devices.length === 0) {
-    rows.push({ label: "pairing", value: "no device paired yet — run `collie pair` to pair your phone" });
+  // Report the resolved host policy, not the presence of devices. Applying a config change needs a restart.
+  if (crewModeOnDisk(deps) !== "peer") {
+    if (!envBool("COLLIE_PAIRING", true, deps.ctx.env)) {
+      rows.push({ label: "pairing", value: "WARNING: OFF in host config (restart to apply). Transcripts and remote shell access need no token past the remaining gates; devices are retained." });
+    } else if (pairedRegistryOf(deps.files, deps.ctx.stateDir).devices.length === 0) {
+      rows.push({ label: "pairing", value: "no device paired yet: run `collie pair` to pair your phone" });
+    }
   }
   return {
     running,

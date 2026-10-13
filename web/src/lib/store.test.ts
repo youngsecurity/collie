@@ -1,5 +1,5 @@
 import { FakeIDBFactory, uninstallFakeIndexedDB } from "@/test/fake-indexeddb";
-import { rememberPairingExpiry } from "./pairing";
+import { __resetPairing, observePairingPolicy, rememberPairingExpiry, setDeviceToken } from "./pairing";
 import {
   __resetStore,
   __storeIdle,
@@ -64,6 +64,26 @@ afterEach(() => {
 });
 
 describe("the on-device store", () => {
+  it("never persists anonymous opt-out content, even with a stale token, and preserves expiry on re-enable", async () => {
+    for (const token of [null, "stale-token"]) {
+      if (token !== null) setDeviceToken(token, T0 + 1000);
+      observePairingPolicy("off");
+      expect(await putRecord("snapshot", "anonymous", { secret: "live only" })).toBe(false);
+      expect(await getRecord("snapshot", "anonymous")).toBeNull();
+      expect(await listRecords("snapshot")).toEqual([]);
+      observePairingPolicy("on");
+      // Old anonymous content and delayed saves stay live-only even after enforcement returns.
+      expect(await putRecord("snapshot", "late-anonymous", "not paired when fetched")).toBe(false);
+      newPage();
+      __resetPairing();
+      observePairingPolicy("on");
+      expect(await getRecord("snapshot", "anonymous")).toBeNull();
+      expect(await getRecord("snapshot", "late-anonymous")).toBeNull();
+    }
+    expect(await putRecord("snapshot", "paired", "accepted again")).toBe(true);
+    clock = T0 + 1001;
+    expect(await getRecord("snapshot", "paired")).toBeNull();
+  });
   it("opens on IndexedDB and gives a record back with its fetch time", async () => {
     expect(await openStore()).toBe("indexeddb");
     expect(await putRecord("snapshot", "lead", { agents: [1, 2] }, { fetchedAt: T0 - 5000 })).toBe(true);

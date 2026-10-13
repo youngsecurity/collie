@@ -59,6 +59,17 @@ function rows(lines: readonly string[]): { key: string; value: string; source: s
 }
 
 describe("config show", () => {
+  test("pairing reports the effective boolean and init documents its secure default", () => {
+    for (const [env, expected] of [[{}, "true"], [{ COLLIE_PAIRING: "off" }, "false"], [{ COLLIE_PAIRING: "typo" }, "true"]] as const) {
+      const h = harness({}, env);
+      cmdConfigShow(h.deps, []);
+      expect(rows(h.io.stdout).find((r) => r.key === "pairing")?.value).toBe(expected);
+    }
+    const h = harness({ [INSTANCE_FILE]: "[access]\npairing = false\n" });
+    cmdConfigShow(h.deps, []);
+    expect(rows(h.io.stdout).find((r) => r.key === "pairing")).toEqual({ key: "pairing", value: "false", source: "file:instance" });
+    expect(generateConfigFile(INSTANCE_FILE)).toContain("#pairing = true");
+  });
   test("the header names both paths in precedence order, each present or absent", () => {
     const h = harness({ [HOME_FILE]: "[network]\nport = 8800\n" });
     expect(cmdConfigShow(h.deps, [])).toBe(EXIT.OK);

@@ -858,6 +858,43 @@ describe("collie doctor — the local checks", () => {
     expect((await findings(posix)).byCheck.get("front-door")?.remedy).toContain("`collie serve` here");
   });
 
+  for (const branch of ["no certificates", "no mapping"] as const) {
+    for (const policy of ["off", "on", "invalid"]) {
+      test(`front-door: Windows ${branch} remedy follows pairing=${policy}`, async () => {
+        const files = healthyFiles();
+        delete files[HANDLER];
+        const answers: NonNullable<Scripted["answers"]> = [
+          ["tailscale status --json", { stdout: branch === "no certificates"
+            ? JSON.stringify({ Self: { DNSName: "laptop.tail.ts.net." } }) : CERTS_ONLY }],
+          ["tailscale serve status --json", { stdout: "{}" }],
+          ...netmapAnswers(NETMAP_OPEN),
+        ];
+        const win = harness(null, [], { files, answers, env: { COLLIE_PAIRING: policy } });
+        win.deps = { ...win.deps, host: hostFor("win32") };
+        const finding = (await findings(win)).byCheck.get("front-door")!;
+        expect(finding.status).toBe("warn");
+        expect(finding.detail).toContain(branch === "no certificates" ? "no HTTPS certificates" : "nothing of ours is published");
+        expect(finding.remedy).toContain(`tailscale serve --bg --set-path=/ ${win.deps.ctx.port}`);
+        expect(finding.remedy).not.toContain("collie serve");
+        if (branch === "no certificates") {
+          expect(finding.remedy).toContain("https://login.tailscale.com/admin/dns");
+          expect(finding.remedy).toContain(`tailscale serve --bg --http=80 --set-path=/ ${win.deps.ctx.port}`);
+        }
+        if (policy === "off") {
+          expect(finding.remedy).toContain("browser pairing is OFF");
+          expect(finding.remedy).toContain("remaining gates");
+          expect(finding.remedy).toContain("remote shell access without a token");
+          expect(finding.remedy).not.toContain("collie pair");
+          expect(finding.remedy).not.toContain("answers no device");
+        } else {
+          expect(finding.remedy).toContain("run `collie pair`");
+          expect(finding.remedy).toContain("answers no device");
+          expect(finding.remedy).not.toContain("pairing is OFF");
+        }
+      });
+    }
+  }
+
   test("front-door: on a Windows host a hand-made root mount that proxies to this collie passes; a POSIX host still warns", async () => {
     const files = healthyFiles();
     delete files[HANDLER];
@@ -1643,6 +1680,17 @@ const tmuxOnly = () => ({
 // A bridge with no paired device answers only `/api/health` and `/api/pair`. `doctor` says so, and
 // names the one command that fixes it.
 describe("pairing — doctor points to collie pair", () => {
+  test("off warns about exposure without a mandatory pair remedy, including an unreadable registry", async () => {
+    for (const files of [without(healthyFiles(), PAIRED_DEVICES), { ...healthyFiles(), [PAIRED_DEVICES]: "broken" }]) {
+      const pairing = (await findings(harness(null, [], { files, env: { COLLIE_PAIRING: "off" } }))).byCheck.get("pairing");
+      expect(pairing?.status).toBe("warn");
+      expect(pairing?.detail).toContain("browser pairing is OFF");
+      expect(pairing?.detail).toContain("remote shell access");
+      expect(pairing?.detail).not.toContain("no device paired");
+      expect(pairing?.remedy).toContain("restart");
+      expect(pairing?.remedy).not.toContain("`collie pair`");
+    }
+  });
   test("no device paired: a warning that names collie pair", async () => {
     const { code, byCheck } = await findings(harness(null, [], { files: without(healthyFiles(), PAIRED_DEVICES) }));
     const pairing = byCheck.get("pairing");

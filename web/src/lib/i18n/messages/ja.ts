@@ -119,6 +119,7 @@ export const ja: Dictionary = {
 
   // --- settings.devices ---
   "settings.devices.title": "ペアリング済みデバイス",
+  "settings.devices.description.disabled": "警告：このホストではペアリングが無効です。他のアクセスチェックを通過すると、トークンなしで記録の閲覧や端末の操作ができます。デバイスは保持されますが、オフラインのセッションキャッシュは無効です。",
   "settings.devices.description.enforced": "読み取りと書き込みのすべてにペアリング済みのデバイスが必要です。",
   "settings.devices.pairedAs": "この端末は {device} としてペアリングされています。",
   "settings.devices.loadError": "ブリッジからペアリング情報を取得できませんでした。",
@@ -134,6 +135,7 @@ export const ja: Dictionary = {
   "settings.devices.revoke": "失効",
   "settings.devices.revokeAria": "{label} を失効",
   "settings.devices.confirm.self": "この端末のペアリングを解除しますか？下書き、保存されたペインのテキスト、通知はこの端末から消去されます。設定は残ります。",
+  "settings.devices.confirm.otherDisabled": "{label}の認証情報を取り消しますか？ペアリングが無効な間は引き続きアクセスできます。",
   "settings.devices.confirm.other": "{label} を失効しますか？再びペアリングするまでアクセスできなくなります。",
   "settings.devices.pair.title": "この端末をペアリング",
   "settings.devices.pair.hint":
@@ -179,6 +181,7 @@ export const ja: Dictionary = {
   "settings.connection.bridge.offline": "Herdr オフライン",
   "settings.connection.bridge.connecting": "接続試行中...",
   "settings.connection.bridge.notPaired": "到達可能、未ペアリング",
+  "settings.connection.device.pairingOff": "このホストではペアリングが無効です",
   "settings.connection.device.notPaired": "適用中、この端末はペアリングされていません",
   "settings.connection.device.paired": "適用中、この端末はペアリング済みです",
   "settings.connection.device.fullAccessNamed": "フルアクセス · {device}",

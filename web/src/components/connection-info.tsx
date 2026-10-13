@@ -27,13 +27,11 @@ export function ConnectionInfo({
   redact?: boolean;
 }) {
   useLocale();
-  const { token, refused } = usePairing();
+  const { token, refused, enforced } = usePairing();
   const paired = token !== null && !refused;
-  const b = bridgeLabel(bridge, paired);
-  // Pairing is always on (ADR 0086), so "is this device paired" is part of its access. No token, or a
-  // refusal latched since the last proof, is the answer here: an unpaired phone gets no snapshot, and
-  // the header gate's `device` field it would have carried is then absent, not "off".
-  const d = deviceLabel(device, paired);
+  const b = bridgeLabel(bridge, !enforced || paired);
+  // The browser policy comes from the bridge, not a retained token or the independent header gate.
+  const d = deviceLabel(device, paired, enforced);
   const m = maskingLabel(redact);
   const secure = hasWindow() && window.isSecureContext;
   const host = hasWindow() ? window.location.host : "—";
@@ -123,17 +121,22 @@ function bridgeLabel(bridge: BridgeStatus | undefined, paired: boolean): StatusL
   return { text: t("settings.connection.bridge.connecting"), tone: "text-muted-foreground" };
 }
 
-// Mirrors the deviceAuth matrix on the bridge (see bridge/server.ts). "Local" = an authorised request
-// with no device header, i.e. the on-host loopback operator. Pairing comes first: it is always
-// enforced, and an unpaired device has no other access to describe. With the proxy's header gate off
-// (or not yet known), a paired device's access is its pairing.
-function deviceLabel(device: DeviceAuth | undefined, paired: boolean): StatusLine {
+// Pairing and the proxy header gate are independent. An ignored bearer token never implies access.
+function deviceLabel(device: DeviceAuth | undefined, paired: boolean, enforced: boolean): StatusLine {
+  if (!enforced) {
+    const header = device?.enforced ? `; ${headerLabel(device).text}` : "";
+    return { text: t("settings.connection.device.pairingOff") + header, tone: "text-status-working" };
+  }
   if (!paired) {
     return { text: t("settings.connection.device.notPaired"), tone: "text-status-working" };
   }
   if (!device || !device.enforced) {
     return { text: t("settings.connection.device.paired"), tone: "text-status-done" };
   }
+  return headerLabel(device);
+}
+
+function headerLabel(device: DeviceAuth): StatusLine {
   if (device.authorized) {
     return {
       text: device.device

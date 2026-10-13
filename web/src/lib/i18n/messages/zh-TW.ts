@@ -116,6 +116,7 @@ export const zhTW: Dictionary = {
 
   // --- settings.devices ---
   "settings.devices.title": "已配對裝置",
+  "settings.devices.description.disabled": "警告：此主機已停用配對。通過其他存取檢查的用戶端無需權杖即可讀取記錄並控制終端。裝置記錄會保留；離線工作階段快取已關閉。",
   "settings.devices.description.enforced": "所有讀取與寫入操作都需要已配對裝置。",
   "settings.devices.pairedAs": "目前裝置配對身分為 {device}。",
   "settings.devices.loadError": "無法從 Bridge 讀取已配對裝置清單。",
@@ -131,6 +132,7 @@ export const zhTW: Dictionary = {
   "settings.devices.revoke": "撤銷",
   "settings.devices.revokeAria": "撤銷 {label}",
   "settings.devices.confirm.self": "解除目前裝置的配對？此裝置上的草稿、已儲存的窗格文字和通知將被清除。你的設定會保留。",
+  "settings.devices.confirm.otherDisabled": "撤銷 {label} 的憑證？配對停用期間仍可存取。",
   "settings.devices.confirm.other": "撤銷 {label}？在重新配對之前，它將無法存取。",
   "settings.devices.pair.title": "配對此裝置",
   "settings.devices.pair.hint": "在主機上執行 {command}，然後掃描其輸出的代碼或在此輸入。",
@@ -170,6 +172,7 @@ export const zhTW: Dictionary = {
   "settings.connection.bridge.offline": "Herdr 離線",
   "settings.connection.bridge.connecting": "正在連線…",
   "settings.connection.bridge.notPaired": "可連線，未配對",
+  "settings.connection.device.pairingOff": "此主機已關閉配對",
   "settings.connection.device.notPaired": "已強制，此裝置未配對",
   "settings.connection.device.paired": "已強制，此裝置已配對",
   "settings.connection.device.fullAccessNamed": "完整權限 · {device}",

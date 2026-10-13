@@ -15,8 +15,16 @@ lives in the README. Security requirements in [docs/security.md](security.md) ap
 - [Multiple Collie instances on one host](#multiple-collie-instances-on-one-host)
 - [The standby door — a crew's failover path](#the-standby-door--a-crews-failover-path)
 
-Individual devices can also be authorized without a proxy via
-[pairing](security.md#pair-a-device--the-write-credential).
+Device [pairing](security.md#pair-a-device--the-write-credential) is on by default, independently
+of the proxy. The examples below use that default.
+
+> **Warning.** Setting `COLLIE_PAIRING=off` or `[access] pairing=false` and restarting permits
+> tokenless transcript reads and remote shell access through the remaining gates. It preserves
+> devices and credentials but disables anonymous offline session caching. Host, Origin, TCP-peer,
+> identity, device-header, containment, masking, crew and standby checks are unchanged.
+
+With that explicit opt-out, skip the pairing steps and omit the `Authorization: Bearer $TOKEN`
+header in these browser API checks. Re-enable pairing and restart to require credentials again.
 
 ---
 
@@ -24,9 +32,10 @@ Individual devices can also be authorized without a proxy via
 
 Collie reads an opaque device ID from `COLLIE_DEVICE_HEADER` and checks `COLLIE_DEVICE_ALLOWLIST`.
 Allowlisted IDs receive write access; missing or unlisted IDs receive read-only access (terminal
-input, uploads, and pane actions are blocked). Pairing is a second gate and always on: every device
-also needs a [pairing token](security.md#pair-a-device--the-write-credential) for every `/api` call,
-reads included.
+input, uploads, and pane actions are blocked). Pairing is a second gate, on by default: every device
+also needs a [pairing token](security.md#pair-a-device--the-write-credential) for protected `/api`
+calls, reads included, unless the host explicitly opts out. The header gate still protects writes
+and the Files view's `device-read` when pairing is off.
 
 Collie configuration (`.env`):
 
@@ -68,8 +77,8 @@ location / {
 }
 ```
 
-Verify header injection and override from an external device. Every `/api` call except
-`/api/health` and `/api/pair` needs a pairing token, so pair a terminal first. On the host, run
+Verify header injection and override from an external device. With default-on pairing, every
+`/api` call except `/api/health` and `/api/pair` needs a token, so pair a terminal first. On the host, run
 `collie pair`. It prints an 8-character code. Claim the code from the device you test with. The
 `Origin` header must match the public URL. The answer holds the token. Keep it in a shell variable
 and never paste it into a file:
@@ -91,16 +100,17 @@ $ curl -s -H "Authorization: Bearer $TOKEN" -H 'X-Device-Id: not-listed' https:/
 {"enforced":true,"device":"header-check","authorized":true}
 ```
 
-With a token, `device` names the paired label (`header-check`), not the header value. No field
-returns the raw header value any more, so read `authorized`: it is true only when the header the
-bridge saw is on `COLLIE_DEVICE_ALLOWLIST` and the token is valid. If the second check returns
+With pairing enabled, `device` names the paired label (`header-check`), not the header value.
+With pairing off, it names the proxy's device header instead; bearer tokens are ignored.
+In both modes, read `authorized`: it is true only when the header the bridge saw is on
+`COLLIE_DEVICE_ALLOWLIST`, plus a valid token when pairing is enabled. If the second check returns
 `"authorized":false`, the proxy is appending the client's header instead of overriding it. When
 you finish, remove the test device with `collie devices revoke header-check`.
 
 Operational notes:
 - Direct loopback access (`http://127.0.0.1:$COLLIE_PORT`) sends no header and is read-only, and
-  it still needs a pairing token.
-- To execute commands locally via curl, pass the token and the header explicitly to loopback:
+  it still needs a pairing token unless the host explicitly opts out.
+- To execute commands locally via curl, pass the header and, with pairing on, the token to loopback:
   `curl -H "Authorization: Bearer $TOKEN" -H 'X-Device-Id: my-laptop' http://127.0.0.1:$COLLIE_PORT/api/...`
 - Revoke access by removing the ID from `COLLIE_DEVICE_ALLOWLIST` and restarting (Standalone:
   `bin/collie restart`; Herdr: `herdr plugin action invoke restart --plugin herdr.collie`).
@@ -305,8 +315,9 @@ Run the proxy or tunnel on the same host as Collie. Collie refuses a connection 
 come from loopback, so a proxy on another machine needs
 [Variant D](#variant-d--off-host-identity-proxy-over-the-tailnet) instead.
 
-Then pair the phone with `collie pair`. None of these doors knows which device may type; pairing
-does ([Pair a device](security.md#pair-a-device--the-write-credential)).
+With default-on pairing, pair the phone with `collie pair`
+([Pair a device](security.md#pair-a-device--the-write-credential)). If the host opts out,
+callers admitted by the remaining gates can type without a pairing credential.
 
 | Door | Private by default | HTTPS certificate | Extra step |
 | --- | --- | --- | --- |
@@ -377,7 +388,8 @@ A tunnel made in the Zero Trust dashboard works too: set its public hostname's s
 `COLLIE_PUBLIC_HOSTS` expects.
 
 > **Warning.** Without step 4, anyone who finds the hostname gets a shell on your machine.
-> Cloudflare Access is the door's lock; pairing then decides which device may type.
+> Cloudflare Access is the door's lock; default-on pairing adds a device credential check.
+> Opting out of pairing does not disable Cloudflare Access verification.
 
 5. Make Collie check the lock. In the Access application, copy the **Application Audience (AUD)
    tag**. Add it and your team name to `.env`, then restart.
@@ -399,8 +411,9 @@ A tunnel made in the Zero Trust dashboard works too: set its public hostname's s
 
    Only a process on this machine skips the token: a request to `127.0.0.1` or `localhost` that
    carries no `Cf-*` and no forwarding header (`X-Forwarded-For`, `X-Forwarded-Host`,
-   `X-Forwarded-Proto`, `Forwarded`, `X-Real-Ip`). It still needs pairing to type. `/api/health`
-   and the crew links do not need a token either. `collie doctor` is such a local caller, so a green
+   `X-Forwarded-Proto`, `Forwarded`, `X-Real-Ip`). It still needs a pairing credential for protected
+   reads and writes unless the host explicitly opts out. `/api/health` and the crew links do not
+   need a Cloudflare Access token either. `collie doctor` is such a local caller, so a green
    doctor does not show that the keys loaded or that a token verifies. Open the hostname from the
    phone to check that.
    [ADR 0081](../.adr/0081-a-front-doors-signed-identity-is-verified-cloudflare-access-is-the-first-preset.md) has the reasons.
