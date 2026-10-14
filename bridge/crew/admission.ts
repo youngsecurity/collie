@@ -24,6 +24,8 @@ export const PROTOCOL_HEADER = "x-crew-protocol";
 export const MEMBER_HEADER = "x-crew-member";
 /** The operator's device identity, forwarded for the peer's audit trail (§6, §12). */
 export const DEVICE_HEADER = "x-crew-device";
+/** Optional attribution namespace. Never an admission factor or copied from a browser header. */
+export const DEVICE_KIND_HEADER = "x-crew-device-kind";
 
 /** RFC 8187's charset prefix: what marks a {@link DEVICE_HEADER} value as percent-encoded UTF-8. */
 const EXT_VALUE_PREFIX = "UTF-8''";

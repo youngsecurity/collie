@@ -1,6 +1,7 @@
 import { mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
+import type { DeviceKind } from "./device-kind.ts";
 import { harnessLaunch } from "./harness-launch.ts";
 import type { JsonObject, JsonValue } from "./json.ts";
 import { buildRecipe, cleanLauncherText, MAX_COMMAND_CHARS, MAX_LABEL_CHARS, scanNoPrompts } from "./launcher-recipes.ts";
@@ -53,8 +54,12 @@ export interface AddedLauncher {
   label: string;
   /** True when the line skips permission prompts (a chip said so, the scan found a flag, or a tick). */
   noPrompts: boolean;
-  /** The pairing label of the device that added it. */
-  device: string;
+  /** Attribution only. Anonymous additions have no device and stay in memory. */
+  device: string | null;
+  /** Absent on legacy paired rows. Header names are not pairing labels. */
+  deviceKind?: DeviceKind;
+  /** Independent proxy attribution, never stored in the paired-label field used by CLI revocation. */
+  headerDevice?: string;
   /** `local` when the phone talked to this bridge, `crew` when the lead forwarded the add. */
   via: "local" | "crew";
   /** Epoch ms of the add. */
@@ -72,17 +77,25 @@ function asRecord(value: JsonValue | undefined): JsonObject | null {
 export function coerceAddedRow(raw: JsonValue | undefined): AddedLauncher | null {
   const r = asRecord(raw);
   if (r === null) return null;
-  const { id, kind, harness, source, options, command, label, noPrompts, device, via, at } = r;
+  const { id, kind, harness, source, options, command, label, noPrompts, device, via, at, deviceKind, headerDevice } = r;
+  // Anonymous additions must never be restored from disk.
+  if (deviceKind !== undefined && deviceKind !== "paired" && deviceKind !== "header") return null;
   if (!isRequestId(id)) return null;
   if (kind !== "agent" && kind !== "command") return null;
   if (source !== "recipe" && source !== "text") return null;
   if (typeof command !== "string" || typeof label !== "string" || typeof noPrompts !== "boolean") return null;
-  if (typeof device !== "string" || device === "" || (via !== "local" && via !== "crew")) return null;
+  if (via !== "local" && via !== "crew") return null;
+  if (device !== null && typeof device !== "string") return null;
+  if (deviceKind === "header") {
+    if (device !== null || typeof headerDevice !== "string" || headerDevice === "") return null;
+  } else if (typeof device !== "string" || device === "" || headerDevice !== undefined) return null;
   if (typeof at !== "number" || !Number.isFinite(at)) return null;
   const line = cleanLauncherText(command, MAX_COMMAND_CHARS);
   const name = cleanLauncherText(label, MAX_LABEL_CHARS);
   if (!line.ok || !name.ok || line.text !== command || name.text !== label) return null;
   const row: AddedLauncher = { id, kind, source, command, label, noPrompts, device, via, at };
+  if (deviceKind !== undefined) row.deviceKind = deviceKind;
+  if (typeof headerDevice === "string") row.headerDevice = headerDevice;
   if (kind === "agent") {
     if (typeof harness !== "string" || harnessLaunch(harness) === undefined) return null;
     row.harness = harness;
@@ -220,13 +233,14 @@ export function parseAddedText(text: string | null): Loaded {
 
 /** The text a list of rows is written as. */
 export function formatAddedFile(rows: readonly AddedLauncher[]): string {
-  return `${JSON.stringify({ version: ADDED_VERSION, rows }, null, 2)}\n`;
+  return `${JSON.stringify({ version: ADDED_VERSION, rows: rows.filter((r) => r.deviceKind !== "anonymous") }, null, 2)}\n`;
 }
 
 /** The file-backed store `bridge/index.ts` builds once. */
 export class AddedLauncherStore implements AddedLauncherSurface {
   private cache: { mtime: number | null; loaded: Loaded } | null = null;
   private queue: Promise<void> = Promise.resolve();
+  private anonymous: AddedLauncher[] = [];
 
   constructor(
     private readonly io: AddedFileIo,
@@ -252,7 +266,7 @@ export class AddedLauncherStore implements AddedLauncherSurface {
   }
 
   async list(): Promise<AddedLauncher[]> {
-    return [...((await this.load()).rows ?? [])];
+    return [...((await this.load()).rows ?? []), ...this.anonymous];
   }
 
   async get(id: string): Promise<AddedLauncher | undefined> {
@@ -266,9 +280,11 @@ export class AddedLauncherStore implements AddedLauncherSurface {
       this.cache = null;
       const { rows } = await this.load();
       if (rows === null) return unwritable;
-      const out = edit(rows);
+      const out = edit([...rows, ...this.anonymous]);
       if (out.rows !== null) {
-        await this.io.write(formatAddedFile(out.rows));
+        const persisted = formatAddedFile(out.rows);
+        if (persisted !== formatAddedFile(rows)) await this.io.write(persisted);
+        this.anonymous = out.rows.filter((r) => r.deviceKind === "anonymous");
         this.cache = null;
       }
       return out.answer;

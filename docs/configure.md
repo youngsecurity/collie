@@ -786,6 +786,13 @@ Crew and standby credentials remain independent. Off does not delete devices or 
 
 Missing, stale and expired browser tokens do not block live use while off.
 
+The New page can run commands and add launchers through the remaining gates. Without an
+independent device-header identity, added launchers and launch retry receipts stay in memory and
+are lost when the bridge restarts. These runs do not add command history or folder recents.
+Header-authenticated additions retain their own attribution and are not removed by revoking a
+paired device with the same name. In a crew, update both the lead and the member before relying
+on these opt-out behaviors.
+
 The browser does not write new offline session records in this mode, even if
 it still holds a token. After re-enabling pairing, reload the page to resume
 offline caching. Existing records keep their expiry and wipe rules.
@@ -803,7 +810,7 @@ COLLIE_REDACT=off
 
 | variable | default | what it does |
 | --- | --- | --- |
-| `COLLIE_REDACT` | `on` | Masks API keys, JWTs, PEM private keys, bearer tokens and `password=` values in the mirror, Chat, History, push notifications, file bodies in Files and diffs in Changes. `off` sends them as they are. |
+| `COLLIE_REDACT` | `on` | Masks API keys, JWTs, PEM private keys, bearer tokens and `password=` values in the mirror, Chat, History, durable ask display text, push notifications, file bodies in Files and diffs in Changes. `off` sends them as they are. |
 
 In the config file this is `[access] redact`. The mask keeps the width of what it hides, so the
 mirror's layout holds. It catches high-confidence shapes only; the limits are in

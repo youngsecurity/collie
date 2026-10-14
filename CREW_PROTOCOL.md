@@ -454,6 +454,7 @@ Every request on a crew link, and every response:
 | `X-Crew-Protocol: 1` | both | Protocol version. Required on every request **and** every response (§7). |
 | `X-Crew-Member: <member-id>` | both | Who is speaking. On a request, the lead's id; on a response, the peer's. Informational — identity is proven by the pinned certificate, never by this header. |
 | `X-Crew-Device: <device-id>` | request | The operator's device identity, forwarded for the peer's audit trail (§12). Absent when the lead's device gate is off. Printable ASCII as itself, any other id in RFC 8187 form (§12). |
+| `X-Crew-Device-Kind: header\|anonymous` | request | Optional fork extension, added 2026-10-14, additive-optional under §7.1. Identifies attribution provenance, not authorization. Absent or unrecognized means the legacy paired-label contract. The lead derives it from its own resolved policy, never from a browser header. See §12. |
 | `X-Crew-Preflight: fresh` | request | **Optional**, added 2026-09-04 (§19). On `GET /crew/v1/snapshot` only: a REQUEST that the answering member re-run its own `collie update --check --local` before it answers. `fresh` is the only value with meaning; anything else reads as absent. A member that ignores it is a **correct member** — its answer is then simply older, and `asOf` says so. Honoured at most once per `PREFLIGHT_TTL_MS` per member. |
 | `X-Crew-Lead-Release: <x.y.z>` | request | **Optional**, added 2026-09-04 (§20). On `GET /crew/v1/snapshot` only: the bare version the LEAD is itself running, sent only while that version is a strict release and the lead's own health gate has settled it. Absent means the lead is on a dev or prerelease build, or is mid-run — and absent means the receiving member does nothing. It is a statement about the sender and carries no ref, no URL and no command. |
 | `X-Crew-Update-Turn: <member-name>;<run-id>` | request | **Optional**, added 2026-09-04 (§20). On `GET /crew/v1/snapshot` only: who may take that release now, and the id of the `UpdateRun` the operator confirmed on the lead. Sent to **at most one member at a time**. A member ignores a turn that does not name itself. Absent means it is not this member's turn. |
@@ -1603,6 +1604,16 @@ happened on the peer's terminals.
 - The lead forwards `X-Crew-Device: <device-id>` — the operator's device identity as the lead resolved
   it via `deviceAuth()` (`bridge/server.ts:1216-1223`). Absent when the lead's device gate is off,
   matching how the field is omitted rather than nulled today (`bridge/audit.ts:55-61`).
+- **Fork attribution provenance** (added 2026-10-14, additive-optional under §7.1). A lead with
+  browser pairing disabled sends `X-Crew-Device-Kind: header` when its independent device-header
+  gate supplies the identity, or `anonymous` when no identity is present. The header never grants
+  admission: the existing crew factors, role and member device policy still run. Missing or
+  unrecognized values retain paired-label semantics. New members distinguish header-owned launcher
+  rows from paired rows, so a paired-device revocation cannot delete a header-owned row with the
+  same name. Anonymous additions and their launch receipts stay in memory; anonymous runs do not
+  populate command history or folder recents. Older members ignore this optional header and retain
+  their existing opt-out limitations. Update both sides before relying on these behaviors. Protocol
+  version remains 2; existing paired requests and answers do not change.
 - **The value's encoding** (#324). A device id of printable ASCII travels as itself, byte for byte.
   Any other id (a pairing label like `폰`) travels in RFC 8187's ext-value form, `UTF-8''` followed
   by the percent-encoded UTF-8, and the peer decodes it before its allowlist and its audit line see

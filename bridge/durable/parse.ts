@@ -15,11 +15,26 @@
 //   • `<stateDir>/control-receipts.json`, their receipts (`coerceControlReceipt`).
 
 import type { JsonObject, JsonValue } from "../json.ts";
+import { redactText } from "../redact.ts";
 import type { AnswerRequest, Ask, ControlRequest, ControlTarget } from "../types.ts";
 import { isRequestId } from "../worktree-receipts.ts";
 import type { AnswerReceipt, AnswerState } from "./answer.ts";
 import type { ControlAct, ControlReceipt, ControlState } from "./control.ts";
 import type { GuardAsk, GuardEntry } from "./guard.ts";
+
+// Opaque control fields, not display text. An option id may look like a key but must round-trip.
+const ASK_CONTROL_KEYS = new Set(["id", "kind", "toolCallId", "itemId", "turnId", "askId", "optionId", "revision", "effect", "mimeType"]);
+
+/**
+ * Mask an ask's display strings, including nested tool output from a newer peer. This JSON
+ * boundary rebuilds the wire value rather than changing an adapter or crew cache object.
+ */
+export function maskAsk<T>(ask: T): T {
+  // SAFETY: asks are JSON wire values. The reviver replaces only display strings with strings;
+  // opaque control fields and the shape are preserved, including fields from a newer crew peer.
+  return JSON.parse(JSON.stringify(ask), (key: string, value: JsonValue) =>
+    typeof value === "string" && !ASK_CONTROL_KEYS.has(key) ? redactText(value) : value) as T;
+}
 
 const STATES: ReadonlySet<string> = new Set(["pending", "unknown", "unsent", "taken", "too-late", "stale", "refused", "maybe-applied"]);
 

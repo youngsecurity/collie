@@ -96,6 +96,17 @@ function post(path: string, body: string, headers: Record<string, string> = {}):
   return [new Request(url, { method: "POST", body, headers }), url];
 }
 
+test("crew attribution provenance is lead-owned, never a browser's header", async () => {
+  for (const kind of ["paired", "header", "anonymous"] as const) {
+    const { transport, calls } = transportOf(() => ok(new Response("{}")));
+    const [req, url] = post("/api/launchers/added?host=laptop", "{}", { "x-crew-device-kind": "anonymous" });
+    await forward(req, url, { transport, device: kind === "anonymous" ? null : "phone", deviceKind: kind });
+    const headers = new Headers(calls[0]?.init.headers);
+    expect(headers.get("x-crew-device-kind")).toBe(kind === "paired" ? null : kind);
+    expect(crewDeviceOf(new Request("http://member.invalid", { headers }))).toBe(kind === "anonymous" ? null : "phone");
+  }
+});
+
 // ── The route table is §5's, and it is one table ─────────────────────────────
 
 /**

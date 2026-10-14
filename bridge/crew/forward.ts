@@ -1,7 +1,8 @@
 import type { JsonObject } from "../json.ts";
 import { MASK_VERSION } from "../redact.ts";
 import { MAX_UPLOAD_OVERHEAD, uploadTooLarge } from "../uploads.ts";
-import { DEVICE_HEADER, encodeDeviceHeader } from "./admission.ts";
+import { DEVICE_HEADER, DEVICE_KIND_HEADER, encodeDeviceHeader } from "./admission.ts";
+import type { DeviceKind } from "../device-kind.ts";
 import { type CrewLink, type PeerFailure, type PeerOutcome, WRITE_BUDGET_MS } from "./peer-client.ts";
 import { HOST_PARAM, type PeerState } from "./registry.ts";
 
@@ -24,9 +25,9 @@ import { HOST_PARAM, type PeerState } from "./registry.ts";
 // ── THE ONE BODY IT READS: TEXT THE PHONE WILL SHOW ──────────────────────────
 // A member masks secrets in its own text before it answers (bridge/redact.ts), but a member one
 // release behind does not, and the phone must not get a key in clear because of a member's version.
-// So five answers are masked again on the lead, with the injected {@link AnswerMask} (the same
+// Text answers are masked again on the lead, with the injected {@link AnswerMask} (the same
 // functions the local routes use, through `bridge/crew/mask.ts`): the mirror, History, Chat, a
-// Changes diff and a Files body ({@link textAnswerOf}). The mask is idempotent, so an answer a member
+// Changes diff, a Files body and a stale ask ({@link textAnswerOf}). The mask is idempotent, so an answer a member
 // already masked comes back byte for byte. Every other route, a picture and a blob included, still
 // streams unread. An answer that should be masked and cannot be read is refused, never passed on raw.
 //
@@ -115,15 +116,16 @@ const FORWARDABLE: readonly RegExp[] = [
  * The answers that carry text a pane or an agent wrote, which the lead masks before the phone reads
  * them (§9.1): the mirror (`pane`), a History page, a Chat body, and a Changes or Files answer, asked
  * by pane or by space. A picture (`files/image`) and a blob are bytes, never text, and stay byte for
- * byte, and so does every write's answer.
+ * byte. Writes also stay untouched except for an ask answer, whose 409 can carry the current ask.
  */
-export type TextAnswer = "pane" | "history" | "chat" | "changes" | "files";
+export type TextAnswer = "pane" | "history" | "chat" | "changes" | "files" | "answer";
 
 /** Which {@link TextAnswer} a crew route answers with, or `null` for a route whose answer is not text. */
 export function textAnswerOf(route: string): TextAnswer | null {
   if (/^pane\/[^/]+$/.test(route)) return "pane";
   if (/^pane\/[^/]+\/history$/.test(route)) return "history";
   if (/^pane\/[^/]+\/chat$/.test(route)) return "chat";
+  if (/^pane\/[^/]+\/answer$/.test(route)) return "answer";
   if (/^(?:pane|workspace)\/[^/]+\/changes$/.test(route)) return "changes";
   if (/^(?:pane|workspace)\/[^/]+\/files$/.test(route)) return "files";
   return null;
@@ -518,6 +520,8 @@ export interface ForwardDeps {
   readonly onExchange?: (receivedAt: number) => void;
   /** The operator's device, as the LEAD resolved it — forwarded as `X-Crew-Device` (§12). */
   readonly device?: string | null;
+  /** Optional attribution namespace, not a gate verdict. Absent retains legacy paired semantics. */
+  readonly deviceKind?: DeviceKind;
   /**
    * The LEAD's own upload cap in bytes (`cfg.maxUploadBytes`), for the §13 pre-check below. Passed
    * in rather than imported because it is no longer a constant — it is this host's setting, and a
@@ -532,7 +536,7 @@ export interface ForwardDeps {
 }
 
 /**
- * A member's text answer, masked for the phone. Only a `2xx` with a body is read: a `304` has no
+ * A member's text answer, masked for the phone. A `2xx` or an ask's `409` with a body is read: a `304` has no
  * body, and an error body (`404 unknown-path`, `502 transcript read failed`) carries no session text
  * on either side, so it streams on as itself.
  *
@@ -552,7 +556,8 @@ export interface ForwardDeps {
  * `content-length` is copied ({@link proxiedResponse}), so the new body is framed by its own length.
  */
 async function maskedAnswer(res: Response, answer: TextAnswer, mask: AnswerMask, memberId: string): Promise<Response> {
-  if (res.status < 200 || res.status >= 300 || res.status === 204 || res.body === null) return res;
+  const staleAsk = answer === "answer" && res.status === 409;
+  if ((!staleAsk && (res.status < 200 || res.status >= 300)) || res.status === 204 || res.body === null) return res;
   let raw: string;
   try {
     raw = await res.text();
@@ -655,6 +660,7 @@ export async function forwardToPeer(req: Request, url: URL, deps: ForwardDeps): 
   // `duplex` is required by the Fetch spec for a stream body; the DOM lib's `RequestInit` predates
   // it, so the streaming half of this init is typed here rather than asserted at the assignment.
   const headers = forwardHeaders(req, deps.device);
+  if (deps.deviceKind !== undefined && deps.deviceKind !== "paired") headers.set(DEVICE_KIND_HEADER, deps.deviceKind);
   // Text the phone will show is masked here, whatever the member's version (§9.1). Every other answer
   // is not read at all. A masked answer's tag carries the mask's version, both ways ({@link saltTag}).
   const answer = deps.mask === undefined ? null : textAnswerOf(route);

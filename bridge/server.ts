@@ -47,6 +47,8 @@ import { launchReplay, memoryLaunchReceipts, type LaunchReceiptSurface } from ".
 import { isStarterBody, launchStarter, memoryStarterReceipts, starterItems, type StarterReceiptSurface } from "./starter-launch.ts";
 import { answerPane, memoryAnswerReceipts, type AnswerReceiptSurface } from "./durable/answer.ts";
 import { controlPane, memoryControlReceipts, rawInputRefusal, type ControlReceiptSurface } from "./durable/control.ts";
+import { deviceKind, type DeviceKind } from "./device-kind.ts";
+import { DEVICE_KIND_HEADER } from "./crew/admission.ts";
 import { withOpenAsks, withTurn } from "./durable/pane-asks.ts";
 import {
   memoryWorktreeChoices,
@@ -135,7 +137,7 @@ import {
   maskHistoryPage,
   maskPaneRead,
   maskSnapshotTitles,
-  maskTerminalTitle,
+  maskAskAnswer,
 } from "./answer-mask.ts";
 import { maskForwardedAnswer } from "./crew/mask.ts";
 import { redactAnsi } from "./redact.ts";
@@ -662,6 +664,8 @@ interface RouteCaller {
   gate(level: GateLevel): Response | null;
   /** The device a write is attributed to. */
   device(): string | null;
+  /** Attribution provenance only; gate() still decides admission. */
+  deviceKind?(): DeviceKind;
   /** Where a write's audit line lands — the peer's is pre-stamped `via:"crew"` + originator (§12). */
   readonly audit: AuditLog;
   /**
@@ -1248,6 +1252,7 @@ export function startServer(opts: {
   const worktreeReceipts = opts.worktreeReceipts ?? memoryWorktreeReceipts();
   const worktreeBases = opts.worktreeBases ?? memoryWorktreeBases();
   const launchReceipts = opts.launchReceipts ?? memoryLaunchReceipts();
+  const anonymousLaunchReceipts = memoryLaunchReceipts();
   const starterReceipts = opts.starterReceipts ?? memoryStarterReceipts();
   const answerReceipts = opts.answerReceipts ?? memoryAnswerReceipts();
   const controlReceipts = opts.controlReceipts ?? memoryControlReceipts();
@@ -1282,6 +1287,8 @@ export function startServer(opts: {
   };
   /** Who the requester is, across both device gates — see {@link requestDevice}. */
   const whois = (req: Request): DeviceAuth => requestDevice(req, cfg, pairingGate);
+  const whoKind = (req: Request): DeviceKind => cfg.pairing === false
+    ? (whois(req).device === null ? "anonymous" : "header") : "paired";
   const crewLead = opts.crewLead;
   const crewStatus = opts.crewStatus;
   const peerNotifier = opts.peerNotifier;
@@ -1441,10 +1448,7 @@ export function startServer(opts: {
     // nothing. No entry means no key at all, which renders as nothing.
     const withActivity = (from: SessionRuntime, p: AgentView): AgentView => {
       const a = activity.get(from.name, p.paneId);
-      // The title is the one string here a program in the pane writes, so it is masked like the
-      // mirror (bridge/redact.ts) before it reaches the phone and the phone's cache.
-      const titled = cfg.redact ? maskTerminalTitle(p) : p;
-      const withTimes = a ? { ...titled, lastActiveAt: a.activeAt, lastSeenAt: a.seenAt } : titled;
+      const withTimes = a ? { ...p, lastActiveAt: a.activeAt, lastSeenAt: a.seenAt } : p;
       const key = p.agentSession?.value;
       const reading = key === undefined ? undefined : cache?.get(key);
       const read = reading === undefined ? withTimes : { ...withTimes, cache: reading };
@@ -1483,7 +1487,7 @@ export function startServer(opts: {
     const paneList = (pick: (rtx: SessionRuntime) => AgentView[]): PaneWire[] => {
       const wired = sources.map((from) => ({
         name: from.name,
-        // A pane whose adapter raises asks as data carries them, capped at five (ADR 0100), and one
+        // A pane whose adapter raises asks as data carries all of them (ADR 0100), and one
         // whose adapter names turns carries its newest `turnId` (ADR 0101); every other pane comes
         // back from `withOpenAsks` and `withTurn` as the same object.
         panes: pick(from).map((p) => withTurn(withOpenAsks(toPaneWire(withActivity(from, p), hasJournal, discoversSessions), from.herdr), from.herdr)),
@@ -1508,7 +1512,7 @@ export function startServer(opts: {
     if (device !== null) body.device = device;
     // Only while the mux is down for a cause the phone words (a refused token), like `device`.
     if (muxFault !== undefined) body.muxFault = muxFault;
-    return body;
+    return cfg.redact ? maskSnapshotTitles(body) : body;
   };
 
   /**
@@ -1626,11 +1630,12 @@ export function startServer(opts: {
       if (rt instanceof Response) return rt;
       return launch(rt.herdr, rt.engine, req, caller.audit, caller.device(), rt.name, allowedLaunchers, {}, {
         harnesses,
-        receipts: launchReceipts,
+        receipts: caller.deviceKind?.() === "anonymous" ? anonymousLaunchReceipts : launchReceipts,
         starterReceipts,
         folders,
         switches: launcherSources.switches,
         recentRuns,
+        deviceKind: caller.deviceKind?.(),
       });
     }
     // Rows must come from the host that runs them: today's `/api/config` (a lead-only body) sent
@@ -1891,7 +1896,7 @@ export function startServer(opts: {
           session,
           settled: () => rt.engine.pokeNow(),
         });
-        return "text" in answered ? text(answered.text, answered.status) : json(answered.body, req.headers.get("accept-encoding"), answered.status);
+        return "text" in answered ? text(answered.text, answered.status) : json(cfg.redact ? maskAskAnswer(answered.body) : answered.body, req.headers.get("accept-encoding"), answered.status);
       }
       // A send or an abort that names the turn or ask the phone saw (ADR 0101). The receipt is written
       // before the control leaves; on a crew it lives on the member that owns the pane.
@@ -1973,6 +1978,7 @@ export function startServer(opts: {
           return verdict.ok ? null : text(verdict.reason, 403);
         },
         device: () => device,
+        deviceKind: () => deviceKind(req.headers.get(DEVICE_KIND_HEADER)),
         audit: audit.scoped({ via: "crew", from }),
         via: "crew",
       });
@@ -2256,6 +2262,7 @@ export function startServer(opts: {
             const forwarded = secure(
               await crewLead!.forward(req, url, resolved, {
                 device: whois(req).device,
+                deviceKind: whoKind(req),
                 // A member's text is masked here too, by the lead's own switch, so a member one
                 // release behind cannot send a key to the phone in clear (CREW_PROTOCOL.md §9.1).
                 mask: cfg.redact ? maskForwardedAnswer : undefined,
@@ -2348,6 +2355,7 @@ export function startServer(opts: {
         resolve: target,
         gate: browserGate,
         device: () => whois(req).device,
+        deviceKind: () => whoKind(req),
         audit,
       });
       if (sessionRouted) return sessionRouted;
@@ -5230,7 +5238,7 @@ export async function launchersRoute(
 export const FORGET_DEVICE_PATH = "/api/launchers/added/forget-device";
 
 /** What the added-launcher routes need of their caller. */
-export type AddedRouteCaller = Pick<RouteCaller, "gate" | "resolve" | "device" | "audit" | "via">;
+export type AddedRouteCaller = Pick<RouteCaller, "gate" | "resolve" | "device" | "deviceKind" | "audit" | "via">;
 
 /** Serve one of the three added-launcher writes, or `null` when `pathname` is none of them. */
 export async function serveAddedLauncherRoute(
@@ -5262,6 +5270,7 @@ export async function serveAddedLauncherRoute(
   const answer: RouteAnswer = await act(body, {
     sources,
     device: caller.device(),
+    deviceKind: caller.deviceKind?.(),
     via: caller.via === "crew" ? "crew" : "local",
     audit: caller.audit,
     session: rt.name,
@@ -5632,6 +5641,7 @@ export async function launch(
 
   const picked = await pickLaunch(fields, getLaunchers, deps.harnesses, {
     device,
+    deviceKind: deps.deviceKind,
     switches: deps.switches ?? (() => Promise.resolve({ ...DEFAULT_SWITCHES })),
   });
   if (picked instanceof Response) return picked;
@@ -5689,7 +5699,7 @@ export async function launch(
   const answer = await work;
   // A folder the sheet named that worked joins Recent, as a space created there does. Never a row's
   // pinned folder, which the operator already wrote down, and never on a failure.
-  if (answer.ok && asked !== undefined && row?.cwd === undefined && deps.folders !== undefined) {
+  if (answer.ok && deps.deviceKind !== "anonymous" && asked !== undefined && row?.cwd === undefined && deps.folders !== undefined) {
     await deps.folders.recordRecent(answer.pane.cwd);
   }
   if (!answer.ok || picked.kind !== "run" || row === undefined) return json(answer, ae);
@@ -5697,7 +5707,7 @@ export async function launch(
   // refusal returned above, and a replay or a joined retry never reaches this line. A history that
   // cannot be written does not undo a run that happened.
   // A line that seems to carry a secret ran, and is not kept (bridge/recent-runs.ts).
-  if (deps.recentRuns !== undefined && !looksSecret(row.command)) {
+  if (deps.deviceKind !== "anonymous" && deps.recentRuns !== undefined && !looksSecret(row.command)) {
     const where = asked ?? besidePane?.cwd ?? null;
     try {
       const recorded = await deps.recentRuns.record({ line: row.command, cwd: where, at: Date.now(), noPrompts: picked.noPrompts === true });
@@ -5711,6 +5721,8 @@ export async function launch(
 
 /** What `launch` needs beyond the route's own arguments. Every field defaults for a test. */
 export interface LaunchDeps {
+  /** From the already-admitted caller, never from the request body. */
+  deviceKind?: DeviceKind;
   /** The agents this host starts by id. Absent: no `harness` body is accepted. */
   harnesses?: Pick<HarnessProbe, "launch">;
   /** Absent: an in-memory store. */
@@ -5748,6 +5760,7 @@ type PickedLaunch = { kind: "row" | "harness" | "shell" | "run"; row: Launcher |
 /** What a one-off `run` is checked against: who asks, and the operator's switch (ADR 0095). */
 interface RunGate {
   device: string | null;
+  deviceKind?: DeviceKind;
   switches: () => Promise<Pick<LauncherSwitches, "run">>;
 }
 
@@ -5793,7 +5806,7 @@ async function pickRun(raw: JsonValue | undefined, gate: RunGate | null): Promis
   const refuse = (code: ErrorCode, status: number, detail: ApiErrorDetail = {}): Response =>
     json({ ok: false, ...apiError(code, detail) } satisfies CreateResponse, null, status);
   if (gate === null) return refuse("launch.run_no_branch", 400);
-  if (gate.device === null || gate.device === "") return refuse("launch.no_device", 403);
+  if ((gate.device === null || gate.device === "") && gate.deviceKind !== "anonymous") return refuse("launch.no_device", 403);
   if (!(await gate.switches()).run) return refuse("launch.run_off", 403);
   if (typeof raw !== "string") return refuse("launch.bad_line", 400, { problem: "empty", max: MAX_COMMAND_CHARS });
   const line = cleanLauncherText(raw, MAX_COMMAND_CHARS);

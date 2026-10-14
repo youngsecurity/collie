@@ -739,6 +739,22 @@ describe("collie devices revoke — the device's launcher rows", () => {
     expect(d.io.stdout.join("\n")).toContain("Removed 1 launcher row");
   });
 
+  test("a paired revoke preserves an independent header row with the same display name", () => {
+    const paired = row("11111111-1111-4111-8111-111111111111", "pixel", "local", "htop");
+    const independent = {
+      ...row("22222222-2222-4222-8222-222222222222", "pixel", "local", "btop"),
+      device: null, deviceKind: "header", headerDevice: "pixel",
+    };
+    const d = deps({
+      ...registryFile(device({ label: "pixel" })),
+      [ADDED]: JSON.stringify({ version: 1, rows: [paired, independent] }),
+    });
+    d.ctx = context({ COLLIE_PAIRING: "off" });
+    expect(cmdDevicesRevoke(d, ["pixel"])).toBe(EXIT.OK);
+    expect(JSON.parse(d.files.read(ADDED)!)).toEqual({ version: 1, rows: [independent] });
+    expect(JSON.parse(d.files.read(REGISTRY)!)).toEqual({ devices: [] });
+  });
+
   test("optional pairing still revokes credentials and launcher rows without claiming access is closed", () => {
     const d = deps({
       ...registryFile(device({ label: "pixel" })),

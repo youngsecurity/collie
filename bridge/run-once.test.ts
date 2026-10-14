@@ -166,6 +166,19 @@ function fixture(over: { switches?: Partial<LauncherSwitches>; device?: string |
 }
 
 describe("POST /api/launch `{ run }`: the shape", () => {
+  test("an admitted anonymous opt-out run works without a credential or persistent history", async () => {
+    const f = fixture({ device: null });
+    const folders: string[] = [];
+    const deps: LaunchDeps = { deviceKind: "anonymous", folders: { recordRecent: async (path) => { folders.push(path); } } };
+    expect((await f.run({ run: "make test", cwd: "/synthetic", requestId: ID }, deps)).status).toBe(200);
+    expect((await f.run({ run: "make test", cwd: "/synthetic", requestId: ID }, deps)).body).toMatchObject({ replayed: true });
+    expect(f.mux.texts).toEqual([["w1:p1", "make test"]]);
+    expect(f.io.writes).toBe(0);
+    expect(await f.recent.list()).toEqual([]);
+    expect(folders).toEqual([]);
+    f.setSwitches({ run: false });
+    expect((await f.run({ run: "make test", requestId: ID2 }, deps)).body).toMatchObject({ code: "launch.run_off" });
+  });
   test("a run opens a shell in the folder and types the line plus Enter, as a row does", async () => {
     const f = fixture();
     const out = await f.run({ run: "make test", cwd: "~/src/app", requestId: ID });

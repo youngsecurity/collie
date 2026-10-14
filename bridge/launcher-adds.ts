@@ -1,3 +1,4 @@
+import type { DeviceKind } from "./device-kind.ts";
 import type { AuditLog } from "./audit.ts";
 import { apiError } from "./error-codes.ts";
 import { HARNESS_LAUNCHES, harnessLaunch } from "./harness-launch.ts";
@@ -70,10 +71,11 @@ export function addedWire(row: AddedLauncher): Launcher {
     id: row.id,
     kind: row.kind,
     noPrompts: row.noPrompts,
-    addedBy: row.device,
     addedAt: row.at,
     addedAs: row.source,
   };
+  const attributed = row.headerDevice ?? row.device;
+  if (attributed !== null) out.addedBy = attributed;
   if (row.harness !== undefined) out.harness = row.harness;
   return out;
 }
@@ -208,8 +210,9 @@ export interface RouteAnswer {
 /** Who is asking, and where the audit lines go. */
 export interface AddContext {
   sources: LauncherSources;
-  /** The pairing label of the caller's device. `null` cannot add. */
+  /** Attribution after the route's independent write gates have passed. */
   device: string | null;
+  deviceKind?: DeviceKind;
   /** `crew` when the lead forwarded the request. */
   via: "local" | "crew";
   audit: AuditLog;
@@ -248,7 +251,7 @@ export async function addLauncher(body: JsonValue, ctx: AddContext): Promise<Rou
   const earlier = await ctx.sources.added.get(requestId);
   if (earlier !== undefined) return { status: 200, body: { ok: true, row: addedWire(earlier), replayed: true } };
 
-  if (ctx.device === null || ctx.device === "") return refusal(403, apiError("launcher.no_device"));
+  if ((ctx.device === null || ctx.device === "") && ctx.deviceKind !== "anonymous") return refusal(403, apiError("launcher.no_device"));
   const switches = await ctx.sources.switches();
   if (!switches.adds) return refusal(403, apiError("launcher.adds_off"));
 
@@ -325,6 +328,11 @@ export async function addLauncher(body: JsonValue, ctx: AddContext): Promise<Rou
   if (operator.some((r) => r.command === row.command)) return refusal(409, apiError("launcher.duplicate"));
 
   const full: AddedLauncher = { ...row, label };
+  if (ctx.deviceKind !== undefined) full.deviceKind = ctx.deviceKind;
+  if (ctx.deviceKind === "header" && ctx.device !== null) {
+    full.headerDevice = ctx.device;
+    full.device = null;
+  }
   const outcome = await ctx.sources.added.add(full);
   if (!outcome.ok) {
     if (outcome.reason === "duplicate") return refusal(409, apiError("launcher.duplicate"));
@@ -341,8 +349,8 @@ export async function addLauncher(body: JsonValue, ctx: AddContext): Promise<Rou
       kind: full.kind,
       harness: full.harness,
       source: full.source,
-      command: full.command,
-      label: full.label,
+      command: ctx.deviceKind === "anonymous" ? undefined : full.command,
+      label: ctx.deviceKind === "anonymous" ? undefined : full.label,
       noPrompts: full.noPrompts,
     },
   });
@@ -360,7 +368,13 @@ export async function removeLauncher(body: JsonValue, ctx: AddContext): Promise<
     action: "launcher.remove",
     session: ctx.session,
     device: ctx.device,
-    detail: { requestId: gone.id, command: gone.command, label: gone.label, addedBy: gone.device, reason: "removed" },
+    detail: {
+      requestId: gone.id,
+      command: gone.deviceKind === "anonymous" ? undefined : gone.command,
+      label: gone.deviceKind === "anonymous" ? undefined : gone.label,
+      addedBy: gone.headerDevice ?? gone.device,
+      reason: "removed",
+    },
   });
   return { status: 200, body: { ok: true, removed: 1 } };
 }
@@ -380,7 +394,7 @@ export async function renameLauncher(body: JsonValue, ctx: AddContext): Promise<
     action: "launcher.rename",
     session: ctx.session,
     device: ctx.device,
-    detail: { requestId: renamed.id, label: renamed.label },
+    detail: { requestId: renamed.id, label: renamed.deviceKind === "anonymous" ? undefined : renamed.label },
   });
   return { status: 200, body: { ok: true, row: addedWire(renamed) } };
 }
@@ -397,7 +411,7 @@ export async function forgetDeviceRows(
   audit: AuditLog,
   reason: string,
 ): Promise<AddedLauncher[]> {
-  const gone = await added.removeWhere((r) => r.device === device && r.via === via);
+  const gone = await added.removeWhere((r) => (r.deviceKind ?? "paired") === "paired" && r.device === device && r.via === via);
   for (const row of gone) {
     audit.record({
       action: "launcher.remove",
@@ -420,9 +434,10 @@ export async function sweepRevokedRows(
   audit: AuditLog,
 ): Promise<AddedLauncher[]> {
   if (labels === null) return [];
-  const stale = (await added.list()).some((r) => r.via === "local" && !labels.has(r.device));
-  if (!stale) return [];
-  const gone = await added.removeWhere((r) => r.via === "local" && !labels.has(r.device));
+  const revoked = (r: AddedLauncher): boolean =>
+    (r.deviceKind ?? "paired") === "paired" && r.via === "local" && r.device !== null && !labels.has(r.device);
+  if (!(await added.list()).some(revoked)) return [];
+  const gone = await added.removeWhere(revoked);
   for (const row of gone) {
     audit.record({
       action: "launcher.remove",

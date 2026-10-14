@@ -60,6 +60,28 @@ function fixture(opts: { operator?: Launcher[]; switches?: Partial<LauncherSwitc
 const recipe = (harness: string, options: string[], extra: JsonObject = {}): JsonValue => ({ requestId: ID1, recipe: { harness, options }, ...extra });
 
 describe("addLauncher: a recipe", () => {
+  test.each(["local", "crew"] as const)("paired revocation cannot collide with independent attribution via %s", async (via) => {
+    const f = fixture();
+    await addLauncher(recipe("claude", [], { requestId: ID1 }), f.ctx({ via }));
+    await addLauncher(recipe("claude", ["skip"], { requestId: ID2 }), f.ctx({ via, deviceKind: "header" }));
+    await addLauncher(recipe("claude", ["opus"], { requestId: ID3 }), f.ctx({ via, device: null, deviceKind: "anonymous" }));
+    // The CLI compares this paired-label field directly. Independent identities never occupy it.
+    expect((await f.added.list()).filter((row) => row.device === "phone").map((row) => row.id)).toEqual([ID1]);
+    expect((await forgetDeviceRows(f.added, "phone", via, f.audit, "device-revoked")).map((row) => row.id)).toEqual([ID1]);
+    expect((await sweepRevokedRows(f.added, new Set(), f.audit))).toEqual([]);
+    expect((await f.added.list()).map((row) => row.id)).toEqual([ID2, ID3]);
+    const restored = await new AddedLauncherStore(f.io).list();
+    expect(restored).toMatchObject([{ id: ID2, device: null, headerDevice: "phone", deviceKind: "header" }]);
+    expect(f.io.text).not.toContain(ID3);
+  });
+
+  test("the sweep still removes legacy paired rows without touching a matching header identity", async () => {
+    const f = fixture();
+    await addLauncher(recipe("claude", [], { requestId: ID1 }), f.ctx());
+    await addLauncher(recipe("claude", ["skip"], { requestId: ID2 }), f.ctx({ deviceKind: "header" }));
+    expect((await sweepRevokedRows(f.added, new Set(), f.audit)).map((row) => row.id)).toEqual([ID1]);
+    expect((await f.added.list()).map((row) => row.id)).toEqual([ID2]);
+  });
   test("the bridge builds the line from its own table and records who added it", async () => {
     const f = fixture();
     const out = await addLauncher(recipe("claude", ["skip"]), f.ctx());
