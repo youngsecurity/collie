@@ -37,14 +37,16 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 ## [Unreleased]
 
+## [1.21.0+ys.1] - 2026-10-14
+
 ### Changed
 
-- **Collie adopts upstream 1.21.0 while preserving the fork's safeguards.** Import 1.19.0 through 1.21.0: the New page, configurable Keys board, phone and host speech, durable agents, pinned Chat prompts, harness compatibility fixes, and crew update checks. Preserve default-on pairing with its explicit host opt-out, offline cache boundaries, terminal preferences, fork update selection, the Herdr 0.8.0 minimum, and manual source-only publication. Thanks @AltanS (youngsecurity/collie#88).
+- **Collie adopts upstream 1.21.0 while preserving the fork's safeguards.** Import 1.19.0 through 1.21.0: the New page, configurable Keys board, phone and host speech, durable agents, pinned Chat prompts, harness compatibility fixes, and crew update checks. Preserve default-on pairing with its explicit host opt-out, offline cache boundaries, terminal preferences, fork update selection, the Herdr 0.8.0 minimum, and manual source-only publication. Thanks @AltanS (youngsecurity/collie#88). ([fb7d5ea8](https://github.com/youngsecurity/collie/commit/fb7d5ea8))
 
 ### Fixed
 
-- **Durable permission cards keep secrets out of the phone.** Mask display text before local and crew snapshots or stale-answer responses reach the browser and its offline cache, while preserving opaque control identifiers and the explicit masking opt-out. (youngsecurity/collie#88)
-- **New-page actions respect the host's optional pairing policy.** Permit authorized anonymous runs and temporary launcher additions without persisting their content, and distinguish independent header attribution from paired-device labels so revocation cannot remove the wrong launcher rows. Crew forwarding carries optional attribution provenance without changing protocol version 2. (youngsecurity/collie#88)
+- **Durable permission cards keep secrets out of the phone.** Mask display text before local and crew snapshots or stale-answer responses reach the browser and its offline cache, while preserving opaque control identifiers and the explicit masking opt-out. (youngsecurity/collie#88) ([456e08c4](https://github.com/youngsecurity/collie/commit/456e08c4))
+- **New-page actions respect the host's optional pairing policy.** Permit authorized anonymous runs and temporary launcher additions without persisting their content, and distinguish independent header attribution from paired-device labels so revocation cannot remove the wrong launcher rows. Crew forwarding carries optional attribution provenance without changing protocol version 2. (youngsecurity/collie#88) ([456e08c4](https://github.com/youngsecurity/collie/commit/456e08c4))
 
 ## [1.18.1+ys.2] - 2026-10-14
 
