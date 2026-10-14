@@ -156,7 +156,7 @@ When a pairing ends, the phone deletes what Collie stored under it. This happens
 phone from Settings, and when the bridge refuses its token with `device not paired` or `device expired`.
 
 The phone deletes the token, every unsent draft, the saved pane text and herd, the push subscription,
-and Collie's caches except the app shell. Your settings stay: theme, language, pins and other
+the "No prompts" confirms, and Collie's caches except the app shell. Your settings stay: theme, language, pins and other
 preferences hold no session text. Settings asks you to confirm before it revokes any device.
 
 The phone's own wipe is the only one. The bridge sends no `Clear-Site-Data` header, because that
@@ -180,6 +180,7 @@ bridge is out of reach. Every item below has a size bound and a lifetime.
 | Push endpoint | localStorage | until it changes | deleted |
 | App shell | Cache Storage | until the next build | kept |
 | Fonts and push titles | Cache Storage | until replaced | deleted |
+| Whistle speech model and engine files (only if you chose to copy them) | Cache Storage | until you remove them | deleted |
 | Herd and pane text, as last seen | IndexedDB `collie-store` | 24 hours | deleted |
 | Newest Chat turns of each pane | IndexedDB `collie-store` | 1 day, or the "Keep chat on this phone" setting | deleted |
 
@@ -226,6 +227,25 @@ Key security boundaries and risks:
   `~/.codex`, `~/.config/gh` or `~/.ssh` shows what is there. So does the `.env` of a second Collie
   whose config folder sits under the workspace. A hard link inside the folder to a file outside it is
   not caught either.
+- **A paired device can add launchers.** With the default `[phone] adds = true`, a phone may add a
+  row built from a recipe: an agent plus option chips whose flags the bridge picks from its own
+  table. A line typed by hand needs `free_text = true`, which is off by default. A recipe can still
+  skip permission prompts. Such a row carries a "No prompts" badge, and each device confirms it once.
+  Revoking a device removes the rows it added. Set `adds = false` to turn off every phone-added row
+  ([Your own launchers](configure.md#launchers-added-from-a-phone),
+  [ADR 0094](../.adr/0094-launchers-added-from-a-phone.md)).
+- **A paired device can run a one-off command.** With the default `[phone] run = true`, a phone may
+  type a line it wrote into a fresh shell on a machine. This adds no power, because a paired phone can
+  already open a shell and type into it. The line follows the free-line character rule, and the bridge
+  refuses it with no paired device. Each command that started is kept, up to 12, in
+  `commands-recent.json` in the state folder (mode 0600). A line that seems to carry a secret (an
+  assignment such as `TOKEN=…`, a URL with a password, or a word such as `token` or `password`) runs
+  but is not kept. The check is a guess, so a secret can still slip into the list; the audit log
+  records only a line's first word and its length. Unpairing or revoking a device leaves the
+  list as it is, because running a line again needs a paired device. Set `run = false` to remove the
+  shortcut
+  ([One-off commands](configure.md#one-off-commands-and-their-history),
+  [ADR 0095](../.adr/0095-one-off-commands-and-their-history.md)).
 - **A single instance exposes all sessions.** By default, one Collie process fronts every
   multiplexer session discovered under Herdr's configuration root, including sandbox sessions
   ([Multi-session](configure.md#multi-session)).
@@ -276,6 +296,65 @@ Key security boundaries and risks:
 
 Restrict access further with Tailscale ACLs and `COLLIE_TRUSTED_USER`. Provided as-is, without
 warranty.
+
+## The speech engine (Whistle)
+
+Whistle runs third-party code: a WebAssembly engine from Cactus Compute. It runs on the phone, or on
+the host as the bridge's user. Collie bounds what that code can reach. It cannot remove the reach
+entirely.
+
+- **Vendored and pinned.** The engine is two files, `needle.js` and `needle.wasm`, kept byte for byte
+  as upstream published them, with upstream's licence and a provenance note
+  (`web/public/stt/needle-3-93e88ede/`). A test pins the sha256 of both files and the list of the
+  sixteen functions the wasm may ask its host for. A new import is a reason to stop. Only a person
+  updates the pin, and reads the diff first. The model has its own pinned hash, and Collie keeps a
+  downloaded copy only when it matches.
+- **On the phone, a worker with its own policy.** The wasm runs in a dedicated worker. The bridge
+  serves every script under `stt/` with this policy, and no other page gets it:
+
+  ```
+  Content-Security-Policy: default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; base-uri 'none'
+  ```
+
+  The worker has no network, no DOM and no way to load code from elsewhere. It cannot read the
+  pairing token, which sits in `localStorage`, and workers have no `localStorage`. Before it does
+  anything else, it compiles a tiny wasm module. A browser that does not give the worker its own
+  policy refuses that, and *This phone* shows as unavailable there.
+- **The page's policy does not change.** The document policy never gains `'wasm-unsafe-eval'`, and
+  it keeps `connect-src 'self'`.
+- **What the worker can still reach.** It can read and write this origin's IndexedDB and Cache
+  Storage, which no policy directive closes. `collie-store` holds recent pane and Chat text
+  ([What the phone keeps](#what-the-phone-keeps)). That text was already masked, but it is readable.
+  This reach is accepted, and named in the ADR. If it starts to matter, the next step is a sandboxed
+  frame around the worker.
+- **On the host, a child of Collie's own binary.** One short-lived child per dictation runs
+  `_whistle-transcribe` with a fixed argument list that Collie wrote. It checks the engine, the wasm
+  and the model against their pins before it compiles anything. It has a 60-second deadline, killed
+  with SIGKILL, a 256 KiB output cap and at most two at once. It gets none of the bridge's `COLLIE_*`
+  variables. The bridge sets only two, the state folder and the install folder, to paths it resolved
+  itself. Nothing from the request reaches the argument list but the recording.
+- **A second outbound call, by a person's tap.** The update check is the first. The model download is
+  the second: one file, from one pinned Hugging Face address, written only after its hash matched.
+  A phone never calls Hugging Face. It copies the model from the host, with the pairing token. The
+  routes need a write device, run on the lead only, allow one download at a time and are audited.
+- **Setup from Settings is an exception to "setup is a CLI act".** Providers that store a credential
+  or name a command stay in the terminal. Whistle does none of these. A stolen write token can
+  already type into terminals and start an update, so the setup tap gives it nothing new.
+- **Switching to Codex from Settings is the other exception.** A write device may switch the host
+  between Whistle, Codex and Off, and nothing else. Codex needs the full consent, the same words
+  `collie stt setup` prints, and a tap on **I accept**; the bridge then runs the CLI's own probe. A
+  stolen write token could point the host's speech at the operator's signed-in ChatGPT account. It
+  cannot add a key or a command, or replace one. The token can already type `codex` into a
+  terminal. [ADR 0097](../.adr/0097-codex-speech-can-be-chosen-from-settings.md) weighs this.
+  A switch from Settings also writes the paired device's name, as given at pairing, and the time into
+  `stt.json`, so **Host speech** can say who changed it last. No token and no address is written.
+  A run of `collie stt setup` drops that line.
+- **Paired devices can read what the host's speech settings name, by name only.** That is the
+  command's name, a model file's name and a speech service's host name, never a path, an argument,
+  a key or a URL path.
+
+Why it is built this way: [ADR 0096](../.adr/0096-speech-can-stay-on-the-phone.md). The setup steps
+are in [Voice input and Web Push](voice-and-push.md#whistle-speech-to-text-on-your-phone-or-your-host).
 
 ## What leaves the machine is masked
 
@@ -371,6 +450,10 @@ reports and no analytics. There is no flag that enables them.
 The one unprompted outbound call is the update check: an anonymous HTTPS `GET` to GitHub's public
 tags API (`bridge/update.ts`) that compares your version to the newest tag. It carries no data about
 you or your machine, only the static user-agent `collie-update-check`.
+
+The Whistle model download is the other outbound call. It happens only when a person taps **Download
+to host** or runs `collie stt whistle`, and it sends no data about you ([The speech engine
+(Whistle)](#the-speech-engine-whistle)).
 
 If you set `COLLIE_ACCESS_TEAM`, Collie also fetches that Cloudflare Access team's public keys, at
 start and once an hour. That call is yours to turn on, and it sends nothing about you either.

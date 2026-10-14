@@ -9,6 +9,8 @@ import { UPDATE_MODE_HOLD, isReloadHeldBy, subscribeReloadHeld } from "@/lib/rel
 import { BootSplash, RootError, RootLayout } from "@/routes/root";
 import { HomeRoute } from "@/routes/home";
 import { SpaceRoute } from "@/routes/space";
+import { NewRoute } from "@/routes/new";
+import { NewAddRoute } from "@/routes/new-add";
 import { DetailRoute } from "@/routes/detail";
 import { HistoryRoute } from "@/routes/history";
 import { ChangesRoute } from "@/routes/changes";
@@ -18,6 +20,9 @@ import {
   SettingsAppearanceRoute,
   SettingsExperimentsRoute,
   SettingsDeviceRoute,
+  SettingsVoiceRoute,
+  SettingsVoiceHostRoute,
+  SettingsVoiceModelRoute,
   SettingsSystemRoute,
 } from "@/routes/settings-sections";
 import { CrewRoute } from "@/routes/crew";
@@ -82,6 +87,12 @@ export const router = createBrowserRouter([
     children: [
       { index: true, element: <HomeRoute /> },
       { path: "space/:spaceId", element: <SpaceRoute /> },
+      // The New page (M48), a page since 1.19.0 and a bottom sheet before. No loader: it reads the root
+      // snapshot (for a pane's folder and branch) and asks the chosen machine's bridge for its own lists.
+      // Where it was opened from rides in the query (`?machine=`, `?pane=`, `?s=`), so a reload keeps it.
+      { path: "new", element: <NewRoute /> },
+      // "Add your own" (ADR 0094): a page below New, for a launcher this phone adds on one machine.
+      { path: "new/add", element: <NewAddRoute /> },
       // Settings is an INDEX of four sections (routes/settings.tsx). Its only loader is the pairing
       // forward: the QR `collie pair` prints still names `/settings?pair=<code>`, and the form now
       // lives on System. `replace`, as for `/pack` below, so Back does not land on the index and
@@ -96,6 +107,10 @@ export const router = createBrowserRouter([
       },
       { path: "settings/appearance", element: <SettingsAppearanceRoute /> },
       { path: "settings/device", element: <SettingsDeviceRoute /> },
+      { path: "settings/voice", element: <SettingsVoiceRoute /> },
+      // Two pages below Voice: the host's option for every device, and the Whistle model's copies.
+      { path: "settings/voice/host", element: <SettingsVoiceHostRoute /> },
+      { path: "settings/voice/model", element: <SettingsVoiceModelRoute /> },
       { path: "settings/alerts", element: <SettingsAlertsRoute /> },
       // The fifth section. It is routable whether or not the index offers a row for it — a page
       // reachable only by URL is the ordinary case for a section that comes and goes, and it is

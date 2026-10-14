@@ -212,6 +212,9 @@ collie update --rollback         # put the previous version back
 collie update --major            # cross one major, see below
 ```
 
+`collie update --help` prints the usage and starts nothing. Every `collie` command answers `-h` and
+`--help` the same way, before it does any work.
+
 On a Herdr-managed install the same verbs are Herdr actions:
 
 ```bash
@@ -645,6 +648,27 @@ herdr plugin install AltanS/collie --yes
 herdr plugin action invoke restart --plugin herdr.collie
 ```
 
+## Upgrading to 1.19.0
+
+Version 1.19.0 moves starting things to one page and lets each phone shape its own Keys and
+launchers. Nothing needs doing on upgrade day. What you will notice:
+
+- **The New sheet is a page.** **+ New** on the dashboard opens `/new`, with the machine, an Agent or
+  Command select, the folder and a **New worktree** switch. The new-space sheet, its space label and
+  its list of existing worktrees are gone. Open an existing worktree with `herdr worktree open` on the
+  machine ([Start an agent or a shell from the phone](claude-code-on-your-phone.md#start-an-agent-or-a-shell-from-the-phone)).
+- **A crew member must update to start agents by name.** The page lists a member that runs an older
+  Collie, with its choices disabled. Update the lead first, and the members follow
+  ([Starting something on a machine](crew.md#starting-something-on-a-machine)).
+- **Phones may add launchers.** With the default `[phone] adds = true`, a paired phone can add up to
+  20 rows to a machine, kept in `launchers-added.json`. Set `adds = false` in `launchers.toml` to turn
+  that off ([Launchers added from a phone](configure.md#launchers-added-from-a-phone)).
+- **The Keys pad is a board.** It starts as the pad you had, and each browser keeps its own
+  arrangement ([Your own key pad](configure.md#your-own-key-pad)). Presets in `keys.toml` are
+  unchanged.
+- **A bare folder name is a folder under home.** `projects` in the Folder field now means
+  `~/projects`, and a folder that is not there is refused with a notice.
+
 ## Upgrading to 1.18.0
 
 Version 1.18.0 makes pairing mandatory for reads as well as writes
@@ -654,6 +678,9 @@ Version 1.18.0 makes pairing mandatory for reads as well as writes
 - **Unpaired browsers see the pair screen.** A desktop browser that never paired, which could read
   before, now gets `403 device not paired`. Run `collie pair` on the host, then enter the code in
   Settings on that browser ([Pair a device](security.md#pair-a-device--the-write-credential)).
+- **An installed app can keep the old screens for one more load.** An installed app may still show
+  the previous version's screens until it loads once more. If it shows "Sign in" after the update to
+  1.18 or later, reload the app, or close and reopen it. Then pair it as above.
 - **Scripts must pair once.** A script that read the API without a token gets `403` now. Run
   `collie pair --expires 30d`, then claim the code with a POST to `/api/pair` that carries
   `{"code": "...", "label": "script"}` and a same-origin `Origin` header. The token comes back once,

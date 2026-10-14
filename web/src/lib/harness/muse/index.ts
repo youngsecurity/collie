@@ -1,5 +1,5 @@
 // The Muse harness adapter — Tier 1 chrome + Tier-2 approval / single-select / multi-select /
-// trust lifts for Muse Code 1.3.0 (agent string "muse").
+// trust lifts for Muse Code 1.3.x–1.4.7 (agent string "muse").
 //
 // The TUI this reads (see DIALOG_NOTES.md beside this file for the full probe log):
 //
@@ -15,13 +15,14 @@
 //
 //   - Approval REPLACES the box (no ❯ row): command (`Would you like to run the following
 //     command?` + `$` / `Stage N/M` / `Current argv:`) or network (`Would you like to allow this
-//     network access?` + `network:` / `full URL:`) + `› N.` options. Digit alone (family
-//     `permission`).
+//     network access?` + `network:` / `full URL:`) + `›`/`⟩ N.` options + a static 1.4.7 hint row.
+//     Digit alone (family `permission`).
 //   - Questions LEAVE the bare ❯ under them: `Request user input` header (live timer — anchors
-//     detection, never enters a signature) + question + `› N.` options + footer. Digits MOVE the
-//     pointer; Enter selects (family `select`, keys [digit, Enter]).
+//     detection, never enters a signature) + question + `›`/`⟩ N.` options + footer (a multi-
+//     question dialog adds an `N of M` progress row above it). Digits MOVE the pointer; Enter
+//     selects (family `select`, keys [digit, Enter]).
 //   - Checkbox adds `[ ]`/`[x]` prefixes + a numbered `Submit answer (N checked)` row and a review
-//     phase (`Review answers before submit` + `> Submit answers` / `Interrupt turn`). Pointer-mode
+//     phase (`Review answers before submit` + `⟩ Submit answers` / `Interrupt turn`). Pointer-mode
 //     choreography throughout (`toggle`/`submit: "pointer"`): digit-jump + verified Enter to toggle,
 //     a verified pointer walk + freshly-bound Enter to submit — review swallows digits entirely.
 //   - Trust is pre-session (no chrome at all): `Do you trust this workspace?` + period-less `N  Label`
@@ -64,7 +65,7 @@ import {
   regionReachesTail,
   stripChrome,
 } from "./chrome";
-import { askHeaderDirectlyAbove, boxHoldsNoDraft, isVoiceRule, rstrip } from "./markers";
+import { askHeaderDirectlyAbove, boxHoldsNoDraft, isVoiceRule, locateTail, rstrip } from "./markers";
 import { museDraftIsOpaque, musePasteCarriesSend } from "./paste";
 import { detectQuestionRegion } from "./question";
 import { detectTrustRegion } from "./trust";
@@ -159,6 +160,18 @@ function lift(lines: StyledLine[], startLine: number, region: string, dialog: Bl
 }
 
 /**
+ * Positive evidence that Muse's own TUI owns the tail, for the unread-dialog card (.adr/0053, addendum
+ * 2026-09-26): its bottom rule and statusline are there (`locateTail`). Every Muse dialog keeps them,
+ * the approval that replaces the box and the tasks popup between them included, while the shell after
+ * exit (`muse resume <id>`) and the banner Muse paints before its composer have neither, so the card
+ * no longer flashes over them (harness canary 2026-10-12, Muse 1.4.6). `composerReady` has already
+ * answered false by the time this is asked, so the frame is there and its box does not hold the keys.
+ */
+function museModalOnScreen(lines: StyledLine[]): boolean {
+  return locateTail(lines) !== null;
+}
+
+/**
  * The Muse adapter: Tier-1 composer/status/draft/chrome probes plus the four Tier-2 dialog lifts.
  * Registers under the EXACT Herdr agent string "muse" (registry.ts) — prefix-matching is banned
  * (AltanS/collie#99). The paste supplement + opacity predicate are what keep long sends verifying
@@ -174,6 +187,7 @@ export const museAdapter: HarnessAdapter = {
   // it does not always dismiss the request — which is why the card's caption names the key and never
   // promises "cancel".
   cancelKey: "Escape",
+  modalOnScreen: museModalOnScreen,
   extractInputDraft,
   extractStatusLines,
   composerPrompt,
@@ -182,4 +196,9 @@ export const museAdapter: HarnessAdapter = {
   draftCarriesSend: (sent, draft) =>
     musePasteCarriesSend(sent, draft) || museAttachCarriesSend(sent, draft),
   draftIsOpaque: museDraftIsOpaque,
+  // Muse 1.4.4 swallows an Enter sent within ~60ms of the text (#395); the bridge's own
+  // REPLY_SETTLE_MS in bridge/server.ts is the same 350, which web code cannot import.
+  submitSettleMs() {
+    return 350;
+  },
 };

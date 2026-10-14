@@ -222,6 +222,12 @@ TLS carrying the crew secret. A member is a full Collie with no front door, and 
 agents, journal, uploads and audit log. Management runs entirely through the CLI, with no Herdr UI
 actions. The wire itself is specified in [`CREW_PROTOCOL.md`](../CREW_PROTOCOL.md).
 
+A peer is one Collie instance, and one Collie instance mirrors one backend. A host that has more than
+one backend therefore runs more than one peer, each with its own port and state directory, and each
+joins the crew on its own. A Herdr session and a durable agent program on the same host are the
+example: the Herdr peer and a second peer with `COLLIE_MUX=durable` appear as two machines in the
+list ([durable notes](multiplexers.md#durable-notes)).
+
 ![Code reaches a member over your own ssh, never over the crew link.](images/crew/crew-ssh-rides.svg)
 
 Code rides your own ssh to every machine. `crew add` installs a member that way and `crew update`
@@ -254,7 +260,7 @@ each machine, for 24 hours. A Collie with no crew keeps the same day for its own
 | what | Linux | macOS | Windows |
 | --- | --- | --- | --- |
 | CPU | yes | yes | yes |
-| Memory | yes, without the page cache | yes | yes |
+| Memory | yes, without the page cache | yes, without the file cache | yes |
 | Load average | yes | yes | no |
 | Network | yes, physical interfaces only | no | no |
 | Disks | yes | yes | yes |
@@ -381,6 +387,25 @@ in its own status line, and after a failure it shows the rules the bridge last r
 
 The push goes to every device subscribed to this Collie. The card links to Settings, Alerts, where you
 choose which alerts you get.
+
+## Starting something on a machine
+
+The New page (**+ New** on the dashboard) has a **Machine** select when you run a crew. The agent, the
+command and the folder you pick all belong to the machine you picked, and that machine runs the start.
+
+- **Each machine says which agents it has.** It looks on the `PATH` your login shell uses, so an
+  agent installed through nvm or in a home folder counts. An agent a machine lacks stays in the
+  select, disabled, marked "not installed". The same agent can be ready on one machine and greyed out
+  on the next.
+- **Each machine reads its own launchers.** The rows in `launchers.toml`, and the rows a phone added
+  there, are not shared across the crew
+  ([Your own launchers](configure.md#your-own-launchers)). Its folders list, the Recent and Favourite
+  rows, is its own too, and the page checks the folder on that machine's disk.
+- **A New worktree is made on the lead only.** On a member the switch stays, off, and says "only on"
+  the lead's name.
+- **A member from before 1.19.0 starts nothing by name.** The page lists its choices, disabled, with
+  the reason "this machine runs an older Collie". Update the member to start agents on it
+  ([Update, from the phone or the terminal](upgrading.md#update-from-the-phone-or-the-terminal)).
 
 ## Members that were not installed by install.sh
 

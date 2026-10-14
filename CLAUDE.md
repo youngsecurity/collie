@@ -565,7 +565,19 @@ lint guard, the crew-wire guard or the `flake.lock` guard.
   rows are the allowlist `POST /api/launch` matches exactly, so the client names a row and never
   supplies a command line. Same reader, same mtime liveness; no scope ladder, because a row that
   makes its own pane has nothing to address. Do not add a second allowlist and do not let the client
-  supply a command line.
+  supply a command line. The New page may also name an agent by id (`harness`), which the bridge
+  maps to ONE binary word in `bridge/harness-launch.ts` and reports per machine on `/api/launchers`;
+  a launch with a `requestId` replays from `launch-receipts.json` instead of opening a second pane
+  ([ADR 0091](./.adr/0091-launch-by-id-with-a-request-id.md)).
+  Rows a phone adds live in `<stateDir>/launchers-added.json` under the operator's `[phone]` switches,
+  never in `launchers.toml`; they are merged into the allowlist at read time, the operator's row wins
+  a duplicate line, a recipe row is rebuilt from `bridge/launcher-recipes.ts` and a free line is
+  re-checked at every read. The bridge never writes `launchers.toml`, and a revoke takes the device's
+  rows with it ([ADR 0094](./.adr/0094-launchers-added-from-a-phone.md)).
+  The one exception to "never a command line" is a one-off `run`: a paired device, the operator's
+  `[phone] run` switch and the same character rule, typed as a row is, never on a new branch, and
+  recorded in `<stateDir>/commands-recent.json`, never as a row; its audit line keeps the command word
+  and the length, not the line ([ADR 0095](./.adr/0095-one-off-commands-and-their-history.md)).
 - **Every user-facing string goes through `t()`/`tn()` from `@/lib/i18n`**, and a component that
   calls them subscribes via `useLocale()` so it re-renders on a locale (or lazy-dictionary) change.
   `messages/en.ts` is the source of truth; all six dictionary files change together, enforced by
@@ -675,8 +687,13 @@ the rule below: `stt.json` in the state dir when the operator ran `collie stt se
 font files under `<config-dir>/fonts`, served read-only through `bridge/operator-fonts.ts`
 ([ADR 0033](./.adr/0033-the-app-face-is-a-device-preference.md)).
 
-**The law is that a CLIENT-SUPPLIED value becomes a path in three places only: the journal, the
-Changes view, and the Files view** — in the journal it is a pane id, never a path. The Changes view
+**The law is that a CLIENT-SUPPLIED value becomes a path in four places only: the journal, the
+Changes view, the Files view, and a branch's folder** — in the journal it is a pane id, never a path.
+A branch's folder (`bridge/worktree-folder.ts`,
+[ADR 0093](./.adr/0093-a-branch-folder-is-named-by-its-parent.md)) is a PARENT the phone names and a
+child the bridge names after the branch; `resolveParentTarget` refuses a `..` as sent, a link below
+home, a folder outside home, in a dotdir or in the repo, and a child that exists, and it runs at plan
+and again at create. Don't call Herdr's `worktree.create` with a `path` that did not just pass it. The Changes view
 (`bridge/changes.ts`, [ADR 0065](./.adr/0065-the-changes-view-reads-git-read-only.md)) is bounded by
 a listed-paths rule: a diff is served only for a repo the bridge's own discovery returned and a path
 git listed there, and an untracked read goes through `containedRealpath` too. Its git runs are
@@ -717,16 +734,27 @@ exemption is granted by POSITION — the peer check sits after the federated dis
 its own `COLLIE_STANDBY_HOST` and neither gate reaches it; don't route it through the front door's
 `fetch` to share them.
 
-**The bridge makes no outbound call and spawns no long-running child for content — unless the
-operator ran `collie stt setup`.** Speech-to-text (`bridge/stt/`, CLI `cli/stt.ts`) is a registered
-provider seam, absent until that verb writes `stt.json`: it then holds a provider credential at 0600,
-opens an operator-configured outbound path carrying microphone audio, on the `codex` provider
-spawns a `codex app-server` child, and on the `local-cli` provider spawns the operator's named
+**The bridge makes two outbound calls of its own, and spawns no child for content unless
+`stt.json` names a speech provider.** The two calls are the update check and the Whistle
+model download: one file, fetched on a write device's tap or `collie stt whistle`, from a pinned
+address, and kept only when its sha256 matches a pin in this release
+([ADR 0096](./.adr/0096-speech-can-stay-on-the-phone.md)). A `durable` peer configured with `COLLIE_DURABLE_URL` makes a third, to the program's URL the
+operator set, with the bearer token from `COLLIE_DURABLE_TOKEN`, and it is declined by setting
+nothing ([ADR 0103](./.adr/0103-the-wire-has-two-transports-a-private-socket-or-tls-with-a-token.md)). Speech-to-text (`bridge/stt/`, CLI
+`cli/stt.ts`) is a registered provider seam, absent until `stt.json` names a provider. Then it may
+hold a provider credential at 0600, open an operator-configured outbound path carrying microphone
+audio, on `codex` spawn a `codex app-server` child, and on `local-cli` spawn the operator's named
 command as the bridge user, once per dictation, argv only and never a shell (ADR 0029, addendum
-2026-10-03). Every one of these costs is declined by doing nothing, the local-engine
-configuration keeps the egress on loopback, and the wire identity is probed honest-first and recorded
+2026-10-03). The `whistle` provider spawns Collie's own binary instead, `_whistle-transcribe` with a
+fixed argv, under the same bounds, and its audio stays on the host. Every one of these costs is
+declined by doing nothing, the local-engine configuration keeps the egress on loopback, and the wire
+identity is probed honest-first and recorded
 ([ADR 0029](./.adr/0029-speech-to-text-is-a-provider-seam-collie-owns.md)). Setup is a CLI act, never
-a web form, for the reason pairing is.
+a web form, for the reason pairing is, with two named exceptions, neither of which takes a key or a
+command: Whistle may be set up from Settings (ADR 0096), and a write device may switch the host
+between Whistle, Codex and Off, Codex only after the CLI's own consent text and an "I accept" tap,
+then the CLI's own probe ([ADR 0097](./.adr/0097-codex-speech-can-be-chosen-from-settings.md)). A
+provider set up with a key or a command, or named by the environment, is never changed from the app.
 
 **Two device gates guard writes, independently, and compose by AND.** `COLLIE_DEVICE_HEADER` trusts
 a name a proxy injects; **pairing** (`bridge/pairing.ts`, `collie pair` / `collie devices`) requires a

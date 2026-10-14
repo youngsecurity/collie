@@ -1,4 +1,6 @@
 import { loadDraft, saveDraft } from "@/lib/drafts";
+import { AGAIN_KEY, rememberAgain } from "@/lib/new-page";
+import { NO_PROMPTS_KEY, rememberNoPromptsConfirm } from "@/lib/no-prompts";
 import { loadLastPaneText, loadLastSnapshot, saveLastPaneText, saveLastSnapshot } from "@/lib/last-seen";
 import { http, HttpResponse } from "msw";
 
@@ -86,6 +88,7 @@ function seed(): void {
 const PREFERENCE_KEYS = [
   "collie:theme:v1",
   "collie:design:v1",
+  "collie:key-board:v1",
   "collie:display-prefs:v4",
   "collie:dash-prefs:v1",
   "collie:pins:v1",
@@ -129,6 +132,32 @@ describe("wipeDevice — a pairing that ended", () => {
     expect(unsubscribe).toHaveBeenCalledTimes(1);
   });
 
+  it("forgets the New page's last start per machine, because it names that pairing's folders", async () => {
+    stubCaches([]);
+    stubServiceWorker();
+    rememberAgain("", { what: { kind: "shell" }, label: "Shell", cwd: "~/src/client", branch: null, at: 1 });
+    expect(localStorage.getItem(AGAIN_KEY)).not.toBeNull();
+    await wipeDevice("unpair");
+    expect(localStorage.getItem(AGAIN_KEY)).toBeNull();
+  });
+
+  it("forgets the per-device No prompts confirms, so a new pairing asks again (ADR 0094)", async () => {
+    stubCaches([]);
+    stubServiceWorker();
+    rememberNoPromptsConfirm("", "claude --dangerously-skip-permissions", 1);
+    expect(localStorage.getItem(NO_PROMPTS_KEY)).not.toBeNull();
+    await wipeDevice("unpair");
+    expect(localStorage.getItem(NO_PROMPTS_KEY)).toBeNull();
+  });
+
+  it("keeps the No prompts confirms on a password wipe, which clears session text only", async () => {
+    stubCaches([]);
+    stubServiceWorker();
+    rememberNoPromptsConfirm("", "codex --yolo", 1);
+    await wipeDevice("password", { scope: LEAD, paneId: "w1:p1" });
+    expect(localStorage.getItem(NO_PROMPTS_KEY)).not.toBeNull();
+  });
+
   it("clears the memory tier of drafts too, not only localStorage", async () => {
     // Over the disk cap: this draft lives only in the memory tier.
     saveDraft(LEAD, "w1:p1", "x".repeat(9 * 1024));
@@ -155,6 +184,12 @@ describe("wipeDevice — a pairing that ended", () => {
     ]);
     await wipeDevice("expired");
     expect(deleted.toSorted()).toEqual(["collie-fonts", "collie-push-titles", "collie-push-titles:/collie/"]);
+  });
+
+  it("takes the speech cache too: the model was fetched with the token, so it leaves with it (ADR 0096)", async () => {
+    const { deleted } = stubCaches(["collie-stt", "collie-stt:/collie/", "workbox-precache-v2-https://collie.example/"]);
+    await wipeDevice("unpair");
+    expect(deleted.toSorted()).toEqual(["collie-stt", "collie-stt:/collie/"]);
   });
 
   it("leaves the preferences alone", async () => {

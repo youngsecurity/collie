@@ -25,6 +25,7 @@
 import { meaningfulTabLabel, meaningfulTerminalTitle } from "../../activity.ts";
 import { isUnnamedTab } from "../../pane-name.ts";
 import type { DialMode } from "../../dial.ts";
+import type { ForegroundProcess } from "../../journal/types.ts";
 import { declareCapabilities } from "../capabilities.ts";
 import { herdrMachineCandidates } from "./machine-list.ts";
 import { herdrSessionSource } from "./sessions.ts";
@@ -65,6 +66,7 @@ import {
   paneAgentSession,
   type CreatedShell,
   type HerdrRpc,
+  type HerdrWorktreeCreate,
   type WirePane,
   type WireTab,
   type WireWorkspace,
@@ -438,6 +440,15 @@ export class HerdrMux implements MuxAdapter {
     }
   }
 
+  async foregroundProcesses(paneId: string): Promise<MuxOutcome<readonly ForegroundProcess[]>> {
+    try {
+      const info = await this.client.processInfo(paneId);
+      return muxOk((info.foreground_processes ?? []).map((p) => ({ argv: p.argv ?? [] })));
+    } catch (err) {
+      return transportRefusal(err);
+    }
+  }
+
   async typeText(paneId: string, text: string): Promise<MuxAck> {
     return this.attempt(() => this.client.sendPaneText(paneId, text));
   }
@@ -535,10 +546,13 @@ export class HerdrMux implements MuxAdapter {
 
   async createWorktree(request: MuxWorktreeCreateRequest): Promise<MuxOutcome<MuxCreatedPane>> {
     try {
-      const created = await this.client.createWorktree({
-        cwd: request.repoRoot,
-        branch: request.branch,
-      });
+      const { repoRoot: cwd, branch, base, path } = request;
+      // Assigned, never spread from `undefined`: an absent field must stay off the wire, so a call
+      // without it is byte for byte the call Herdr has always had.
+      const opts: HerdrWorktreeCreate = { cwd, branch };
+      if (base !== undefined) opts.base = base;
+      if (path !== undefined) opts.path = path;
+      const created = await this.client.createWorktree(opts);
       return muxOk(toCreatedPane(created));
     } catch (err) {
       return worktreeRefusal(err);

@@ -13,7 +13,10 @@ import {
 import { burstPaneId, resetPollIntent, sendCount } from "./poll-intent";
 import { __refusalSettled, WIPE_LAST_KEY } from "./wipe";
 import {
+  apiErrorFields,
   checkForUpdates,
+  checkRun,
+  clearRecentRuns,
   createTab,
   fetchAuthedBytes,
   fetchChat,
@@ -28,12 +31,21 @@ import {
   readFailureKind,
   imageSrc,
   refreshNow,
+  removeRecentRun,
   sendKeys,
+  startLaunch,
   sendReply,
   textBeforeLastSend,
   uploadFile,
   sttTimeoutFor,
+  startRun,
   transcribeAudio,
+  fetchSttHost,
+  fetchSttModel,
+  fetchWhistleStatus,
+  removeWhistleModel,
+  setSttHost,
+  startWhistleSetup,
   withTimeout,
   XHR_HEADER,
   XHR_HEADER_VALUE,
@@ -647,6 +659,21 @@ describe("api client — the transcription deadline scales with the clip", () =>
 
   it("a nonsense size cannot produce a deadline shorter than the fixed allowance", () => {
     expect(sttTimeoutFor(-1)).toBe(80_000);
+    expect(sttTimeoutFor(-1, "audio/wav")).toBe(80_000);
+  });
+
+  it("a WAV waits for the host engine's deadline, half the clip and at most three minutes", () => {
+    const wav = (seconds: number) => 44 + seconds * 32_000;
+    const upload = (bytes: number) => Math.ceil((bytes * 8 * 1000) / 256_000);
+    // A short WAV keeps the flat 60 s, like any other clip of its size.
+    expect(sttTimeoutFor(wav(10), "audio/wav")).toBe(sttTimeoutFor(wav(10), "audio/webm"));
+    // Four minutes, the longest the host engine takes: 120 s for the engine on top of the upload.
+    expect(sttTimeoutFor(wav(240), "audio/wav")).toBe(upload(wav(240)) + 120_000 + 20_000);
+    expect(sttTimeoutFor(wav(240), "audio/wav; codecs=1")).toBe(upload(wav(240)) + 120_000 + 20_000);
+    // Never more than three minutes for the engine, whatever the size.
+    expect(sttTimeoutFor(wav(600), "audio/wav")).toBe(upload(wav(600)) + 180_000 + 20_000);
+    // Other providers' clips keep the flat budget.
+    expect(sttTimeoutFor(wav(240), "audio/webm")).toBe(upload(wav(240)) + 60_000 + 20_000);
   });
 });
 
@@ -992,6 +1019,104 @@ describe("api client — identity proxy refusals", () => {
   });
 });
 
+// WHISTLE (ADR 0096): the host's model and the phone's copy of it.
+/** The bridge's error code a promise rejected with, or undefined when it did not reject with one. */
+async function refusalCode(promise: Promise<unknown>): Promise<string | undefined> {
+  try {
+    await promise;
+  } catch (thrown) {
+    return apiErrorFields(thrown)?.code;
+  }
+  return undefined;
+}
+
+describe("the Whistle calls", () => {
+  const STATUS = { state: "absent", bytes: 16919407, hostEngine: false, hostTaken: false };
+
+  it("reads the status, starts the setup and removes the model on the right routes", async () => {
+    const seen: string[] = [];
+    server.use(
+      http.get("/api/stt/whistle", () => {
+        seen.push("GET /api/stt/whistle");
+        return HttpResponse.json(STATUS);
+      }),
+      http.post("/api/stt/whistle", () => {
+        seen.push("POST /api/stt/whistle");
+        return HttpResponse.json({ ...STATUS, state: "downloading", received: 0 }, { status: 202 });
+      }),
+      http.delete("/api/stt/whistle", () => {
+        seen.push("DELETE /api/stt/whistle");
+        return HttpResponse.json(STATUS);
+      }),
+    );
+    expect((await fetchWhistleStatus()).state).toBe("absent");
+    expect((await startWhistleSetup()).state).toBe("downloading");
+    expect((await removeWhistleModel()).state).toBe("absent");
+    expect(seen).toEqual(["GET /api/stt/whistle", "POST /api/stt/whistle", "DELETE /api/stt/whistle"]);
+  });
+
+  it("reads and switches the host's provider; Codex carries the consent id, the others carry none", async () => {
+    const HOST = {
+      provider: "none",
+      available: false,
+      configuredBy: "none",
+      switchable: { whistle: { ok: true }, codex: { ok: true }, off: { ok: true } },
+    };
+    const bodies: unknown[] = [];
+    server.use(
+      http.get("/api/stt/host", () => HttpResponse.json(HOST)),
+      http.put("/api/stt/host", async ({ request }) => {
+        bodies.push(await request.json());
+        return HttpResponse.json(HOST);
+      }),
+    );
+    expect((await fetchSttHost()).provider).toBe("none");
+    await setSttHost("whistle");
+    await setSttHost("off");
+    await setSttHost("codex", "codex-consent-80d08bef89cd");
+    expect(bodies).toEqual([
+      { provider: "whistle" },
+      { provider: "off" },
+      { provider: "codex", consent: "codex-consent-80d08bef89cd" },
+    ]);
+  });
+
+  it("carries the host's refusal code, so Settings can say it in the operator's language", async () => {
+    server.use(
+      http.put("/api/stt/host", () =>
+        HttpResponse.json({ error: "locked", code: "stt.host_provider_locked" }, { status: 409 }),
+      ),
+    );
+    await expect(setSttHost("off")).rejects.toThrow(/409/);
+    expect(await refusalCode(setSttHost("off"))).toBe("stt.host_provider_locked");
+  });
+
+  it("fetches the model by hash with the token and hands the stream back untouched", async () => {
+    setDeviceToken("tok-model-1");
+    let auth: string | null = null;
+    const sha = "b".repeat(64);
+    server.use(
+      http.get(`/api/stt/model/${sha}`, ({ request }) => {
+        auth = request.headers.get("authorization");
+        return new HttpResponse(new Uint8Array([1, 2, 3]), { headers: { "content-type": "application/octet-stream" } });
+      }),
+    );
+    const res = await fetchSttModel(sha);
+    expect(auth).toBe("Bearer tok-model-1");
+    expect([...new Uint8Array(await res.arrayBuffer())]).toEqual([1, 2, 3]);
+  });
+
+  it("throws the host's refusal when it no longer holds that model", async () => {
+    const sha = "c".repeat(64);
+    server.use(
+      http.get(`/api/stt/model/${sha}`, () =>
+        HttpResponse.json({ error: "unknown model", code: "stt.model_unknown" }, { status: 404 }),
+      ),
+    );
+    expect(await refusalCode(fetchSttModel(sha))).toBe("stt.model_unknown");
+  });
+});
+
 // "LOOK NOW" — the one write-shaped call that is a read, and the one scope it declines to make.
 describe("refreshNow", () => {
   it("posts to /api/refresh for the local collie", async () => {
@@ -1260,5 +1385,58 @@ describe("the Files image read (ADR 0090)", () => {
     const abort = new AbortController();
     abort.abort();
     await expect(fetchFileImage({ kind: "pane", paneId: "w1:p1" }, "logo.png", undefined, abort.signal)).rejects.toBeTruthy();
+  });
+});
+
+describe("one-off runs and their history (ADR 0095)", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  function capture() {
+    const calls: Array<{ url: string; method: string | undefined; body: unknown }> = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      calls.push({ url: String(input), method: init?.method, body: init?.body == null ? undefined : JSON.parse(String(init.body)) });
+      return new Response(JSON.stringify({ ok: true, removed: 1 }), { status: 200, headers: { "content-type": "application/json" } });
+    });
+    return calls;
+  }
+
+  it("startRun sends `run`, the folder only when named, and the request id, to that machine", async () => {
+    const calls = capture();
+    await startRun("make test", { cwd: "~/src/app", requestId: "id-1" }, { host: "badger" });
+    await startRun("htop", { requestId: "id-2" });
+    expect(calls).toEqual([
+      { url: "/api/launch?host=badger", method: "POST", body: { run: "make test", requestId: "id-1", cwd: "~/src/app" } },
+      { url: "/api/launch", method: "POST", body: { run: "htop", requestId: "id-2" } },
+    ]);
+  });
+
+  it("startLaunch sends a starter by its id and the request id, and never a folder", async () => {
+    const calls = capture();
+    await startLaunch({ kind: "starter", id: "notes-new" }, { cwd: "~/src/app", requestId: "id-3" }, { host: "badger" });
+    await startLaunch({ kind: "row", command: "htop" }, { cwd: "~/src/app", requestId: "id-4" });
+    expect(calls).toEqual([
+      { url: "/api/launch?host=badger", method: "POST", body: { starter: "notes-new", requestId: "id-3" } },
+      { url: "/api/launch", method: "POST", body: { command: "htop", requestId: "id-4", cwd: "~/src/app" } },
+    ]);
+  });
+
+  it("checkRun posts the line to that machine's check and returns its answer, a read that sends nothing else", async () => {
+    const calls = capture();
+    await checkRun("claude --yolo", { host: "badger" });
+    await checkRun("htop");
+    expect(calls).toEqual([
+      { url: "/api/launch/check?host=badger", method: "POST", body: { run: "claude --yolo" } },
+      { url: "/api/launch/check", method: "POST", body: { run: "htop" } },
+    ]);
+  });
+
+  it("remove names the exact line; clear sends an empty body; both reach the member on host=", async () => {
+    const calls = capture();
+    await expect(removeRecentRun("make test", { host: "badger" })).resolves.toEqual({ ok: true, removed: 1 });
+    await clearRecentRuns({ host: "badger" });
+    expect(calls).toEqual([
+      { url: "/api/launch/recent/remove?host=badger", method: "POST", body: { line: "make test" } },
+      { url: "/api/launch/recent/clear?host=badger", method: "POST", body: {} },
+    ]);
   });
 });

@@ -1,12 +1,15 @@
 import { join } from "node:path";
 import { envBool } from "../bridge/config.ts";
 
+import { formatAuditLine } from "../bridge/audit.ts";
+import { ADDED_FILE, formatAddedFile, parseAddedText } from "../bridge/launchers-added.ts";
 import {
   acquireRegistryLockSync,
   CODE_TTL_MS,
   coerceRegistry,
   type RegistryLock,
   DEVICES_FILENAME,
+  escapeLabelForTerminal,
   generateCode,
   isExpired,
   newPending,
@@ -63,6 +66,11 @@ export interface PairingDeps {
   random?: (n: number) => Buffer;
   /** The synchronous wait the registry lock polls with; a test injects a clock, production leaves it. */
   sleep?: (ms: number) => void;
+  /**
+   * Append one line to `<stateDir>/audit.log`, the bridge's own trail. `devices revoke` writes the
+   * launcher rows it removes there (ADR 0094). Absent writes no line.
+   */
+  appendAudit?: (line: string) => void;
 }
 
 /**
@@ -269,10 +277,10 @@ export function cmdDevicesList(deps: PairingDeps): number {
     return EXIT.OK;
   }
   const now = (deps.now ?? Date.now)();
-  const width = Math.max(...devices.map((d) => d.label.length));
+  const width = Math.max(...devices.map((d) => escapeLabelForTerminal(d.label).length));
   for (const d of devices) {
     deps.io.out(
-      `${d.label.padEnd(width)}  created ${stamp(d.createdAt)}  last seen ${stamp(d.lastSeenAt)}  ${expiryText(d, now)}`,
+      `${escapeLabelForTerminal(d.label).padEnd(width)}  created ${stamp(d.createdAt)}  last seen ${stamp(d.lastSeenAt)}  ${expiryText(d, now)}`,
     );
   }
   if (devices.some((d) => isExpired(d, now))) {
@@ -305,15 +313,15 @@ function matchLabel(registry: PairedRegistry, typed: string): LabelMatch {
 /** Say why a label named nothing (or too much) on stderr, in revoke's words. */
 function reportLabelMiss(deps: PairingDeps, registry: PairedRegistry, typed: string, match: LabelMatch): void {
   if (match.kind === "many") {
-    deps.io.err(`error: \`${typed}\` matches more than one paired device: ${match.labels.join(", ")}`);
+    deps.io.err(`error: \`${escapeLabelForTerminal(typed)}\` matches more than one paired device: ${match.labels.map(escapeLabelForTerminal).join(", ")}`);
     deps.io.err("  type the label exactly as `collie devices list` prints it.");
     return;
   }
-  deps.io.err(`error: no paired device labelled \`${typed}\``);
+  deps.io.err(`error: no paired device labelled \`${escapeLabelForTerminal(typed)}\``);
   deps.io.err(
     registry.devices.length === 0
       ? "  nothing is paired on this machine, see `collie devices list`."
-      : `  paired: ${registry.devices.map((d) => d.label).join(", ")}`,
+      : `  paired: ${registry.devices.map((d) => escapeLabelForTerminal(d.label)).join(", ")}`,
   );
 }
 
@@ -361,7 +369,7 @@ export function cmdDevicesSetExpiry(deps: PairingDeps, args: readonly string[]):
     }
     if (!writeRegistryOrReport(deps, next, lock)) return EXIT.FAIL;
     deps.io.out(
-      `✓ "${match.label}" expires ${new Date(expiresAt).toISOString()} (${lifetimeText(lifetime.ms)} from now). No restart needed.`,
+      `✓ "${escapeLabelForTerminal(match.label)}" expires ${new Date(expiresAt).toISOString()} (${lifetimeText(lifetime.ms)} from now). No restart needed.`,
     );
     return EXIT.OK;
   });
@@ -383,7 +391,7 @@ export function cmdDevicesClearExpiry(deps: PairingDeps, args: readonly string[]
     }
     const had = registry.devices.find((d) => d.label === match.label)?.expiresAt;
     if (had === undefined) {
-      deps.io.out(`"${match.label}" has no expiry, so there is nothing to clear.`);
+      deps.io.out(`"${escapeLabelForTerminal(match.label)}" has no expiry, so there is nothing to clear.`);
       return EXIT.OK;
     }
     const next = setDeviceExpiry(registry, match.label, null);
@@ -392,7 +400,7 @@ export function cmdDevicesClearExpiry(deps: PairingDeps, args: readonly string[]
       return EXIT.FAIL;
     }
     if (!writeRegistryOrReport(deps, next, lock)) return EXIT.FAIL;
-    deps.io.out(`✓ "${match.label}" no longer expires. Its token works until you revoke it.`);
+    deps.io.out(`✓ "${escapeLabelForTerminal(match.label)}" no longer expires. Its token works until you revoke it.`);
     return EXIT.OK;
   });
 }
@@ -454,11 +462,11 @@ function revokeLocked(deps: PairingDeps, label: string, lock: RegistryLock): num
     const registry = readRegistry(deps);
     const removed = removeDevice(registry, label);
     if (removed === null) {
-      deps.io.err(`error: no paired device labelled \`${label}\``);
+      deps.io.err(`error: no paired device labelled \`${escapeLabelForTerminal(label)}\``);
       deps.io.err(
         registry.devices.length === 0
           ? "  nothing is paired on this machine — `collie devices list`."
-          : `  paired: ${registry.devices.map((d) => d.label).join(", ")}`,
+          : `  paired: ${registry.devices.map((d) => escapeLabelForTerminal(d.label)).join(", ")}`,
       );
       return EXIT.FAIL;
     }
@@ -478,12 +486,61 @@ function revokeLocked(deps: PairingDeps, label: string, lock: RegistryLock): num
 
   const required = envBool("COLLIE_PAIRING", true, deps.ctx.env);
   deps.io.out(required
-    ? `✓ revoked "${label}": it loses paired access on its next request (no restart needed).`
-    : `✓ revoked "${label}": its credential is removed, but browser access remains open past the remaining gates while pairing is OFF.`);
+    ? `✓ revoked "${escapeLabelForTerminal(label)}": it loses paired access on its next request (no restart needed).`
+    : `✓ revoked "${escapeLabelForTerminal(label)}": its credential is removed, but browser access remains open past the remaining gates while pairing is OFF.`);
+  const forgotten = forgetLauncherRows(deps, label);
+  if (forgotten > 0) {
+    deps.io.out(
+      `  Removed ${forgotten} launcher row${forgotten === 1 ? "" : "s"} it added from its phone. The running bridge removes the ones it added on crew members.`,
+    );
+  }
   if (required && next.devices.length === 0) {
     deps.io.out("  That was the last paired device: Collie now answers no phone or browser. Run `collie pair` to pair one.");
   }
   return EXIT.OK;
+}
+
+/**
+ * Remove the launcher rows `label` added from its phone on THIS machine (ADR 0094), and write one
+ * audit line per row. The bridge reads `launchers-added.json` by mtime, so the rows leave the launch
+ * allowlist on its next read. A file the store would not write over is left alone and said so: the
+ * bridge's read-time sweep drops the rows once the file reads again. Answers how many went.
+ */
+function forgetLauncherRows(deps: PairingDeps, label: string): number {
+  const path = join(deps.ctx.stateDir, ADDED_FILE);
+  const text = deps.files.read(path);
+  if (text === null) return 0;
+  const { rows } = parseAddedText(text);
+  if (rows === null) {
+    deps.io.err(`  note: ${path} cannot be read, so the launcher rows "${escapeLabelForTerminal(label)}" added stay until it can.`);
+    return 0;
+  }
+  const gone = rows.filter((r) => r.device === label && r.via === "local");
+  if (gone.length === 0) return 0;
+  try {
+    const tmp = `${path}.${process.pid}.cli.tmp`;
+    deps.files.write(tmp, formatAddedFile(rows.filter((r) => !gone.includes(r))), 0o600);
+    deps.files.rename(tmp, path);
+  } catch (err) {
+    deps.io.err(`  note: could not write ${path} — ${err instanceof Error ? err.message : String(err)}; the bridge drops the rows on its next read.`);
+    return 0;
+  }
+  const content = deps.ctx.env.COLLIE_AUDIT_CONTENT === "none" ? "none" : "preview";
+  const now = (deps.now ?? Date.now)();
+  for (const row of gone) {
+    deps.appendAudit?.(
+      formatAuditLine(
+        {
+          action: "launcher.remove",
+          device: null,
+          detail: { requestId: row.id, command: row.command, label: row.label, addedBy: row.device, reason: "device-revoked" },
+        },
+        now,
+        content,
+      ),
+    );
+  }
+  return gone.length;
 }
 
 export function devicesUsage(): string {

@@ -91,7 +91,7 @@ describe("flake.nix and MIN_BUN", () => {
 });
 
 describe("CI runs the flake's Bun", () => {
-  for (const [name, count] of [["ci", 3], ["windows", 1], ["release", 1]] as const) {
+  for (const [name, count] of [["ci", 4], ["windows", 1], ["release", 1]] as const) {
     test(`${name}.yml pins every setup-bun to flake.nix's bunVersion`, () => {
       const workflow = readFileSync(join(ROOT, ".github", "workflows", `${name}.yml`), "utf8");
       // SAFETY: `Bun.YAML.parse` answers plain data; each field read is compared against a string.
@@ -103,15 +103,21 @@ describe("CI runs the flake's Bun", () => {
     });
   }
 
-  test("windows-suites.ps1 gives each suite its own skip budget, 28 in all, each skip named", () => {
+  test("windows-suites.ps1 gives each suite its own skip budget, 99 in all, each skip named", () => {
     const script = readFileSync(join(ROOT, "scripts", "windows-suites.ps1"), "utf8");
     const budget = (suite: string): number => Number(new RegExp(`\\[int\\]\\$MaxSkips${suite} = (\\d+)`).exec(script)?.[1] ?? Number.NaN);
-    expect([budget("Bridge"), budget("Cli"), budget("Scripts")]).toEqual([4, 1, 23]);
-    // The bridge allowance is exactly the local-cli tests that stay POSIX-only, and the comment names them.
+    expect([budget("Bridge"), budget("Cli"), budget("Scripts")]).toEqual([62, 14, 23]);
+    // The bridge allowance is the local-cli tests that stay POSIX-only, the one real-engine Whistle
+    // case that needs the uncommitted model, the 21 durable example tests and the 36 durable socket
+    // tests; the comment names them all.
     const localCli = readFileSync(join(ROOT, "bridge", "stt", "local-cli.test.ts"), "utf8");
     const posixOnly = [...localCli.matchAll(/test\.if\(posix\)\("([^"]+)"/g)].map((m) => m[1]!);
-    expect(posixOnly).toHaveLength(budget("Bridge"));
+    expect(posixOnly).toHaveLength(4);
+    expect(budget("Bridge")).toBe(posixOnly.length + 1 + 21 + 36);
+    expect(budget("Cli")).toBe(2 + 12);
     for (const name of posixOnly) expect(script).toContain(name);
+    expect(script).toContain("a 13 s WAV becomes text through a real child of this Collie");
+    expect(script).toContain("a child of this checkout's CLI turns 10.4 s of speech into text");
     expect(script).not.toContain("[int]$MaxSkips = ");
     expect(script).toContain("if ($skip -gt $skipBudget[$name])");
   });

@@ -11,10 +11,14 @@ import {
   machinePath,
   machinesPath,
   machineTabOf,
+  newAddPath,
+  newPath,
   pairLandingPath,
   panePath,
   parentChain,
   readFrom,
+  readNewAddKind,
+  readNewAt,
   resolveTreeUp,
   resolveUp,
   resolveUpTo,
@@ -25,6 +29,7 @@ import {
   treeUpLanding,
   updatesPath,
   upTarget,
+  voicePagePath,
 } from "./nav";
 
 describe("the commit view's paths", () => {
@@ -132,6 +137,62 @@ describe("homePath", () => {
   });
 });
 
+describe("the New page's address", () => {
+  it("is /new, with the machine, the pane and the session in the query only when given", () => {
+    expect(newPath()).toBe("/new");
+    expect(newPath({})).toBe("/new");
+    expect(newPath({ machine: "mini" })).toBe("/new?machine=mini");
+    expect(newPath({ machine: "mini", pane: "w1:p1", session: "demo" })).toBe("/new?machine=mini&pane=w1%3Ap1&s=demo");
+    expect(newPath({ pane: "w1:p1" })).toBe("/new?pane=w1%3Ap1");
+  });
+
+  it("reads back what it wrote, and blank values as absent", () => {
+    expect(readNewAt("?machine=mini&pane=w1%3Ap1&s=demo")).toEqual({ machine: "mini", pane: "w1:p1", session: "demo" });
+    expect(readNewAt("")).toEqual({ machine: undefined, pane: undefined, session: undefined });
+    expect(readNewAt("?machine=%20&pane=")).toEqual({ machine: undefined, pane: undefined, session: undefined });
+  });
+
+  it("carries the item to open on (?pick=) back from Add your own, and reads it back", () => {
+    expect(newPath({ machine: "mini", pick: "row:claude --model opus" })).toBe("/new?machine=mini&pick=row%3Aclaude+--model+opus");
+    expect(readNewAt("?pick=row%3Aclaude+--model+opus").pick).toBe("row:claude --model opus");
+    expect(readNewAt("").pick).toBeUndefined();
+  });
+});
+
+describe("Add your own's address", () => {
+  it("is /new/add with the half to open on, then the machine, the pane and the session when given", () => {
+    expect(newAddPath()).toBe("/new/add?kind=agent");
+    expect(newAddPath({}, "command")).toBe("/new/add?kind=command");
+    expect(newAddPath({ machine: "mini", pane: "w1:p1", session: "demo" }, "agent")).toBe(
+      "/new/add?kind=agent&machine=mini&pane=w1%3Ap1&s=demo",
+    );
+  });
+
+  it("reads the half back: only command is Command", () => {
+    expect(readNewAddKind("?kind=command")).toBe("command");
+    expect(readNewAddKind("?kind=agent")).toBe("agent");
+    expect(readNewAddKind("?kind=other")).toBe("agent");
+    expect(readNewAddKind("")).toBe("agent");
+  });
+
+  it("sits below the New page: the dashboard, a space and a pane are above it, and so is /new", () => {
+    expect(isAncestor("/new", "/new/add")).toBe(true);
+    expect(isAncestor("/", "/new/add")).toBe(true);
+    expect(isAncestor("/pane/w1%3Ap1", "/new/add")).toBe(true);
+    expect(isAncestor("/settings", "/new/add")).toBe(false);
+    expect(isAncestor("/new/add", "/new")).toBe(false);
+  });
+
+  it("a cold deep link has the New page it names behind it, and that page's own parents", () => {
+    expect(parentChain("/new/add", "?kind=agent")).toEqual(["/", "/new"]);
+    expect(parentChain("/new/add", "?kind=command&machine=mini&pane=w1%3Ap1&s=demo")).toEqual([
+      "/?h=mini&s=demo",
+      "/pane/w1%3Ap1?h=mini&s=demo",
+      "/new?machine=mini&pane=w1%3Ap1&s=demo",
+    ]);
+  });
+});
+
 describe("updatesPath", () => {
   // A CHILD path of settings, not an anchor inside it — so "back" from the page lands on Settings
   // and the router can hold the two as separate routes.
@@ -143,6 +204,13 @@ describe("updatesPath", () => {
     // It is a path, not a fragment: PAIRED_DEVICES_HASH's shape would not have given it a route.
     expect(updatesPath()).not.toContain("#");
     expect(settingsPath()).toBe("/settings");
+  });
+});
+
+describe("voicePagePath", () => {
+  it("names the two pages below the Voice hub, keeping the scope", () => {
+    expect(voicePagePath("host")).toBe("/settings/voice/host");
+    expect(voicePagePath("model", { host: "badger", session: "demo" })).toBe("/settings/voice/model?h=badger&s=demo");
   });
 });
 
@@ -203,6 +271,10 @@ describe("ancestorsOf / isAncestor: the level tree", () => {
     ["/pane/w1%3Ap2/changes", "/pane/w1%3Ap1/changes/commit", false],
     ["/space/w1/changes", "/space/w1/changes/commit", true],
     ["/space/w1/changes/commit", "/space/w1/changes", false],
+    ["/settings/voice", "/settings/voice/host", true],
+    ["/settings", "/settings/voice/model", true],
+    ["/settings/voice/host", "/settings/voice", false],
+    ["/settings/voice/host", "/settings/voice/model", false],
     ["/", "/settings", true],
     ["/pane/w1%3Ap1", "/settings", false],
     ["/settings", "/settings/updates", true],
@@ -221,6 +293,13 @@ describe("ancestorsOf / isAncestor: the level tree", () => {
     ["/settings", "/machines/bluefin", true],
     ["/machines/workshop", "/machines/bluefin", false],
     ["/pane/w1%3Ap1", "/machines/bluefin", false],
+    // The New page is opened from the dashboard, a space, or a pane's menu; nothing else is above it.
+    ["/", "/new", true],
+    ["/space/w1?h=badger", "/new", true],
+    ["/pane/w1%3Ap1", "/new", true],
+    ["/pane/w1%3Ap1/history", "/new", false],
+    ["/settings", "/new", false],
+    ["/new", "/new", false],
     ["/", "/nowhere", false],
   ])("%s above %s: %s", (from, here, expected) => {
     expect(isAncestor(from, here)).toBe(expected);
@@ -318,11 +397,20 @@ describe("parentChain: what a cold deep link gets behind it", () => {
     // section behind it — two taps back to home, matching the two pushes that would have got here.
     ["/settings/updates", "", ["/", "/settings", "/settings/system"]],
     ["/settings/device", "", ["/", "/settings"]],
+    ["/settings/voice", "", ["/", "/settings"]],
+    // The two pages below the Voice hub: the hub and the index behind them.
+    ["/settings/voice/host", "", ["/", "/settings", "/settings/voice"]],
+    ["/settings/voice/model", "?h=badger", ["/?h=badger", "/settings?h=badger", "/settings/voice?h=badger"]],
     ["/crew", "", ["/", "/settings", "/settings/system"]],
     // Machines sits under Settings, and one machine under Machines: a cold deep link gets both behind it.
     ["/machines", "", ["/", "/settings"]],
     ["/machines/bluefin", "", ["/", "/settings", "/machines"]],
     ["/machines/bluefin", "?h=badger", ["/?h=badger", "/settings?h=badger", "/machines?h=badger"]],
+    // The New page: the screen it names behind it. A pane's worktree gets the pane too.
+    ["/new", "", ["/"]],
+    ["/new", "?machine=mini", ["/?h=mini"]],
+    ["/new", "?pane=w1%3Ap1", ["/", "/pane/w1%3Ap1"]],
+    ["/new", "?machine=mini&pane=w1%3Ap1&s=demo", ["/?h=mini&s=demo", "/pane/w1%3Ap1?h=mini&s=demo"]],
     ["/nowhere", "", []],
   ])("%s%s → %j", (pathname, search, expected) => {
     expect(parentChain(pathname, search)).toEqual(expected);

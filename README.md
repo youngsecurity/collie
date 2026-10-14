@@ -37,7 +37,8 @@ until explicitly configured.
 - **Status dashboard** with panes kept in their workspaces, attention marked in place, and a tab label on each row
 - **Push notifications** when an agent blocks on user input
 - **Quick actions and slash commands** configured per agent
-- **Keypad for terminal control keys**: `Esc`, `Ctrl+C`, arrows, and modifier combinations
+- **Keys board you arrange**: `Esc`, `Ctrl+C`, arrows and modifier combinations, plus wider keys, your own chords and sequences, sticky `Ctrl`/`Alt`/`Shift`, presets (Claude Code, Prefix, Vim) and a layout code to share
+- **Start from the phone**: a **+ New** button opens one page where you pick the machine, an agent or a command, the folder and an optional new worktree; each machine shows which agents it has, a lost reply never opens a second pane, and you can add your own launchers from the phone
 - **Output search** and full conversation history beyond standard terminal scrollback
 - **Files screen**: the files of an agent's workspace folder with the changes marked, and a Changes segment with what it changed in its git repos, as diffs with syntax colour, and its last commit, read-only
 - **File attachments**: images from the camera roll, and markdown, text and code files
@@ -46,6 +47,7 @@ until explicitly configured.
 - **Twelve UI languages** and a per-device typeface setting
 - **Herdr session switching** managed from the web interface
 - **PWA support** running locally on loopback with no external accounts or cloud dependencies
+- **No telemetry**: the app sends no analytics, usage statistics or crash reports. Its one unprompted call is the update check to GitHub ([details](./docs/security.md#what-leaves-your-machine))
 
 ## Demo
 
@@ -66,7 +68,7 @@ data without installation.
   </tr>
   <tr>
     <td align="center" width="50%"><img src="assets/space-detail.png" alt="A space's tabs and panes" width="250"><br><sub><b>Space</b> — its tabs and panes, deep-linkable</sub></td>
-    <td align="center" width="50%"><img src="assets/keys.png" alt="The special-keys pad — arrows, Esc, Tab, Ctrl, Alt, Shift" width="250"><br><sub><b>Keys</b> — the special-keys pad, no chords to remember</sub></td>
+    <td align="center" width="50%"><img src="assets/keys.png" alt="The special-keys pad — arrows, Esc, Tab, Ctrl, Alt, Shift" width="250"><br><sub><b>Keys</b> — the special-keys pad, arranged the way you work</sub></td>
   </tr>
   <tr>
     <td align="center" width="50%"><img src="assets/quick.png" alt="The Quick dock — one-tap replies over a working pane" width="250"><br><sub><b>Quick</b> — your own one-tap replies, from <code>quick-replies.toml</code></sub></td>
@@ -143,7 +145,7 @@ and that is the only way to install it on a phone.
 | | |
 | --- | --- |
 | [**Install in five minutes**](./docs/five-minute-install.md) | The recommended setup, step by step: Tailscale, Herdr and Collie on your computer, then a paired phone with Collie on its home screen |
-| [**Claude Code in tmux or Herdr, on your phone**](./docs/claude-code-on-your-phone.md) | Keep Claude Code running in tmux or Herdr when SSH drops. Manage sessions, approve prompts, and send Esc or Ctrl from your phone with push alerts. |
+| [**Claude Code in tmux or Herdr, on your phone**](./docs/claude-code-on-your-phone.md) | Keep Claude Code running in tmux or Herdr when SSH drops. Manage sessions, start new agents and worktrees, approve prompts, and send Esc or Ctrl from your phone with push alerts. |
 
 ### Reference
 
@@ -152,11 +154,11 @@ and that is the only way to install it on a phone.
 | [**Install**](./docs/install.md) | The front door you need, then the install for your system: Linux, Arch and Omarchy, Nix, macOS, Windows, or as a Herdr plugin. Covers first run, setup on an iPhone or Android phone, updates, and uninstallation |
 | [**Windows**](./docs/windows.md) | Windows 11 with Herdr: what is supported, installing with `install.ps1`, the unsigned binary, updating, long paths, and what is not tested |
 | [**Security**](./docs/security.md) | What a Collie exposes, the defenses, and default-on device pairing with an explicit host opt-out |
-| [**Configure**](./docs/configure.md) | The `.env`, your own slash commands, keys, quick replies and typefaces; appearance, Zen mode, language |
+| [**Configure**](./docs/configure.md) | The `.env`, your own slash commands, keys, quick replies, launchers and typefaces; appearance, Zen mode, language |
 | [**Changes**](./docs/changes.md) | The Files screen: a workspace's folder with its changes marked, the changed files and their diffs, and the last commit, from the pane or the dashboard's Files tab. Read-only git, nested repos, and the two settings that decide how far it looks |
 | [**Deployment**](./docs/deployment.md) | Front doors other than the default: an identity-aware proxy, a reverse proxy with no Tailscale, an off-host ingress, several Collies on one host (one per user, or several instances for one user), and a crew's standby door |
 | [**Commands**](./docs/commands.md) | Every `collie` verb, putting `collie` on your PATH, and the Herdr actions that mirror the verbs on a Herdr-managed install |
-| [**Multiplexers**](./docs/multiplexers.md) | Pointing Collie at Herdr, tmux, zellij, tuios or Tern, what each backend can answer, and agent beacons. Experimental for tmux, zellij, tuios and Tern; bug reports wanted |
+| [**Multiplexers**](./docs/multiplexers.md) | Pointing Collie at Herdr, tmux, zellij, tuios, Tern or a durable agent program, what each backend can answer, and agent beacons. Experimental for tmux, zellij, tuios, Tern and durable; bug reports wanted |
 | [**Crews**](./docs/crew.md) | Several machines' Collies behind one URL: invite, join, deputy, failover |
 | [**Voice input and Web Push**](./docs/voice-and-push.md) | The microphone in the composer, and notifications when an agent is waiting on you |
 | [**Manage & update**](./docs/upgrading.md) | Update from the phone or the terminal, roll back, update a crew, cross a major, stop, uninstall, and upgrading a 0.x install to 1.0 |
@@ -364,3 +366,5 @@ integration is documented in [`HERDR_API.md`](./HERDR_API.md).
 - Contribution guidelines: [`CONTRIBUTING.md`](./CONTRIBUTING.md)
 - Names, logo and forks: [`TRADEMARKS.md`](./TRADEMARKS.md)
 - Release history: [`CHANGELOG.md`](./CHANGELOG.md)
+- Third-party code: the Whistle speech engine, `needle` by Cactus Compute (Apache-2.0), is vendored in
+  [`web/public/stt/`](./web/public/stt/needle-3-93e88ede/LICENSE)

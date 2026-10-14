@@ -106,6 +106,9 @@ const NEUTRAL = new Set([
   // The `/plugin` "Add Marketplace" source field: a text field no grammar reads. The unread card
   // covers it (unread-dialog.test.ts).
   "claude--v2283-plugin-marketplaces-add-form--w82.txt",
+  // Claude Code 2.1.296's box table with a `⚠️` cell, cut to the reply's rows: a table that pans
+  // (table-run.test.ts), never a dialog.
+  "claude--box-table-vs16-emoji.txt",
 ]);
 
 const allClaudeFixtures = readdirSync(PANES_DIR)
@@ -278,6 +281,9 @@ describe("the walk-pair table", () => {
         "claude | trust | Quick safety check",
         "codex | trust | Trust this folder?",
         "omp | select | Pick a colour",
+        "pi | select | 1",
+        "pi | select | Auth",
+        "pi | select | Which package manager do you want to use?",
         "opencode | permission | % WebFetch https",
         "opencode | permission | $ echo narrow-width-probe",
         "opencode | permission | This will allow edit until OpenCode is restarted.",
