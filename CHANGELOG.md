@@ -40,6 +40,8 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 ### Fixed
 
 - **Crew updates serialize safely and show release notes in-app.** Adopt upstream 1.21.1's updater latch, bounded locks, dismissible crew failures, release notes and smaller session-switcher mark. Keep exclusive lock acquisition, fork-only update targets, pairing and storage safeguards, and manual source-only publication. Thanks @AltanS (youngsecurity/collie#93).
+- **Later crew retry failures reappear without reloading the app.** Limit an optimistic dismissal to the failed run it closes and let acknowledged bridge timestamps take over, even while the dismissal request is pending or fails. Thanks @AltanS (youngsecurity/collie#93).
+
 ## [1.21.0+ys.1] - 2026-10-14
 
 ### Changed

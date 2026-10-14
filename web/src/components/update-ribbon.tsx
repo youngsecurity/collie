@@ -16,13 +16,14 @@ import { useSelfUpdate } from "@/lib/self-update";
 import { useUpdateRun } from "@/lib/update-run-store";
 import {
   type Dismissal,
+  crewSettledAt,
   dismissesLocally,
   dismissTarget,
   ribbonText,
   ribbonView,
   type RibbonView,
 } from "@/lib/update-ribbon";
-import type { DismissScope } from "@/lib/types";
+import type { DismissScope, UpdateInfo } from "@/lib/types";
 
 // ── THE UPDATE BAND ─────────────────────────────────────────────────────────────────────────────
 //
@@ -94,13 +95,27 @@ export function UpdateRibbon() {
   // this holds what the operator just closed so the band drops on the tap rather than on the next
   // poll. Keyed by version AND scope like the stored one, so a newer version still raises the band
   // and closing a crew notice does not hide this host's own offer.
-  const [justDismissed, setJustDismissed] = useState<Dismissal | null>(null);
+  const [justDismissed, setJustDismissed] = useState<
+    (Dismissal & { snapshot: UpdateInfo | undefined }) | null
+  >(null);
   // THE DOWNLOAD ROW, PUT DOWN FOR THIS DOCUMENT ONLY (2026-09-12). See `dismissesLocally` for why
   // it is not the bridge's `dismissUpdate`: nothing was declined, the install goes on, and the
   // controller swap still reloads this page when it lands.
   const [downloadHidden, setDownloadHidden] = useState(false);
 
   const update = data?.update;
+  // A changed bridge dismissal is authoritative, even if the POST is still pending. A new run
+  // also ends the optimistic close, including a peers-only retry with no lead run record.
+  // Compare bridge values, not this device's clock; a failed POST only hides the run closed.
+  const localDismissal = justDismissed?.scope === "crew" && (
+    justDismissed.snapshot?.dismissedCrewVersion !== update?.dismissedCrewVersion ||
+    justDismissed.snapshot?.dismissedCrewAt !== update?.dismissedCrewAt ||
+    justDismissed.snapshot?.run?.startedAt !== update?.run?.startedAt ||
+    crewSettledAt(justDismissed.snapshot) !== crewSettledAt(update)
+  ) ? null : justDismissed;
+  useEffect(() => {
+    if (justDismissed !== null && localDismissal === null) setJustDismissed(null);
+  }, [justDismissed, localDismissal]);
   // THE CENSUS, from the one store that owns the update subject (ADR 0044). The snapshot does not
   // carry it, and the band needs it for one decision: a failed leg whose member has since levelled
   // itself is no longer a sentence worth a row (`lib/crew-level.ts`). The store is already subscribed
@@ -118,11 +133,10 @@ export function UpdateRibbon() {
     update,
     bundleStale,
     bundleInstalling: stage === "installing",
-    dismissedVersion: dismissedIn("offer", justDismissed, update?.dismissedVersion),
-    dismissedCrewVersion: dismissedIn("crew", justDismissed, update?.dismissedCrewVersion),
-    // A tap in THIS tab covers the run on screen, whatever it settled at, so it carries no stamp. The
-    // bridge's stamp takes over on the next poll.
-    dismissedCrewAt: justDismissed?.scope === "crew" ? null : (update?.dismissedCrewAt ?? null),
+    dismissedVersion: dismissedIn("offer", localDismissal, update?.dismissedVersion),
+    dismissedCrewVersion: dismissedIn("crew", localDismissal, update?.dismissedCrewVersion),
+    // Only the optimistic close overrides the stamp; the acknowledged bridge value takes over.
+    dismissedCrewAt: localDismissal?.scope === "crew" ? null : (update?.dismissedCrewAt ?? null),
     crew,
     now: Date.now(),
   });
@@ -196,9 +210,9 @@ export function UpdateRibbon() {
         onActivate={onTap}
         dismissLabel={t(target.scope === "crew" ? "updateRibbon.hideNotice" : "updateRibbon.dismiss")}
         onDismiss={() => {
-          setJustDismissed(target);
-          // Told to the bridge, which is where the decision belongs. A failed call is a courtesy
-          // lost, not an error worth a line: this band is already gone, and the next tap re-sends.
+          setJustDismissed({ ...target, snapshot: update });
+          // A failed call keeps only the bounded local close, without an error row. Completion
+          // never changes local state: an older request must not undo a newer tap or snapshot.
           void dismissUpdate(target.version, target.scope).catch(() => {});
         }}
       />
