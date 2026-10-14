@@ -37,13 +37,15 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 ## [Unreleased]
 
+## [1.18.1+ys.2] - 2026-10-14
+
 ### Added
 
-- **Trusted hosts can explicitly disable browser pairing again.** Set `COLLIE_PAIRING=off` or `[access] pairing=false` and restart to allow tokenless reads and writes past the remaining gates. Pairing stays on by default; invalid values do not disable it. Devices, independent access checks and crew credentials remain intact, warnings name the transcript and remote shell exposure, and opt-out reads do not populate offline session storage.
+- **Trusted hosts can explicitly disable browser pairing again.** Set `COLLIE_PAIRING=off` or `[access] pairing=false` and restart to allow tokenless reads and writes past the remaining gates. Pairing stays on by default; invalid values do not disable it. Devices, independent access checks and crew credentials remain intact, warnings name the transcript and remote shell exposure, and opt-out reads do not populate offline session storage. ([6fb5cd48](https://github.com/youngsecurity/collie/commit/6fb5cd48))
 
 ### Fixed
 
-- **Disabling pairing stops queued and in-flight offline reads.** Recheck the live-only policy before cached reads execute and before their results return, without deleting retained records or changing expiry and wipe rules. Clarify registry-error documentation and the Turkish retained-device warning. (youngsecurity/collie#90)
+- **Disabling pairing stops queued and in-flight offline reads.** Recheck the live-only policy before cached reads execute and before their results return, without deleting retained records or changing expiry and wipe rules. Clarify registry-error documentation and the Turkish retained-device warning. (youngsecurity/collie#90) ([a95c67a4](https://github.com/youngsecurity/collie/commit/a95c67a4))
 
 ## [1.18.1+ys.1] - 2026-10-10
 
