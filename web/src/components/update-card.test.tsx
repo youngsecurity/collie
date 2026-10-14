@@ -8,6 +8,8 @@ import { server } from "@/test/setup";
 import { ROOT_ROUTE_ID, type HomeData } from "@/lib/loaders";
 import { __resetReloadGuard, isReloadHeld } from "@/lib/reload-guard";
 import { __resetUpdateRunStore } from "@/lib/update-run-store";
+import { getDeviceToken, getPairingExpiry, sessionCacheAllowed, setDeviceToken } from "@/lib/pairing";
+import { putRecord } from "@/lib/store";
 import type {
   PreflightReport,
   UpdateInfo,
@@ -249,6 +251,103 @@ describe("update card — what it says before anything happens", () => {
     await waitFor(() => expect(snoozed).toBe(true));
     expect(screen.getByText("Dismissed until the next digest.")).toBeInTheDocument();
     expect(screen.getByText(/Running 1\.3\.0/)).toBeInTheDocument();
+  });
+});
+
+// ── WHAT THE RELEASES CHANGED (1.21.1) ─────────────────────────────────────────────────────────
+// Altan, 2026-10-13: "I also thought that we'd have release notes by now for new updates." The card
+// listed version numbers and nothing else, because nothing upstream carried notes to it.
+describe("release notes on the card", () => {
+  it("shows fork notes from an opt-out read without enabling anonymous persistence or starting an update", async () => {
+    setDeviceToken("expired-device-token", 1);
+    const current = info({
+      current: "1.21.0+ys.1", latest: "1.21.1+ys.1",
+      latestUrl: "https://github.com/youngsecurity/collie/releases/tag/v1.21.1+ys.1",
+      newerVersions: ["1.21.1+ys.1"],
+    });
+    const lead = '<img src=x onerror="alert(1)"> stays text.';
+    let starts = 0;
+    server.use(
+      http.get("/api/update/check", ({ request }) => {
+        expect(request.headers.get("authorization")).toBe("Bearer expired-device-token");
+        return HttpResponse.json({
+          ...current, preflight: GREEN,
+          releaseNotes: {
+            current: null,
+            offered: [{ version: current.latest, url: current.latestUrl,
+              groups: [{ name: "Fixed", leads: [lead] }] }],
+          },
+        }, { headers: { "X-Collie-Pairing": "off" } });
+      }),
+      http.post("/api/update", () => {
+        starts += 1;
+        return HttpResponse.json({});
+      }),
+    );
+    const rendered = renderCard(current);
+    expect(await screen.findByText("What's new in 1.21.1+ys.1")).toBeInTheDocument();
+    expect(screen.getByText(lead)).toBeInTheDocument();
+    expect(rendered.container.querySelector("img")).toBeNull();
+    expect(screen.getByRole("link", { name: /Release page/ })).toHaveAttribute("href", current.latestUrl);
+    expect(sessionCacheAllowed()).toBe(false);
+    expect(await putRecord("snapshot", "anonymous-update-read", { secret: "live only" })).toBe(false);
+    expect(getDeviceToken()).toBe("expired-device-token");
+    expect(getPairingExpiry()).toBe(1);
+    expect(getUpdateAsk()).toBeNull();
+    expect(starts).toBe(0);
+  });
+
+  const notes = {
+    current: {
+      version: "1.3.0",
+      url: "https://github.com/AltanS/collie/releases/tag/v1.3.0",
+      groups: [{ name: "Fixed", leads: ["The red row closes when you tap its ✕."] }],
+    },
+    offered: [
+      {
+        version: "1.3.1",
+        url: "https://github.com/AltanS/collie/releases/tag/v1.3.1",
+        groups: [{ name: "Fixed", leads: ["A patch line."] }],
+      },
+      {
+        version: "1.4.0",
+        url: "https://github.com/AltanS/collie/releases/tag/v1.4.0",
+        groups: [
+          { name: "Added", leads: ["The Updates page lists what an update changes."] },
+          { name: "Fixed", leads: ["`collie doctor` names the check."] },
+        ],
+      },
+    ],
+  };
+  const serveNotes = (update: UpdateInfo) =>
+    server.use(http.get("/api/update/check", () => HttpResponse.json({ ...update, preflight: GREEN, releaseNotes: notes })));
+
+  it("names what the offered update brings, newest release first, before the confirm", async () => {
+    serveNotes(info());
+    renderCard(info());
+    expect(await screen.findByText("What's new in 1.4.0")).toBeInTheDocument();
+    expect(screen.getByText("The Updates page lists what an update changes.")).toBeInTheDocument();
+    expect(screen.getByText("A patch line.")).toBeInTheDocument();
+    // A lead's backticks render as code, not as backticks.
+    expect(screen.getByText("collie doctor").tagName).toBe("CODE");
+    // Notes about the version already installed are not notes about the update.
+    expect(screen.queryByText("The red row closes when you tap its ✕.")).not.toBeInTheDocument();
+    const pages = screen.getAllByRole("link", { name: "Release page" });
+    expect(pages[0]).toHaveAttribute("href", "https://github.com/AltanS/collie/releases/tag/v1.4.0");
+  });
+
+  it("after the update, names what the running version changed", async () => {
+    const current = info({ latest: "1.3.0", releaseAvailable: false, newerVersions: [] });
+    serveNotes(current);
+    renderCard(current);
+    expect(await screen.findByText("What changed in 1.3.0")).toBeInTheDocument();
+    expect(screen.getByText("The red row closes when you tap its ✕.")).toBeInTheDocument();
+  });
+
+  it("an older bridge sends no notes, and the card grows no section", async () => {
+    renderCard(info());
+    expect(await screen.findByText(/folds in 1\.3\.1, 1\.4\.0/)).toBeInTheDocument();
+    expect(screen.queryByText(/What's new in/)).not.toBeInTheDocument();
   });
 });
 
