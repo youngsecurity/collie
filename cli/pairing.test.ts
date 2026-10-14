@@ -15,6 +15,7 @@ import {
   PENDING_FILENAME,
   sha256Hex,
 } from "../bridge/pairing.ts";
+import { ADDED_FILE } from "../bridge/launchers-added.ts";
 import { capture, context, type FakeFiles, fakeExec, fakeFiles, posixKey, type SeededFiles, STATE } from "./fakes.ts";
 import { EXIT } from "./io.ts";
 import {
@@ -271,6 +272,41 @@ describe("collie devices list", () => {
     // A device that has never made a request reads as `never`, not as the epoch.
     expect(d.io.stdout[1]).toContain("never");
     expect(d.io.stdout[1]).not.toContain("1970");
+  });
+
+  test("a label stored before the rule existed is printed with its hidden characters spelled out", () => {
+    const d = deps(
+      registryFile(device({ label: "evil\u001b[2Jname" }), device({ label: "rtl\u202eabc\u200b" }), device({ label: "plain" })),
+    );
+    expect(cmdDevicesList(d)).toBe(EXIT.OK);
+    const out = d.io.stdout.join("\n");
+    expect(out).toContain("evil\\u{1B}[2Jname");
+    expect(out).toContain("rtl\\u{202E}abc\\u{200B}");
+    expect(out).not.toContain("\u001b");
+    expect(out).not.toContain("\u202e");
+    expect(out).not.toContain("\u200b");
+    expect(out).toContain("plain");
+  });
+
+  test("a revoke that names no device prints the stored labels escaped too", () => {
+    const d = deps(registryFile(device({ label: "evil\u001b[2Jname" })));
+    expect(cmdDevicesRevoke(d, ["nobody"])).toBe(EXIT.FAIL);
+    expect(d.io.stderr.join("\n")).toContain("evil\\u{1B}[2Jname");
+    expect(d.io.stderr.join("\n")).not.toContain("\u001b");
+  });
+
+  test("successful locked mutations escape legacy labels without changing their identity", () => {
+    const label = "evil\u001b[2Jname";
+    const d = deps(registryFile(device({ label })));
+    expect(cmdDevicesSetExpiry(d, [label, "30d"])).toBe(EXIT.OK);
+    expect(cmdDevicesClearExpiry(d, [label])).toBe(EXIT.OK);
+    expect(cmdDevicesClearExpiry(d, [label])).toBe(EXIT.OK);
+    expect(cmdDevicesRevoke(d, [label])).toBe(EXIT.OK);
+    const out = d.io.stdout.join("\n");
+    expect(out).toContain("evil\\u{1B}[2Jname");
+    expect(out).not.toContain("\u001b");
+    expect(JSON.parse(d.files.read(REGISTRY)!)).toEqual({ devices: [] });
+    expect(d.files.locks).toHaveLength(8);
   });
 
   test("the expiry column: no expiry, a date ahead, or EXPIRED", () => {
@@ -664,5 +700,98 @@ describe("collie devices revoke — a live holder is never reclaimed", () => {
     expect(d.io.stderr.join("\n")).toContain("could not lock the paired-device registry");
     expect(d.files.entries.get(REGISTRY)!.text).toBe(before);
     expect(d.files.entries.get(LOCK)?.text).toBe('{"pid":999,"at":0}'); // never broken
+  });
+});
+
+// ADR 0094: the launcher rows a revoked device added from its phone go with it, and the audit log says so.
+describe("collie devices revoke — the device's launcher rows", () => {
+  const ADDED = `${STATE}/${ADDED_FILE}`;
+  const row = (id: string, by: string, via: "local" | "crew", command: string) => ({
+    id,
+    kind: "command",
+    source: "text",
+    command,
+    label: command,
+    noPrompts: false,
+    device: by,
+    via,
+    at: 1,
+  });
+  const file = (...rows: ReturnType<typeof row>[]) => JSON.stringify({ version: 1, rows });
+
+  test("removes the local rows it added, keeps the rest, and appends one audit line per row", () => {
+    const d = deps({
+      ...registryFile(device({ label: "pixel" }), device({ label: "ipad" })),
+      [ADDED]: file(
+        row("11111111-1111-4111-8111-111111111111", "pixel", "local", "htop"),
+        row("22222222-2222-4222-8222-222222222222", "pixel", "crew", "btop"),
+        row("33333333-3333-4333-8333-333333333333", "ipad", "local", "top"),
+      ),
+    });
+    const audit: string[] = [];
+    expect(cmdDevicesRevoke({ ...d, appendAudit: (l) => audit.push(l) }, ["pixel"])).toBe(EXIT.OK);
+    const entry = d.files.entries.get(ADDED)!;
+    expect(entry.mode).toBe(0o600);
+    // SAFETY: the store's own file shape, written by `formatAddedFile`.
+    expect((JSON.parse(entry.text) as { rows: { command: string }[] }).rows.map((r) => r.command)).toEqual(["btop", "top"]);
+    expect(audit).toHaveLength(1);
+    expect(JSON.parse(audit[0]!)).toMatchObject({ action: "launcher.remove", detail: { addedBy: "pixel", reason: "device-revoked" } });
+    expect(d.io.stdout.join("\n")).toContain("Removed 1 launcher row");
+  });
+
+  test("a paired revoke preserves an independent header row with the same display name", () => {
+    const paired = row("11111111-1111-4111-8111-111111111111", "pixel", "local", "htop");
+    const independent = {
+      ...row("22222222-2222-4222-8222-222222222222", "pixel", "local", "btop"),
+      device: null, deviceKind: "header", headerDevice: "pixel",
+    };
+    const d = deps({
+      ...registryFile(device({ label: "pixel" })),
+      [ADDED]: JSON.stringify({ version: 1, rows: [paired, independent] }),
+    });
+    d.ctx = context({ COLLIE_PAIRING: "off" });
+    expect(cmdDevicesRevoke(d, ["pixel"])).toBe(EXIT.OK);
+    expect(JSON.parse(d.files.read(ADDED)!)).toEqual({ version: 1, rows: [independent] });
+    expect(JSON.parse(d.files.read(REGISTRY)!)).toEqual({ devices: [] });
+  });
+
+  test("optional pairing still revokes credentials and launcher rows without claiming access is closed", () => {
+    const d = deps({
+      ...registryFile(device({ label: "pixel" })),
+      [ADDED]: file(row("11111111-1111-4111-8111-111111111111", "pixel", "local", "htop")),
+    });
+    d.ctx = context({ COLLIE_PAIRING: "off" });
+    expect(cmdDevicesRevoke(d, ["pixel"])).toBe(EXIT.OK);
+    expect(JSON.parse(d.files.read(REGISTRY)!)).toEqual({ devices: [] });
+    expect(JSON.parse(d.files.read(ADDED)!)).toEqual({ version: 1, rows: [] });
+    expect(d.io.stdout.join("\n")).toContain("browser access remains open");
+    expect(d.io.stdout.join("\n")).not.toContain("Collie now answers no phone or browser");
+    expect(d.files.entries.has(LOCK)).toBe(false);
+  });
+
+  test("a refused registry write leaves launcher rows untouched", () => {
+    const added = file(row("11111111-1111-4111-8111-111111111111", "pixel", "local", "htop"));
+    const d = deps({ ...registryFile(device({ label: "pixel" })), [ADDED]: added });
+    const write = d.files.write;
+    d.files.write = (path, text, mode) => {
+      if (posixKey(path) === REGISTRY) throw new Error("ENOSPC");
+      write(path, text, mode);
+    };
+    const audit: string[] = [];
+    expect(cmdDevicesRevoke({ ...d, appendAudit: (line) => audit.push(line) }, ["pixel"])).toBe(EXIT.FAIL);
+    expect(d.files.read(ADDED)).toBe(added);
+    expect(audit).toEqual([]);
+    expect(d.files.entries.has(LOCK)).toBe(false);
+  });
+
+  test("no file, or a file it may not write over, is left alone", () => {
+    const none = deps(registryFile(device({ label: "pixel" })));
+    expect(cmdDevicesRevoke(none, ["pixel"])).toBe(EXIT.OK);
+    expect(none.files.entries.get(ADDED)).toBeUndefined();
+    const foreign = JSON.stringify({ version: 9, rows: [] });
+    const d = deps({ ...registryFile(device({ label: "pixel" })), [ADDED]: foreign });
+    expect(cmdDevicesRevoke(d, ["pixel"])).toBe(EXIT.OK);
+    expect(d.files.entries.get(ADDED)!.text).toBe(foreign);
+    expect(d.io.stderr.join("\n")).toContain("cannot be read");
   });
 });

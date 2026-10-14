@@ -1,7 +1,8 @@
 import type { JsonObject } from "../json.ts";
 import { MASK_VERSION } from "../redact.ts";
 import { MAX_UPLOAD_OVERHEAD, uploadTooLarge } from "../uploads.ts";
-import { DEVICE_HEADER, encodeDeviceHeader } from "./admission.ts";
+import { DEVICE_HEADER, DEVICE_KIND_HEADER, encodeDeviceHeader } from "./admission.ts";
+import type { DeviceKind } from "../device-kind.ts";
 import { type CrewLink, type PeerFailure, type PeerOutcome, WRITE_BUDGET_MS } from "./peer-client.ts";
 import { HOST_PARAM, type PeerState } from "./registry.ts";
 
@@ -24,9 +25,9 @@ import { HOST_PARAM, type PeerState } from "./registry.ts";
 // ── THE ONE BODY IT READS: TEXT THE PHONE WILL SHOW ──────────────────────────
 // A member masks secrets in its own text before it answers (bridge/redact.ts), but a member one
 // release behind does not, and the phone must not get a key in clear because of a member's version.
-// So five answers are masked again on the lead, with the injected {@link AnswerMask} (the same
+// Text answers are masked again on the lead, with the injected {@link AnswerMask} (the same
 // functions the local routes use, through `bridge/crew/mask.ts`): the mirror, History, Chat, a
-// Changes diff and a Files body ({@link textAnswerOf}). The mask is idempotent, so an answer a member
+// Changes diff, a Files body and a stale ask ({@link textAnswerOf}). The mask is idempotent, so an answer a member
 // already masked comes back byte for byte. Every other route, a picture and a blob included, still
 // streams unread. An answer that should be masked and cannot be read is refused, never passed on raw.
 //
@@ -62,7 +63,11 @@ export function crewRouteFor(pathname: string): string | null {
  * but not across a link (or, worse, the reverse).
  */
 const FORWARDABLE: readonly RegExp[] = [
-  /^pane\/[^/]+(?:\/(?:reply|keys|upload|close|rename|history|chat|changes|files|focus))?$/,
+  // `answer` (ADR 0100): an answer to an ask by id, a WRITE that reaches the member that owns the
+  // pane, where its receipt lives. Additive-optional (§7.1): a member that predates it answers 404.
+  // `send` and `abort` (ADR 0101): a control that names the turn the phone saw, a WRITE to the member
+  // that owns the pane, where its receipt lives. Additive-optional the same way.
+  /^pane\/[^/]+(?:\/(?:reply|keys|upload|close|rename|history|chat|changes|files|focus|answer|send|abort))?$/,
   // One picture under the Files root, as bytes (ADR 0090): off the disk of the member that owns the
   // pane or the space, like the Files read it sits beside. Mirrors `PANE_FILES_IMAGE_ROUTE` and
   // `WORKSPACE_FILES_IMAGE_ROUTE` in bridge/server.ts one-for-one. Additive-optional (§7.1).
@@ -83,6 +88,17 @@ const FORWARDABLE: readonly RegExp[] = [
   // lead's. Both ride the crew link exactly like `workspace` does.
   /^launch$/,
   /^launchers$/,
+  // The rows a phone adds, removes and renames (ADR 0094). Each machine keeps its own store, so a
+  // `?host=` write lands in THAT member's `launchers-added.json` and nowhere else; no row is ever
+  // copied between machines. `forget-device` is the lead's own call when it revokes a device; the
+  // lead's browser path refuses it, so only an admitted lead's request reaches a member with it.
+  /^launchers\/added(?:\/(?:remove|rename|forget-device))?$/,
+  // The one-off command history (ADR 0095): one per machine, so a `?host=` remove or clear changes
+  // THAT member's `commands-recent.json`, and nothing is copied. A run itself rides `launch` above.
+  /^launch\/recent\/(?:remove|clear)$/,
+  // Check one typed line before it runs (ADR 0095, amendment): a read that runs and stores nothing, so
+  // a `?host=` check is the member's own scan, and a member that predates it answers 404.
+  /^launch\/check$/,
   // The new-space sheet's folder list (#289): folders exist on ONE machine, so the list is that
   // machine's own `folders.json`, read and starred on the member that holds it — the lead keeps no
   // copy. Additive-optional (CREW_PROTOCOL.md §7.1): a member that predates it answers 404, and the
@@ -100,15 +116,16 @@ const FORWARDABLE: readonly RegExp[] = [
  * The answers that carry text a pane or an agent wrote, which the lead masks before the phone reads
  * them (§9.1): the mirror (`pane`), a History page, a Chat body, and a Changes or Files answer, asked
  * by pane or by space. A picture (`files/image`) and a blob are bytes, never text, and stay byte for
- * byte, and so does every write's answer.
+ * byte. Writes also stay untouched except for an ask answer, whose 409 can carry the current ask.
  */
-export type TextAnswer = "pane" | "history" | "chat" | "changes" | "files";
+export type TextAnswer = "pane" | "history" | "chat" | "changes" | "files" | "answer";
 
 /** Which {@link TextAnswer} a crew route answers with, or `null` for a route whose answer is not text. */
 export function textAnswerOf(route: string): TextAnswer | null {
   if (/^pane\/[^/]+$/.test(route)) return "pane";
   if (/^pane\/[^/]+\/history$/.test(route)) return "history";
   if (/^pane\/[^/]+\/chat$/.test(route)) return "chat";
+  if (/^pane\/[^/]+\/answer$/.test(route)) return "answer";
   if (/^(?:pane|workspace)\/[^/]+\/changes$/.test(route)) return "changes";
   if (/^(?:pane|workspace)\/[^/]+\/files$/.test(route)) return "files";
   return null;
@@ -150,6 +167,9 @@ export function forwardKind(route: string): ForwardKind {
   // this lead has not heard from in a while, never refused before it is tried (§10.3's "a READ to a
   // dead member is still attempted").
   if (route === "launchers") return "read";
+  // The line check is a POST that changes nothing: attempted even against a stale member, never refused
+  // before it is tried (§10.3).
+  if (route === "launch/check") return "read";
   // The folder list is a GET that changes nothing, read even from a stale member like the rows
   // above; a star writes that member's file, so it is a write and a member not taking writes
   // refuses it before it is tried (§10.3), as a read-only device does on the member itself.
@@ -197,7 +217,10 @@ export function forwardAuditAction(route: string): string | null {
   // alone can't see — this generic name is the LEAD's own line about the forward (§12's "plus the
   // target host"), and the peer's own audit line is the accurate record of which one ran.
   if (route === "launch") return "launch";
-  if (route === "launchers") return null;
+  // The member writes the same two names for the history writes (ADR 0095).
+  if (route === "launch/recent/remove") return "launch.recent.remove";
+  if (route === "launch/recent/clear") return "launch.recent.clear";
+  if (route === "launchers" || route === "launch/check") return null;
   if (route === "folders" || route === "folders/star") return null; // a read, and a preference
   if (route.startsWith("blobs/")) return null; // a read
   if (isWorkspaceRead(route)) return null; // a read
@@ -497,6 +520,8 @@ export interface ForwardDeps {
   readonly onExchange?: (receivedAt: number) => void;
   /** The operator's device, as the LEAD resolved it — forwarded as `X-Crew-Device` (§12). */
   readonly device?: string | null;
+  /** Optional attribution namespace, not a gate verdict. Absent retains legacy paired semantics. */
+  readonly deviceKind?: DeviceKind;
   /**
    * The LEAD's own upload cap in bytes (`cfg.maxUploadBytes`), for the §13 pre-check below. Passed
    * in rather than imported because it is no longer a constant — it is this host's setting, and a
@@ -511,7 +536,7 @@ export interface ForwardDeps {
 }
 
 /**
- * A member's text answer, masked for the phone. Only a `2xx` with a body is read: a `304` has no
+ * A member's text answer, masked for the phone. A `2xx` or an ask's `409` with a body is read: a `304` has no
  * body, and an error body (`404 unknown-path`, `502 transcript read failed`) carries no session text
  * on either side, so it streams on as itself.
  *
@@ -531,7 +556,8 @@ export interface ForwardDeps {
  * `content-length` is copied ({@link proxiedResponse}), so the new body is framed by its own length.
  */
 async function maskedAnswer(res: Response, answer: TextAnswer, mask: AnswerMask, memberId: string): Promise<Response> {
-  if (res.status < 200 || res.status >= 300 || res.status === 204 || res.body === null) return res;
+  const staleAsk = answer === "answer" && res.status === 409;
+  if ((!staleAsk && (res.status < 200 || res.status >= 300)) || res.status === 204 || res.body === null) return res;
   let raw: string;
   try {
     raw = await res.text();
@@ -634,6 +660,7 @@ export async function forwardToPeer(req: Request, url: URL, deps: ForwardDeps): 
   // `duplex` is required by the Fetch spec for a stream body; the DOM lib's `RequestInit` predates
   // it, so the streaming half of this init is typed here rather than asserted at the assignment.
   const headers = forwardHeaders(req, deps.device);
+  if (deps.deviceKind !== undefined && deps.deviceKind !== "paired") headers.set(DEVICE_KIND_HEADER, deps.deviceKind);
   // Text the phone will show is masked here, whatever the member's version (§9.1). Every other answer
   // is not read at all. A masked answer's tag carries the mask's version, both ways ({@link saltTag}).
   const answer = deps.mask === undefined ? null : textAnswerOf(route);

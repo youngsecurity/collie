@@ -8,6 +8,7 @@ import type { GitHead } from "./git-head.ts";
 import type { ChatBody } from "./journal/live.ts";
 import type { AgentSessionRef, TranscriptEntry } from "./journal/types.ts";
 import type { MuxCapability, MuxSpaceCapacity, MuxTopologyLatency } from "./mux/capabilities.ts";
+import type { SttWireIdentity } from "./stt/config.ts";
 import type { UpdateRun } from "./update-run.ts";
 
 // Re-exported so the wire surface has ONE import site: a consumer of PaneHistoryResponse gets the
@@ -146,6 +147,15 @@ export interface AgentView {
    */
   cache?: PaneCache;
   /**
+   * The model this pane's agent is on, as its harness names it: a `/model` chosen since the last turn
+   * first (Claude), else the model that turn ran on (`claude-opus-5-5`, `provider:model` for opencode
+   * and pi). Read by the cache tracker's probe and attached at serialise time exactly as {@link cache}
+   * is. Display only: the phone draws it small above the belt and nothing decides on it.
+   *
+   * ABSENT, NEVER A PLACEHOLDER: no journal adapter, no session, no turn yet, or an older bridge.
+   */
+  model?: string;
+  /**
    * What the checkout holding this pane's folder is on: a branch, or a detached head at a full
    * object name. Read off disk by `bridge/git-head.ts` (two small files, no git process, no lock) and
    * attached at serialise time exactly as {@link cache} is.
@@ -196,7 +206,166 @@ export type PaneWire = Omit<AgentView, "agentSession" | "sessionAgent"> & {
    * none: there is no third state to get wrong.
    */
   session?: string;
+  /**
+   * The open asks a person may answer on this pane, as data, oldest first (ADR 0100).
+   *
+   * ONE PRODUCER: only a pane from an adapter that raises asks as data carries the key (the
+   * `durable` adapter, `MuxAdapter.openAsks`). The screen reader never fills it, so every ask has
+   * one owner. Absent on every other pane, and absent from every older bridge, which the phone reads
+   * as "no asks as data here". An empty list is a real answer: this pane takes answers by id and
+   * has none open.
+   *
+   * EVERY open ask is listed, up to the adapter's cap of 50 per pane (WIRE.md section 6). The push
+   * guard caps pushes, never this list; the phone draws the first five and opens the rest on a tap.
+   */
+  asks?: Ask[];
+  /**
+   * The newest turn of this pane: the one running now, or the last one that ran (ADR 0101).
+   *
+   * ONE PRODUCER, like {@link asks}: only a pane from an adapter that takes guarded controls carries
+   * it (the `durable` adapter, `MuxAdapter.paneTurn`). The phone sends it back unchanged as the
+   * `turnId` of a send or an abort, so the bridge can refuse a control aimed at a turn the person did
+   * not see. Absent on every other pane and from every older bridge.
+   */
+  turnId?: string;
 };
+
+/** What a person may choose on an ask (WIRE.md section 4). */
+export interface AskOption {
+  /** Unique inside its ask. Sent back unchanged as `optionId`. */
+  id: string;
+  label: string;
+  effect: "allow" | "allow-always" | "deny" | "cancel";
+}
+
+/** The tool call an ask is about, when the program wants it drawn. */
+export interface AskTool {
+  name: string;
+  /** One line: the arguments, shortened. */
+  summary: string;
+  output?: string;
+}
+
+/**
+ * One open ask, as the phone draws it (ADR 0100). Every string was cleaned and capped by the adapter
+ * that read it (WIRE.md section 6), and every id is sent back unchanged, never shown.
+ */
+export interface Ask {
+  /** New after every restart of the program, even for the same tool call. */
+  id: string;
+  /** `permission` is the only kind in this version. A card for another kind is not answerable. */
+  kind: string;
+  /** The program's id for the tool call. The same across a restart; the push guard keys on it. */
+  toolCallId: string;
+  /** Starts at 1 and rises when the program changes this ask in place. Sent back as `revision`. */
+  revision: number;
+  /** One line the card leads with. */
+  title: string;
+  /** The item the card sits under, usually the tool item. */
+  itemId: string;
+  /** At least one, at most six. An ask with none is shown as not answerable. */
+  options: AskOption[];
+  reason?: string;
+  tool?: AskTool;
+  /**
+   * Present when the adapter's cleaning cut or changed the title or the reason (WIRE.md section 6).
+   * The card says the text was shortened and offers no `allow-always` on such an ask.
+   */
+  cleaned?: true;
+}
+
+/**
+ * `POST /api/pane/:id/answer`'s body, as the bridge reads it (ADR 0100). `requestId` is a UUID the
+ * phone mints per tap; a retry of the same tap sends the same one.
+ */
+export interface AnswerRequest {
+  requestId: string;
+  askId: string;
+  /** The revision the phone saw. */
+  revision: number;
+  optionId: string;
+  note?: string;
+}
+
+/**
+ * What `POST /api/pane/:id/answer` answers, one shape for every outcome (ADR 0100).
+ *
+ *  • `taken` (200): the program took the answer and closed the ask.
+ *  • `too-late` (200): the ask is not open any more (answered, stopped, or from before a restart).
+ *  • `stale` (409): the ask changed since the phone read it. `ask` is its current form when the
+ *    program sent one. Nothing ran.
+ *  • `unknown` (504): the answer may or may not have reached the program. The receipt stays, so
+ *    "Try again" with the SAME request id replays rather than answers twice.
+ *  • `maybe-applied` (200): an earlier try with this request id had an unknown outcome, and this
+ *    retry found the ask closed or changed. The first try may be what closed it, so the phone says
+ *    "may already be applied, check the chat" instead of an error.
+ *  • `refused` (409): nothing ran, and the same request would be refused again. `reason` is the
+ *    mux refusal's word (ADR 0022): `unsupported` when this pane takes no answers at all, or
+ *    `request-id-reused` when this request id was already used for another answer.
+ *
+ * `replayed: true` marks an answer read off the receipt of an earlier request with this id.
+ */
+export type AnswerResponse =
+  | { ok: true; outcome: "taken"; replayed?: true }
+  | { ok: false; outcome: "too-late"; replayed?: true }
+  | { ok: false; outcome: "stale"; ask?: Ask; replayed?: true }
+  | { ok: false; outcome: "unknown"; detail: string }
+  | { ok: false; outcome: "maybe-applied"; replayed?: true }
+  | { ok: false; outcome: "refused"; reason: "unsupported" | "refused" | "request-id-reused"; detail: string; replayed?: true };
+
+/**
+ * `POST /api/pane/:id/send`'s body (ADR 0101). Exactly one of `turnId` and `askId`: the turn the
+ * phone last showed, or an open ask it answers inside. `requestId` is a UUID the phone mints per
+ * intent; a retry of the same intent sends the same one. `text` is 1 to 32768 UTF-8 bytes.
+ */
+export interface SendRequest {
+  requestId: string;
+  text: string;
+  /** While a turn runs: join it (true) or wait for the next turn (false, the default). */
+  steer?: boolean;
+  turnId?: string;
+  askId?: string;
+}
+
+/** `POST /api/pane/:id/abort`'s body (ADR 0101). Exactly one of `turnId` and `askId`. */
+export interface AbortRequest {
+  requestId: string;
+  turnId?: string;
+  askId?: string;
+}
+
+/** What a control names: the turn the phone saw, or an open ask. Never both, never neither. */
+export type ControlTarget = { readonly kind: "turn"; readonly id: string } | { readonly kind: "ask"; readonly id: string };
+
+/** A send or an abort, as the bridge reads it off the phone's body and hands it to the adapter. */
+export type ControlRequest =
+  | { readonly act: "send"; readonly requestId: string; readonly target: ControlTarget; readonly text: string; readonly steer: boolean }
+  | { readonly act: "abort"; readonly requestId: string; readonly target: ControlTarget };
+
+/**
+ * What `POST /api/pane/:id/send` and `/abort` answer, one shape for both (ADR 0101).
+ *
+ *  • `ok` (200): the program accepted the act. It answers when it took it, not when the turn ends.
+ *  • `stale` (409): the turn named is not the newest one, or the ask is not open. Nothing ran.
+ *    `turnId` and `askIds` are what is current, so the phone can reload and show what changed.
+ *  • `unknown` (504): the act may or may not have reached the program. The receipt stays, so
+ *    "Try again" with the SAME request id replays rather than acts twice.
+ *  • `maybe-applied` (200): an earlier try with this request id had an unknown outcome, and this
+ *    retry found the turn moved on. The first try may be what moved it, so the phone says "may
+ *    already be applied, check the chat" instead of an error.
+ *  • `refused` (409): nothing ran, and the same request would be refused again. `reason` is the
+ *    mux refusal's word (ADR 0022): `unsupported` when this pane or program cannot take the act, or
+ *    `request-id-reused` when this request id was already used for another send or stop.
+ *
+ * `replayed: true` marks an outcome read off the receipt of an earlier request with this id, or a
+ * program that said it saw this request id before.
+ */
+export type ControlResponse =
+  | { ok: true; outcome: "ok"; replayed?: true }
+  | { ok: false; outcome: "stale"; turnId: string; askIds: string[]; replayed?: true }
+  | { ok: false; outcome: "unknown"; detail: string }
+  | { ok: false; outcome: "maybe-applied"; replayed?: true }
+  | { ok: false; outcome: "refused"; reason: "unsupported" | "refused" | "request-id-reused"; detail: string; replayed?: true };
 
 /**
  * Strip a pane down to its wire shape. The one place the session ref leaves the bridge's hands.
@@ -300,6 +469,22 @@ export interface TabView {
 export type BridgeStatus = "connected" | "disconnected";
 
 /**
+ * Why the multiplexer refused the last read, when the phone can say it in words (M50 spec 14). Only one
+ * today: a durable program over HTTPS that answered 401 or 403 to the peer's bearer token. Every other
+ * failure stays the plain `disconnected`, which the phone already words.
+ */
+export type MuxFault = "token-refused";
+
+/**
+ * The fault a failed read's message names, or undefined. The durable HTTPS client starts the detail of a
+ * refused token with `token-refused` (bridge/mux/durable/http-client.ts `TOKEN_REFUSED`), and the
+ * adapter throws that detail as the message of a failed `snapshot()`.
+ */
+export function muxFaultOf(message: string): MuxFault | undefined {
+  return message.startsWith("token-refused") ? "token-refused" : undefined;
+}
+
+/**
  * One entry in the snapshot's `sessions` list — a herdr session this bridge fronts. Additive: a
  * single-session deployment reports exactly one (the primary), so nothing about the UI changes.
  */
@@ -345,6 +530,11 @@ export interface DeviceAuth {
 /** GET /api/snapshot — the current herd view. */
 export interface SnapshotResponse {
   bridge: BridgeStatus;
+  /**
+   * Why the multiplexer is down, when the phone can say it (M50 spec 14). Present only while `bridge`
+   * is `disconnected` for that cause, so every other body, and its ETag, is unchanged.
+   */
+  muxFault?: MuxFault;
   /** Per-device authorisation for the requesting client; absent when the feature is off. */
   device?: DeviceAuth;
   /** Agent-bearing panes, in place order: space, tab, position in the tab. Never by status (ADR 0063). */
@@ -1070,45 +1260,13 @@ export interface CreatedPane {
  * is that shell, so the client can navigate straight into it before the next poll lands.
  */
 export type CreateResponse =
-  | { ok: true; pane: CreatedPane }
-  | { ok: false; error: string; code?: ErrorCode; detail?: ApiErrorDetail };
-
-/** One Git worktree of the repo a space sits in (ADR 0032). */
-export interface WorktreeView {
-  /** Absolute checkout path — the identity, and what `open` is asked with. */
-  path: string;
-  /** The branch checked out there; `null` for a detached head. */
-  branch: string | null;
-  /**
-   * The space showing it, or `null` when it exists on disk and nothing does.
-   *
-   * `null` is what hides the Remove row: removal is addressed by space, so a checkout nothing shows
-   * cannot be removed from the phone at all.
-   */
-  openWorkspaceId: string | null;
-  /** `false` for the repo's own checkout, which is listed for context and is never removable. */
-  linked: boolean;
-  /** The multiplexer believes the checkout is gone and its administrative files could be pruned. */
-  prunable: boolean;
-}
-
-/** GET /api/workspace/:id/worktrees — the worktrees of the repo that space sits in. */
-export type WorktreeListResponse =
-  | { ok: true; worktrees: WorktreeView[] }
+  // `noPrompts`: a one-off run's line carries a flag known to skip permission prompts (ADR 0095).
+  // Present only on the answer to a fresh `run`; a replay answers the stored pane alone.
+  | { ok: true; pane: CreatedPane; replayed?: true; noPrompts?: boolean }
   | { ok: false; error: string; code?: ErrorCode; detail?: ApiErrorDetail };
 
 /**
- * POST /api/workspace/:id/worktree[/open] — the space now showing the checkout.
- *
- * `alreadyOpen` says the space was already there, which is an ANSWER and not a failure: the phone
- * navigates to `pane` either way.
- */
-export type WorktreeOpenResponse =
-  | { ok: true; pane: CreatedPane; alreadyOpen: boolean }
-  | { ok: false; error: string; code?: ErrorCode; detail?: ApiErrorDetail };
-
-/**
- * POST /api/workspace/:id/worktree — the new worktree's space, plus what happened to the launcher
+ * POST /api/worktree — the new worktree's space, plus what happened to the launcher
  * (ADR 0089).
  *
  * `launcherStarted` is false when no launcher was asked for AND when one was asked for and could not
@@ -1128,6 +1286,31 @@ export type WorktreeCreateResponse =
     }
   | { ok: false; error: string; code?: ErrorCode; detail?: ApiErrorDetail };
 
+
+/**
+ * GET /api/worktree/plan — what a branch from a folder would be, before Start (M48, ADR 0093).
+ *
+ * `repoRoot` is the repo's main checkout, as a real path. `defaultBranch` is what a create with
+ * `base: { kind: "default" }` starts from, `currentBranch` the branch the folder itself is on, each
+ * `null` when there is none to name. `remembered` is this repo's last choices on this machine.
+ * `branchValid`, `defaultTarget` and `parentTarget` answer only when the query named a branch (and a
+ * parent): `defaultTarget` is where Herdr will put the folder when no path is sent, a prediction from
+ * Herdr's own rule; `parentTarget` is the folder rule's verdict on the parent the phone named.
+ */
+export type WorktreePlanResponse =
+  | {
+      ok: true;
+      repoRoot: string;
+      defaultBranch: string | null;
+      currentBranch: string | null;
+      remembered?: { base: "default" | "current"; folder: "default" | "parent"; parent?: string };
+      branchValid?: boolean;
+      defaultTarget?: { path: string; exists: boolean };
+      parentTarget?:
+        | { ok: true; path: string }
+        | { ok: false; error: string; code?: ErrorCode; detail?: ApiErrorDetail };
+    }
+  | { ok: false; error: string; code?: ErrorCode; detail?: ApiErrorDetail };
 
 /**
  * Which role this collie plays in a crew (CREW_PROTOCOL.md §3). `solo` is a lead with zero peers —
@@ -1335,6 +1518,71 @@ export interface Launcher {
    * either way.
    */
   cwd?: string;
+  /**
+   * Where the row comes from (ADR 0094): the operator's `launchers.toml`, or a phone (this machine's
+   * `launchers-added.json`). Absent from an older bridge, which only had the first.
+   */
+  source?: "operator" | "added";
+  /** An added row's id: the request id of the add. Absent on an operator row. */
+  id?: string;
+  /** `agent` when a harness reads the row; absent or `command` for a plain line. */
+  kind?: "agent" | "command";
+  /** The harness id that reads an agent row. */
+  harness?: string;
+  /** True when the line skips permission prompts: the phone badges it and asks once per device. */
+  noPrompts?: boolean;
+  /** The pairing label of the device that added the row. Added rows only. */
+  addedBy?: string;
+  /** Epoch ms of the add. Added rows only. */
+  addedAt?: number;
+  /** How the row was added: built from a recipe, or a line typed by hand. Added rows only. */
+  addedAs?: "recipe" | "text";
+}
+
+/** One option chip of a recipe, as the phone draws it (bridge/launcher-recipes.ts). */
+export interface RecipeOptionWire {
+  id: string;
+  label: string;
+  /** The words the option appends, so the phone can show the line before the bridge builds it. */
+  args: string;
+  group?: string;
+  noPrompts?: true;
+}
+
+/** One harness's recipe: its binary and the option chips this bridge's table lists for it. */
+export interface RecipeWire {
+  harness: string;
+  label: string;
+  binary: string;
+  options: RecipeOptionWire[];
+}
+
+/** An added row that does not start here now, and why (ADR 0094). */
+export interface AddedOffWire {
+  id: string;
+  label: string;
+  command: string;
+  kind: "agent" | "command";
+  harness?: string;
+  /** `adds_off`: the operator turned phone rows off. `free_text_off`: free lines are off. */
+  reason: "adds_off" | "free_text_off";
+}
+
+/** What "Add your own" needs to know about THIS machine (ADR 0094). */
+export interface LaunchersAdding {
+  /** `[phone] adds`: whether a phone may add rows here, and its rows may start. */
+  adds: boolean;
+  /** `[phone] free_text`: whether a phone may add a line typed by hand. */
+  freeText: boolean;
+  /** `[phone] run`: whether a phone may run a one-off line here, and run a `recentRuns` entry again (ADR 0095). */
+  run: boolean;
+  /** The absolute path of this machine's `launchers.toml`, written or not. */
+  file: string;
+  /** Rows stored now, and the most there may be. */
+  count: number;
+  max: number;
+  recipes: RecipeWire[];
+  off: AddedOffWire[];
 }
 
 /**
@@ -1347,6 +1595,118 @@ export interface Launcher {
 export interface LaunchersResponse {
   launchers: Launcher[];
   home: string;
+  /**
+   * The agents this host can start by id, and whether each binary is there (ADR 0091). Absent from a
+   * bridge that predates the New sheet, which is how the phone tells an older crew member apart.
+   */
+  harnesses?: HarnessInfo[];
+  /**
+   * What "Add your own" needs (ADR 0094). Absent from a bridge older than 1.19.0, which takes no
+   * phone-added rows: the phone then offers no add.
+   */
+  adding?: LaunchersAdding;
+  /**
+   * Every agent, row and the shell, in the order the page lists them, each with its availability on
+   * THIS machine and the reason code when it is off (ADR 0094). Absent from an older bridge.
+   */
+  items?: LauncherItem[];
+  /**
+   * The one-off lines a phone ran on THIS machine, newest first, at most twelve (ADR 0095). Listed
+   * while `[phone] run` is off too, each then unavailable with `run_off`. Absent from an older bridge.
+   */
+  recentRuns?: RecentRunWire[];
+}
+
+/** One line in this machine's one-off command history (ADR 0095, `bridge/recent-runs.ts`). */
+export interface RecentRunWire {
+  /** The line, exactly as it ran. Running it again is `POST /api/launch` with `{ run: line }`. */
+  line: string;
+  /** The folder it last ran in, absolute, or `null` for home. */
+  cwd: string | null;
+  /** Epoch ms of the last run. */
+  at: number;
+  /** The line carries a flag known to skip permission prompts: badge it, and confirm once per device. */
+  noPrompts: boolean;
+  /** Whether it may run here now. */
+  available: boolean;
+  /** Why not: `run_off`, the operator turned one-off runs off (`[phone] run = false`). */
+  reason?: "run_off";
+}
+
+/** POST /api/launch/recent/remove and /clear (ADR 0095). `removed` is how many entries went. */
+export type RecentRunsResponse =
+  | { ok: true; removed: number }
+  | { ok: false; error: string; code?: ErrorCode; detail?: ApiErrorDetail };
+
+/**
+ * POST /api/launch/check `{ run }` (ADR 0095, amendment): what a one-off line would be, before it runs.
+ * A READ: it runs nothing and stores nothing. `noPrompts` is {@link scanNoPrompts}'s answer on the
+ * cleaned line; `problem` is the character rule's refusal, in which case `noPrompts` is false.
+ */
+export interface LaunchCheckResponse {
+  ok: true;
+  noPrompts: boolean;
+  problem?: "empty" | "too_long" | "forbidden_character";
+}
+
+/**
+ * One thing the New page may start on THIS machine, with whether it can start here now and why not
+ * (ADR 0094). The page draws every item; an unavailable one is a disabled option with its reason.
+ * Machine-wide reasons (the machine is not taking writes, an older Collie) are the phone's own, from
+ * the crew health and from this list's absence; these are the reasons only this machine knows.
+ */
+export interface LauncherItem {
+  /** Stable per machine: `harness:<id>`, `row:<command>`, or `shell`. */
+  key: string;
+  /** What `POST /api/launch` (and `POST /api/worktree`) names to start it. A starter is run by `POST /api/launch` alone (ADR 0102). */
+  start: { harness: string } | { command: string } | { shell: true } | { starter: string };
+  /** Agents: Collie reads the pane as that harness. Commands: a plain line, no agent status. */
+  group: "agents" | "commands";
+  label: string;
+  /** The harness that reads it: a built-in agent, or an agent row. */
+  harness?: string;
+  /** The line a row types. */
+  command?: string;
+  /** A row's pinned folder. */
+  cwd?: string;
+  /** `program`: a starter the durable program offers (ADR 0102). */
+  source: "builtin" | "operator" | "added" | "program";
+  /** True when the line skips permission prompts: badge it, and confirm once per device. */
+  noPrompts: boolean;
+  /**
+   * False on a starter: it takes no text of any kind, so the page shows no prompt field and a launch
+   * body carrying text is refused. Absent on every other item (ADR 0102). This is NOT `noPrompts`,
+   * which marks a line that skips an agent's permission prompts.
+   */
+  takesPrompt?: false;
+  /** Whether it may start on a new branch: agents and the shell, never a command row. */
+  branch: boolean;
+  available: boolean;
+  /**
+   * Why not, when `available` is false. `not_found`: the binary is not on this machine's login PATH.
+   * `adds_off`: the operator turned phone rows off. `free_text_off`: free lines are off.
+   */
+  reason?: "not_found" | "adds_off" | "free_text_off";
+  /** Added rows: the id (for rename and remove), who added it, when, and how. */
+  id?: string;
+  addedBy?: string;
+  addedAt?: number;
+  addedAs?: "recipe" | "text";
+}
+
+/** POST /api/launchers/added and /rename's answer. */
+export type AddedLauncherResponse =
+  | { ok: true; row: Launcher; replayed?: true }
+  | { ok: false; error: string; code?: ErrorCode; detail?: ApiErrorDetail };
+
+/** One agent a host can start by id (`bridge/harness-launch.ts`). */
+export interface HarnessInfo {
+  /** The id `POST /api/launch` takes as `harness`. */
+  id: string;
+  /** The harness's own name for itself. */
+  label: string;
+  /** Whether the binary is on this host's login PATH. A launch of one that is not still runs. */
+  found: boolean;
 }
 
 /**
@@ -1475,6 +1835,13 @@ export interface BridgeConfig {
    */
   stt?: SttCapability;
   /**
+   * The Whistle model on this host (ADR 0096), so Settings can offer the setup tap. Present on every
+   * lead and solo collie that knows the feature; absent on an older bridge, and on a crew member's
+   * own answer, because speech is lead-only (ADR 0029). A `?host=<member>` read carries the lead's,
+   * like `stt`.
+   */
+  whistle?: WhistleStatus;
+  /**
    * What this collie accepts as an attachment. **Absent is a bridge older than this field**, which
    * a client reads as the contract that shipped before it: 10 MB, images only. Present, it is the
    * whole answer — the phone builds its file picker's `accept` list from it and refuses an oversize
@@ -1520,6 +1887,124 @@ export interface SttCapability {
   available: boolean;
   /** Operator-facing prose when it could not. Absent when it could. */
   reason?: string;
+  /**
+   * What the phone must upload. Present only for the `whistle` provider (ADR 0096 Decision 4):
+   * `wav-16k` is 16 kHz mono 16-bit little-endian PCM WAV, and nothing else is accepted. Absent means
+   * the recording as the browser made it.
+   */
+  input?: "wav-16k";
+  /**
+   * The longest recording this provider takes, in milliseconds. Present only when it differs from
+   * the phone's 5-minute default: the `whistle` provider takes 4 minutes, because a WAV is about four
+   * times the size of a compressed recording and the 8 MiB upload cap stays.
+   */
+  maxDurationMs?: number;
+}
+
+/**
+ * Why Settings may not switch the host to one choice (ADR 0097), as a code the phone translates:
+ *
+ *  - `env`               the deployment's environment names the speech settings; it wins, and no phone changes it
+ *  - `terminal`          a provider set up in a terminal with a key, an endpoint or a command
+ *  - `unreadable`        `stt.json` is there and cannot be read; it is the operator's to fix
+ *  - `not-ready`         Whistle: the model is not on the host yet
+ *  - `codex-missing`     Codex: no `codex` binary was found on the host
+ *  - `codex-signed-out`  Codex: `codex login status` says it is not signed in
+ *  - `codex-other-login` Codex: signed in, but not with ChatGPT (an API key, say)
+ *  - `codex-unknown`     Codex: the sign-in could not be checked (a timeout, an answer not understood)
+ */
+export type SttHostSwitchReason =
+  | "env"
+  | "terminal"
+  | "unreadable"
+  | "not-ready"
+  | "codex-missing"
+  | "codex-signed-out"
+  | "codex-other-login"
+  | "codex-unknown";
+
+/** Whether one choice may be made from Settings, and if not, why. */
+export interface SttHostSwitch {
+  ok: boolean;
+  /** Absent when `ok`. */
+  reason?: SttHostSwitchReason;
+}
+
+/**
+ * What the host's speech settings name, by name only (Settings → Voice titles its card with it).
+ * Every field is optional and is dropped when it holds a hidden character. Never a path, an argument
+ * other than the one model file's name, a key, an environment value, or a URL's path or query.
+ * Mirrors `SttHostSetup` in web/src/lib/types.ts.
+ */
+export interface SttHostSetup {
+  /** `local-cli`: the command's basename (`whistle-stt`, `whisper-cli`). */
+  command?: string;
+  /**
+   * `local-cli`: the basename of the first argument that names a model file (`ggml-base.bin`).
+   * `openai-compatible`: the configured model (`whisper-large-v3`). `whistle`: the pinned model's
+   * version, the first seven characters of its revision.
+   */
+  model?: string;
+  /** `openai-compatible`: the service's host, with its port when it has one (`api.groq.com`, `127.0.0.1:8080`). */
+  endpoint?: string;
+}
+
+/**
+ * The host's speech provider, as `GET /api/stt/host` and `PUT /api/stt/host` report it (ADR 0097).
+ * Mirrors `SttHostStatus` in web/src/lib/types.ts.
+ */
+export interface SttHostStatus {
+  /** `whistle`, `codex`, `openai-compatible`, `local-cli`, or `none`. A name this build does not know is passed through. */
+  provider: string;
+  /** Whether it could serve a request right now. False for `none`. */
+  available: boolean;
+  /** Operator-facing prose when it could not: the provider's own words, or why the settings do not resolve. */
+  reason?: string;
+  /** For `codex` only: the identity recorded at setup. `codex-cli` is the fallback that wears the Codex CLI's headers. */
+  identity?: SttWireIdentity;
+  /** Where the provider is named: `stt.json` in the state dir, the bridge's environment, or nowhere. */
+  configuredBy: "file" | "env" | "none";
+  /** The three choices Settings offers, each with whether it may be made now. */
+  switchable: { whistle: SttHostSwitch; codex: SttHostSwitch; off: SttHostSwitch };
+  /** The `codex` binary whose sign-in would pay, for the consent's words. Present when one was found. */
+  codexBin?: string;
+  /**
+   * The paired device that last changed the option from Settings, by its pairing label. Absent when
+   * the option was last set in a terminal, by the environment, or by a device the bridge could not
+   * name. Never a token, an address or a header value.
+   */
+  changedBy?: string;
+  /** When that device changed it, an ISO 8601 time. Present exactly when `changedBy` is. */
+  changedAt?: string;
+  /** What the settings name: the command, the model, the service's host. Absent when they name nothing, or do not resolve. */
+  setup?: SttHostSetup;
+}
+
+/** Where the host's copy of the Whistle model stands (ADR 0096 Decision 2). */
+export type WhistleState = "absent" | "downloading" | "ready" | "failed";
+
+/**
+ * The Whistle model on the host and the host engine's switch, as `GET /api/stt/whistle` and
+ * `/api/config` report them. Mirrors `WhistleStatus` in web/src/lib/types.ts.
+ */
+export interface WhistleStatus {
+  state: WhistleState;
+  /** Exact size of the pinned model, for the button and the bar. Always present. */
+  bytes: number;
+  /** Present while downloading: the bytes received so far. */
+  received?: number;
+  /** Present only when state is "ready": the held file's sha256, lowercase hex, a hash this build accepts. */
+  sha256?: string;
+  /** Present only when state is "ready" and the manifest names it: the Hugging Face revision the file came from. */
+  revision?: string;
+  /** Present only when state is "ready" and the manifest names it: when the host fetched the file, an ISO 8601 time. */
+  fetchedAt?: string;
+  /** Present when state is "failed": operator-facing prose, no paths. */
+  reason?: string;
+  /** True when the host STT provider is `whistle`. */
+  hostEngine: boolean;
+  /** True when another provider is configured, so Settings cannot turn the host engine on. */
+  hostTaken: boolean;
 }
 
 /**

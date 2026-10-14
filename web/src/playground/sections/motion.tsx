@@ -21,7 +21,6 @@ import { AnchoredMenu } from "@/components/ui/anchored-menu";
 import { UpdateCheckControl } from "@/components/update-check-control";
 import { SnoozeControl } from "@/components/snooze-control";
 import { NotifyPrefsControl } from "@/components/notify-prefs-control";
-import { RecordingStrip } from "@/components/recording-strip";
 import { CrewFormation } from "@/components/crew-formation";
 import { useCrew } from "@/components/crew-provider";
 import { useOptionalRootData } from "@/lib/route-data";
@@ -258,9 +257,9 @@ function StatusIndicatorsCard() {
       label="StatusDot, StatusBadge & StatusWord"
       reach="any agent row (dashboard, tab strip, pane strip, pane header) for the dot; the pane
         header's line 1 for the word."
-      note="Every dot below has `live` breathing ON so the animation can be judged. In the real app
-        exactly ONE dot per pane ever breathes (the pane chip and the pane header's own badge); every
-        other mount shows a solid, still dot for the same working state. Stale examples show the
+      note="Every mark below has `live` ON so the turn can be judged. In the real app exactly ONE
+        mark per pane ever turns (the pane chip and the pane header's own badge); every other mount
+        shows a still mark for the same working state. Stale examples show the
         frozen-last-snapshot dim (opacity-40) the three primitives share."
       span={2}
     >
@@ -327,7 +326,7 @@ function BottomSheetMotionCard() {
     <Card
       state="bottom-sheet-motion"
       label="BottomSheet, entrance, exit and drag-to-dismiss"
-      reach="any sheet in the app: pane actions, the new-space sheet, a device's paperwork. Pull down
+      reach="any sheet in the app: pane actions, the New page, a device's paperwork. Pull down
         from the handle to dismiss by drag; tap the backdrop or Escape for the ordinary dismiss."
       note="Mounted inside a PhoneFrame, whose `transform` is the containing block for the sheet's
         `position: fixed` root (harness.tsx's own PhoneFrame doc, the same composition the Settings
@@ -460,46 +459,19 @@ function CrewFormationPulseInner() {
 }
 
 function PulseIndicatorsCard() {
-  const [transcribing, setTranscribing] = useState(false);
   return (
     <Card
       state="pulse-indicators"
-      label="mic pulse and the crew's blocked-count pulse"
-      reach="RecordingStrip: hold the composer's mic button to arm a recording. CrewFormation's
-        blocked pill: Settings → Crew, while at least one member's herd holds a blocked pane."
-      note="RecordingStrip needs only its own props. CrewFormation's pulse needs the SAME per-host
-        health and counts the real crew route derives (routes/crew.tsx), built here from
-        CrewProvider's `useCrew()` and lib/hosts's `hostCounts` over the trio fixture (which carries
-        blocked panes), the same derivation the route uses, not a copy of its output."
+      label="the crew's blocked-count pulse"
+      reach="CrewFormation's blocked pill: Settings → Crew, while at least one member's herd holds a blocked pane. (The microphone's pulse lives on the voice takeover cards, in the Pane section.)"
+      note="CrewFormation's pulse needs the SAME per-host health and counts the real crew route derives
+        (routes/crew.tsx), built here from CrewProvider's `useCrew()` and lib/hosts's `hostCounts`
+        over the trio fixture (which carries blocked panes), the same derivation the route uses, not a
+        copy of its output."
       span={2}
     >
       <Stage>
         <div className="flex flex-col gap-4 p-4">
-          <div>
-            <p className="mb-1.5 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
-              RecordingStrip
-            </p>
-            <div className="mb-1.5">
-              <Segmented
-                name="recording"
-                value={transcribing ? "on" : "off"}
-                options={[
-                  { value: "off", label: "Recording" },
-                  { value: "on", label: "Transcribing" },
-                ]}
-                onChange={(next) => setTranscribing(next === "on")}
-              />
-            </div>
-            <div className="rounded-md border border-border bg-card">
-              <RecordingStrip
-                elapsed="0:12"
-                transcribing={transcribing}
-                handsFree={false}
-                onStop={() => {}}
-                onDiscard={() => {}}
-              />
-            </div>
-          </div>
           <div>
             <p className="mb-1.5 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
               CrewFormation, blocked pill

@@ -550,7 +550,7 @@ firstrun HERDR_SOCKET_PATH="${F_HOME}/absent.sock" "$BIN" start \
   && fail "\`collie start\` came up with no multiplexer to mirror"
 assert_contains "$STDERR" "no COLLIE_MUX is set"
 assert_contains "$STDERR" "no multiplexers are running"
-assert_contains "$STDERR" "COLLIE_MUX=<herdr|tern|tmux|tuios|zellij> collie start"
+assert_contains "$STDERR" "COLLIE_MUX=<durable|herdr|tern|tmux|tuios|zellij> collie start"
 [ -f "${F_CONFIG}/.env" ] && fail "a refused start still wrote a config"
 
 # Exactly one found, and no terminal to ask at: auto-selected, said out loud, and written down.
@@ -2213,7 +2213,7 @@ for args in "stt" "stt nonsense"; do
   set -e
   assert_eq "$rc" "2"
 done
-assert_contains "$(cat "${TMP_ROOT}/err")" "usage: collie stt {setup|test|status|off}"
+assert_contains "$(cat "${TMP_ROOT}/err")" "usage: collie stt {setup|whistle|test|status|off}"
 
 # Not one of them shelled out to anything — `stt` never runs a tool it was not told to.
 assert_eq "$(cat "$PAIR_CALLS")" ""

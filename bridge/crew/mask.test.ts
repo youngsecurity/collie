@@ -4,7 +4,7 @@
 // Placeholders only: the fake key is built at run time, so no key shape sits in this file.
 import { describe, expect, test } from "bun:test";
 
-import { maskChatBody, maskDiff, maskFileBody, maskHistoryPage, maskPaneRead, maskSnapshotTitles } from "../answer-mask.ts";
+import { maskAskAnswer, maskChatBody, maskDiff, maskFileBody, maskHistoryPage, maskPaneRead, maskSnapshotTitles } from "../answer-mask.ts";
 import type { ChatWindowBody } from "../journal/live.ts";
 import type { TranscriptEntry } from "../journal/types.ts";
 import type { ChangeDiff, FileReadAnswer, PaneReadResponse } from "../types.ts";
@@ -118,6 +118,27 @@ const diff: ChangeDiff = {
 const fileText: FileReadAnswer = { available: true, root: "/home/a/p", path: ".env", size: 80, binary: false, truncated: false, text: `KEY=${key}\n` };
 
 describe("which answers the lead masks", () => {
+  test("a forwarded 409 stale ask is masked, but redact off preserves its bytes", async () => {
+    const body = { ok: false, outcome: "stale", ask: {
+      id: key, revision: 2, title: key, reason: key,
+      options: [{ id: key, label: key, effect: "allow" }],
+      tool: { name: key, summary: key, output: [{ kind: "text", text: key }] },
+    } };
+    const original = JSON.stringify(body);
+    const url = new URL("https://lead.example/api/pane/p/answer?host=laptop");
+    for (const mask of [maskForwardedAnswer, undefined]) {
+      const peer = member(original, 409);
+      const res = await forwardToPeer(new Request(url, { method: "POST", body: "{}" }), url, {
+        link: LINK, state: REACHABLE, maxUploadBytes: DEFAULT_MAX_UPLOAD_BYTES, transport: peer.transport, mask,
+      });
+      expect(res.status).toBe(409);
+      expect(await res.text()).toBe(mask === undefined ? original : JSON.stringify(maskAskAnswer(body)));
+    }
+    expect(JSON.stringify(body)).toBe(original);
+    expect(maskAskAnswer(body).ask.id).toBe(key);
+    expect(maskAskAnswer(body).ask.options[0]?.id).toBe(key);
+    expect(maskAskAnswer(body).ask.tool.output[0]?.text).toBe(masked);
+  });
   test("the mirror, History, Chat, Changes and Files, by pane and by space; never a picture or a blob", () => {
     expect(textAnswerOf("pane/w1%3Ap1")).toBe("pane");
     expect(textAnswerOf("pane/w1%3Ap1/history")).toBe("history");

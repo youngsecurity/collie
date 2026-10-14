@@ -23,8 +23,11 @@ import { stampSend } from "./poll-intent";
 import { observeServerBuild, SERVER_BUILD_HEADER } from "./server-build";
 import { mounted } from "./base-path";
 import { CHAT_UNCHANGED, type ChatAnswer } from "./chat-window";
+import { parseAsk, type AnswerResult } from "./ask";
+import type { ColumnRange } from "./column-range";
 import type {
   ActionResponse,
+  AddedLauncherResponse,
   BridgeConfig,
   ChatAfter,
   ChatBefore,
@@ -37,6 +40,8 @@ import type {
   CacheWatchState,
   FoldersResponse,
   LaunchersResponse,
+  LaunchCheckResponse,
+  RecentRunsResponse,
   NotifyPrefs,
   ChangeCommitDiffResponse,
   ChangeCommitResponse,
@@ -52,14 +57,18 @@ import type {
   PaneReadResponse,
   PairFailure,
   SnapshotResponse,
+  SttHostChoice,
+  SttHostStatus,
   UpdateCheckResponse,
   UpdateInfo,
   UpdateRun,
   UpdateStartResponse,
   UploadResponse,
-  WorktreeListResponse,
+  WorktreeBaseChoice,
   WorktreeCreateResponse,
-  WorktreeOpenResponse,
+  WorktreeFolderChoice,
+  WhistleStatus,
+  WorktreePlanResponse,
 } from "./types";
 import type { SubscribeBody } from "./push";
 
@@ -113,6 +122,11 @@ class ApiError extends Error {
     this.status = status;
     this.fields = fields;
   }
+}
+
+/** The HTTP status an API request failed with, or `undefined` for anything that is not one (a network error). */
+export function apiErrorStatus<TThrown>(error: TThrown): number | undefined {
+  return error instanceof ApiError ? error.status : undefined;
 }
 
 /** True when an API request failed with the given HTTP status. */
@@ -207,16 +221,31 @@ const STT_PROVIDER_BUDGET_MS = 60_000;
 // Request set-up, the bridge's own parse, and the response coming back down. Small and flat: none
 // of it scales with the audio.
 const STT_OVERHEAD_MS = 20_000;
+// A WAV goes to the host's `whistle` provider, whose deadline scales with the clip
+// (bridge/stt/whistle.ts `whistleTimeoutFor`): half the clip's length, at least the 60 s above and
+// at most three minutes. The clip's length is read off its size: 16 kHz, 2 bytes a sample, after the
+// 44-byte header the phone writes (lib/stt-pcm.ts).
+const STT_WAV_BYTES_PER_SECOND = 16_000 * 2;
+const STT_WAV_HEADER_BYTES = 44;
+const STT_WHISTLE_BUDGET_CAP_MS = 180_000;
+
+/** The bridge's provider deadline for a clip: the flat 60 s, or the `whistle` one for a WAV. */
+function sttProviderBudgetFor(bytes: number, type: string): number {
+  if (type.split(";", 1)[0]!.trim().toLowerCase() !== "audio/wav") return STT_PROVIDER_BUDGET_MS;
+  const clipMs = (Math.max(0, bytes - STT_WAV_HEADER_BYTES) / STT_WAV_BYTES_PER_SECOND) * 1000;
+  return Math.min(STT_WHISTLE_BUDGET_CAP_MS, Math.max(STT_PROVIDER_BUDGET_MS, Math.ceil(clipMs / 2)));
+}
 
 /**
- * The whole-request deadline for one clip of `bytes`, in milliseconds.
+ * The whole-request deadline for one clip of `bytes`, in milliseconds. `type` is the clip's content
+ * type: a WAV waits for the host engine's longer deadline, every other type for the flat one.
  *
  * Exported for the unit test, and for anyone who wants to know what the ceiling actually is: at the
- * 8 MiB maximum (MAX_STT_AUDIO_BYTES) it is a little under six minutes.
+ * 8 MiB maximum (MAX_STT_AUDIO_BYTES) it is a little under six minutes, or about seven for a WAV.
  */
-export function sttTimeoutFor(bytes: number): number {
+export function sttTimeoutFor(bytes: number, type: string = ""): number {
   const upload = Math.ceil((Math.max(0, bytes) * 8 * 1000) / STT_UPLINK_BITS_PER_SECOND);
-  return upload + STT_PROVIDER_BUDGET_MS + STT_OVERHEAD_MS;
+  return upload + sttProviderBudgetFor(bytes, type) + STT_OVERHEAD_MS;
 }
 
 /**
@@ -1136,6 +1165,7 @@ export function sendKeys(
   scope?: Scope,
   expectedPrompt?: string,
   expectedStyled?: string,
+  expectedColumns?: ColumnRange,
 ): Promise<ActionResponse> {
   stampSend(paneId);
   // Snapshot what the client has seen NOW, before the key can change anything: `settleAfterSend`
@@ -1151,12 +1181,155 @@ export function sendKeys(
       {
         method: "POST",
         // As in `sendReply`: an `undefined` property is omitted by `JSON.stringify`. The bridge honours
-        // `expected_styled` only beside `expected_prompt` (ADR 0080 point 7); an older bridge ignores it.
-        body: JSON.stringify({ keys, expected_prompt: expectedPrompt, expected_styled: expectedStyled }),
+        // `expected_styled` (ADR 0080 point 7) and `expected_columns` (lib/column-range.ts) only beside
+        // `expected_prompt`. An older bridge ignores both: without the columns it compares whole rows,
+        // which refuses a column-bound tap rather than passing it.
+        body: JSON.stringify({
+          keys,
+          expected_prompt: expectedPrompt,
+          expected_styled: expectedStyled,
+          expected_columns: expectedColumns,
+        }),
       },
       recoverPromptChanged,
     ),
   );
+}
+
+// ── A pane with no screen: answer an ask, send, stop (ADR 0100, ADR 0101) ─────────────────────────
+//
+// Three writes that name WHAT THE PHONE SAW and carry a request id minted for the tap. None of them
+// types keys: a pane with no screen has none. Each answers one of a few outcomes as a VALUE, because
+// 409 and 504 are answers here and not failures; a transport error still throws, and the caller reads
+// it as "may have arrived". An OLDER machine answers 404 to all three (the routes are additive over a
+// crew link), which reads as `stale` with `older`, the way `fetchChat` reads its own 404.
+
+/** The status a recovered answer arrived with, kept on its body so one reader handles 200 and the rest. */
+const HTTP_STATUS = "httpStatus";
+
+/** Turn a refusal-shaped answer (404, 409, 504) into a body the readers below take; null falls through to the error path. */
+const recoverOutcome = (status: number, detail: string): JsonObject | null =>
+  status === 404 || status === 409 || status === 504 ? { ...parseJsonObject(detail), [HTTP_STATUS]: status } : null;
+
+/** The old-peer reading: the route is missing on that machine. */
+const isMissingRoute = (body: JsonObject): boolean => body[HTTP_STATUS] === 404;
+
+/** What `POST /api/pane/:id/answer` came to, as the card reads it (lib/ask.ts `AnswerResult`). */
+function answerResultOf(body: JsonObject | undefined): AnswerResult | null {
+  if (body === undefined) return null;
+  if (isMissingRoute(body)) return { outcome: "stale", older: true };
+  switch (body.outcome) {
+    case "taken":
+      return body.replayed === true ? { outcome: "taken", replayed: true } : { outcome: "taken" };
+    case "too-late":
+      return body.replayed === true ? { outcome: "too-late", replayed: true } : { outcome: "too-late" };
+    case "stale": {
+      const ask = parseAsk(body.ask);
+      return ask === undefined ? { outcome: "stale" } : { outcome: "stale", ask };
+    }
+    case "unknown":
+      return { outcome: "unknown" };
+    case "maybe-applied":
+      return { outcome: "maybe-applied" };
+    case "refused":
+      return { outcome: "refused", detail: asJsonString(body.detail) ?? "" };
+    default:
+      return null;
+  }
+}
+
+/**
+ * POST /api/pane/:id/answer: a person's tap answers one ask. `requestId` is minted per tap and reused
+ * only by "Try again" after an `unknown`; `revision` is the one the card showed. Never called by
+ * anything but a tap (ADR 0100 point 4).
+ */
+export async function answerAsk(
+  paneId: string,
+  answer: { requestId: string; askId: string; revision: number; optionId: string },
+  scope?: Scope,
+): Promise<AnswerResult> {
+  const body = await req<JsonObject>(
+    withScope(`/api/pane/${encodeURIComponent(paneId)}/answer`, scope),
+    { method: "POST", body: JSON.stringify(answer) },
+    recoverOutcome,
+  );
+  const result = answerResultOf(body);
+  if (result === null) throw new ApiError("The answer route sent a body this phone cannot read.", 502);
+  return result;
+}
+
+/** Which of the two names a control carries: the turn the phone saw, or the ask it answers inside. */
+export type ControlTarget = { turnId: string } | { askId: string };
+
+/** What a send or an abort came to. `stale` carries what is current, so the pane can say what moved. */
+export type ControlResult =
+  | { outcome: "ok" }
+  | { outcome: "stale"; turnId?: string; askIds: string[]; older?: true }
+  | { outcome: "refused"; reason: string; detail: string }
+  | { outcome: "maybe-applied" }
+  | { outcome: "unknown" };
+
+function controlResultOf(body: JsonObject | undefined): ControlResult | null {
+  if (body === undefined) return null;
+  if (isMissingRoute(body)) return { outcome: "stale", askIds: [], older: true };
+  switch (body.outcome) {
+    case "ok":
+      return { outcome: "ok" };
+    case "stale": {
+      const ids = Array.isArray(body.askIds) ? body.askIds.map(asJsonString).filter((id): id is string => id !== undefined) : [];
+      const turnId = asJsonString(body.turnId);
+      return turnId === undefined ? { outcome: "stale", askIds: ids } : { outcome: "stale", turnId, askIds: ids };
+    }
+    case "unknown":
+      return { outcome: "unknown" };
+    case "maybe-applied":
+      return { outcome: "maybe-applied" };
+    case "refused":
+      return { outcome: "refused", reason: asJsonString(body.reason) ?? "refused", detail: asJsonString(body.detail) ?? "" };
+    default:
+      return null;
+  }
+}
+
+async function postControl(paneId: string, route: "send" | "abort", body: JsonObject, scope: Scope | undefined): Promise<ControlResult> {
+  // The operator is watching from the tap on, as every write to a pane assumes (poll-intent).
+  stampSend(paneId);
+  const got = await req<JsonObject>(
+    withScope(`/api/pane/${encodeURIComponent(paneId)}/${route}`, scope),
+    { method: "POST", body: JSON.stringify(body) },
+    recoverOutcome,
+  );
+  const result = controlResultOf(got);
+  if (result === null) throw new ApiError(`The ${route} route sent a body this phone cannot read.`, 502);
+  if (result.outcome === "ok") stampSend(paneId);
+  return result;
+}
+
+/**
+ * POST /api/pane/:id/send: text for a pane with no screen. It names the turn or the ask the phone saw
+ * and carries a request id; a stale name is refused with 409 before anything reaches the program.
+ * `steer` says the text is for the turn that is running, not a new one.
+ */
+export function sendToPane(
+  paneId: string,
+  send: { requestId: string; text: string; steer: boolean; target: ControlTarget | null },
+  scope?: Scope,
+): Promise<ControlResult> {
+  const body: JsonObject = { requestId: send.requestId, text: send.text };
+  if (send.steer) body.steer = true;
+  if (send.target !== null) Object.assign(body, send.target);
+  return postControl(paneId, "send", body, scope);
+}
+
+/** POST /api/pane/:id/abort: stop the turn the phone saw. Same names and the same stale rule as a send. */
+export function abortPane(
+  paneId: string,
+  abort: { requestId: string; target: ControlTarget | null },
+  scope?: Scope,
+): Promise<ControlResult> {
+  const body: JsonObject = { requestId: abort.requestId };
+  if (abort.target !== null) Object.assign(body, abort.target);
+  return postControl(paneId, "abort", body, scope);
 }
 
 /**
@@ -1284,6 +1457,164 @@ export function launch(command: string, besidePaneId?: string, scope?: Scope): P
 }
 
 /**
+ * What the New page starts (ADR 0091): a `launchers.toml` row by its command, an agent by its id,
+ * or a plain shell. Exactly one, which is what the bridge checks first.
+ */
+export type StartWhat =
+  | { kind: "row"; command: string }
+  | { kind: "harness"; id: string }
+  | { kind: "shell" }
+  /** A starter a durable program offers, by its id (ADR 0102). It takes no text and never starts on a branch's folder. */
+  | { kind: "starter"; id: string }
+  /** A one-off line the person typed, or took from the machine's history (ADR 0095). Never on a branch. */
+  | { kind: "run"; line: string };
+
+/** What can start on a new worktree: everything but a one-off line (`launch.run_no_branch`). */
+export type BranchableWhat = Exclude<StartWhat, { kind: "run" }>;
+
+/** POST /api/launch's body from the New page. A named contract so `startLaunch` infers against it. */
+interface StartLaunchBody {
+  command?: string;
+  harness?: string;
+  shell?: true;
+  starter?: string;
+  cwd?: string;
+  requestId: string;
+}
+
+/**
+ * POST /api/launch from the New page: one kind, an optional folder, and a request id the phone
+ * minted for this intent. A retry with the same id answers the first pane (`replayed: true`).
+ */
+export function startLaunch(what: BranchableWhat, opts: { cwd?: string; requestId: string }, scope?: Scope): Promise<CreateResponse> {
+  const body: StartLaunchBody = { requestId: opts.requestId };
+  if (what.kind === "row") body.command = what.command;
+  else if (what.kind === "harness") body.harness = what.id;
+  else if (what.kind === "starter") body.starter = what.id;
+  else body.shell = true;
+  // A starter has no folder: the bridge ignores one, so none is sent.
+  if (opts.cwd !== undefined && what.kind !== "starter") body.cwd = opts.cwd;
+  return req<CreateResponse>(withScope("/api/launch", scope), { method: "POST", body: JSON.stringify(body) });
+}
+
+// ── One-off commands and their history, per machine (ADR 0095) ──────────────────────────────────
+//
+// A line the person wrote, typed into a fresh shell on that machine. The bridge checks a paired
+// device, the operator's `[phone] run` switch and the character rule (200 characters, no control,
+// separator or bidi character) before anything runs. A run that works joins that machine's history,
+// which `fetchLaunchers` lists as `recentRuns`; running an entry again is this same call. A `scope`
+// with `host` reaches that member through the lead's ordinary forward.
+
+/** POST /api/launch's body for a one-off run. A named contract so `startRun` infers against it. */
+interface StartRunBody {
+  run: string;
+  cwd?: string;
+  requestId: string;
+}
+
+/**
+ * POST /api/launch `{ run }`. `requestId` is minted per intent (`mintRequestId`): a retry with it
+ * answers the first pane (`replayed: true`) and runs nothing. The answer's `noPrompts` says whether
+ * the line carries a flag known to skip permission prompts. Refusals: `launch.no_device`,
+ * `launch.run_off`, `launch.bad_line` (`detail.problem`, `detail.max`), `launch.bad_folder`,
+ * `launch.folder_missing`.
+ */
+export function startRun(line: string, opts: { cwd?: string; requestId: string }, scope?: Scope): Promise<CreateResponse> {
+  const body: StartRunBody = { run: line, requestId: opts.requestId };
+  if (opts.cwd !== undefined) body.cwd = opts.cwd;
+  return req<CreateResponse>(withScope("/api/launch", scope), { method: "POST", body: JSON.stringify(body) });
+}
+
+/**
+ * POST /api/launch/check: what a typed line would be, before it runs. A read, forwarded with `?host=`:
+ * it runs nothing and stores nothing, and the answer is that machine's own scan. `problem` is the
+ * character rule's refusal; `noPrompts` says whether the line skips permission prompts, which the
+ * history can only say after a first run (ADR 0095, amendment).
+ */
+export function checkRun(line: string, scope?: Scope): Promise<LaunchCheckResponse> {
+  return req<LaunchCheckResponse>(withScope("/api/launch/check", scope), {
+    method: "POST",
+    body: JSON.stringify({ run: line }),
+  });
+}
+
+/** POST /api/launch/recent/remove: remove one line from that machine's history. */
+export function removeRecentRun(line: string, scope?: Scope): Promise<RecentRunsResponse> {
+  return req<RecentRunsResponse>(withScope("/api/launch/recent/remove", scope), {
+    method: "POST",
+    body: JSON.stringify({ line }),
+  });
+}
+
+/** POST /api/launch/recent/clear: remove every line from that machine's history. */
+export function clearRecentRuns(scope?: Scope): Promise<RecentRunsResponse> {
+  return req<RecentRunsResponse>(withScope("/api/launch/recent/clear", scope), { method: "POST", body: "{}" });
+}
+
+/**
+ * GET /api/worktree/plan — what a branch from `cwd` would be (ADR 0093). A read, lead-local: the
+ * sheet asks it only of the lead. `branch` and `parent` add the folder answers.
+ */
+export function planWorktree(query: { cwd: string; branch?: string; parent?: string }, scope?: Scope): Promise<WorktreePlanResponse> {
+  const params = new URLSearchParams({ cwd: query.cwd });
+  if (query.branch !== undefined && query.branch !== "") params.set("branch", query.branch);
+  if (query.parent !== undefined && query.parent !== "") params.set("parent", query.parent);
+  return req<WorktreePlanResponse>(withScope(`/api/worktree/plan?${params.toString()}`, scope));
+}
+
+/** POST /api/worktree's body. A named contract so `createWorktreeAt` infers against it. */
+interface WorktreeAtBody {
+  cwd: string;
+  branch: string;
+  base: WorktreeBaseChoice;
+  folder: WorktreeFolderChoice;
+  requestId: string;
+  harness?: string;
+  /** An agent row (an operator's with a harness, or one a phone added): the allowlisted line. */
+  command?: string;
+  shell?: true;
+}
+
+/**
+ * POST /api/worktree — a new branch in its own folder from the folder `cwd` names, opened as a
+ * space, with an agent or a shell in it (ADR 0093). Lead-local, like every worktree call.
+ */
+export function createWorktreeAt(
+  ask: {
+    cwd: string;
+    branch: string;
+    base: WorktreeBaseChoice;
+    folder: WorktreeFolderChoice;
+    requestId: string;
+    what: BranchableWhat;
+  },
+  scope?: Scope,
+): Promise<WorktreeCreateResponse> {
+  const body: WorktreeAtBody = { cwd: ask.cwd, branch: ask.branch, base: ask.base, folder: ask.folder, requestId: ask.requestId };
+  if (ask.what.kind === "harness") body.harness = ask.what.id;
+  else if (ask.what.kind === "row") body.command = ask.what.command;
+  else body.shell = true;
+  return req<WorktreeCreateResponse>(withScope("/api/worktree", scope), {
+    method: "POST",
+    body: JSON.stringify(body),
+    timeoutMs: WORKTREE_TIMEOUT_MS,
+  });
+}
+
+/**
+ * Whether a Start that threw may still have happened on the host (ADR 0091). A refusal (a 4xx) is an
+ * answer: nothing ran. So is a crew member that was never reached (503 `host_unreachable`,
+ * `host_incompatible`). Everything else, a transport failure, a timeout, a 5xx or the crew's 504
+ * `write_outcome_unknown`, says nothing about the host, so the phone must not guess.
+ */
+export function outcomeUnknown<TThrown>(thrown: TThrown): boolean {
+  if (!(thrown instanceof ApiError)) return true;
+  if (thrown.status < 500) return false;
+  const code = thrown.fields?.code;
+  return !(thrown.status === 503 && (code === "host_unreachable" || code === "host_incompatible"));
+}
+
+/**
  * GET /api/launchers — THIS scope's own host's launcher rows, read live off its `launchers.toml`.
  * Never cached alongside `/api/config`: rows must come from the host that runs them, and the
  * operator file is read live on the bridge, so this is fetched on mount and again whenever the
@@ -1293,10 +1624,55 @@ export function fetchLaunchers(scope?: Scope): Promise<LaunchersResponse> {
   return req<LaunchersResponse>(withScope("/api/launchers", scope));
 }
 
+// ── Rows a phone adds on one machine (ADR 0094) ─────────────────────────────────────────────────
+//
+// Each machine keeps its own list: a `scope` with `host` writes THAT member's store through the
+// lead's ordinary forward, and nothing is copied anywhere else. All three are writes on the write gate.
+
+/** What "Add your own" sends: a recipe the bridge builds, or a line typed by hand. */
+export type AddLauncherAsk =
+  | { recipe: { harness: string; options: string[] }; label?: string }
+  | {
+      text: string;
+      kind: "agent" | "command";
+      /** Required for an agent line: which harness reads it. */
+      harness?: string;
+      /** The person's own tick: an alias hides its flags. */
+      noPrompts?: boolean;
+      label?: string;
+    };
+
 /**
- * GET /api/folders — THIS scope's own host's folder list for the new-space sheet (#289), off that
+ * POST /api/launchers/added. `requestId` is a UUID minted per add (`mintRequestId`); a retry with the
+ * same id answers the stored row with `replayed: true` and adds nothing.
+ */
+export function addLauncher(ask: AddLauncherAsk, requestId: string, scope?: Scope): Promise<AddedLauncherResponse> {
+  return req<AddedLauncherResponse>(withScope("/api/launchers/added", scope), {
+    method: "POST",
+    body: JSON.stringify({ ...ask, requestId }),
+  });
+}
+
+/** POST /api/launchers/added/remove — remove one row a phone added on that machine. */
+export function removeAddedLauncher(id: string, scope?: Scope): Promise<{ ok: true; removed: number }> {
+  return req<{ ok: true; removed: number }>(withScope("/api/launchers/added/remove", scope), {
+    method: "POST",
+    body: JSON.stringify({ id }),
+  });
+}
+
+/** POST /api/launchers/added/rename — a new label for one row a phone added. */
+export function renameAddedLauncher(id: string, label: string, scope?: Scope): Promise<AddedLauncherResponse> {
+  return req<AddedLauncherResponse>(withScope("/api/launchers/added/rename", scope), {
+    method: "POST",
+    body: JSON.stringify({ id, label }),
+  });
+}
+
+/**
+ * GET /api/folders — THIS scope's own host's folder list for the New page (#289), off that
  * machine's `folders.json`. Session-scoped only so `?host=` reaches the machine whose folders they
- * are; the list itself is one per machine. Read when the sheet opens and when its chosen machine
+ * are; the list itself is one per machine. Read when the page opens and when its chosen machine
  * changes (lib/folders.ts), never polled and never part of the snapshot.
  */
 export function fetchFolders(scope?: Scope): Promise<FoldersResponse> {
@@ -1311,8 +1687,8 @@ interface StarFolderBody {
 
 /**
  * POST /api/folders/star — star (`true`) or unstar (`false`) one folder on THIS scope's host. The
- * bridge refuses a folder that is not already in its lists, so the sheet only ever sends one it read.
- * Answers the whole new list, so the sheet redraws from the bridge's word rather than guessing.
+ * bridge refuses a folder that is not already in its lists, so the page only ever sends one it read.
+ * Answers the whole new list, so the page redraws from the bridge's word rather than guessing.
  */
 export function starFolder(folder: string, starred: boolean, scope?: Scope): Promise<FoldersResponse> {
   const body: StarFolderBody = { folder, starred };
@@ -1334,60 +1710,6 @@ export function starFolder(folder: string, starred: boolean, scope?: Scope): Pro
 export function fetchCacheRules(): Promise<CacheRulesResponse> {
   return req<CacheRulesResponse>("/api/cache-rules");
 }
-
-/** The worktrees of the repo a space sits in. Empty-handed when the space is not in one. */
-export function listWorktrees(workspaceId: string, scope?: Scope): Promise<WorktreeListResponse> {
-  return req<WorktreeListResponse>(
-    withScope(`/api/workspace/${encodeURIComponent(workspaceId)}/worktrees`, scope),
-  );
-}
-
-/**
- * What a worktree create may carry beyond the branch (ADR 0089). Both are optional, and the
- * dashboard's sheet sends neither, which is the body the route has always taken.
- */
-export interface WorktreeCreateExtras {
-  /** One id per intent, minted by the phone. A retry with the same id replays, never re-creates. */
-  requestId?: string;
-  /** A launcher row's `command`, typed into the new shell. Absent is a plain shell. */
-  launcher?: string;
-}
-
-/** The create's wire body: the branch, plus the two extras when the caller has them. */
-interface WorktreeCreateBody {
-  branch: string;
-  requestId?: string;
-  launcher?: string;
-}
-
-/** Create a worktree on a new branch and open it as its own space, optionally starting an agent in it. */
-export function createWorktree(
-  workspaceId: string,
-  branch: string,
-  scope?: Scope,
-  extras: WorktreeCreateExtras = {},
-): Promise<WorktreeCreateResponse> {
-  const body: WorktreeCreateBody = { branch };
-  if (extras.requestId !== undefined) body.requestId = extras.requestId;
-  if (extras.launcher !== undefined) body.launcher = extras.launcher;
-  return req<WorktreeCreateResponse>(
-    withScope(`/api/workspace/${encodeURIComponent(workspaceId)}/worktree`, scope),
-    { method: "POST", body: JSON.stringify(body), timeoutMs: WORKTREE_TIMEOUT_MS },
-  );
-}
-
-/** Show a worktree that already exists. Answers `alreadyOpen` rather than refusing. */
-export function openWorktree(
-  workspaceId: string,
-  path: string,
-  scope?: Scope,
-): Promise<WorktreeOpenResponse> {
-  return req<WorktreeOpenResponse>(
-    withScope(`/api/workspace/${encodeURIComponent(workspaceId)}/worktree/open`, scope),
-    { method: "POST", body: JSON.stringify({ path }), timeoutMs: WORKTREE_TIMEOUT_MS },
-  );
-}
-
 
 /**
  * The bridge's startup config: push setup, the build id, the operator's own rows, and the
@@ -1495,8 +1817,8 @@ export function checkForUpdates(): Promise<UpdateInfo> {
  * preflight behind it is cached on the bridge, so polling it costs one `collie update --check` a
  * minute at most.
  */
-export function fetchUpdateState(signal?: AbortSignal): Promise<UpdateCheckResponse> {
-  return req<UpdateCheckResponse>("/api/update/check", signal ? { signal } : undefined);
+export function fetchUpdateState(signal?: AbortSignal, timeoutMs?: number): Promise<UpdateCheckResponse> {
+  return req<UpdateCheckResponse>("/api/update/check", { signal, timeoutMs });
 }
 
 /**
@@ -1765,7 +2087,7 @@ export function transcribeAudio(audio: Blob, signal?: AbortSignal): Promise<SttR
           [XHR_HEADER]: XHR_HEADER_VALUE,
           ...authHeader(),
         },
-        signal: withTimeout(signal, sttTimeoutFor(audio.size)),
+        signal: withTimeout(signal, sttTimeoutFor(audio.size, audio.type)),
       });
       const detail = await errorDetail(res);
       notePairing("POST", res.status, res.ok ? undefined : detail);
@@ -1787,4 +2109,76 @@ export function transcribeAudio(audio: Blob, signal?: AbortSignal): Promise<SttR
       };
     })().finally(endLongUpload),
   );
+}
+
+// ── WHISTLE: THE MODEL ON THE HOST, AND THE PHONE'S COPY OF IT (ADR 0096) ───────────────────────
+
+/** The whole-request deadline for copying the model to the phone: 17 MB, 30 s over a tailnet, and a
+ *  slow cellular link still has to finish. The body is streamed, so this runs until the last byte. */
+const STT_MODEL_TIMEOUT_MS = 5 * 60_000;
+
+/** Where the host's copy of the model stands. A read; the poll reads it once a second while it downloads. */
+export function fetchWhistleStatus(signal?: AbortSignal): Promise<WhistleStatus> {
+  return req<WhistleStatus>("/api/stt/whistle", { signal, timeoutMs: POLL_TIMEOUT_MS });
+}
+
+/** Ask the host to download the model (write-gated). Answers `202` while it starts or joins one, `200`
+ *  when the model is already there; both carry the status. The bytes arrive on the host's own time. */
+export function startWhistleSetup(): Promise<WhistleStatus> {
+  return req<WhistleStatus>("/api/stt/whistle", { method: "POST" });
+}
+
+/** Remove the model from the host, and the `whistle` provider with it when it was the host's (write-gated). */
+export function removeWhistleModel(): Promise<WhistleStatus> {
+  return req<WhistleStatus>("/api/stt/whistle", { method: "DELETE" });
+}
+
+// ── THE HOST'S SPEECH PROVIDER (ADR 0097) ─────────────────────────────────────────────────────
+
+/**
+ * A Codex switch runs the honest-first identity probe on the host, which may take as long as one
+ * transcription (two minutes at most, bridge/stt/codex.ts) plus the sign-in check. The others are quick.
+ */
+const STT_HOST_SWITCH_TIMEOUT_MS = 150_000;
+
+/** Which provider the host runs, who set it, and which of the three choices Settings may make. A read. */
+export function fetchSttHost(signal?: AbortSignal): Promise<SttHostStatus> {
+  return req<SttHostStatus>("/api/stt/host", { signal });
+}
+
+/**
+ * Switch the host's speech provider (write-gated): Whistle, Codex or Off, and nothing else. Codex needs
+ * `consent`, the id of the consent text this app showed and the person accepted (lib/stt-consent.ts).
+ * A refusal carries a `stt.*` code, which {@link describeThrownError} says in the operator's language.
+ */
+export function setSttHost(provider: SttHostChoice, consent?: string): Promise<SttHostStatus> {
+  return req<SttHostStatus>("/api/stt/host", {
+    method: "PUT",
+    body: JSON.stringify(consent === undefined ? { provider } : { provider, consent }),
+    timeoutMs: provider === "codex" ? STT_HOST_SWITCH_TIMEOUT_MS : undefined,
+  });
+}
+
+/**
+ * The model's bytes, as a STREAM, so the caller can count them and hash them as they come.
+ *
+ * A plain read: it needs the pairing token and nothing more (ADR 0096 Decision 9). It is not a JSON
+ * call and the body is far too big for the poll leash, so it takes its own deadline and hands the
+ * response back untouched on success. A refusal throws like every other call here. The path names the
+ * file by its hash, and the bridge answers only when that hash is the one it holds.
+ */
+export async function fetchSttModel(sha256: string, signal?: AbortSignal): Promise<Response> {
+  const path = `/api/stt/model/${encodeURIComponent(sha256)}`;
+  const res = await apiFetch(path, {
+    signal: withTimeout(signal, STT_MODEL_TIMEOUT_MS),
+    headers: { [XHR_HEADER]: XHR_HEADER_VALUE, ...authHeader() },
+  });
+  captureBuild(res);
+  if (!res.ok) {
+    const detail = await errorDetail(res);
+    notePairing("GET", res.status, detail);
+    notePairingAnswer(res.status, detail);
+    throw new ApiError(`${path} → ${res.status} ${detail}`, res.status, parseApiErrorFields(detail));
+  }
+  return res;
 }

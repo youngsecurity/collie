@@ -44,6 +44,8 @@
 
 import { mounted } from "@/lib/base-path";
 import { clearAllDrafts, clearDraft } from "@/lib/drafts";
+import { forgetAgain } from "@/lib/new-page";
+import { forgetNoPromptsConfirms } from "@/lib/no-prompts";
 import {
   clearDeviceToken,
   EXPIRED_BODY,
@@ -133,6 +135,10 @@ async function clearCaches(): Promise<void> {
   // `collie-fonts` and `collie-push-titles` (each per mount) go: fonts re-fill on first use, and the
   // push titles are written again on the next boot. Sibling mounts on the same origin lose theirs
   // too, which costs them the same refill and nothing more.
+  //
+  // `collie-stt` goes too, on purpose, and it is the one entry here that costs something to refill
+  // (17 MB). The model was fetched with the pairing token, so it leaves with the token (ADR 0096
+  // Decision 10). The recovery in lib/pwa.ts spares it; this wipe does not.
   await Promise.all(names.filter((name) => !name.startsWith(PRECACHE_PREFIX)).map((name) => storage.delete(name)));
 }
 
@@ -149,6 +155,19 @@ const BUILT_IN: readonly (readonly [string, WipeCleaner])[] = [
     (context) => {
       if (context.reason === "password") clearDraft(context.pane.scope, context.pane.paneId);
       else clearAllDrafts();
+    },
+  ],
+  [
+    "new-page",
+    (context) => {
+      if (context.reason !== "password") forgetAgain();
+    },
+  ],
+  [
+    // The per-device "No prompts" confirms (ADR 0094): they name machines and command lines.
+    "no-prompts",
+    (context) => {
+      if (context.reason !== "password") forgetNoPromptsConfirms();
     },
   ],
   [

@@ -96,6 +96,17 @@ function post(path: string, body: string, headers: Record<string, string> = {}):
   return [new Request(url, { method: "POST", body, headers }), url];
 }
 
+test("crew attribution provenance is lead-owned, never a browser's header", async () => {
+  for (const kind of ["paired", "header", "anonymous"] as const) {
+    const { transport, calls } = transportOf(() => ok(new Response("{}")));
+    const [req, url] = post("/api/launchers/added?host=laptop", "{}", { "x-crew-device-kind": "anonymous" });
+    await forward(req, url, { transport, device: kind === "anonymous" ? null : "phone", deviceKind: kind });
+    const headers = new Headers(calls[0]?.init.headers);
+    expect(headers.get("x-crew-device-kind")).toBe(kind === "paired" ? null : kind);
+    expect(crewDeviceOf(new Request("http://member.invalid", { headers }))).toBe(kind === "anonymous" ? null : "phone");
+  }
+});
+
 // ── The route table is §5's, and it is one table ─────────────────────────────
 
 /**
@@ -127,6 +138,27 @@ describe("which routes cross a link", () => {
     expect(crewRouteFor("/api/tab/w1:t1/rename")).toBe("tab/w1:t1/rename");
     expect(crewRouteFor("/api/tab/w1:t1/close")).toBe("tab/w1:t1/close");
     expect(crewRouteFor("/api/workspace")).toBe("workspace");
+  });
+
+  test("an answer to an ask crosses the link as a write, to the member that owns the pane (ADR 0100)", () => {
+    expect(crewRouteFor("/api/pane/w1:p1/answer")).toBe("pane/w1:p1/answer");
+    expect(apiPathFor("pane/w1:p1/answer")).toBe("/api/pane/w1:p1/answer");
+    expect(forwardKind("pane/w1:p1/answer")).toBe("write");
+    expect(forwardPaneId("pane/conv%2001/answer")).toBe("conv 01");
+    // Nothing hangs under it: an answer is one route, not a family.
+    expect(crewRouteFor("/api/pane/w1:p1/answer/x")).toBeNull();
+  });
+
+  test("a send and an abort cross the link as writes, to the member that owns the pane and its receipt (ADR 0101)", () => {
+    for (const action of ["send", "abort"]) {
+      expect(crewRouteFor(`/api/pane/conv-02/${action}`)).toBe(`pane/conv-02/${action}`);
+      expect(apiPathFor(`pane/conv-02/${action}`)).toBe(`/api/pane/conv-02/${action}`);
+      expect(forwardKind(`pane/conv-02/${action}`)).toBe("write");
+      expect(forwardPaneId(`pane/conv%2002/${action}`)).toBe("conv 02");
+      // The member's control route writes `send` or `abort` (bridge/durable/control.ts), so the lead's line matches.
+      expect(forwardAuditAction(`pane/conv-02/${action}`)).toBe(action);
+      expect(crewRouteFor(`/api/pane/conv-02/${action}/x`)).toBeNull();
+    }
   });
 
   test("launch and its rows cross the link too — rows must come from the host that runs them", () => {
@@ -215,7 +247,7 @@ describe("which routes cross a link", () => {
     // The list IS the inventory of what crosses a link; `chat` joined it with the live window, and
     // `files` with the Files view (ADR 0083).
     expect(paneActions).toEqual([
-      "changes", "chat", "close", "files", "focus", "history", "keys", "rename", "reply", "upload",
+      "abort", "answer", "changes", "chat", "close", "files", "focus", "history", "keys", "rename", "reply", "send", "upload",
     ]);
     for (const action of paneActions) expect(crewRouteFor(`/api/pane/x/${action}`)).toBe(`pane/x/${action}`);
     const tabActions = tab.match(alternation)![1]!.split("|").toSorted();
@@ -263,7 +295,7 @@ describe("which routes cross a link", () => {
     // must be attempted against a stale member rather than refused before it is tried (§10.3).
     expect(forwardKind("pane/w1:p1/chat")).toBe("read");
     expect(forwardKind("pane/w1:p1/changes")).toBe("read");
-    for (const action of ["reply", "keys", "upload", "close", "rename"]) {
+    for (const action of ["reply", "keys", "upload", "close", "rename", "answer", "send", "abort"]) {
       expect(forwardKind(`pane/w1:p1/${action}`)).toBe("write");
     }
     expect(forwardKind("tab")).toBe("write");
@@ -282,6 +314,8 @@ describe("which routes cross a link", () => {
     expect(forwardAuditAction("pane/w1:p1/reply")).toBe("reply");
     expect(forwardAuditAction("pane/w1:p1/keys")).toBe("keys");
     expect(forwardAuditAction("pane/w1:p1/upload")).toBe("upload");
+    // The member's answer route writes `answer` (bridge/durable/answer.ts), so the lead's line matches.
+    expect(forwardAuditAction("pane/w1:p1/answer")).toBe("answer");
     expect(forwardAuditAction("pane/w1:p1/close")).toBe("pane.close");
     expect(forwardAuditAction("pane/w1:p1/rename")).toBe("pane.rename");
     expect(forwardAuditAction("tab")).toBe("tab.create");
@@ -977,9 +1011,13 @@ describe("journal, uploads and state stay host-local", () => {
   // gap is right. If a route is added, this test goes red, and the table in MUX_CONTRACT.md
   // § "Conformance across a crew link" is what has to be corrected in the same change.
   test("four mux-port verbs have no forwardable crew route, and the contract says which", () => {
-    // The shapes a route for each would take, in this surface's own grammar.
+    // The shapes a route for each would take, in this surface's own grammar. The worktree create is
+    // lead-local at `POST /api/worktree` (and its plan); list and open have had no route at all since
+    // the space-scoped ones were removed in 1.20.0, so the old shapes must not forward either.
     const unreachable = [
       "sessions",
+      "worktree",
+      "worktree/plan",
       "workspace/w1/worktrees",
       "workspace/w1/worktree",
       "workspace/w1/worktree/open",
@@ -992,5 +1030,17 @@ describe("journal, uploads and state stay host-local", () => {
     const contract = readFileSync(join(import.meta.dir, "..", "..", "MUX_CONTRACT.md"), "utf8");
     expect(contract).toContain("## Conformance across a crew link");
     expect(contract).toContain("listSessions` and the three worktree verbs have no forwardable route");
+  });
+});
+
+// ADR 0094: a phone's own launcher rows live on ONE machine; `?host=` writes reach that member's store.
+describe("the added-launcher routes cross the link as writes", () => {
+  test("add, remove, rename and the lead's forget are forwardable writes; nothing else under the path is", () => {
+    for (const route of ["launchers/added", "launchers/added/remove", "launchers/added/rename", "launchers/added/forget-device"]) {
+      expect(crewRouteFor(`/api/${route}`)).toBe(route);
+      expect(forwardKind(route)).toBe("write");
+    }
+    expect(crewRouteFor("/api/launchers/added/list")).toBeNull();
+    expect(crewRouteFor("/api/launchers/added/")).toBeNull();
   });
 });

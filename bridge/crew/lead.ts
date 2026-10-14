@@ -981,6 +981,7 @@ export class CrewLead {
     opts: {
       readonly audit?: ForwardDeps["audit"];
       readonly device?: string | null;
+      readonly deviceKind?: ForwardDeps["deviceKind"];
       readonly mask?: ForwardDeps["mask"];
     } = {},
   ): Promise<Response> {

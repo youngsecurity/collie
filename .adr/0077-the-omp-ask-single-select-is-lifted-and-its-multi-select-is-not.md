@@ -131,3 +131,46 @@ answer editor.
 - **Revisit** when a capture shows an option description, a scrolling list, a timed question or the
   `ascii` preset, when omp changes the footer or what Enter does, or when the multi-select toggle
   gets a shared recipe.
+
+## Addendum — 2026-10-10: option descriptions are read
+
+Status is unchanged: **Accepted**. Nothing above this line is rewritten. This addendum takes up the
+first case of the Revisit clause: a capture shows option descriptions
+(`omp--v18-8-ask-single-described.txt`, omp 18.8.0, issue #372), and a second capture of the same
+dialog with the pointer moved (`omp--v18-8-ask-single-described-moved.txt`, omp 18.8.7) proves the walk.
+
+- **Point 7 now reads description rows, and nothing else it declined.** omp draws every option's
+  description wherever the pointer is, so a walk still moves the pointer alone and the keys do not
+  change; each description joins its option's `description` on the card. The row layout and the
+  shapes that still decline are in `ASK_NOTES.md` and `ask.ts`, beside the code that reads them.
+- **A lifted description is never cut short.** omp hides a description's rows past the second behind
+  an expand key it names in the footer, and point 1's exact footer declines that screen.
+- **The race guard counts body rows, not options.** The core signature blanks the pointer on the
+  pointed option's own row, which description rows push down. Counted in options, the blank would
+  miss the pointer, and every walk to an option below a description would read back as a changed
+  dialog.
+
+## Addendum — 2026-10-13: current Ask footers and single-select batches
+
+This amends points 1, 7 and 8 for the captured OMP 18.10.3 footer, expanded question body and
+style-only batch identity. Point 9 still excludes multi-select: the review below belongs to a
+batch of single-select questions and prints an explicit Enter-to-submit footer.
+`Alt+H hide` had prevented even short questions from producing a card in Chat;
+`Ctrl+O expand/collapse` names the measured long-text state.
+
+- Single-select batch questions reuse the guarded pointer walk of ADR 0080. Enter advances;
+  the complete final review offers Submit with Enter alone. Review arrows scroll, not select.
+- The active question is style-only. Its tab index is part of the walk identity and the styled
+  region binds each write, including the final review. Identical text on another tab is not
+  the same question.
+- Truncated text offers only Expand and Cancel. Answers become available after the expanded
+  screen is read; no hidden text is reconstructed from the session journal.
+- Missing review answers, preview rails, timeout titles and unknown footer segments decline.
+  Clipped question windows have no capture here and are not claimed as supported; matching a
+  complete-looking box does not establish that arbitrary missing rows can be detected.
+  Multi-select still needs its own guarded toggle recipe.
+
+Evidence and limits: `ASK_NOTES.md`, the `omp--v18-10-ask-*` captures, parser/guard tests and
+`e2e/omp-ask-chat.spec.ts`. A paired mobile-shaped browser completed a real three-question call
+including expansion and final Submit; another completed a typed custom answer. The Chat journal
+card stays read-only. No shared model or Chat component changes are needed.

@@ -33,10 +33,12 @@ afterwards. A copy-paste gives you six places to remember instead.
 | `ui/button.tsx` | Every clickable control with a label. Six variants, one box. Exports `buttonVariants` so a real `<a>` can wear the clothes. |
 | `ui/badge.tsx` | A small static label pill. Not a status chip — it carries no dot and no tap floor. |
 | `ui/card.tsx` | A filled panel on `--card` with its own edge. The Settings surface. |
-| `ui/bottom-bar.tsx` | The band at the foot of a screen that holds its own controls: a rule above, the page colour, the safe area under the buttons. It owns the band and nothing in it. The Changes screen's Previous / Next pair, and the Back it repeats on a phone (§12). |
+| `ui/bottom-bar.tsx` | The band at the foot of a screen that holds its own controls: a rule above, the page colour, the safe area under the buttons. It owns the band and nothing in it. The Changes screen's Previous / Next pair, the Back it repeats on a phone (§12), and the New page's summary line and Start. |
 | `ui/chip.tsx` | The pill in a strip: label, optional leading glyph and status dot, 44px hit box, and an optional name that says its act (the status words then become its description). Space and tab strips. |
 | `ui/collapse.tsx` | The only sanctioned way an in-flow surface appears or disappears: an eased 240ms height+opacity slide that holds its last child through the exit. Styles nothing. |
 | `ui/collapse.tsx` → `CollapseSwap` | Two surfaces taking turns in ONE band, as one motion: a single-cell grid, one height animation (the tall one's), and the short stand-in pinned in the cell fading over it. The fix for two sibling collapses on opposite gates, where the leaving surface is pushed the height of the band by the arriving one. The stand-in must be the shorter of the two. |
+| `ui/copyable-block.tsx` | Any block with a caller-supplied literal to copy. Owns an always-visible, opaque Copy icon over the block's top-right corner and the success or failure status, never the content's formatting. The icon itself confirms the outcome on every screen, including History and Files, which have no status line: a check (`--status-working`) or an X (`--status-blocked`) for 1.5s, then the Copy glyph again, in the same 24px box. Its transparent 44px tap target may extend beyond the block; it reserves no gutter or height and deliberately covers text beneath it. Without a clipboard API it draws the content alone. |
+| `ui/fab.tsx` | The floating New button: a 48px-tall "+ New" pill in the outline-button look (page fill, a uniform 1px `--border` edge, foreground ink, `shadow-md`; `dark:bg-card` lifts it off the near-black page; hover and press take `--accent`) with the house 2px corner, that folds to a 48px round "+" once the list scrolls (`collapsed`) and opens out again at the top; width and corner move on one transition that `motion-reduce` turns off. It is `fixed` at the right edge of the content column, portalled to `<body>`, at `z-30` (under the toast's `z-40` and the sheets' `z-50`). The ONE exception to "the sheet is the app's only floating layer", and only on the dashboard's Dashboard tab. It owns the look, the busy spinner swap and the name; the caller owns whether it is drawn and the `bottom-` that clears its footer. Exception rules below the table. |
 | `ui/image-card.tsx` | One journal picture, framed, as an anchor to its bytes, with a caption saying where it came from. The mirror's placeholder clusters, and the newest turn's picture right after the mirror. Every element is a `<span>`, so it may sit inside the mirror's `<pre>`. `surface` picks the frame: dark-space inside the mirror, the app's tokens on the page. |
 | `ui/image-frame.tsx` | One picture shown whole in the content column: at most the column's width and 70% of the screen's height, centred, on a checkerboard of `--card` and `--muted` that shows transparency in both themes, with one caption line under it that is always there, so filling it moves nothing. The Files view's picture and SVG previews (ADR 0090). Not for a journal picture, which is `ImageCard`. |
 | `ui/list-group.tsx` | A run of flat rows drawn as ONE bordered region. Gives a `divide-y` list a first and last edge. |
@@ -45,17 +47,50 @@ afterwards. A copy-paste gives you six places to remember instead.
 | `ui/notice.tsx` | The app's ONE notice look: five tones × two placements (`strip`, `box`), each on its own height floor, and the single table the tint recipe may appear in. Owns shape, tone and live-region semantics; owns no words and no visibility. |
 | `ui/segmented.tsx` | Two or three labelled segments in one row, exactly one selected: Diff \| Source \| Preview, the Files screen's All files \| Changes, the 1 h / 24 h chart switch, the alert threshold and duration choices. Values are strings or numbers. Every segment reserves its 1px border and the selected one only recolours it, so a switch moves nothing (§2), and a tap on the selected segment does nothing. `semantics` picks a tab list (a switch between screens) or a radio group (one setting); `disabled` makes the row inert. A segment may carry a count (`badge`, with `badgeLabel` for the screen reader), floated on its top-right corner like the toggle button's, as the Files screen's Changes segment does. Theme and Belt size predate it and still carry their own copy. |
 | `ui/section-label.tsx` | The small uppercase word that names a section. Type only — it renders a `<span>` and owns no structure. |
-| `ui/select.tsx` | A form select: a NATIVE `<select>` in a 44px box with our own chevron (`appearance-none`), a full `--border` edge and the house corner, so a phone draws its own picker and no sheet is needed. `lead` puts an inert glyph before the text; the caller's `className` sizes the box (`flex-1 min-w-0` for the flexible one, `shrink-0` for the compact one). The "New agent on a branch" sheet's Repository and Agent fields, and the dashboard's workspace and order selects (`dash-selects.tsx`). The three Settings selects (language, typeface, terminal font) carry the same construction by hand and have not been moved onto it. |
-| `ui/sheet.tsx` | `BottomSheet`. The app's only floating layer; there is no popover, no dialog, no tooltip. |
+| `ui/select.tsx` | A form select: a NATIVE `<select>` in a 44px box with our own chevron (`appearance-none`), a full `--border` edge and the house corner, so a phone draws its own picker and no sheet is needed. `lead` puts an inert glyph before the text; the caller's `className` sizes the box (`flex-1 min-w-0` for the flexible one, `shrink-0` for the compact one). The New page's machine, agent and command selects (`routes/new.tsx`), and the dashboard's workspace and order selects (`dash-selects.tsx`). The three Settings selects (language, typeface, terminal font) carry the same construction by hand and have not been moved onto it. |
+| `ui/sheet.tsx` | `BottomSheet`. The app's only floating layer, with one exception: the dashboard's floating New button (`ui/fab.tsx`, below). There is no popover, no dialog, no tooltip. It also exports `useAnySheetOpen`, the count of open sheets that button hides itself on. |
 | `ui/strip-host.tsx` | The ribbon band, an overlay hung from the header bar's bottom edge. Renders ONE `StripSlot` at a time, the highest priority, and keeps the two permanent `sr-only` live regions. It reserves no space: a zero-height anchor sits right after the header, and the band floats from it at `z-30` over the top of the route, on the page colour with a `shadow-md`. Domain-blind: a bigger number wins, and it does not know what a connection is. `flow` paints it in flow instead, for a playground stage with no route under it; the app never sets it. |
 | `ui/switch.tsx` | A boolean toggle, `role="switch"`. No Radix. |
 | `ui/tab-bar.tsx` | A bottom tab bar: equal icon-over-word tabs on the page colour, a rule above, the safe area below. The active mark is a reserved 2px top edge, and a count badge floats on the icon, so a switch or a count never moves a word. The dashboard footer (ADR 0066, ADR 0085): with a crew, Crew, Dashboard, Changes, so the default tab sits in the middle under the thumb and the two side tabs are the side trips. |
 | `ui/toggle-button.tsx` | An icon toggle button: a setting that is on or off, with `aria-pressed`, drawn as a 44px square (icon only) or 44px tall with a word. Owns the one pressed look, the primary tint plus the hairline `ring-primary/40`, so a pressed toggle never reads like a selected `bg-muted` segment beside it. An optional `badge` count sits on the square's corner, absolute, so a count that comes or goes moves nothing (§2). The dashboard's needs-you switch, the Changes tree's Ignored toggle, the Changes list's Tree toggle, and the Changes only toggle with its badge. Not for a multi-select filter chip, and not for the `role="switch"` track of `ui/switch.tsx`. |
+| `ui/tap-target.ts` | The composer's 44px hit-area extension for a 36px round face (`TOOLBAR_TAP_TARGET`): a transparent `::before` four pixels larger on every side. Not a component, a class string. The composer's round buttons and the voice takeover's OK and bin, so OK stands on the mic's own reach. |
 | `ui/toast-viewport.tsx` | Where a transient event floats: `dock="bottom"` fixed to the viewport, `dock="top"` absolute inside a route's content region. Owns position and nothing else. |
 | `ui/chat/chat-input.tsx` | The composer's text box shell. |
 | `ui/chat/chat-message-list.tsx` | The transcript's scrolling list. |
 
 If the thing you need is not in that table, say so in the diff and put it in that folder.
+
+### The one exception to "the sheet is the only floating layer": the dashboard's New button
+
+`BottomSheet` is the app's only floating layer, with **exactly one exception: the dashboard's
+floating New button** (`ui/fab.tsx`, mounted by `routes/home.tsx` on the Dashboard tab only, never on Crew or Files). Why: the
+only create control on the dashboard was a FolderPlus in the Spaces section header, low on a long
+scrolling page and out of reach of the thumb, and a worktree was two taps behind it. One create entry
+under the thumb was the pick (card 1.3, 2026-10-08; it opened a sheet then). Since M48 (1.19.0) it opens
+the one New page (`routes/new.tsx`, `/new`; a sheet could not hold a form that long): the machine on a
+crew, Again, an Agent or Command select, Folder, "New worktree", then the summary line and Start pinned
+in a bottom bar. What cannot run stays in its select, disabled, with the reason in brackets. The exception is bounded by these rules, and a second floating control must change this
+section first:
+
+- **It reserves nothing in flow.** It is `fixed`, so showing, hiding or going busy moves no content
+  (§2). The dashboard's scroll content ends with enough bottom padding that the last row scrolls clear
+  of it, set by whether the button is offered (which includes being on the Dashboard tab) and never by its transient hides.
+- **Toasts clear it.** The dashboard's `ToastViewport` is lifted by the footer, the button's gap and the
+  button's face (`bottom-[calc(3.5rem+1px+1rem+3rem)]` against the Fab's
+  `bottom-[calc(3.5rem+1px+safe-area+1rem)]`), so a toast floats above the button's top edge and never
+  covers it. The two sums live side by side in `routes/home.tsx`; change one, change both.
+- **It hides, it does not dim,** while any `BottomSheet` is open (`useAnySheetOpen`) and while the
+  on-screen keyboard is up (`useKeyboardOpen`). Under a sheet's backdrop it would be a second create
+  entry beside the one in use; over the keyboard it would ride up onto the list.
+- **It is drawn only if a row could work.** Not on a device that may not write, and not when the
+  multiplexer cannot make a space, no launcher is configured and no repo is open. On a saved copy it
+  stays drawn and refuses on the tap, as `workspace-new-tab.tsx` does.
+- **It reads "+ New" at the top and folds to "+" on scroll.** The word is the label a first-time
+  reader needs; once the list moves, the round "+" covers less of it. The pill takes the 2px corner,
+  because it is wider than it is tall; only the folded circle is full-round. The accessible name is
+  "New" in both shapes, and the word is `aria-hidden`.
+- **The Spaces header's FolderPlus stays,** and opens the same page. So does the empty dashboard's
+  "Start your first agent" card. The button adds an entry; it removes none.
 
 ### The alert family: the primitive landed, the conversion did not finish
 
@@ -238,10 +273,47 @@ its neighbour by picking a bigger step.
 round came back softer than the direction that was chosen.
 
 **Full-round is RESERVED** for shapes whose width equals their height, where it draws a
-circle: status dots, the avatar, the switch thumb, a bead, the dashed "+" of
-`ui/add-button.tsx` at both its sizes. Anything wider than it is tall becomes a *stadium*,
+circle: the status marks that ARE a circle (working, done, idle, unknown; blocked is a triangle and unseen a square, see below), the avatar, the switch thumb, a bead, the dashed "+" of
+`ui/add-button.tsx` at both its sizes, the floating New button of `ui/fab.tsx` when folded (its "+ New" pill takes 2px). Anything wider than it is tall becomes a *stadium*,
 and there is no stadium in the mark. The chip, the pane pill and the switch track all take
 2px, each with a comment at the line saying why, so nobody "fixes" one back.
+
+### A status mark is a shape first and a colour second
+
+A pane's state is drawn as a **shape** in one 12px box, so it reads on a small phone and to a
+colour-blind eye. Colour alone did not survive the range: on the app's own `--status-*` tokens a
+deuteranope reads blocked, working and done as one colour in light theme (`status-badge.tsx`
+holds the measurement), and the summary line drops its words on a phone, leaving the marks alone
+(issue 420, 2026-10-12, playground card 9).
+
+| State | Shape |
+| --- | --- |
+| blocked ("needs you") | filled triangle, point up, with a 1.8px round-joined stroke in its own colour so it weighs about the same as the disc (97% of its area) |
+| working | circle with its left half filled, no inner marks |
+| done | filled disc |
+| idle | hollow ring |
+| unknown | hollow dashed ring, so it stays apart from idle |
+| unseen reply (`ui/unseen-mark.tsx`) | 9px full-ink filled square, 1.5px corners; not a status colour, because it is a different kind of fact |
+
+- **One component draws all of them.** `StatusDot` (`status-badge.tsx`) owns the five shapes and
+  `UnseenMark` the square. Counts, headings, rows, chips, the strips and the pane header all call
+  them. Do not draw a status as a bare coloured `rounded-full` span; the chip's, the heading's and
+  the belt's needs-you marks went through this on purpose.
+- **Colour stays the `--status-*` token, drawn as `currentColor`.** It is the second channel and
+  the text tokens are untouched. The resting marks are drawn at 60% so eighteen idle rings do not
+  out-shout the one that needs you; a ring's inside is filled with the surface it sits on (`surface`).
+- **A shape does not read at 8px.** The default box is 12px (`size-3`); a slot that must stay
+  narrower passes `size-2.5` (10px) at the smallest, and the card's mark takes `-mx-px` to keep
+  its row's 10px slot. The pane header's badge is the 12px box, absolutely placed on the agent
+  tile's corner, so growing it moved nothing in the header. Every state fills the same box, so a
+  state change is paint only (§2).
+- **Motion: the watched mark only.** The working mark turns (`.status-turn`: rotation only,
+  linear, 1.8s a turn) where `status-breathe` used to run, on the one mark the operator is
+  watching a pane through (`live`: the pane chip, the header badge, the running card, the stream's
+  "still going"). It replaced the opacity breathe. Every other mark is still, a frozen (`stale`)
+  reading does not turn, and under `prefers-reduced-motion: reduce` nothing moves.
+- **The summary line still drops words from the right** when it is too narrow; the shapes are why
+  that is now safe.
 
 ---
 
@@ -773,7 +845,7 @@ On a phone the edge swipe is history back, so the history stack must be the leve
 (`web/src/hooks/use-nav.ts`), never a bare `navigate(path)`:
 
 - **Down** (`nav.down`) pushes and records `from`. Opening a space, a pane, History, Changes,
-  Settings, Crew, Updates.
+  Settings, Crew, Updates, New.
 - **Sideways** (`nav.side`) replaces and carries `from`. Pane to pane, tab to tab, space chip to
   space chip, the machine and session switchers. `nav.open` picks down or sideways for a new pane.
 - **Up** (`nav.up(parent)`, `nav.upTo(parent)`) steps back when the entry behind is a legitimate

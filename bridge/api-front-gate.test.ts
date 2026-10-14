@@ -134,7 +134,12 @@ describe("the route table read off server.ts", () => {
       "/api/snapshot",
       "/api/devices/revoke",
       "/api/pane/id1/reply",
-      "/api/workspace/id1/worktrees",
+      "/api/pane/id1/answer",
+      "/api/pane/id1/send",
+      "/api/pane/id1/abort",
+      "/api/stt/host",
+      "/api/stt/whistle",
+      "/api/workspace/id1/changes",
       // The Files existence check (ADR 0088): a POST read, refused without a token like every route.
       "/api/pane/id1/files/exist",
       "/api/workspace/id1/files/exist",
@@ -197,6 +202,30 @@ describe("apiFrontGate: every /api/ path but the allowlist is refused without a 
     const cfg = config();
     for (const path of everyApiPath()) {
       expect(apiFrontGate(request("GET", path, { authorization: `Bearer ${TOKEN}` }), path, cfg, store, LOOPBACK_PEER)).toBeNull();
+    }
+  });
+
+  test("the explicit opt-out reaches new durable and speech routes without resolving a token", () => {
+    const gate: PairingGate = { resolve: () => { throw new Error("ignored registry"); } };
+    const cfg = config({ pairing: false });
+    for (const [method, path] of [
+      ["POST", "/api/pane/id1/answer"],
+      ["POST", "/api/pane/id1/send"],
+      ["POST", "/api/pane/id1/abort"],
+      ["GET", "/api/stt/host"],
+      ["PUT", "/api/stt/host"],
+      ["POST", "/api/stt/whistle"],
+      ["DELETE", "/api/stt/whistle"],
+      ["GET", `/api/stt/model/${"a".repeat(64)}`],
+    ] as const) {
+      const req = request(method, path, { authorization: "Bearer ignored" });
+      expect(apiFrontGate(req, path, cfg, gate, LOOPBACK_PEER)).toBeNull();
+      const level = method === "GET" ? "read" : "write";
+      expect(guard(req, cfg, level, gate, LOOPBACK_PEER)).toBeNull();
+      expect(guard(req, cfg, level, gate, null)?.status).toBe(403);
+      if (level === "write") {
+        expect(guard(req, { ...cfg, deviceHeader: "x-device", deviceAllowlist: ["phone"] }, level, gate, LOOPBACK_PEER)?.status).toBe(403);
+      }
     }
   });
 

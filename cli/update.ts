@@ -65,9 +65,10 @@ import {
   driveApply,
   HEALTH_POLL_MS,
   HEALTH_TIMEOUT_ENV,
-  healthProbe,
+  bootEvidenceOf,
+  updateHealthProbe,
   probeConfigOf,
-  probeTarget,
+  updateHealthTarget,
   healthTimeoutMs,
   HANDOFF_CONFIRM_MS,
   idleRun,
@@ -3060,6 +3061,9 @@ async function runApply(deps: UpdateDeps, a: ApplyArgs): Promise<number> {
       ? flipCurrent(deps, layout, dir)
       : flipToStaged(deps, layout, { dir, version: dir.replace(/^v/, ""), complete: true }).ok;
 
+  // The peer's runtime marker must come from the latest restart, including a rollback restart.
+  // No marker can pass before the first restart.
+  let restartedAt = Number.POSITIVE_INFINITY;
   const recovery = recoveryCommand(layout, a.from, deps.host);
   let run: UpdateRun;
   try {
@@ -3069,12 +3073,18 @@ async function runApply(deps: UpdateDeps, a: ApplyArgs): Promise<number> {
         // Through `current`, for BOTH install kinds. This process is the OLD version, and its own
         // `restart` would rewrite the unit from its own root — pinning the supervisor to the version
         // the flip just left, which would make the flip cosmetic.
-        restart: () => Promise.resolve(restartThroughCurrent(deps, layout)),
-        // Not "loopback and the front-door port": a wide bind and a peer's TLS-pinned listener are
-        // both real, and both make that URL the wrong door (`cli/update-run.ts` → `probeTarget`).
-        health: healthProbe(
+        restart: () => {
+          restartedAt = deps.now();
+          return Promise.resolve(restartThroughCurrent(deps, layout));
+        },
+        // A TLS-only peer proves its own certificate and fresh boot instead of using a plain-HTTP door.
+        health: updateHealthProbe(
           deps.net,
-          probeTarget(probeConfigOf(deps.ctx.env, deps.files, deps.ctx.stateDir, deps.ctx.port)),
+          updateHealthTarget(probeConfigOf(deps.ctx.env, deps.files, deps.ctx.stateDir, deps.ctx.port)),
+          bootEvidenceOf(deps.files, stateDir, () => restartedAt, (pid) => {
+            const found = deps.exec.processLookup(pid);
+            return found.kind === "unknown" ? null : found.kind === "running";
+          }),
         ),
         prune: () => {
           if (a.kind === "binary") collectOldVersions(deps, layout, a.to);

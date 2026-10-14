@@ -12,6 +12,7 @@ import { computeEtag } from "./http-cache.ts";
 import { muxOk } from "./mux/types.ts";
 import { NotifyPrefsStore } from "./notify-prefs.ts";
 import { FolderStore } from "./folders.ts";
+import { WorktreeBaseStore } from "./worktree-bases.ts";
 import { WorktreeReceiptStore } from "./worktree-receipts.ts";
 import { MachineAlertStore } from "./machine-alerts.ts";
 import { loadMachineHistory, saveMachineHistory } from "./machine-history.ts";
@@ -261,6 +262,9 @@ const SNAPSHOT_KEYS = {
   ts: true,
   // Present on the type since M4/04, absent from every solo body — see the section header.
   servers: true,
+  // Not a crew dimension: present only while the mux is down for a refused durable token (M50 spec
+  // 14), so a healthy solo body carries no such key and no golden byte moved.
+  muxFault: true,
 } satisfies Record<keyof SnapshotResponse, true>;
 
 const SESSION_SUMMARY_KEYS = {
@@ -313,6 +317,9 @@ const PANE_WIRE_KEYS = {
   // pane in this baseline names a session a probe could read, so no golden byte moved — which is the
   // claim the feature makes, not an aside. The bridge never guesses a number before it measures one.
   cache: true,
+  // Not a crew dimension: the model the pane's agent is on, from the same probe as `cache` and absent
+  // here for the same reason, so no golden byte moved.
+  model: true,
   // Not crew dimensions: the operator's name for this pane's one-pane tab, and the pane's position in
   // its tab. Computed on the machine the pane lives on; an older peer omits both.
   soleTabName: true,
@@ -321,6 +328,12 @@ const PANE_WIRE_KEYS = {
   // own disk. Attached at serialise time like `cache`, and absent here: this baseline builds its body
   // with no reader, so no golden byte moved.
   gitHead: true,
+  // Not a crew dimension: the open asks of a pane whose adapter raises them as data (ADR 0100). Only
+  // the `durable` adapter fills it, so it is absent on every pane here and no golden byte moved.
+  asks: true,
+  // Not a crew dimension either: the newest turn of a pane whose adapter takes guarded controls
+  // (ADR 0101). Only the `durable` adapter fills it, so it is absent here and no golden byte moved.
+  turnId: true,
 } satisfies Record<keyof PaneWire, true>;
 
 const DEVICE_AUTH_KEYS = {
@@ -397,11 +410,12 @@ const TAB_KEYS = {
 } satisfies Record<keyof TabView, true>;
 
 describe("solo zero-tax — wire shapes carry no crew dimension", () => {
-  test("SnapshotResponse carries `servers` as OPTIONAL and nothing else new", () => {
+  test("SnapshotResponse carries `servers` as OPTIONAL and nothing else new (and `muxFault`, absent while healthy)", () => {
     expect(Object.keys(SNAPSHOT_KEYS).toSorted()).toEqual([
       "agents",
       "bridge",
       "device",
+      "muxFault",
       "notifications",
       "servers",
       "sessions",
@@ -433,6 +447,7 @@ describe("solo zero-tax — wire shapes carry no crew dimension", () => {
   test("PaneWire carries the two address dimensions and nothing else", () => {
     expect(Object.keys(PANE_WIRE_KEYS).toSorted()).toEqual([
       "agent",
+      "asks",
       "cache",
       "cwd",
       "focused",
@@ -443,6 +458,7 @@ describe("solo zero-tax — wire shapes carry no crew dimension", () => {
       "kind",
       "lastActiveAt",
       "lastSeenAt",
+      "model",
       "paneId",
       "paneLabel",
       "readableLines",
@@ -455,6 +471,7 @@ describe("solo zero-tax — wire shapes carry no crew dimension", () => {
       "tabPosition",
       "terminalTitle",
       "terminalTitleStale",
+      "turnId",
       "workspaceId",
       "workspaceLabel",
       "workspaceNumber",
@@ -622,13 +639,20 @@ describe("solo zero-tax — routes", () => {
       // the poll path, forwarded to the owning member and taxing a solo instance with nothing.
       // `files` is the Files view (ADR 0083): one folder or one file under the Changes root, a read
       // gated on an authorised device and forwarded to the owning member like `changes`.
-      "/^\\/api\\/pane\\/([^/]+)(?:\\/(reply|keys|upload|close|rename|history|chat|changes|files|focus))?$/",
+      // `answer` answers an ask by id (ADR 0100): a write, forwarded to the owning member, and only a
+      // pane whose adapter raises asks as data takes it, so a solo Herdr bridge answers it the refusal.
+      // `send` and `abort` name the turn the phone saw (ADR 0101): writes, forwarded the same way, and
+      // only a pane whose adapter takes guarded controls takes them; a Herdr pane gets the refusal.
+      "/^\\/api\\/pane\\/([^/]+)(?:\\/(reply|keys|upload|close|rename|history|chat|changes|files|focus|answer|send|abort))?$/",
       // Which paths exist under the Files root (ADR 0088), asked in one batch for the pane view's
       // links: a read with the Files gate, one `lstat` per path, not forwarded across a crew link.
       "/^\\/api\\/pane\\/([^/]+)\\/files\\/exist$/",
       // One picture under the Files root, as its bytes (ADR 0090): the Files read's checks and gate,
       // the type read off the bytes, forwarded to the owning member like `files`.
       "/^\\/api\\/pane\\/([^/]+)\\/files\\/image$/",
+      // The Whistle model as bytes (ADR 0096 Decision 9): a content-addressed READ, the hash compared
+      // with the held file's and never made into a path. Lead-local, not forwardable.
+      "/^\\/api\\/stt\\/model\\/([^/]+)$/",
       "/^\\/api\\/tab\\/([^/]+)\\/(rename|close)$/",
       // The Changes view asked by workspace (ADR 0065): the same read as the pane route's `changes`,
       // read-gated and forwarded with `?host=` to the member that owns the space.
@@ -640,8 +664,6 @@ describe("solo zero-tax — routes", () => {
       "/^\\/api\\/workspace\\/([^/]+)\\/files\\/exist$/",
       // The same picture read, asked by workspace (ADR 0090).
       "/^\\/api\\/workspace\\/([^/]+)\\/files\\/image$/",
-      "/^\\/api\\/workspace\\/([^/]+)\\/worktree(?:\\/(open))?$/",
-      "/^\\/api\\/workspace\\/([^/]+)\\/worktrees$/",
       // Default closed (ADR 0086): an `/api/*` path no route claims passes the read gate, pairing
       // included, and then answers 404 instead of the SPA's app shell. Not a route of its own, and it
       // registers nothing on the crew link.
@@ -677,11 +699,29 @@ describe("solo zero-tax — routes", () => {
       // the client names a row, never a command line. An operator who declares none can call it,
       // and every call is refused.
       "/api/launch",
+      // Remove one line from THIS machine's one-off command history, or clear it (ADR 0095): two
+      // SOLO writes that legitimately extend this list, named here rather than exempted. Session-scoped
+      // and write-gated through the same closure `/api/launch` rides, so a `?host=` call lands in that
+      // member's own `commands-recent.json`.
+      // Check one typed line before it runs (ADR 0095, amendment): a SOLO read that legitimately extends
+      // this list, named here rather than exempted. Read-gated and session-scoped through the same
+      // closure `/api/launch` rides, so a `?host=` call forwards to the member whose scan it is.
+      "/api/launch/check",
+      "/api/launch/recent/clear",
+      "/api/launch/recent/remove",
       // This host's own launcher rows, read live off its `launchers.toml` — a SOLO route that
       // legitimately extends this list, named here rather than exempted. Session-scoped and
       // read-gated through the same closure `/api/launch` rides, so a `?host=` call forwards to
       // the peer that runs the rows rather than reading the lead's own file.
       "/api/launchers",
+      // Rows a phone adds, removes and renames on THIS machine (ADR 0094) — three SOLO writes that
+      // legitimately extend this list, named here rather than exempted. Session-scoped and write-gated
+      // through the same closure `/api/launch` rides, so a `?host=` call lands in that member's own
+      // store. A fourth path, the crew's forget (`FORGET_DEVICE_PATH`), is refused on the browser path
+      // and served on the link only, so it registers no browser route here.
+      "/api/launchers/added",
+      "/api/launchers/added/remove",
+      "/api/launchers/added/rename",
       // Machines (ADR 0084): the list with each machine's latest sample. A read, gated as one.
       "/api/machines",
       // The prompt-cache watch list (M28/03, ADR 0042). Three SOLO routes in the notifications family,
@@ -708,6 +748,14 @@ describe("solo zero-tax — routes", () => {
       // here rather than exempted, exactly as device pairing is. It is off until an operator
       // configures a provider, and it registers no crew route.
       "/api/stt",
+      // The host's speech provider (ADR 0097): a SOLO route that legitimately extends this list, named
+      // here rather than exempted. Lead-local like `/api/stt`, its write gated like it, not forwardable.
+      // A bridge whose operator never opens Settings → Voice runs nothing and writes nothing through it.
+      "/api/stt/host",
+      // The Whistle model (ADR 0096): a SOLO route that legitimately extends this list, named here
+      // rather than exempted. Lead-local like `/api/stt`, gated like it, and not forwardable. A bridge
+      // whose operator never taps "Download to host" downloads nothing and writes nothing through it.
+      "/api/stt/whistle",
       "/api/subscribe",
       "/api/tab",
       // Starting an update from the phone (M15/05) — a SOLO route that legitimately extends this
@@ -723,6 +771,11 @@ describe("solo zero-tax — routes", () => {
       // own notify record, and a peer never pushes an update notification of its own.
       "/api/update/snooze",
       "/api/workspace",
+      // The New sheet's branch from a FOLDER (M48, ADR 0093): the plan it shows before Start, and the
+      // create. Two SOLO routes, named here rather than exempted. Session-scoped through the gate and
+      // lead-local like the worktree create: neither is forwardable.
+      "/api/worktree",
+      "/api/worktree/plan",
       "/auth",
       "/auth/*",
     ]);
@@ -871,7 +924,7 @@ describe("solo zero-tax — config", () => {
   // Read from `bridge/config-schema.ts` rather than by grepping `config.ts`'s source, because the
   // schema is now the single declaration of what every setting is (ADR 0040). The rows that carry a
   // `configField` are exactly the settings `loadConfig` resolves, which is the list §11 pins. A
-  // CONFIG FILE ADDS NO ENV KEY, so this list is the 38 names it has always been plus `COLLIE_BASE_PATH` (ADR 0052), `COLLIE_MUSE_ROOT` and the two `COLLIE_ACCESS_*` keys (ADR 0081) — the two
+  // CONFIG FILE ADDS NO ENV KEY, so this list is the 38 names it has always been plus `COLLIE_BASE_PATH` (ADR 0052), `COLLIE_MUSE_ROOT`, `COLLIE_OPENCLAW_ROOT` (#401) and the two `COLLIE_ACCESS_*` keys (ADR 0081) — the two
   // `COLLIE_MUX_ENDPOINT_<NAME>` rows collapse back to the prefix the old grep saw, because the env
   // name is built at the call site and the file key must not be.
   test("the schema names exactly today's COLLIE_* env keys — no crew enrollment key", () => {
@@ -904,6 +957,7 @@ describe("solo zero-tax — config", () => {
       "COLLIE_MUX",
       "COLLIE_MUX_ENDPOINT_",
       "COLLIE_NOTIFY_DELAY_MS",
+      "COLLIE_OPENCLAW_ROOT",
       "COLLIE_OPENCODE_ROOT",
       "COLLIE_PAIRING",
       "COLLIE_PI_ROOT",
@@ -944,6 +998,9 @@ const STATE_DIR_ENTRIES = [
   // never on Linux or macOS, and never on a Windows install whose folders were private already.
   "acl-backups",
   "activity.json",
+  // One receipt per answer to an ask (ADR 0100), written before the answer leaves. Written by use and
+  // by nothing else: absent until the first answer from a phone.
+  "answer-receipts.json",
   "audit.log",
   // Agent beacons (M11/01) — a directory, and one no bridge module ever writes: the bridge only ever
   // READS it, and the emitter that fills it is a CLI verb the operator installs a hook for. An
@@ -953,12 +1010,33 @@ const STATE_DIR_ENTRIES = [
   // under the global switch — both are events, so a bridge that is merely started still writes the four
   // entries asserted below.
   "cache-watch.json",
+  // The one-off lines a phone ran on this machine, newest first (ADR 0095). Written by use and by
+  // nothing else: absent until the first one-off run that works.
+  "commands-recent.json",
+  // One receipt per send or abort on a durable pane (ADR 0101), written before the control leaves.
+  // Written by use and by nothing else: absent until the first one from a phone.
+  "control-receipts.json",
+  // The bridge's own log of a durable program's panes (ADR 0099), one file per pane inside this folder.
+  // Written only by a bridge that drives `COLLIE_MUX=durable`: the factory that builds the writer is
+  // never called for Herdr, tmux or zellij, so every other instance never has this folder.
+  "durable",
+  // The push guard's memory for asks that travel as data (ADR 0100), keyed on (host, toolCallId).
+  // Written only when a pane that carries asks opens or closes one: a bridge with no durable pane,
+  // and no peer with one, never writes it.
+  "durable-asks.json",
   // The new-space sheet's folder list (M40/02, #289), and a §11 row RENEGOTIATED ON PURPOSE: it is
   // the one entry here a solo instance's own operator writes through ordinary use, from the phone.
   // Absent until the first space created with a folder or the first star — both are acts, and a
   // bridge that is only started, only read, or only ever asked for spaces in home writes none of it,
   // so the four entries asserted below hold. Driven in "the folder list appears only on use".
   "folders.json",
+  // One receipt per launch the phone tagged with a request id (ADR 0091), so a retried Start never
+  // opens a second pane. Written by use and by nothing else: absent until the first launch that
+  // carries an id succeeds.
+  "launch-receipts.json",
+  // The launcher rows phones added on this machine (ADR 0094). Written by use and by nothing else:
+  // absent until the first add from a phone succeeds.
+  "launchers-added.json",
   // The host's own read credential (bridge/local-secret.ts), a §11 row RENEGOTIATED ON PURPOSE: reads
   // need the pairing token (ADR 0086), so the CLI's own reads of its bridge need a credential too. A
   // started bridge writes it (one 0600 file, rotated per start) and a clean stop deletes it, so a
@@ -983,8 +1061,13 @@ const STATE_DIR_ENTRIES = [
   "pairing-pending.json",
   "push-subscriptions.json",
   "snooze.json",
-  // Speech-to-text settings. Absent until the operator runs `collie stt setup`, and READ ONLY by
-  // the bridge — `bridge/stt/config.ts` names this path and never writes it.
+  // One receipt per starter a phone ran on a durable program (ADR 0102). Written by use and by nothing
+  // else: absent until the first starter run, which only a peer on `COLLIE_MUX=durable` can offer.
+  "starter-receipts.json",
+  // Speech-to-text settings. Absent until the operator runs `collie stt setup`. The bridge writes it
+  // in one case only: the Host speech provider card in Settings, which writes Whistle or Codex (after
+  // the consent) or removes the file, and only while no key, command or environment names a provider
+  // (bridge/stt/host-http.ts, ADR 0097).
   "stt.json",
   // The detached updater's own stdout and stderr (#283), with the run before it kept beside it as
   // `update-runner.log.1`. Absent until the first update started from the phone: the bridge opens it
@@ -997,6 +1080,17 @@ const STATE_DIR_ENTRIES = [
   "update.json",
   "update.lock",
   "uploads",
+  // The Whistle model's folder, `whistle/` (ADR 0096): the model, its manifest and a download's
+  // part file. Absent until a write device taps "Download to host" or the operator runs
+  // `collie stt whistle`; nothing else creates it.
+  "whistle",
+  // The ref each new worktree was cut from (ADR 0089, amended). Written by use and by nothing else:
+  // absent until the first create that named a starting point succeeds. Driven in "the worktree
+  // bases appear only on use".
+  "worktree-bases.json",
+  // The New sheet's last branch choices per repo (M48). Written by use and by nothing else: absent
+  // until the first branch create from a folder succeeds.
+  "worktree-choices.json",
   // One receipt per worktree create the phone tagged with a request id (ADR 0089), so a retried
   // create replays instead of making a second worktree. Written by use and by nothing else: absent
   // until the first create that carries an id succeeds. Driven in "the worktree receipts appear only
@@ -1157,6 +1251,22 @@ describe("solo zero-tax — the filesystem", () => {
       await rm(stateDir, { recursive: true, force: true });
     }
   });
+
+  // The same shape for the worktree bases (ADR 0089, amended): loading writes nothing, a create that
+  // named a starting point writes the one file.
+  test("the worktree bases appear only on use: a create that named a starting point", async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), "collie-solo-baseline-"));
+    try {
+      const bases = new WorktreeBaseStore(stateDir);
+      await bases.load();
+      expect(await readdir(stateDir)).toEqual([]);
+      await bases.record("/home/op/repo/.worktrees/x", { base: "main", createdAt: 1 });
+      expect(await readdir(stateDir)).toEqual(["worktree-bases.json"]);
+      expect(STATE_DIR_ENTRIES).toContain("worktree-bases.json");
+    } finally {
+      await rm(stateDir, { recursive: true, force: true });
+    }
+  });
 });
 
 // §11's "Files written" row, amended on purpose by ADR 0084, and driven like the folder list above:
@@ -1194,7 +1304,9 @@ describe("solo zero-tax — the machine files", () => {
       now += 60_000;
       watch.observe(SOLO_MACHINE_ID, sample, now);
       watch.tick();
-      await Bun.sleep(5);
+      // The tick's save is already on the chain and the history is no longer dirty, so flush waits for
+      // that write and adds none. A fixed sleep listed the folder mid-rename on Windows (the .tmp file).
+      await watch.flush();
       expect(await readdir(stateDir)).toEqual(["machine-history.json"]);
 
       await watch.setAlerts(SOLO_MACHINE_ID, { cpu: { above: 0.9, forMin: 10 } });
