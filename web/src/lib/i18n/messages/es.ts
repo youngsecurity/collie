@@ -120,6 +120,7 @@ export const es: Dictionary = {
 
   // --- settings.devices ---
   "settings.devices.title": "Dispositivos vinculados",
+  "settings.devices.description.disabled": "Advertencia: el emparejamiento está desactivado en este host. Quienes superen los demás controles pueden leer transcripciones y controlar terminales sin token. Los dispositivos se conservan; la caché de sesiones sin conexión está desactivada.",
   "settings.devices.description.enforced":
     "Toda lectura y toda escritura requieren un dispositivo vinculado.",
   "settings.devices.pairedAs": "Este dispositivo está vinculado como {device}.",
@@ -136,6 +137,7 @@ export const es: Dictionary = {
   "settings.devices.revoke": "Revocar",
   "settings.devices.revokeAria": "Revocar {label}",
   "settings.devices.confirm.self": "¿Desvincular este dispositivo? Se borran aquí sus borradores, el texto guardado de los paneles y las notificaciones. Tus ajustes se mantienen.",
+  "settings.devices.confirm.otherDisabled": "¿Revocar la credencial de {label}? El acceso sigue disponible mientras el emparejamiento esté desactivado.",
   "settings.devices.confirm.other": "¿Revocar {label}? Pierde el acceso hasta que se vincule de nuevo.",
   "settings.devices.pair.title": "Vincular dispositivo",
   "settings.devices.pair.hint":
@@ -182,6 +184,7 @@ export const es: Dictionary = {
   "settings.connection.bridge.offline": "Herdr desconectado",
   "settings.connection.bridge.connecting": "Conectando…",
   "settings.connection.bridge.notPaired": "Accesible, sin emparejar",
+  "settings.connection.device.pairingOff": "Vinculación desactivada en este host",
   "settings.connection.device.notPaired": "Obligatorio, este dispositivo no está vinculado",
   "settings.connection.device.paired": "Obligatorio, este dispositivo está vinculado",
   "settings.connection.device.fullAccessNamed": "Acceso total · {device}",

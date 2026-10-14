@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { envBool } from "../bridge/config.ts";
 
 import {
   acquireRegistryLockSync,
@@ -256,8 +257,14 @@ async function printPairQr(deps: PairingDeps, code: string): Promise<void> {
 /** `collie devices list` — who holds a write credential for this bridge. */
 export function cmdDevicesList(deps: PairingDeps): number {
   const { devices } = readRegistry(deps);
+  const required = envBool("COLLIE_PAIRING", true, deps.ctx.env);
+  if (!required) deps.io.out("WARNING: browser pairing is OFF in host config. Transcripts and remote shell access need no token past the remaining gates. Devices are retained.");
   if (devices.length === 0) {
-    deps.io.out("no devices paired — Collie answers no phone or browser until one is (pairing is always on).");
+    if (!required) {
+      deps.io.out("no devices paired; browser pairing is optional.");
+      return EXIT.OK;
+    }
+    deps.io.out("no devices paired: Collie answers no phone or browser until one is (pairing is on).");
     deps.io.out("Run `collie pair` to enrol the first device.");
     return EXIT.OK;
   }
@@ -270,7 +277,7 @@ export function cmdDevicesList(deps: PairingDeps): number {
   }
   if (devices.some((d) => isExpired(d, now))) {
     deps.io.out(
-      "An expired device is refused but still listed; revoke it, or give it a new expiry.",
+      "An expired credential is refused when pairing is required but stays listed; revoke it, or give it a new expiry.",
     );
   }
   return EXIT.OK;
@@ -469,8 +476,11 @@ function revokeLocked(deps: PairingDeps, label: string, lock: RegistryLock): num
     }
   }
 
-  deps.io.out(`✓ revoked "${label}" — it loses all access on its next request (no restart needed).`);
-  if (next.devices.length === 0) {
+  const required = envBool("COLLIE_PAIRING", true, deps.ctx.env);
+  deps.io.out(required
+    ? `✓ revoked "${label}": it loses paired access on its next request (no restart needed).`
+    : `✓ revoked "${label}": its credential is removed, but browser access remains open past the remaining gates while pairing is OFF.`);
+  if (required && next.devices.length === 0) {
     deps.io.out("  That was the last paired device: Collie now answers no phone or browser. Run `collie pair` to pair one.");
   }
   return EXIT.OK;

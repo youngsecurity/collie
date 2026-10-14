@@ -143,6 +143,7 @@ export const en = {
 
   // --- settings.devices ---
   "settings.devices.title": "Paired devices",
+  "settings.devices.description.disabled": "Warning: pairing is disabled on this host. Callers passing the remaining gates can read transcripts and control terminals without a token. Devices are retained; offline session caching is off.",
   "settings.devices.description.enforced": "Every read and every write needs a paired device.",
   "settings.devices.pairedAs": "This device is paired as {device}.",
   "settings.devices.loadError": "Couldn’t load the paired devices from the bridge.",
@@ -158,6 +159,7 @@ export const en = {
   "settings.devices.revoke": "Revoke",
   "settings.devices.revokeAria": "Revoke {label}",
   "settings.devices.confirm.self": "Unpair this phone? Its drafts, saved pane text and notifications are cleared here. Your settings stay.",
+  "settings.devices.confirm.otherDisabled": "Revoke {label}'s credential? Access remains available while pairing is disabled.",
   "settings.devices.confirm.other": "Revoke {label}? It loses access until it is paired again.",
   "settings.devices.pair.title": "Pair this device",
   "settings.devices.pair.hint":
@@ -204,6 +206,7 @@ export const en = {
   "settings.connection.bridge.offline": "Herdr offline",
   "settings.connection.bridge.connecting": "Connecting…",
   "settings.connection.bridge.notPaired": "Reachable, not paired",
+  "settings.connection.device.pairingOff": "Pairing off on this host",
   "settings.connection.device.notPaired": "Enforced, this device is not paired",
   "settings.connection.device.paired": "Enforced, this device is paired",
   "settings.connection.device.fullAccessNamed": "Full access · {device}",

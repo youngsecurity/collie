@@ -15,7 +15,7 @@ import {
 import { markDead as markPaneDead, markLive as markPaneLive } from "./liveness";
 import { abortSignalAfter, abortSignalAny } from "./env";
 import { asJsonString, parseJsonObject, type JsonObject } from "./json";
-import { authHeader, clearNotPaired, EXPIRED_BODY, markExpired, markNotPaired, NOT_PAIRED_BODY } from "./pairing";
+import { authHeader, clearNotPaired, EXPIRED_BODY, markExpired, markNotPaired, NOT_PAIRED_BODY, observePairingPolicy } from "./pairing";
 import { pairingRefused } from "./wipe";
 import { fileVersionOf } from "./file-image-cache";
 import { isLead, normalizeScope, paneScopeKey, type Scope } from "./scope";
@@ -362,7 +362,16 @@ function normaliseProxyRedirect(res: Response): Response {
 async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
   // Every caller spells a root-absolute `/api/…`; the mount is applied here, once (ADR 0052).
   try {
-    return normaliseProxyRedirect(await fetch(mounted(path), { ...init, redirect: "manual" }));
+    const res = normaliseProxyRedirect(await fetch(mounted(path), { ...init, redirect: "manual" }));
+    // Health and enrolment are open even when pairing is required, so neither proves admission.
+    const route = path.split("?")[0];
+    const policy = res.headers.get("X-Collie-Pairing");
+    // A protected 403 can report re-enabled pairing even when this device is no longer admitted.
+    // A registry outage can still report off. Refusal and wipe handling remain separate below.
+    if ((res.ok || res.status === 304 || res.status === 403 || policy === "off") && route !== "/api/health" && route !== "/api/pair") {
+      observePairingPolicy(policy);
+    }
+    return res;
   } catch (error) {
     throw deadlineError(error, init?.signal);
   }

@@ -95,7 +95,7 @@ The config file groups every setting under a `[section]`. The environment name o
 | `bridge` | poll cadence, how many lines are read, where state lives |
 | `network` | the port, the bind address, allowed hosts and origins |
 | `mux` | which multiplexer this collie mirrors, and where it lives |
-| `access` | the Tailscale identity gate, the device header, the audit trail, the secret mask |
+| `access` | the Tailscale identity gate, browser pairing, the device header, the audit trail, the secret mask |
 | `push` | the three Web Push (VAPID) values |
 | `uploads` | the attachment size cap and the extra text types accepted |
 | `journal` | where each harness keeps its own session log |
@@ -534,6 +534,52 @@ folder or the first star.
 In a [crew](crew.md), each machine keeps the folders that exist on it, and the sheet shows the list
 of the machine you picked. A machine that runs an older Collie has no list, and the sheet then shows
 none for it.
+
+## Optional browser pairing
+
+Pairing is required by default, even with an empty or missing device registry.
+
+```bash
+# In the host's .env, only for an intentionally trusted deployment
+COLLIE_PAIRING=off
+```
+
+Or use the boolean setting in `config.toml`:
+
+```toml
+[access]
+pairing = false
+```
+
+| setting | accepted values | behavior |
+| --- | --- | --- |
+| `COLLIE_PAIRING` | `off`, `0`, `false`, `no` | Explicitly disables browser token enforcement. Case-insensitive; surrounding whitespace is ignored. |
+| `COLLIE_PAIRING` | `on`, `1`, `true`, `yes` | Requires pairing for reads and writes. |
+| `COLLIE_PAIRING` | unset or empty | Defaults on when no file opts out. An explicitly empty environment value overrides a file with the secure default. |
+| `COLLIE_PAIRING` | any other value | Warns and requires pairing. |
+| `[access] pairing` | TOML `true` or `false` only | Strings and numbers are invalid, reported by `collie config check`, and force the secure default rather than inheriting a lower file's opt-out. |
+
+Environment overrides TOML. Apply changes by restarting: on a Herdr-managed install, run
+`herdr plugin action invoke restart --plugin herdr.collie`; on a binary install, `collie restart`.
+`collie config show`, `collie status` and `collie doctor` report the resolved host configuration;
+the API and Settings report the running bridge's policy.
+
+> **Warning.** Off permits callers that pass the remaining gates to read transcripts and control
+> terminals without a token, including other local users able to reach the port. Revoking a device
+> does not remove that tokenless access. Keep a trusted, restricted front door.
+
+Host, Origin, TCP-peer, trusted-user and Cloudflare Access checks remain in force. The device-header
+allowlist still guards writes and Files reads; filesystem containment and masking are unchanged.
+Crew and standby credentials remain independent. Off does not delete devices or credentials;
+`COLLIE_PAIRING=on` and a restart restore checks against the same registry, including expiry.
+
+Missing, stale and expired browser tokens do not block live use while off.
+
+The browser does not write new offline session records in this mode, even if
+it still holds a token. After re-enabling pairing, reload the page to resume
+offline caching. Existing records keep their expiry and wipe rules.
+
+See [Security](security.md#disable-browser-pairing-on-a-trusted-host).
 
 ## Secret masking
 

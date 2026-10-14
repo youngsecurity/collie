@@ -1593,7 +1593,11 @@ describe("the status banner", () => {
   // peer, which has no door of its own, never shows the row.
   test("names `collie pair` while no device is paired, and drops the row once one is", async () => {
     const fresh = (await statusBanner(harness({ ready: true }).deps)).join("\n");
-    expect(fresh).toContain("pairing   no device paired yet — run `collie pair` to pair your phone");
+    expect(fresh).toContain("pairing   no device paired yet: run `collie pair` to pair your phone");
+    const off = (await statusBanner(harness({ env: { COLLIE_PAIRING: "off" } }).deps)).join("\n");
+    expect(off).toContain("WARNING: OFF in host config");
+    expect(off).toContain("remote shell access");
+    expect(off).not.toContain("run `collie pair`");
 
     const registry = JSON.stringify({
       devices: [{ label: "phone", tokenHash: "a".repeat(64), createdAt: 1, lastSeenAt: 1 }],
@@ -2000,7 +2004,7 @@ describe("restart off Windows, golden", () => {
     "    local     http://127.0.0.1:8787",
     "    tailnet   http://127.0.0.1:8787 (Tailscale name unavailable)",
     // These fakes hold no paired device, so the banner names `collie pair` (ADR 0086).
-    "    pairing   no device paired yet — run `collie pair` to pair your phone",
+    "    pairing   no device paired yet: run `collie pair` to pair your phone",
     "",
   ];
   const head = ["took COLLIE_MUX=herdr from your environment; wrote COLLIE_MUX=herdr to /cfg/.env", "bridge stopped", "building web UI (first run)…"];

@@ -267,6 +267,19 @@ export function withHsts(handler: (req: Request) => Promise<Response>): (req: Re
   };
 }
 
+/** Report the browser policy even on reads, so anonymous live content never enters the offline store. */
+export function withPairingPolicy(
+  handler: (req: Request) => Promise<Response>,
+  cfg: Pick<Config, "pairing" | "basePath">,
+): (req: Request) => Promise<Response> {
+  return async (req) => {
+    const res = await handler(req);
+    const path = stripMount(new URL(req.url).pathname, cfg.basePath);
+    if (path.startsWith("/api/")) res.headers.set("X-Collie-Pairing", cfg.pairing === false ? "off" : "on");
+    return res;
+  };
+}
+
 // Loopback Host/Origin forms (with an optional port). A loopback Host is trusted only when the
 // socket peer is also loopback: Host is client-written and cannot establish where a client sits.
 const LOOPBACK_HOST = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/;
@@ -955,10 +968,10 @@ export function startServer(opts: {
    */
   peerNotifier?: { applyPrefs(): void; tags(): string[] };
   /**
-   * Device pairing (bridge/pairing.ts). Always supplied by index.ts — it is not an opt-in feature
-   * flag: the store reads its own registry off disk, and pairing is always on (ADR 0086), so an empty
-   * registry refuses every `/api/*` route but health and pair. Optional here only so the existing
-   * tests can build a server without it; a server without a store checks no token.
+   * Device pairing (bridge/pairing.ts). Always supplied by index.ts, even with the host opt-out.
+   * The store retains credentials independently of browser policy (ADR 0091). With the default
+   * policy, an empty registry refuses every `/api/*` route but health and pair. Optional here only
+   * so existing tests can build a server without it; a server without a store checks no token.
    *
    * It is deliberately NOT threaded into the crew surface. `/crew/v1/*` is admitted by pinned mutual
    * TLS plus the crew secret and shares nothing with a browser credential (CREW_PROTOCOL.md §6,
@@ -1719,7 +1732,7 @@ export function startServer(opts: {
     // certificate never reaches `fetch` at all, so nothing below has to defend against it.
     tls: listenerTls,
 
-    fetch: withHsts(async (req: Request) => {
+    fetch: withHsts(withPairingPolicy(async (req: Request) => {
       const url = new URL(req.url);
       // A mounted collie (`COLLIE_BASE_PATH`, ADR 0052) is normally reached through a proxy that
       // strips the mount before it forwards — `tailscale serve` does, `http.StripPrefix` on the
@@ -2621,16 +2634,7 @@ export function startServer(opts: {
         const token = bearerToken(req.headers);
         let body: DevicesResponseBody;
         try {
-          const current = pairing.resolve(token)?.label ?? null;
-          // `currentExpired` lets a cold open tell "your pairing expired" from "you never paired"
-          // without first having to fail a write. It says nothing the caller's own token did not
-          // already prove: it is true only for the holder of that expired token.
-          body = {
-            enforced: pairing.enforced(),
-            current,
-            currentExpired: current === null && pairing.expired(token),
-            devices: toDeviceWire(pairing.registry(), current),
-          };
+          body = devicesResponseBody(pairing, cfg, token);
         } catch {
           // The registry is unreadable. The gate answers that with a 503 already, but the host's CLI
           // is admitted without the registry being asked, and a file can tear between the two reads.
@@ -2673,9 +2677,7 @@ export function startServer(opts: {
         audit.record({ action: "device.revoke", device: whois(req).device, detail: { label } });
         let after: DevicesResponseBody;
         try {
-          const current = pairing.resolve(bearerToken(req.headers))?.label ?? null;
-          // A revoke is a write, so the caller's own token just passed the gate: it is not expired.
-          after = { enforced: pairing.enforced(), current, currentExpired: false, devices: toDeviceWire(pairing.registry(), current) };
+          after = devicesResponseBody(pairing, cfg, bearerToken(req.headers));
         } catch {
           return pairingUnavailable();
         }
@@ -2702,7 +2704,7 @@ export function startServer(opts: {
 
       // ── Static PWA (with SPA fallback) ───────────────────────────────────
       return serveStatic(pathname, req.headers.get("accept-encoding"), WEB_DIR, cfg.basePath);
-    }),
+    }, cfg)),
   });
 
   console.log(`[bridge] listening on http://${cfg.host}:${cfg.port}  (poll ${cfg.pollMs}ms)`);
@@ -2733,6 +2735,12 @@ export function startServer(opts: {
  */
 export function startupWarnings(cfg: Config): string[] {
   const warnings: string[] = [];
+  const pairingCheck = cfg.pairing === false
+    ? "has no pairing-token check"
+    : "is checked by its pairing token alone";
+  if (cfg.pairing === false) {
+    warnings.push("[bridge] WARNING: browser pairing is OFF. Callers passing the remaining gates can read transcripts and use remote shell access without a token. Paired devices are retained; restart with COLLIE_PAIRING=on to require them again.");
+  }
   if (!isLoopbackBindHost(cfg.host)) {
     warnings.push(
       `[bridge] WARNING: bound to ${cfg.host} via COLLIE_ALLOW_NON_LOOPBACK_BIND — the identity, device and same-origin gates are all client-settable on a wide bind, and the peer-address check is off. Whatever fronts this port is now the only control.`,
@@ -2753,11 +2761,11 @@ export function startupWarnings(cfg: Config): string[] {
     }
   } else if (!cfg.trustedUser) {
     warnings.push(
-      `[bridge] WARNING: COLLIE_TRUSTED_USER is empty — any tailnet device/user that reaches the bridge is checked by its pairing token alone. Set it to your tailnet login (see README → Variant A).`,
+      `[bridge] WARNING: COLLIE_TRUSTED_USER is empty: any tailnet device/user that reaches the bridge ${pairingCheck}. Set it to your tailnet login (see README → Variant A).`,
     );
   } else if (cfg.trustedUserOptional) {
     warnings.push(
-      `[bridge] WARNING: COLLIE_TRUSTED_USER_OPTIONAL=1 — a request with no Tailscale-User-Login is accepted, so any TAGGED tailnet node (which serve injects no identity for) is checked by its pairing token alone. Unset it outside host-local development.`,
+      `[bridge] WARNING: COLLIE_TRUSTED_USER_OPTIONAL=1: a request with no Tailscale-User-Login is accepted, so any TAGGED tailnet node (which serve injects no identity for) ${pairingCheck}. Unset it outside host-local development.`,
     );
   }
   if (cfg.allowAnyHost) {
@@ -5162,8 +5170,8 @@ export function isHostAllowed(
 
 /**
  * Combined API gate used by every handler. A request must always pass {@link checkAccess}
- * (same-origin / CSRF + optional Tailscale identity) and, at EVERY level, the pairing credential
- * (M46 specs 03 and 06, ADR 0086: reads need the pairing token, and pairing is always on). A
+ * (same-origin / CSRF + optional Tailscale identity). Unless the host explicitly opts out (ADR 0091),
+ * every level also needs the pairing credential (ADR 0086). A
  * `"write"` request — one that types into a terminal or creates panes — must additionally come from
  * an authorised device (see {@link deviceAuth}). A `"device-read"` (the Files view, ADR 0083) needs
  * that header factor too, but is checked for access as a read. A plain `"read"` does not: the header
@@ -5198,7 +5206,8 @@ export function guard(
   // are fixed in completely different places. "expired" is a third (M46 spec 01): the credential is
   // real and was the operator's own, but its lifetime ran out — the phone says "pair again", not
   // "pair", and the operator knows no-one guessed at a token.
-  if (pairing !== undefined) {
+  // Only the browser token check is optional. Access and device-header checks above still run.
+  if (cfg.pairing !== false && pairing !== undefined) {
     const token = bearerToken(req.headers);
     // The host's own CLI (`<stateDir>/local-secret`, bridge/local-secret.ts): a READ credential and
     // nothing else, from this host through no proxy only (`browserPairingGate`) — `local` answers
@@ -5378,6 +5387,22 @@ interface DevicesResponseBody {
   devices: PairedDeviceWire[];
 }
 
+/** Registry metadata and browser enforcement are separate facts, for list and revoke alike. */
+export function devicesResponseBody(
+  store: PairingStore,
+  cfg: Pick<Config, "pairing">,
+  token: string | null,
+): DevicesResponseBody {
+  const enforced = cfg.pairing !== false;
+  const current = enforced ? store.resolve(token)?.label ?? null : null;
+  return {
+    enforced,
+    current,
+    currentExpired: enforced && current === null && store.expired(token),
+    devices: toDeviceWire(store.registry(), current),
+  };
+}
+
 /**
  * The `/api/*` routes that answer without the pairing credential, and nothing else (ADR 0086):
  * `GET`/`HEAD /api/health`, which the updater and monitors ask before anyone has a token, and
@@ -5425,8 +5450,8 @@ export function apiFrontGate(
  * the request path. Named here rather than importing the class so the gate wiring below states
  * exactly what it needs — and so a test can pass a two-line object.
  *
- * There is no "is pairing on?" question any more: it always is (ADR 0086), so a gate that is present
- * is a gate that is enforced. Only a server built without a store at all (a unit test's) skips it.
+ * The browser's Config owns the opt-out (ADR 0091), never this store-facing interface. Crew and
+ * standby credential checks must not inherit the browser policy.
  */
 export interface PairingGate {
   /**
@@ -5455,12 +5480,13 @@ export interface PairingGate {
  *
  * A pairing label is preferred over the header name because it is the stronger claim: the label was
  * chosen by someone holding a code the operator read off a terminal, whereas the header is whatever
- * the proxy asserts. Pairing is always on (ADR 0086), so with a store present this always reports
- * `enforced: true`. Without one (a unit test's server) it is exactly what {@link deviceAuth} says.
+ * the proxy asserts. With pairing required this reports `enforced: true`. With the explicit
+ * host opt-out (ADR 0091), attribution and write permission come only from {@link deviceAuth}.
  */
 export function requestDevice(req: Request, cfg: Config, pairing?: PairingGate): DeviceAuth {
   const header = deviceAuth(req, cfg);
-  if (pairing === undefined) return header;
+  // Ignored credentials must not name or restrict an anonymous caller, even if stale or expired.
+  if (cfg.pairing === false || pairing === undefined) return header;
   const token = bearerToken(req.headers);
   // The host's CLI reads under the synthetic label `local`, and is never authorised to write.
   if (pairing.local?.(token, req) === true) return { enforced: true, device: LOCAL_LABEL, authorized: false };

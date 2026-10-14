@@ -29,6 +29,7 @@ const KEYS = [
   "COLLIE_TRANSCRIPT",
   "COLLIE_TRANSCRIPT_ROOT",
   "COLLIE_REDACT",
+  "COLLIE_PAIRING",
   "COLLIE_CODEX_ROOT",
   "COLLIE_PI_ROOT",
   "COLLIE_OPENCODE_ROOT",
@@ -63,6 +64,17 @@ const KEYS = [
   "HERDR_PLUGIN_CONFIG_DIR",
   "COLLIE_HERDR_DIAL",
 ];
+
+describe("browser pairing configuration", () => {
+  test("defaults on, and only explicit boolean false spellings opt out", () => {
+    for (const raw of [undefined, "", "  ", "on", "1", "true", "yes", "disabled", "of", "2"]) {
+      expect(loadConfig({ COLLIE_PAIRING: raw }).pairing).toBe(true);
+    }
+    for (const raw of ["off", "0", "false", "no", " OFF ", "False"]) {
+      expect(loadConfig({ COLLIE_PAIRING: raw }).pairing).toBe(false);
+    }
+  });
+});
 
 let saved: Record<string, string | undefined>;
 

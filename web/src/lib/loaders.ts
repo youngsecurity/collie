@@ -42,7 +42,7 @@ import { detectNoEchoPrompt } from "@/lib/no-echo";
 import { markPollResult } from "@/lib/poll-intent";
 import { shareEqual } from "@/lib/share-equal";
 import { prefetchPane, takePanePrefetch } from "@/lib/pane-prefetch";
-import { clearNotPaired, isNotPaired, markNotPaired, rememberPairingExpiry } from "@/lib/pairing";
+import { clearNotPaired, isBrowserPairingEnforced, isNotPaired, markNotPaired, rememberPairingExpiry } from "@/lib/pairing";
 import { onWipe, pairingRefused, wipeDevice } from "@/lib/wipe";
 import {
   internScope,
@@ -798,7 +798,7 @@ export interface DevicesData {
  * What a route renders when the loader did not run or threw. Exported because two callers need the
  * same fallback: the Settings System page's `useLoaderData()` default, and its tests.
  */
-export const EMPTY_DEVICES: DevicesData = { enforced: false, current: null, devices: [], error: false };
+export const EMPTY_DEVICES: DevicesData = { enforced: true, current: null, devices: [], error: false };
 
 export async function devicesLoader({ request }: { request?: Request } = {}): Promise<DevicesData> {
   try {
@@ -824,7 +824,7 @@ export async function devicesLoader({ request }: { request?: Request } = {}): Pr
     // pair form. The latch was already set where the refusal was read (lib/api.ts).
     if (isPairingRefusal(e)) return { enforced: true, current: null, devices: [], error: false };
     // Any other failed read says nothing about pairing, so the latch is left exactly as it was.
-    return { enforced: false, current: null, devices: [], error: true };
+    return { enforced: isBrowserPairingEnforced(), current: null, devices: [], error: true };
   }
 }
 

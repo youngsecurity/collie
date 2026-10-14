@@ -1,4 +1,5 @@
 import { dirname } from "node:path";
+import { envBool } from "../bridge/config.ts";
 
 import {
   CONFIG_SECTIONS,
@@ -81,6 +82,8 @@ const SOURCES: readonly ConfigSource[] = ["default", "file:home", "file:instance
  * a name shaped like a credential.
  */
 function shownValue(setting: ConfigSetting, deps: ConfigDeps): string {
+  // A typo must report the secure effective policy, not look like an opt-out.
+  if (setting.env === "COLLIE_PAIRING") return String(envBool("COLLIE_PAIRING", true, deps.ctx.env));
   const raw = deps.ctx.env[setting.env] ?? (setting.alias === undefined ? undefined : deps.ctx.env[setting.alias]);
   if (setting.kind === "secret") return raw === undefined || raw === "" ? "unset" : "set";
   if (raw !== undefined && raw !== "") return raw;
