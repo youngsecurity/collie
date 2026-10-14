@@ -94,7 +94,7 @@ export const tr: Dictionary = {
   "settings.snooze.preset.hour1": "1sa",
   "settings.snooze.preset.hour4": "4sa",
   "settings.devices.title": "Eşlenen cihazlar",
-  "settings.devices.description.disabled": "Uyarı: bu sunucuda eşleme devre dışı. Diğer denetimleri geçenler belirteç olmadan dökümleri okuyabilir ve terminalleri kontrol edebilir. Cihazlar korunur; çevrimdışı oturum önbelleği kapalıdır.",
+  "settings.devices.description.disabled": "Uyarı: bu sunucuda eşleme devre dışı. Diğer denetimleri geçenler belirteç olmadan dökümleri okuyabilir ve terminalleri kontrol edebilir. Eşlenen cihaz kayıtları saklanır; çevrimdışı oturum önbelleği kapalıdır.",
   "settings.devices.description.enforced": "Her okuma ve her yazma işlemi eşlenmiş bir cihaz gerektirir.",
   "settings.devices.pairedAs": "Bu cihaz {device} olarak eşlendi.",
   "settings.devices.loadError": "Eşlenen cihazlar bridge üzerinden yüklenemedi.",

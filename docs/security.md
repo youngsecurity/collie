@@ -92,8 +92,14 @@ door's pairing credentials, do not become optional.
 Off ignores missing, stale and expired browser tokens for live admission and audit attribution.
 Attribution uses only the configured device header, or no device label. The registry remains intact,
 including hashes and expiries; the device list still shows which token belongs to a retained device.
-Set `COLLIE_PAIRING=on` and restart to require those same credentials again. A registry failure
-still prevents listing or managing devices, but does not block normal tokenless live use.
+Set `COLLIE_PAIRING=on` and restart to require those same credentials again.
+
+A registry failure returns `503 pairing unavailable` from browser/API device
+listing and management. It does not block normal tokenless live use.
+
+The operator CLI treats unreadable or invalid-JSON registries as empty:
+`collie devices list` succeeds with no devices. Revocation and expiry changes
+cannot match a device label in that empty result.
 
 The API reports `enforced: false` in device-list and revoke responses and `X-Collie-Pairing: off`
 on API responses. Settings warns instead of requiring pairing; scanning a host-issued QR code

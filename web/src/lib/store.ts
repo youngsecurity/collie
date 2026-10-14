@@ -714,6 +714,7 @@ export function getRecord(kind: RecordKind, key: string, options: GetOptions = {
   if (!sessionCacheAllowed()) return Promise.resolve(null);
   const inst = instance();
   return enqueue(async (backend) => {
+    if (!sessionCacheAllowed()) return null;
     const id = recordId(inst, kind, key);
     const at = now();
     const found = await backend.run(false, async (tx) => {
@@ -727,7 +728,7 @@ export function getRecord(kind: RecordKind, key: string, options: GetOptions = {
       lastWrites.delete(id);
       await backend.run(true, async (tx) => tx.remove(id));
     }
-    return found.record;
+    return sessionCacheAllowed() ? found.record : null;
   }, null);
 }
 
@@ -736,8 +737,9 @@ export function listRecords(kind: RecordKind, options: GetOptions = {}): Promise
   if (!sessionCacheAllowed()) return Promise.resolve([]);
   const inst = instance();
   return enqueue(async (backend) => {
+    if (!sessionCacheAllowed()) return [];
     const at = now();
-    return backend.run(false, async (tx) => {
+    const records = await backend.run(false, async (tx) => {
       const metas = (await tx.metas())
         .filter((m) => m.instance === inst && m.kind === kind && isLive(m, at))
         .toSorted((a, b) => byAge(b, a));
@@ -749,6 +751,7 @@ export function listRecords(kind: RecordKind, options: GetOptions = {}): Promise
       }
       return out;
     });
+    return sessionCacheAllowed() ? records : [];
   }, []);
 }
 
