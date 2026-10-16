@@ -2,6 +2,7 @@ import { type Host } from "../bridge/host.ts";
 import { answersThisBuild } from "../bridge/version.ts";
 import {
   inFlight,
+  LOCK_MAX_HOLD_MS,
   parseUpdateLock,
   parseUpdateRun,
   resolveUpdateRun,
@@ -207,14 +208,16 @@ export function readRun(
 
 /** Whether a run may start, and the sentence explaining a refusal. */
 export type LockVerdict =
-  /** `stale` is the dead lock this verdict judged breakable, or null when there was none at all. */
+  /** `stale` is the expired lock this verdict judged breakable, or null when there was none. */
   | { readonly ok: true; readonly stale: UpdateLock | null }
   | { readonly ok: false; readonly reason: string; readonly held: UpdateLock };
 
 /**
  * May a new run start?
  *
- * A lock whose pid is alive holds, whatever its age — a long build is not a stuck one. A lock older
+ * A lock whose pid is alive holds while it is younger than {@link LOCK_MAX_HOLD_MS} — a long build is
+ * not a stuck one. Past that bound it does not hold even with a live pid: a build runs minutes, so an
+ * hour-old live pid is a pid the machine reused after a crash or reboot, not an update. A lock older
  * than ten minutes whose pid is gone does not hold: it is the crash, the kill or the reboot, and the
  * same single rule `bridge/update-run.ts` reads a stale marker with. A YOUNG lock with a dead pid
  * still holds, so a retry cannot race the tail of a run that is only just finishing.
@@ -222,6 +225,7 @@ export type LockVerdict =
 export function lockVerdict(held: UpdateLock | null, now: number, alive: boolean, staleAfterMs: number): LockVerdict {
   if (held === null) return { ok: true, stale: null };
   if (!alive && now - held.at >= staleAfterMs) return { ok: true, stale: held };
+  if (now - held.at >= LOCK_MAX_HOLD_MS) return { ok: true, stale: held };
   const who = alive ? `pid ${held.pid} is still running it` : `pid ${held.pid} took it`;
   return {
     ok: false,
@@ -244,7 +248,7 @@ export function readLock(files: Files, stateDir: string): UpdateLock | null {
  * Two shapes are not exclusive, and each is named so it cannot be reached by accident:
  *   • `inheritFrom` — the detached runner taking over the lock the staging process wrote for it
  *     (`--handoff <pid>`). The file on disk names that pid, and this process replaces it with its own.
- *   • `breakable` — the stale lock the verdict judged dead. It is removed first, and only if it is
+ *   • `breakable`: the expired lock the verdict judged reclaimable. It is removed first, and only if it is
  *     still the same lock (same pid, same stamp); a lock that changed underneath is a live one.
  */
 export function takeLock(

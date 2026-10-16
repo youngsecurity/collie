@@ -26,7 +26,7 @@ import {
 } from "../bridge/update.ts";
 import { HERDR_MUX } from "../bridge/mux/herdr/adapter.ts";
 import { STAGING_LOG_LINES, STAGING_LOG_PREFIX, stagingLogPath } from "../bridge/staging-log.ts";
-import { inFlight, parseUpdateRun, STALE_AFTER_MS, type UpdateLock, type UpdateRun, updateRunPath } from "../bridge/update-run.ts";
+import { inFlight, parseUpdateRun, STALE_AFTER_MS, type UpdateLock, type UpdateRun, updateLockPath, updateRunPath } from "../bridge/update-run.ts";
 import { manifestMinHerdrFrom, manifestVersionFrom, readBuildInfo } from "../bridge/version.ts";
 import { type BuildDeps, cmdBuild } from "./build.ts";
 import { logFilePath, systemdUserReachable } from "./lifecycle.ts";
@@ -1262,7 +1262,6 @@ export async function cmdUpdate(deps: UpdateDeps, args: readonly string[] = []):
   // Before any path fetches anything: a Herdr below the manifest's floor is refused up front, so the
   // checkout never advances onto code its Herdr cannot run the actions of.
   if (!requireHerdrMinimum(deps)) return EXIT.FAIL;
-  if (install.kind === "binary") return await withStagingRecord(deps, () => updateBinary(deps, args));
   if (install.kind === "packaged") {
     // Not a failure to diagnose — a boundary to respect (ADR 0035). The sentence is the shared one
     // the preflight's `package` check and `doctor`'s install line print, so a reword reaches every
@@ -1283,7 +1282,73 @@ export async function cmdUpdate(deps: UpdateDeps, args: readonly string[] = []):
     deps.io.err("       with a `current` symlink beside it; see docs/install.md.");
     return EXIT.FAIL;
   }
+  // ONE UPDATE AT A TIME ON THIS MACHINE, asked before any of the three paths below begins. On
+  // 2026-10-14 two detached updaters for the same run built into the same tree and broke each other's
+  // rename. The in-place path took no lock at all and wrote no record until its last line, and the
+  // staged and binary paths take the lock only at `handOff`, at the END of staging; this refusal is
+  // what makes the second runner exit at once instead of building beside the first.
+  const busy = refuseIfUpdateRunning(deps);
+  if (busy !== null) return busy;
+  if (install.kind === "binary") return await withStagingRecord(deps, () => updateBinary(deps, args));
   if (staged && layout !== null) return await withStagingRecord(deps, () => updateStagedCheckout(deps, layout, args));
+  // The in-place path holds the lock for its whole run, because nothing else on this path writes
+  // a record until the end. The `_apply-update` child is a separate process and neither checks nor
+  // takes it.
+  // Preserve the fork's exclusive acquisition: a read-back after an overwriting write cannot
+  // serialize two starters. Reclaim only the exact expired lock this verdict inspected.
+  const verdict = updateLockVerdict(deps);
+  if (!verdict.ok) return refuseOnLock(deps, verdict.held, verdict.reason);
+  if (!takeLock(deps.files, deps.ctx.stateDir, deps.pid, deps.now(), { breakable: verdict.stale })) {
+    deps.io.err("error: another update is in flight. It took the lock just now; this update does not start a second one.");
+    return EXIT.FAIL;
+  }
+  try {
+    return await updateInPlace(deps, args);
+  } finally {
+    if (readLock(deps.files, deps.ctx.stateDir)?.pid === deps.pid) releaseLock(deps.files, deps.ctx.stateDir);
+  }
+}
+
+/**
+ * Refuse when another update is already running on this machine, and say so. `null` means the way
+ * is clear.
+ *
+ * Two questions, the two `beginStaging` asks: the lock, and a live in-flight record another process
+ * wrote. The lock alone is not enough, because the staged and binary paths take it only at the end
+ * of staging, and the record alone is not enough, because the in-place path writes it only at the
+ * end of its run.
+ */
+function refuseIfUpdateRunning(deps: UpdateDeps): number | null {
+  const verdict = updateLockVerdict(deps);
+  if (!verdict.ok) return refuseOnLock(deps, verdict.held, verdict.reason);
+  const live = currentRun(deps);
+  if (live !== null && live.pid !== deps.pid && inFlight(live.state)) {
+    deps.io.err(
+      `error: another update is in flight (pid ${live.pid}, ${live.state}). This update does not start a second one. Wait for it to finish.`,
+    );
+    return EXIT.FAIL;
+  }
+  return null;
+}
+
+/** The refusal for a lock another process holds. A dead holder says when the lock clears. */
+function refuseOnLock(deps: UpdateDeps, held: UpdateLock, reason: string): number {
+  const alive = deps.exec.processCommand(held.pid) !== null;
+  const next = alive
+    ? "Wait for it to finish."
+    : `If that update is gone, the lock clears at ${clockTime(held.at + STALE_AFTER_MS)}, or remove ${updateLockPath(deps.ctx.stateDir)}.`;
+  deps.io.err(`error: ${reason}. This update does not start a second one. ${next}`);
+  return EXIT.FAIL;
+}
+
+/** HH:MM on this machine's clock. */
+function clockTime(ms: number): string {
+  const d = new Date(ms);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+/** The in-place path: advance the checkout where it stands, then build and restart from it. */
+async function updateInPlace(deps: UpdateDeps, args: readonly string[]): Promise<number> {
   // Read BEFORE the advance rewrites the manifest — this is the version being left behind, and it is
   // the only moment it is still on disk. `handOff`'s callers get theirs from the `versions/` layout;
   // an in-place checkout has no previous directory to name, so the manifest is the whole record of it.

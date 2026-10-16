@@ -140,7 +140,13 @@ async function renderBand(update: UpdateInfo | undefined) {
   // A data router resolves its loader before the element mounts, so the first synchronous paint is
   // empty. Flush it, the way every other data-router test here reaches the rendered route.
   await act(async () => {});
-  return result;
+  return {
+    ...result,
+    async snapshot(next: UpdateInfo) {
+      update = next;
+      await act(async () => { await router.revalidate(); });
+    },
+  };
 }
 
 /** The band's collapsing row. Absent entirely until something has registered at least once. */
@@ -352,6 +358,109 @@ describe("a peer failure navigates too, and truncates instead of clipping", () =
     await user.click(screen.getByRole("button", { name: "Hide this notice" }));
     expect(dismissUpdate).toHaveBeenCalledWith("1.5.0", "crew");
     expect(screen.queryByText("the updates page")).not.toBeInTheDocument();
+  });
+
+  // 1.21.1: the case above only proved the POST went out. The row itself never went away, because
+  // `ribbonView` never read the crew close. Seen on the release lane on 2026-10-13.
+  it("the ✕ puts the row down on the tap, and it stays down on the next read", async () => {
+    const user = userEvent.setup();
+    const peers: UpdatePeerLeg[] = [{ name: "minibuch", state: "unreachable", reason: "minibuch was not reached" }];
+    const failed = info({ releaseAvailable: false, run: run("done", { peers, settledAt: Date.now() - 60_000 }) });
+    const { container } = await renderBand(failed);
+    await user.click(screen.getByRole("button", { name: "Hide this notice" }));
+    await settleBand();
+    expect(band(container)).toBeNull();
+  });
+
+  it("shows a later same-version failure after acknowledging a dismissal without remounting", async () => {
+    const user = userEvent.setup();
+    const now = Date.now();
+    const peers: UpdatePeerLeg[] = [{ name: "minibuch", state: "unreachable", reason: "not reached" }];
+    const failed = info({
+      releaseAvailable: false,
+      run: run("done", { peers, settledAt: now - 60_000 }),
+    });
+    const { container, snapshot } = await renderBand(failed);
+    await user.click(screen.getByRole("button", { name: "Hide this notice" }));
+    await settleBand();
+    expect(band(container)).toBeNull();
+
+    const acknowledged = { ...failed, dismissedCrewVersion: "1.5.0", dismissedCrewAt: now - 30_000 };
+    await snapshot(acknowledged);
+    expect(band(container)).toBeNull();
+    await snapshot({
+      ...acknowledged,
+      run: run("done", { peers, startedAt: now - 20_000, settledAt: now - 10_000 }),
+    });
+    expect(screen.getByText("Could not update minibuch: not reached. See Updates.")).toBeInTheDocument();
+  });
+
+  it.each(["pending", "rejected"])("a %s dismissal cannot hide a later peers-only retry", async (outcome) => {
+    vi.mocked(dismissUpdate).mockImplementationOnce(() => outcome === "pending"
+      ? new Promise<UpdateInfo>(() => {})
+      : Promise.reject(new Error("offline")));
+    const user = userEvent.setup();
+    const now = Date.now();
+    const peers: UpdatePeerLeg[] = [{ name: "minibuch", state: "unreachable", reason: "not reached" }];
+    const failed = info({
+      releaseAvailable: false,
+      peers,
+      settledAt: now - 60_000,
+      dismissedCrewVersion: "1.5.0",
+      dismissedCrewAt: now - 90_000,
+    });
+    const { container, snapshot } = await renderBand(failed);
+    await user.click(screen.getByRole("button", { name: "Hide this notice" }));
+    await settleBand();
+    expect(band(container)).toBeNull();
+    // An ordinary poll is neither acknowledgement nor a new run.
+    await snapshot({ ...failed });
+    expect(band(container)).toBeNull();
+    await snapshot({ ...failed, settledAt: now - 10_000 });
+    expect(screen.getByText("Could not update minibuch: not reached. See Updates.")).toBeInTheDocument();
+  });
+
+  it.each(["resolved", "rejected"])("a late %s request cannot undo a concurrent acknowledgement or newer close", async (outcome) => {
+    let finishRequest = () => {};
+    vi.mocked(dismissUpdate).mockImplementationOnce(() => new Promise<UpdateInfo>((resolve, reject) => {
+      finishRequest = () => outcome === "resolved" ? resolve(info()) : reject(new Error("offline"));
+    }));
+    const user = userEvent.setup();
+    const now = Date.now();
+    const peers: UpdatePeerLeg[] = [{ name: "minibuch", state: "unreachable", reason: "not reached" }];
+    const failed = info({ releaseAvailable: false, peers, settledAt: now - 60_000 });
+    const { container, snapshot } = await renderBand(failed);
+    await user.click(screen.getByRole("button", { name: "Hide this notice" }));
+    await settleBand();
+    expect(band(container)).toBeNull();
+
+    // One poll can acknowledge the close AND report the next failed retry before the POST returns.
+    const retried = {
+      ...failed,
+      dismissedCrewVersion: "1.5.0",
+      dismissedCrewAt: now - 30_000,
+      settledAt: now - 20_000,
+    };
+    await snapshot(retried);
+    expect(screen.getByText("Could not update minibuch: not reached. See Updates.")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Hide this notice" }));
+    await settleBand();
+    await act(async () => { finishRequest(); });
+    expect(band(container)).toBeNull();
+
+    const acknowledged = { ...retried, dismissedCrewAt: now - 10_000 };
+    await snapshot(acknowledged);
+    expect(band(container)).toBeNull();
+    await snapshot({ ...acknowledged, settledAt: now });
+    expect(screen.getByText("Could not update minibuch: not reached. See Updates.")).toBeInTheDocument();
+  });
+
+  it("another screen reading the recorded close draws no row", async () => {
+    const peers: UpdatePeerLeg[] = [{ name: "minibuch", state: "unreachable", reason: "minibuch was not reached" }];
+    const { container } = await renderBand(
+      info({ releaseAvailable: false, dismissedCrewVersion: "1.5.0", run: run("done", { peers }) }),
+    );
+    expect(band(container)).toBeNull();
   });
 });
 

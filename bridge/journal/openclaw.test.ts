@@ -239,18 +239,19 @@ create table session_transcript_index_state (session_id text primary key, indexe
 create table session_transcript_active_events (session_id text not null, active_position integer not null, event_seq integer not null, message_position integer, context_eligible integer, primary key (session_id, active_position));
 `;
 
-let base = "";
-let stateDir = "";
-let dbPath = "";
-
 function writeAgentDb(path: string, fx: Fixture, schemaVersion = fx.schemaVersion): void {
   const db = new Database(path, { create: true });
-  db.exec(SCHEMA);
-  db.query("insert into schema_meta values ('primary', 'agent', ?, 'main', ?, 0, 0)").run(schemaVersion, fx.openclawVersion);
-  db.query("insert into session_nodes values (?, ?, '{}', 0)").run(fx.sessionKey, fx.sessionId);
-  for (const r of fx.rows) insertRow(db, fx.sessionId, r);
-  db.query("insert into session_transcript_index_state values (?, 0, null, 0, 0, 0, 0)").run(fx.sessionId);
-  db.close();
+  try {
+    db.transaction(() => {
+      db.exec(SCHEMA);
+      db.query("insert into schema_meta values ('primary', 'agent', ?, 'main', ?, 0, 0)").run(schemaVersion, fx.openclawVersion);
+      db.query("insert into session_nodes values (?, ?, '{}', 0)").run(fx.sessionKey, fx.sessionId);
+      for (const r of fx.rows) insertRow(db, fx.sessionId, r);
+      db.query("insert into session_transcript_index_state values (?, 0, null, 0, 0, 0, 0)").run(fx.sessionId);
+    })();
+  } finally {
+    db.close();
+  }
 }
 
 function insertRow(db: Database, sessionId: string, r: FixtureRow): void {
@@ -263,146 +264,152 @@ function insertRow(db: Database, sessionId: string, r: FixtureRow): void {
   if (r.active !== null) db.query("insert into session_transcript_active_events values (?, ?, ?, null, null)").run(sessionId, r.active, r.seq);
 }
 
-beforeEach(async () => {
-  base = await realpath(await mkdtemp(join(tmpdir(), "collie-openclaw-")));
-  stateDir = join(base, "state");
-  await mkdir(join(stateDir, "agents", "main", "agent"), { recursive: true });
-  dbPath = join(stateDir, "agents", "main", "agent", "openclaw-agent.sqlite");
-  writeAgentDb(dbPath, await fixture("session-2026.10.2.json"));
-  // What sits beside the agent database in a real state folder, and must never be read: the config
-  // file and the state database that holds the gateway's shared secret. Placeholders only.
-  await writeFile(join(stateDir, "openclaw.json"), JSON.stringify({ gateway: { auth: { token: "oc-gateway-token-placeholder" } } }));
-  await mkdir(join(stateDir, "state"), { recursive: true });
-  const secrets = new Database(join(stateDir, "state", "openclaw.sqlite"), { create: true });
-  secrets.exec("create table secret_store_entries (name text, value text, deleted_at_ms integer)");
-  secrets.query("insert into secret_store_entries values ('OPENCLAW_GATEWAY_TOKEN', 'oc-gateway-token-placeholder', null)").run();
-  secrets.close();
-});
+describe("database fixtures", () => {
+  let base = "";
+  let stateDir = "";
+  let dbPath = "";
 
-afterEach(async () => {
-  await rm(base, { recursive: true, force: true });
-});
-
-const REF = { kind: "id" as const, value: "agent:main:main" };
-
-describe("OpenclawTranscriptSource", () => {
-  test("resolves the footer's key to the agent database and the session's current id", async () => {
-    const source = new OpenclawTranscriptSource([stateDir]);
-    const key = await source.resolve(REF);
-    expect(key).toBe(`${dbPath}#d21f9015-1ea1-4ee5-b344-ba173f57ed2f`);
-    expect(await source.resolve({ kind: "id", value: "agent:main:nope" })).toBeNull();
-    expect(await source.resolve({ kind: "id", value: "agent:other:main" })).toBeNull();
-    expect(await source.resolve({ kind: "path", value: dbPath })).toBeNull();
+  beforeEach(async () => {
+    base = await realpath(await mkdtemp(join(tmpdir(), "collie-openclaw-")));
+    stateDir = join(base, "state");
+    await mkdir(join(stateDir, "agents", "main", "agent"), { recursive: true });
+    dbPath = join(stateDir, "agents", "main", "agent", "openclaw-agent.sqlite");
+    writeAgentDb(dbPath, await fixture("session-2026.10.2.json"));
+    // What sits beside the agent database in a real state folder, and must never be read: the config
+    // file and the state database that holds the gateway's shared secret. Placeholders only.
+    await writeFile(join(stateDir, "openclaw.json"), JSON.stringify({ gateway: { auth: { token: "oc-gateway-token-placeholder" } } }));
+    await mkdir(join(stateDir, "state"), { recursive: true });
+    const secrets = new Database(join(stateDir, "state", "openclaw.sqlite"), { create: true });
+    secrets.exec("create table secret_store_entries (name text, value text, deleted_at_ms integer)");
+    secrets.query("insert into secret_store_entries values ('OPENCLAW_GATEWAY_TOKEN', 'oc-gateway-token-placeholder', null)").run();
+    secrets.close();
   });
 
-  test("a whole read is the branch in order, zstd rows decoded, through the adapter's own parse", async () => {
-    const adapter = openclawJournal([stateDir]);
-    const key = await adapter.source.resolve(REF);
-    const loaded = await adapter.source.load(key!);
-    expect(loaded.complete).toBe(true);
-    expect(loaded.size).toBe(31);
-    const entries = adapter.parse(loaded.text);
-    expect(entries.filter((e) => e.role === "user")).toHaveLength(5);
-    // The read tool's result was a zstd row; its text arrived.
-    const read = entries.find((e) => e.parts.some((p) => p.kind === "tool" && p.name === "read"))?.parts.at(-1);
-    expect(read?.kind === "tool" && read.result?.text.startsWith("Lab file body.")).toBe(true);
+  afterEach(async () => {
+    await rm(base, { recursive: true, force: true });
   });
 
-  test("a live read opens with the branch tail, then carries only what is new", async () => {
-    const source = new OpenclawTranscriptSource([stateDir]);
-    const key = (await source.resolve(REF))!;
-    const first = await source.readSince(key, NO_CURSOR);
-    expect(first.reset).toBe(true);
-    expect(first.fromStart).toBe(true);
-    expect(first.lines).toHaveLength(31);
-    expect(await source.readSince(key, first.cursor)).toEqual({ lines: [], cursor: first.cursor, reset: false, fromStart: false });
+  const REF = { kind: "id" as const, value: "agent:main:main" };
 
-    const db = new Database(dbPath);
-    const reply = { type: "message", id: "late-1", parentId: "ac671adc-8fc7-4c61-8b88-7e4d3f3ffa11", timestamp: "2026-10-12T21:00:00.000Z", message: { role: "user", content: "One more." } };
-    insertRow(db, "d21f9015-1ea1-4ee5-b344-ba173f57ed2f", { seq: 32, active: 31, createdAt: 1, zstd: false, row: reply });
-    db.close();
-    const next = await source.readSince(key, first.cursor);
-    expect(next.reset).toBe(false);
-    expect(next.lines.map((l) => JSON.parse(l).id)).toEqual(["late-1"]);
-  });
-
-  test("a branch index OpenClaw is rebuilding is not read; the caller holds what it has", async () => {
-    const source = new OpenclawTranscriptSource([stateDir]);
-    const key = (await source.resolve(REF))!;
-    const db = new Database(dbPath);
-    db.query("update session_transcript_index_state set needs_rebuild = 1").run();
-    db.close();
-    expect(await source.readSince(key, NO_CURSOR)).toEqual({ lines: [], cursor: NO_CURSOR, reset: false, fromStart: false });
-  });
-
-  test("a schema newer than the known one is no log, never a read", async () => {
-    const newer = Math.max(...OPENCLAW_SCHEMA_VERSIONS) + 1;
-    const source = new OpenclawTranscriptSource([stateDir]);
-    const key = (await source.resolve(REF))!;
-    const db = new Database(dbPath);
-    db.query("update schema_meta set schema_version = ?").run(newer);
-    db.close();
-    expect(await source.resolve(REF)).toBeNull();
-    // A key resolved before OpenClaw migrated the file reads nothing after it.
-    expect(await source.stat(key)).toBeNull();
-    expect((await source.load(key)).text).toBe("");
-    expect((await source.readSince(key, NO_CURSOR)).lines).toEqual([]);
-  });
-
-  test("a database outside the state folder is not followed", async () => {
-    const elsewhere = join(base, "elsewhere");
-    await mkdir(join(elsewhere, "agent"), { recursive: true });
-    writeAgentDb(join(elsewhere, "agent", "openclaw-agent.sqlite"), await fixture("session-2026.9.8.json"));
-    await symlink(elsewhere, join(stateDir, "agents", "linked"));
-    expect(await new OpenclawTranscriptSource([stateDir]).resolve({ kind: "id", value: "agent:linked:main" })).toBeNull();
-  });
-
-  test("a key it cannot serve reports nothing new", async () => {
-    const source = new OpenclawTranscriptSource([stateDir]);
-    expect(await source.readSince("/nope/not-a-key", NO_CURSOR)).toEqual({ lines: [], cursor: NO_CURSOR, reset: false, fromStart: false });
-    expect(await source.stat("/nope/not-a-key")).toBeNull();
-  });
-});
-
-describe("no gateway token is read or stored", () => {
-  test("the adapter opens the agent database and nothing else, and needs neither neighbour", async () => {
-    const opened: string[] = [];
-    const adapter = openclawJournal([stateDir], (path) => {
-      opened.push(path);
-      return new Database(path, { readonly: true });
+  describe("OpenclawTranscriptSource", () => {
+    test("resolves the footer's key to the agent database and the session's current id", async () => {
+      const source = new OpenclawTranscriptSource([stateDir]);
+      const key = await source.resolve(REF);
+      expect(key).toBe(`${dbPath}#d21f9015-1ea1-4ee5-b344-ba173f57ed2f`);
+      expect(await source.resolve({ kind: "id", value: "agent:main:nope" })).toBeNull();
+      expect(await source.resolve({ kind: "id", value: "agent:other:main" })).toBeNull();
+      expect(await source.resolve({ kind: "path", value: dbPath })).toBeNull();
     });
-    // Both neighbours unreadable: a reader that touched either would fail here instead of reading.
-    await chmod(join(stateDir, "openclaw.json"), 0o000);
-    await chmod(join(stateDir, "state", "openclaw.sqlite"), 0o000);
-    try {
-      const key = (await adapter.source.resolve(REF))!;
-      await adapter.source.stat(key);
-      await adapter.source.load(key);
-      await adapter.source.readSince(key, NO_CURSOR);
-      expect(adapter.parse((await adapter.source.load(key)).text).length).toBeGreaterThan(0);
-    } finally {
-      await chmod(join(stateDir, "openclaw.json"), 0o600);
-      await chmod(join(stateDir, "state", "openclaw.sqlite"), 0o600);
-    }
-    expect(opened.length).toBeGreaterThan(0);
-    expect(new Set(opened)).toEqual(new Set([dbPath]));
+
+    test("a whole read is the branch in order, zstd rows decoded, through the adapter's own parse", async () => {
+      const adapter = openclawJournal([stateDir]);
+      const key = await adapter.source.resolve(REF);
+      const loaded = await adapter.source.load(key!);
+      expect(loaded.complete).toBe(true);
+      expect(loaded.size).toBe(31);
+      const entries = adapter.parse(loaded.text);
+      expect(entries.filter((e) => e.role === "user")).toHaveLength(5);
+      // The read tool's result was a zstd row; its text arrived.
+      const read = entries.find((e) => e.parts.some((p) => p.kind === "tool" && p.name === "read"))?.parts.at(-1);
+      expect(read?.kind === "tool" && read.result?.text.startsWith("Lab file body.")).toBe(true);
+    });
+
+    test("a live read opens with the branch tail, then carries only what is new", async () => {
+      const source = new OpenclawTranscriptSource([stateDir]);
+      const key = (await source.resolve(REF))!;
+      const first = await source.readSince(key, NO_CURSOR);
+      expect(first.reset).toBe(true);
+      expect(first.fromStart).toBe(true);
+      expect(first.lines).toHaveLength(31);
+      expect(await source.readSince(key, first.cursor)).toEqual({ lines: [], cursor: first.cursor, reset: false, fromStart: false });
+
+      const db = new Database(dbPath);
+      const reply = { type: "message", id: "late-1", parentId: "ac671adc-8fc7-4c61-8b88-7e4d3f3ffa11", timestamp: "2026-10-12T21:00:00.000Z", message: { role: "user", content: "One more." } };
+      insertRow(db, "d21f9015-1ea1-4ee5-b344-ba173f57ed2f", { seq: 32, active: 31, createdAt: 1, zstd: false, row: reply });
+      db.close();
+      const next = await source.readSince(key, first.cursor);
+      expect(next.reset).toBe(false);
+      expect(next.lines.map((l) => JSON.parse(l).id)).toEqual(["late-1"]);
+    });
+
+    test("a branch index OpenClaw is rebuilding is not read; the caller holds what it has", async () => {
+      const source = new OpenclawTranscriptSource([stateDir]);
+      const key = (await source.resolve(REF))!;
+      const db = new Database(dbPath);
+      db.query("update session_transcript_index_state set needs_rebuild = 1").run();
+      db.close();
+      expect(await source.readSince(key, NO_CURSOR)).toEqual({ lines: [], cursor: NO_CURSOR, reset: false, fromStart: false });
+    });
+
+    test("a schema newer than the known one is no log, never a read", async () => {
+      const newer = Math.max(...OPENCLAW_SCHEMA_VERSIONS) + 1;
+      const source = new OpenclawTranscriptSource([stateDir]);
+      const key = (await source.resolve(REF))!;
+      const db = new Database(dbPath);
+      db.query("update schema_meta set schema_version = ?").run(newer);
+      db.close();
+      expect(await source.resolve(REF)).toBeNull();
+      // A key resolved before OpenClaw migrated the file reads nothing after it.
+      expect(await source.stat(key)).toBeNull();
+      expect((await source.load(key)).text).toBe("");
+      expect((await source.readSince(key, NO_CURSOR)).lines).toEqual([]);
+    });
+
+    test("a database outside the state folder is not followed", async () => {
+      const elsewhere = join(base, "elsewhere");
+      await mkdir(join(elsewhere, "agent"), { recursive: true });
+      writeAgentDb(join(elsewhere, "agent", "openclaw-agent.sqlite"), await fixture("session-2026.9.8.json"));
+      await symlink(elsewhere, join(stateDir, "agents", "linked"));
+      expect(await new OpenclawTranscriptSource([stateDir]).resolve({ kind: "id", value: "agent:linked:main" })).toBeNull();
+    });
+
+    test("a key it cannot serve reports nothing new", async () => {
+      const source = new OpenclawTranscriptSource([stateDir]);
+      expect(await source.readSince("/nope/not-a-key", NO_CURSOR)).toEqual({ lines: [], cursor: NO_CURSOR, reset: false, fromStart: false });
+      expect(await source.stat("/nope/not-a-key")).toBeNull();
+    });
   });
 
-  test("the module has no way to read a file, and names neither the config nor the secret", async () => {
-    const source = await readFile(join(import.meta.dir, "openclaw.ts"), "utf8");
-    const imports = [...source.matchAll(/ from "([^"]+)";$/gm)].map((m) => m[1]);
-    expect(imports.toSorted()).toEqual(["../json.ts", "./cursor.ts", "./files.ts", "./pi.ts", "./reduce.ts", "./types.ts", "bun:sqlite", "node:path"]);
-    expect(source).not.toMatch(/readFile|Bun\.file|openSync|createReadStream|process\.env|openclaw\.json|secret_store_entries|OPENCLAW_GATEWAY_TOKEN/);
-  });
-});
+  describe("no gateway token is read or stored", () => {
+    test("the adapter opens the agent database and nothing else, and needs neither neighbour", async () => {
+      const opened: string[] = [];
+      const adapter = openclawJournal([stateDir], (path) => {
+        opened.push(path);
+        return new Database(path, { readonly: true });
+      });
+      // Both neighbours unreadable: a reader that touched either would fail here instead of reading.
+      await chmod(join(stateDir, "openclaw.json"), 0o000);
+      await chmod(join(stateDir, "state", "openclaw.sqlite"), 0o000);
+      try {
+        const key = (await adapter.source.resolve(REF))!;
+        await adapter.source.stat(key);
+        await adapter.source.load(key);
+        await adapter.source.readSince(key, NO_CURSOR);
+        expect(adapter.parse((await adapter.source.load(key)).text).length).toBeGreaterThan(0);
+      } finally {
+        await chmod(join(stateDir, "openclaw.json"), 0o600);
+        await chmod(join(stateDir, "state", "openclaw.sqlite"), 0o600);
+      }
+      expect(opened.length).toBeGreaterThan(0);
+      expect(new Set(opened)).toEqual(new Set([dbPath]));
+    });
 
-describe("discover", () => {
-  test("reads the footer off the pane's screen, and nothing without one", async () => {
-    const adapter = openclawJournal([stateDir]);
-    const screen = stripAnsi(await readFile(join(FIXTURES, "tui-idle-2026.9.8.raw.txt"), "utf8"));
-    expect(await adapter.discover?.("/anywhere", { screen: async () => screen })).toEqual(REF);
-    expect(await adapter.discover?.("/anywhere", { screen: async () => null })).toBeNull();
-    expect(await adapter.discover?.("/anywhere")).toBeNull();
-    expect(await adapter.discover?.("/anywhere", { screen: async () => "$ ls\n" })).toBeNull();
+    test("the module has no way to read a file, and names neither the config nor the secret", async () => {
+      const source = await readFile(join(import.meta.dir, "openclaw.ts"), "utf8");
+      const imports = [...source.matchAll(/ from "([^"]+)";$/gm)].map((m) => m[1]);
+      expect(imports.toSorted()).toEqual(["../json.ts", "./cursor.ts", "./files.ts", "./pi.ts", "./reduce.ts", "./types.ts", "bun:sqlite", "node:path"]);
+      expect(source).not.toMatch(/readFile|Bun\.file|openSync|createReadStream|process\.env|openclaw\.json|secret_store_entries|OPENCLAW_GATEWAY_TOKEN/);
+    });
+  });
+
+  describe("discover", () => {
+    test("reads the footer off the pane's screen, and nothing without one", async () => {
+      const adapter = openclawJournal([stateDir]);
+      const screen = stripAnsi(await readFile(join(FIXTURES, "tui-idle-2026.9.8.raw.txt"), "utf8"));
+      expect(await adapter.discover?.("/anywhere", { screen: async () => screen })).toEqual(REF);
+      expect(await adapter.discover?.("/anywhere", { screen: async () => null })).toBeNull();
+      expect(await adapter.discover?.("/anywhere")).toBeNull();
+      expect(await adapter.discover?.("/anywhere", { screen: async () => "$ ls\n" })).toBeNull();
+    });
   });
 });

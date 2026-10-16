@@ -37,6 +37,15 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 ## [Unreleased]
 
+## [1.21.1+ys.1] - 2026-10-14
+
+**Urgent.** A crew member installed from a git checkout can end up half updated, still on the old version.
+
+### Fixed
+
+- **Crew updates serialize safely and show release notes in-app.** Adopt upstream 1.21.1's updater latch, bounded locks, dismissible crew failures, release notes and smaller session-switcher mark. Keep exclusive lock acquisition, fork-only update targets, pairing and storage safeguards, and manual source-only publication. Thanks @AltanS (youngsecurity/collie#93). ([e8e8811a](https://github.com/youngsecurity/collie/commit/e8e8811a))
+- **Later crew retry failures reappear without reloading the app.** Limit an optimistic dismissal to the failed run it closes and let acknowledged bridge timestamps take over, even while the dismissal request is pending or fails. Thanks @AltanS (youngsecurity/collie#93). ([54607cd2](https://github.com/youngsecurity/collie/commit/54607cd2))
+
 ## [1.21.0+ys.1] - 2026-10-14
 
 ### Changed
@@ -243,6 +252,19 @@ The following 1.15.0 through 1.17.0 notes are preserved from
 They describe upstream releases, dates, assets and validation, not releases of this fork.
 The 1.17.0 adoption is recorded under **Unreleased** above; earlier adoptions have their own fork entries.
 Upstream issue numbers and commit links in this historical text refer to `AltanS/collie`.
+
+The following 1.21.1 notes retain upstream's urgency and recovery advice as history, not a fork release declaration.
+
+## Upstream [1.21.1] - 2026-10-14
+
+**Urgent.** A crew member installed from a git checkout can end up half updated, still on the old version.
+
+### Fixed
+
+- **The red "Could not update" row closes when you tap its ✕.** After a crew update that left a machine behind, for example one that was offline, the ✕ recorded the close but the row stayed on every screen. It now goes away and stays away. A later run that fails again, or a newer version, shows it again. A machine that was not reached still counts as "Could not update", because the run is over and nothing is still trying. The Updates page offers "Try <name> again". ([21e5d537](https://github.com/AltanS/collie/commit/21e5d537))
+- **The Updates page shows release notes.** The notes reached the GitHub release page but never the app, so the page listed only version numbers. Each release now publishes its notes beside its version, and before you update the page lists what the new version brings, by Added, Changed and Fixed, with a link to the release page. After an update it lists what the running version changed, read from the changelog that ships with it, and the update screen's last step has a "What changed in <version>" button. Notes appear for releases from 1.21.1 on, and no new network request is made for them. ([827144e2](https://github.com/AltanS/collie/commit/827144e2))
+- **A crew update no longer leaves a member half updated.** A member could start its updater twice when its lead asked twice in a row, and the two runs broke each other's build. The member kept running the old version, and the update band waited until it gave up. A member now starts one updater per run, and `collie update` refuses to start while another update runs on the same machine. A member on an older version can still hit this once while it takes this update. If a member stays behind, run `collie update` on that machine. ([60b7100d](https://github.com/AltanS/collie/commit/60b7100d))
+- **The needs-you mark on the session switcher is smaller.** The red triangle on the switcher button was as heavy as the icon under it and cut into its corner. It is now smaller and covers less of the icon. ([173a2a42](https://github.com/AltanS/collie/commit/173a2a42))
 
 ## Upstream [1.21.0] - 2026-10-13
 

@@ -553,6 +553,13 @@ Each update the phone starts empties that file and keeps the run before it as
 `update-runner.log.1`. On the systemd tier the file holds only the one line `systemd-run` prints,
 and the journal above has the rest.
 
+A crew member can stay on the old version after a crew update. Its checkout then shows the new tag,
+but `/standby/health` or the footer still shows the old build. Check that no updater runs, with
+`systemctl --user list-units 'collie-api-update-*'`. If none runs, invoke
+`herdr plugin action invoke update --plugin herdr.collie` on a Herdr-managed machine, or
+`collie update` on another self-updating install. It rebuilds a checkout whose build did not
+finish. Package-managed installs still use their package manager.
+
 A run that gives up before the switch, a new version that will not start on this machine for
 instance, changes nothing on disk. The phone that started it says that the update failed on that
 machine and gives the reason, and the same reason is the `reason` field of `update.json`.
