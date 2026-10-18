@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { render } from "ink-testing-library";
 
 import { AuditLog, type AuditEntry } from "../bridge/audit.ts";
@@ -20,6 +20,22 @@ import { hostFor } from "../bridge/host.ts";
 // and the run is expected to finish anyway: every line has to have gone through the surface. The
 // frames are then asserted for the leg progression, the condensed restart row and the prompt, which
 // is the part a golden file cannot pin.
+
+// ink-testing-library supplies columns but no rows. Ink then asks terminal-size, which can spawn
+// synchronous `tput` probes on Windows for every layout, including unmount. Keep that host lookup
+// inside the fake world too, for the entire render lifetime, without changing the polling budget.
+let terminalEnv = { columns: process.env.COLUMNS, lines: process.env.LINES };
+beforeEach(() => {
+  terminalEnv = { columns: process.env.COLUMNS, lines: process.env.LINES };
+  process.env.COLUMNS = "100";
+  process.env.LINES = "24";
+});
+afterEach(() => {
+  if (terminalEnv.columns === undefined) delete process.env.COLUMNS;
+  else process.env.COLUMNS = terminalEnv.columns;
+  if (terminalEnv.lines === undefined) delete process.env.LINES;
+  else process.env.LINES = terminalEnv.lines;
+});
 
 // ── The fakes (a slimmer cousin of `cli/remote.test.ts`'s, deliberately not shared: that suite pins
 // the plain lines and must stay untouched by anything this file needs) ───────
@@ -81,6 +97,7 @@ interface RichHarness {
   store: AddStore;
   restarts: number;
   closes: number;
+  remoteLegs: readonly Leg[];
 }
 
 /**
@@ -124,6 +141,7 @@ function harness(opts: {
     crewAdd: () => surface,
   };
   const state = { restarts: 0, closes: 0 };
+  const remoteLegs: Leg[] = [];
 
   let contents: string | null = serializeTrustStore(leadStore());
   const storeIo: TrustStoreIo = {
@@ -190,6 +208,7 @@ function harness(opts: {
     remote: () => ({
       run: async (script) => {
         const leg = legOf(script);
+        remoteLegs.push(leg);
         const stdout =
           leg === "probe"
             ? probeOut(opts.probe)
@@ -215,6 +234,7 @@ function harness(opts: {
   return {
     deps,
     store,
+    remoteLegs,
     get restarts() {
       return state.restarts;
     },
@@ -336,6 +356,10 @@ describe("crew add, drawn", () => {
       expect(frame).not.toContain("written to");
       expect(frame).not.toContain("answered the invite");
       expect(h.restarts).toBe(0);
+      expect(h.remoteLegs).toEqual(["probe", "install"]);
+      expect(h.closes).toBe(1);
+      expect(h.store.state().question).toBeNull();
+      expect(frame).not.toMatch(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/);
     } finally {
       app.unmount();
     }

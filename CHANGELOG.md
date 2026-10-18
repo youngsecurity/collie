@@ -37,6 +37,10 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 ## [Unreleased]
 
+### Fixed
+
+- **Windows tests keep native paths and isolate terminal discovery.** Correct nightly option expectations for native absolute paths and pin the rich crew test's terminal dimensions so synchronous host probes cannot consume its timeout. Preserve failure assertions and strengthen lifecycle coverage without changing runtime behavior or timeout budgets (youngsecurity/collie#101).
+
 ## [1.22.5+ys.1] - 2026-10-18
 
 ### Changed
