@@ -316,8 +316,10 @@ describe("which routes cross a link", () => {
     expect(forwardAuditAction("durable/conversations")).toBeNull();
     expect(forwardAuditAction("durable/conversation/c1/items")).toBeNull();
     expect(forwardAuditAction("durable/conversation/c1/reopen")).toBe("durable.reopen");
-    expect(textAnswerOf("durable/conversation/c1/items")).toBe("history");
-    expect(textAnswerOf("durable/conversations")).toBeNull();
+    expect(textAnswerOf("durable/conversation/c1/items")).toBe("conversation-items");
+    expect(textAnswerOf("durable/conversations")).toBe("conversations");
+    expect(textAnswerOf("durable/conversation/c1/reopen")).toBe("durable-control");
+    expect(textAnswerOf("space/s1/rename")).toBe("durable-control");
     expect(forwardPaneId("durable/conversation/c1/reopen")).toBeUndefined();
   });
 

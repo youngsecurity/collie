@@ -1252,6 +1252,10 @@ in both local and merged snapshots. Forwarded pane `reply`, `send`, `abort` and 
 responses use the control mask; pane `answer` retains its stale-ask mask. Control and ask
 responses with status 409 are masked too, because refusals may carry display text. Opaque
 control identifiers, identifier arrays, hashes and request identity round-trip unchanged.
+Durable conversation lists mask program titles and subtitles, never conversation/pane ids or
+paging cursors. Durable list/items unavailable answers and reopen/space-rename refusals mask
+program diagnostics too. These durable routes also mask HTTP error bodies: JSON diagnostics
+use the control mask and plain-text errors use the text mask, retaining the member's status.
 This changes display redaction, not admission, route availability or required wire fields.
 `CREW_PROTOCOL_VERSION` remains 2. The explicit lead/member redaction switches still apply.
 The existing `X-Crew-Device-Kind: anonymous` attribution also prevents a forwarded reply
@@ -1259,7 +1263,8 @@ from persisting text in the new held-send queue. It may send live or refuse, nev
 save anonymous content. Absent provenance retains the existing paired-label contract.
 
 - **A `2xx` with a body is read, plus the ask/control 409 exceptions above.** A `304` has no
-  body. Other errors stream on as themselves. Unclassified routes, `files/image` and `blobs`
+  body. The durable routes in the fork amendment above also mask error diagnostics. Other
+  errors stream on as themselves. Unclassified routes, `files/image` and `blobs`
   included, are never read on the lead: a picture is bytes, not text.
 - **The mask is idempotent.** A masked span becomes `•` marks, which no pattern matches, so masking a
   masked body changes nothing. A body a 1.18 member already masked is re-serialised with

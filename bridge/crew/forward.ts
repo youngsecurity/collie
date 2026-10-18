@@ -128,9 +128,11 @@ const FORWARDABLE: readonly RegExp[] = [
  * The answers that carry text a pane or an agent wrote, which the lead masks before the phone reads
  * them (§9.1): the mirror (`pane`), a History page, a Chat body, and a Changes or Files answer, asked
  * by pane or by space. A picture (`files/image`) and a blob are bytes, never text, and stay byte for
- * byte. Writes also stay untouched except for an ask answer, whose 409 can carry the current ask.
+ * byte. Control replies carry program diagnostics too. Durable reads and writes also mask failure
+ * responses, including program-authored refusal details.
  */
-export type TextAnswer = "pane" | "history" | "chat" | "changes" | "files" | "answer" | "control";
+export type TextAnswer = "pane" | "history" | "chat" | "changes" | "files" | "answer" | "control"
+  | "conversations" | "conversation-items" | "durable-control" | "diagnostic";
 
 /** Which {@link TextAnswer} a crew route answers with, or `null` for a route whose answer is not text. */
 export function textAnswerOf(route: string): TextAnswer | null {
@@ -141,8 +143,9 @@ export function textAnswerOf(route: string): TextAnswer | null {
   if (/^pane\/[^/]+\/(?:reply|send|abort|action)$/.test(route)) return "control";
   if (/^(?:pane|workspace)\/[^/]+\/changes$/.test(route)) return "changes";
   if (/^(?:pane|workspace)\/[^/]+\/files$/.test(route)) return "files";
-  // The items of a durable conversation are History's own shape (`entries`), masked the same way.
-  if (/^durable\/conversation\/[^/]+\/items$/.test(route)) return "history";
+  if (route === "durable/conversations") return "conversations";
+  if (/^durable\/conversation\/[^/]+\/items$/.test(route)) return "conversation-items";
+  if (/^durable\/conversation\/[^/]+\/reopen$/.test(route) || /^space\/[^/]+\/rename$/.test(route)) return "durable-control";
   return null;
 }
 
@@ -561,16 +564,17 @@ export interface ForwardDeps {
 }
 
 /**
- * A member's text answer, masked for the phone. A `2xx` or an ask's `409` with a body is read: a `304` has no
- * body, and an error body (`404 unknown-path`, `502 transcript read failed`) carries no session text
- * on either side, so it streams on as itself.
+ * A member's text answer, masked for the phone. Read successful bodies, ask/control 409s, and
+ * durable-route errors, which can carry program-authored diagnostics. A 304 has no body. Other
+ * errors keep their existing streaming path.
  *
  * ── FAIL CLOSED ──────────────────────────────────────────────────────────────
  * A body that is not the answer it should be (not JSON, or not the shape the route answers with) is
  * never passed on raw: it is a `502 answer_unmaskable` naming the member. Raw would be the one way a
  * member's key reached the phone through a lead that masks, and a failed read is a state the phone
  * already draws (the last mirror stays, Chat says it could not load). A body the transport lost
- * mid-read is a failed read like any other, `host_unreachable`.
+ * mid-read is a failed read like any other, `host_unreachable`. Durable HTTP errors may also be
+ * plain text; the diagnostic mask handles those as text rather than requiring a success shape.
  *
  * ── HEADERS ─────────────────────────────────────────────────────────────────
  * The member's ETag rides on, salted with the mask's version ({@link saltTag}). The mask is a function
@@ -582,7 +586,8 @@ export interface ForwardDeps {
  */
 async function maskedAnswer(res: Response, answer: TextAnswer, mask: AnswerMask, memberId: string): Promise<Response> {
   const staleAsk = (answer === "answer" || answer === "control") && res.status === 409;
-  if ((!staleAsk && (res.status < 200 || res.status >= 300)) || res.status === 204 || res.body === null) return res;
+  const durableFailure = (answer === "conversations" || answer === "conversation-items" || answer === "durable-control") && res.status >= 400;
+  if ((!staleAsk && !durableFailure && (res.status < 200 || res.status >= 300)) || res.status === 204 || res.body === null) return res;
   let raw: string;
   try {
     raw = await res.text();
@@ -591,7 +596,7 @@ async function maskedAnswer(res: Response, answer: TextAnswer, mask: AnswerMask,
       host: memberId,
     });
   }
-  const masked = mask(answer, raw);
+  const masked = mask(durableFailure ? "diagnostic" : answer, raw);
   if (masked === null) {
     return forwardError(
       "answer_unmaskable",

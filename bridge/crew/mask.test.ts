@@ -60,10 +60,10 @@ function member(body: string | Uint8Array | null, status = 200, contentType = "a
 function viaLead(
   path: string,
   transport: ForwardTransport,
-  opts: { mask?: ForwardDeps["mask"]; headers?: Record<string, string> } = { mask: maskForwardedAnswer },
+  opts: { mask?: ForwardDeps["mask"]; headers?: Record<string, string>; method?: string } = { mask: maskForwardedAnswer },
 ) {
   const url = new URL(`https://lead.example${path}${path.includes("?") ? "&" : "?"}host=laptop`);
-  return forwardToPeer(new Request(url, { headers: opts.headers ?? {} }), url, {
+  return forwardToPeer(new Request(url, { headers: opts.headers ?? {}, method: opts.method ?? "GET" }), url, {
     link: LINK,
     state: REACHABLE,
     maxUploadBytes: DEFAULT_MAX_UPLOAD_BYTES,
@@ -71,6 +71,57 @@ function viaLead(
     mask: opts.mask,
   });
 }
+
+describe("durable responses through the lead", () => {
+  test.each([true, false])("conversation labels honor lead redact=%s, never masking ids or cursors", async (redact) => {
+    const body = { available: true, items: [{ id: key, paneId: key, title: `Title ${key}`, subtitle: key, state: "open", items: 2 }], next: key };
+    const res = await viaLead("/api/durable/conversations", member(JSON.stringify(body)).transport, { mask: redact ? maskForwardedAnswer : undefined });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ...body, items: [{ ...body.items[0], title: `Title ${redact ? masked : key}`, subtitle: redact ? masked : key }] });
+  });
+
+  for (const path of ["/api/durable/conversations", "/api/durable/conversation/c1/items", "/api/durable/conversation/c1/reopen", "/api/space/s1/rename"]) {
+    for (const status of [200, 400, 409, 422, 503]) {
+      test(`${path} masks diagnostics at HTTP ${status}, preserves identity and honors opt-out`, async () => {
+        const method = path.endsWith("/reopen") || path.endsWith("/rename") ? "POST" : "GET";
+        const body = { available: false, ok: false, reason: "unreachable", code: "program.refused", error: `Refused ${key}`, detail: { reason: key }, requestId: key, paneId: key };
+        for (const redact of [true, false]) {
+          const res = await viaLead(path, member(JSON.stringify(body), status).transport, { method, mask: redact ? maskForwardedAnswer : undefined });
+          expect(res.status).toBe(status);
+          expect(await res.json()).toEqual({ ...body, error: `Refused ${redact ? masked : key}`, detail: { reason: redact ? masked : key } });
+        }
+      });
+    }
+    test(`${path} masks plain HTTP error text without changing status`, async () => {
+      const res = await viaLead(path, member(`program diagnostic ${key}`, 400, "text/plain").transport);
+      expect(res.status).toBe(400);
+      expect(await res.text()).toBe(`program diagnostic ${masked}`);
+    });
+  }
+
+  test("a durable transcript masks entries and leaves conversation and page identities intact", async () => {
+    const body = { available: true, id: key, entries: [entry], next: key, more: true };
+    const res = await viaLead("/api/durable/conversation/c1/items", member(JSON.stringify(body)).transport);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual(maskHistoryPage(body));
+  });
+
+  test("JSON error strings and arrays keep their status and shape", async () => {
+    for (const body of [key, [{ detail: key, requestId: key }]]) {
+      const res = await viaLead("/api/durable/conversations", member(JSON.stringify(body), 503).transport);
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual(Array.isArray(body) ? [{ detail: masked, requestId: key }] : masked);
+    }
+  });
+
+  test("malformed labels fail closed rather than bypassing the list mask", async () => {
+    for (const row of [{ title: { text: key } }, { title: "ok", subtitle: [key] }]) {
+      const res = await viaLead("/api/durable/conversations", member(JSON.stringify({ available: true, items: [row] })).transport);
+      expect(res.status).toBe(502);
+      expect(await res.text()).not.toContain(key);
+    }
+  });
+});
 
 const entry: TranscriptEntry = {
   uuid: "u-1",

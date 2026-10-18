@@ -41,6 +41,10 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 - **Collie adopts upstream 1.22.5 while preserving the fork's safeguards.** Import the server-owned Send and Ask protocols, durable-agent sessions and themes, plus upstream harness fixes. Keep default-on pairing and explicit opt-out, independent gates, masked responses, anonymous live-only storage, terminal preferences, scoped pins, fork-only update selection, the Herdr 0.8.0 minimum and manual source-only publication. Anonymous sends that need to wait are refused instead of saving their text in the held-send queue. Thanks @AltanS (youngsecurity/collie#101).
 
+### Fixed
+
+- **Durable history and cancellation preserve masking and reading width.** Mask forwarded conversation titles and local and forwarded durable diagnostics, including reopen and space-rename refusals. Mask settled cancel receipts without changing status codes or opaque identifiers, and keep durable conversation transcripts full width. Explicit redaction opt-out remains supported. Thanks @yousecjoe (youngsecurity/collie#101).
+
 ### Packaging
 
 - **The parked Cloudflare experiment pins patched MCP OAuth dependencies.** Override its MCP client and SDK peers to the first fixed releases for GHSA-6qxp-vccf-f47h, without changing normal Collie dependencies, and resolve the shared SDK's context types from the experiment's own install. Existing OAuth credentials in downstream adaptations still need issuer migration or removal before use. Thanks @yousecjoe (youngsecurity/collie#101).

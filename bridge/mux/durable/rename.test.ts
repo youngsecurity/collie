@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 
 import { MUX_CAPABILITIES } from "../capabilities.ts";
-import { muxConfigBody } from "../../server.ts";
+import { muxConfigBody, renameSpace } from "../../server.ts";
 import { DurableMux, MIN_SNAPSHOT_GAP_MS } from "./adapter.ts";
 import { RENAME_TITLE_MAX, renameTitleOf } from "./clean.ts";
 import { DurableOutcomeUnknown, DurableUnreachable, type DurablePost, type DurableReply, type DurableTransport } from "./client.ts";
@@ -250,6 +250,21 @@ describe("renameTab", () => {
 });
 
 describe("renameSpace", () => {
+  test("the route masks the program's rename-refused diagnostic, unless redaction is off", async () => {
+    const { adapter, program } = await rig();
+    const secret = `sk-test-placeholder-${"0".repeat(40)}`;
+    program.renameRefusal = `name refused with ${secret}`;
+    for (const redact of [true, false]) {
+      const request = new Request("http://x/", { method: "POST", body: JSON.stringify({ label: "New title" }) });
+      const res = await renameSpace(adapter, { pokeNow: () => {} }, "ws-notes", request, { record: () => {} }, "phone", "default", redact);
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.code).toBe("space.rename_failed");
+      expect(body.detail.reason).toContain("name refused with");
+      expect(body.detail.reason.includes(secret)).toBe(!redact);
+    }
+  });
+
   const spaceTitle = async (adapter: DurableMux, spaceId: string) => (await adapter.snapshot()).spaces.find((space) => space.spaceId === spaceId)?.label;
 
   test("posts /rename with kind workspace, the id and the trimmed title, and the next read shows it", async () => {

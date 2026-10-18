@@ -12,7 +12,7 @@
 //
 // Pure: no disk, no clock, no config. The `COLLIE_REDACT` switch is the caller's.
 
-import type { ChangeCommitDiff, ChangeDiff, FileReadAnswer, FilesListing, PaneReadResponse, PaneWire } from "./types.ts";
+import type { ChangeCommitDiff, ChangeDiff, DurableConversationRow, FileReadAnswer, FilesListing, PaneReadResponse, PaneWire } from "./types.ts";
 import { redactEntry } from "./journal/text.ts";
 import type { TranscriptEntry } from "./journal/types.ts";
 import { maskAsk } from "./durable/parse.ts";
@@ -37,6 +37,18 @@ export function maskPaneRead<T extends PaneReadResponse>(body: T): T {
 /** A History page with every turn masked (`redactEntry`). Cursor, counts and flags are untouched. */
 export function maskHistoryPage<T extends { entries: TranscriptEntry[] }>(page: T): T {
   return { ...page, entries: page.entries.map(redactEntry) };
+}
+
+/** Program-authored labels only; conversation/pane ids and paging cursors remain opaque. */
+export function maskDurableConversations<T extends { items: DurableConversationRow[] }>(body: T): T {
+  return {
+    ...body,
+    items: body.items.map((row) => {
+      const masked = { ...row, title: redactText(row.title) };
+      if (row.subtitle !== undefined) masked.subtitle = redactText(row.subtitle);
+      return masked;
+    }),
+  };
 }
 
 /** A Chat body masked: the turns and, on a live window, the queued messages. */

@@ -427,6 +427,28 @@ describe("heldCancelRoute (M56 spec 15)", () => {
     }
   });
 
+  test.each([true, false])("a settled cancel receipt honors redact=%s at HTTP 409", async (redact) => {
+    const dir = mkdtempSync(join(tmpdir(), "collie-route-"));
+    try {
+      const key = `sk-test-placeholder-${"0".repeat(40)}`;
+      const { audit } = auditLines();
+      const { rt, store } = runtime(true, dir);
+      const id = "route-settled-0001";
+      const accepted = store.accept({ id, session: "main", paneId: "%1", paneGeneration: key, surfaceRevision: 0, mode: "send", text: "private" });
+      const receipt = { ...SendProtocol.crashReceipt(accepted.record), detail: `submit refused ${key}` };
+      store.settle(id, receipt);
+      const res = heldCancelRoute(rt, id, "%1", { audit, device: "phone", acceptEncoding: null, redact });
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body).toMatchObject({ result: "refused", reason: "busy", receipt: { requestId: id, paneGeneration: key, outcome: receipt.outcome, reason: receipt.reason, textHash: receipt.textHash } });
+      expect(body.receipt.detail.includes(key)).toBe(!redact);
+      expect(store.get(id)?.receipt).toEqual(receipt);
+      expect(heldCancelRoute(rt, id, "%2", { audit, device: "phone", acceptEncoding: null, redact }).status).toBe(404);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("a held request ends cancelled with its receipt, one audit line and never the text; a running one is a 409 busy; an ended one is dismissed", async () => {
     const dir = mkdtempSync(join(tmpdir(), "collie-route-"));
     try {

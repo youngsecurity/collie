@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 
-import { muxConfigBody } from "../../server.ts";
+import { muxConfigBody, reopenConversation } from "../../server.ts";
 import { DurableMux, MIN_SNAPSHOT_GAP_MS } from "./adapter.ts";
 import { DurableOutcomeUnknown, type DurablePost, type DurableReply, type DurableTransport } from "./client.ts";
 import { FakeDurableClock, FakeDurableProgram } from "./fixture.ts";
@@ -176,6 +176,22 @@ describe("one conversation's items", () => {
 });
 
 describe("reopen", () => {
+  test("the route masks a real program's 422 refusal, with an explicit redact-off escape", async () => {
+    const { adapter, program, tick } = await rig();
+    await adapter.closePane("conv-02");
+    tick();
+    const secret = `sk-test-placeholder-${"0".repeat(40)}`;
+    program.reopenRefusal = `archived with ${secret}`;
+    for (const redact of [true, false]) {
+      const res = await reopenConversation(adapter, { pokeNow: () => {} }, "conv-02", new Request("http://x/", { method: "POST" }), { record: () => {} }, "phone", "default", redact);
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.code).toBe("durable.reopen_failed");
+      expect(body.detail.reason).toContain("archived with");
+      expect(body.detail.reason.includes(secret)).toBe(!redact);
+    }
+  });
+
   test("reopen: a closed pane comes back under the same id after one POST, and the answer names it", async () => {
     const { adapter, transport, program, tick } = await rig();
     expect(await adapter.closePane("conv-02")).toEqual({ ok: true, value: undefined });

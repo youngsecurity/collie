@@ -153,6 +153,7 @@ import {
   maskSnapshotTitles,
   maskAskAnswer,
   maskControlReply,
+  maskDurableConversations,
 } from "./answer-mask.ts";
 import { maskForwardedAnswer } from "./crew/mask.ts";
 import { redactAnsi } from "./redact.ts";
@@ -233,7 +234,6 @@ import type {
   PaneChatResponse,
   PaneHistoryResponse,
   DurableConversationItemsResponse,
-  DurableConversationRow,
   DurableConversationsResponse,
   ReopenConversationResponse,
   PaneReadResponse,
@@ -1924,7 +1924,7 @@ export function startServer(opts: {
       const rt = await caller.resolve();
       if (rt instanceof Response) return rt;
       const spaceId = decodeURIComponent(spaceMatch[1]!);
-      return renameSpace(rt.herdr, rt.engine, spaceId, req, caller.audit, caller.device(), rt.name);
+      return renameSpace(rt.herdr, rt.engine, spaceId, req, caller.audit, caller.device(), rt.name, cfg.redact);
     }
 
     // ── A durable program's history (M53 spec 11): the list, the items of one, a reopen ──
@@ -1950,7 +1950,7 @@ export function startServer(opts: {
       } catch {
         return text("malformed URL", 400);
       }
-      if (reopen) return reopenConversation(rt.herdr, rt.engine, id, req, caller.audit, caller.device(), rt.name);
+      if (reopen) return reopenConversation(rt.herdr, rt.engine, id, req, caller.audit, caller.device(), rt.name, cfg.redact);
       return durableConversationItems(rt.herdr, id, url, req, cfg.redact);
     }
 
@@ -2546,7 +2546,7 @@ export function startServer(opts: {
         const rt = localRuntime(sessionName, req.headers.get("accept-encoding"));
         if (rt instanceof Response) return rt;
         const requestId = decodeURIComponent(pathname.slice("/api/send/".length));
-        return heldCancelRoute(rt, requestId, url.searchParams.get("pane"), { audit, device: whois(req).device, acceptEncoding: req.headers.get("accept-encoding") });
+        return heldCancelRoute(rt, requestId, url.searchParams.get("pane"), { audit, device: whois(req).device, acceptEncoding: req.headers.get("accept-encoding"), redact: cfg.redact });
       }
       // The session page's list of recent sends for one pane (M56 spec 09): outcome, reason, time, keys
       // by name and gaps, read from the receipts. Never a row of the screen and never the text.
@@ -3820,14 +3820,11 @@ export async function durableConversations(
   const read = await herdr.listConversations(durablePageOf(url));
   if (!read.ok) {
     const reason = read.reason === "unsupported" ? "unsupported" : "unreachable";
-    return json({ available: false, reason, detail: read.detail } satisfies DurableConversationsResponse, accept);
+    const body = { available: false, reason, detail: read.detail } satisfies DurableConversationsResponse;
+    return json(redact ? maskControlReply(body) : body, accept);
   }
-  // A title and a subtitle are the program's words, masked like a pane's title (bridge/redact.ts).
-  const items = read.value.items.map((row): DurableConversationRow => {
-    const out: DurableConversationRow = { ...row, title: redact ? redactText(row.title) : row.title };
-    if (row.subtitle !== undefined) out.subtitle = redact ? redactText(row.subtitle) : row.subtitle;
-    return out;
-  });
+  const page = { items: [...read.value.items] };
+  const { items } = redact ? maskDurableConversations(page) : page;
   const body: DurableConversationsResponse = read.value.next === undefined ? { available: true, items } : { available: true, items, next: read.value.next };
   return json(body, accept);
 }
@@ -3851,7 +3848,8 @@ export async function durableConversationItems(
   const read = await herdr.conversationItems(id, durablePageOf(url));
   if (!read.ok) {
     const reason = read.reason === "unsupported" ? "unsupported" : read.reason === "gone" ? "gone" : "unreachable";
-    return json({ available: false, reason, detail: read.detail } satisfies DurableConversationItemsResponse, accept);
+    const body = { available: false, reason, detail: read.detail } satisfies DurableConversationItemsResponse;
+    return json(redact ? maskControlReply(body) : body, accept);
   }
   // An item without its own stamp takes the start of the epoch, as a log row without one would: never "now",
   // which would date a closed conversation to the moment it was opened.
@@ -3878,6 +3876,7 @@ export async function reopenConversation(
   audit: Pick<AuditLog, "record">,
   device: string | null,
   session: string,
+  redact = true,
 ): Promise<Response> {
   const ae = req.headers.get("accept-encoding");
   const reopened =
@@ -3885,7 +3884,8 @@ export async function reopenConversation(
       ? muxUnsupported("reopenConversation", "This multiplexer keeps no closed conversations to bring back.")
       : await herdr.reopenConversation(id);
   if (!reopened.ok) {
-    return json({ ok: false, ...apiError("durable.reopen_failed", { reason: reopened.detail }) } satisfies ReopenConversationResponse, ae);
+    const body = { ok: false, ...apiError("durable.reopen_failed", { reason: reopened.detail }) } satisfies ReopenConversationResponse;
+    return json(redact ? maskControlReply(body) : body, ae);
   }
   audit.record({ action: "durable.reopen", session, device, detail: { id } });
   await settleTopology(herdr, engine);
@@ -5134,6 +5134,7 @@ export async function renameSpace(
   audit: Pick<AuditLog, "record">,
   device: string | null,
   session: string,
+  redact = true,
 ): Promise<Response> {
   const ae = req.headers.get("accept-encoding");
   let body: JsonValue;
@@ -5150,10 +5151,8 @@ export async function renameSpace(
       ? muxUnsupported("renameSpace", NO_SPACE_RENAME)
       : await herdr.renameSpace(spaceId, parsed.label);
   if (!renamed.ok) {
-    return json(
-      { ok: false, ...apiError("space.rename_failed", { reason: renamed.detail }) } satisfies ActionResponse,
-      ae,
-    );
+    const answer = { ok: false, ...apiError("space.rename_failed", { reason: renamed.detail }) } satisfies ActionResponse;
+    return json(redact ? maskControlReply(answer) : answer, ae);
   }
   audit.record({ action: "space.rename", session, device, detail: { spaceId, label: parsed.label } });
   await settleTopology(herdr, engine);
@@ -7295,7 +7294,7 @@ export function heldCancelRoute(
   rt: Pick<SendRouteRuntime, "send" | "name">,
   requestId: string,
   pane: string | null,
-  context: { readonly audit: AuditLog; readonly device: string | null; readonly acceptEncoding: string | null },
+  context: { readonly audit: AuditLog; readonly device: string | null; readonly acceptEncoding: string | null; readonly redact?: boolean },
 ): Response {
   if (rt.send === undefined) return text(SEND_OFF_TEXT, 404);
   if (!REQUEST_ID.test(requestId)) return text("bad request id", 400);
@@ -7305,7 +7304,8 @@ export function heldCancelRoute(
   const detail: AuditDetail = { outcome: answer.result };
   if (answer.reason !== undefined) detail.reason = answer.reason;
   context.audit.record({ action: "send-cancel", paneId: pane, session: rt.name, device: context.device, detail });
-  return json(answer satisfies HeldCancelAnswer, context.acceptEncoding, answer.result === "refused" ? 409 : 200);
+  const out: HeldCancelAnswer = context.redact === false ? answer : maskControlReply(answer);
+  return json(out, context.acceptEncoding, answer.result === "refused" ? 409 : 200);
 }
 
 /** What `/api/ask/<id>` answers with the Send Protocol off: no ask is answerable, a 404 that says why. */

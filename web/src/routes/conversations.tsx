@@ -371,7 +371,8 @@ export function ConversationRoute() {
   }
 
   return (
-    <div className="mx-auto flex min-h-0 w-full max-w-screen-sm flex-1 flex-col md:max-w-screen-md lg:max-w-screen-lg">
+    // Durable conversations replace History, so keep its full-width reading surface and shrink guards.
+    <div className="mx-auto flex min-h-0 min-w-0 w-full max-w-full flex-1 flex-col">
       <PageHeader
         title={title ?? t("conversations.fallbackTitle")}
         // The program's conversation list is the machine's home since M53 spec 12, so the way back is there.

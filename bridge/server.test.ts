@@ -2832,6 +2832,48 @@ describe("durable history routes", () => {
     expect(pages.at(-1)).toEqual({});
   });
 
+  test.each([true, false])("durable route diagnostics honor redact=%s without changing error contracts", async (redact) => {
+    const detail = `program refused with ${KEY}`;
+    const adapter = {
+      listConversations: async () => muxUnreachable(detail),
+      conversationItems: async () => muxGone(detail),
+      reopenConversation: async () => muxRefused(detail),
+      renameSpace: async () => muxRefused(detail),
+      refresh: async () => { throw new Error("a refused write must not refresh"); },
+    };
+    const url = new URL("http://x/api/durable/conversations");
+    const audit = { record: () => { throw new Error("a refused write must not be audited as success"); } };
+    const engine = { pokeNow: () => {} };
+    const responses = [
+      await durableConversations(adapter, url, get(url.pathname), redact),
+      await durableConversationItems(adapter, KEY, url, get("/"), redact),
+      await reopenConversation(adapter, engine, KEY, new Request(url, { method: "POST" }), audit, "phone", "default", redact),
+      await renameSpace(adapter, engine, KEY, new Request(url, { method: "POST", body: JSON.stringify({ label: "New title" }) }), audit, "phone", "default", redact),
+    ];
+    const bodies = [];
+    for (const response of responses) {
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(JSON.stringify(body).includes(KEY)).toBe(!redact);
+      bodies.push(body);
+    }
+    expect(bodies[0]).toMatchObject({ available: false, reason: "unreachable" });
+    expect(bodies[1]).toMatchObject({ available: false, reason: "gone" });
+    expect(bodies[2]).toMatchObject({ ok: false, code: "durable.reopen_failed" });
+    expect(bodies[3]).toMatchObject({ ok: false, code: "space.rename_failed" });
+  });
+
+  test.each([true, false])("durable titles honor redact=%s and preserve opaque ids/cursors", async (redact) => {
+    const row = { ...ROW, id: KEY, paneId: KEY, subtitle: KEY };
+    const adapter = { listConversations: async () => muxOk({ items: [row], next: KEY }) };
+    const url = new URL("http://x/api/durable/conversations");
+    const res = await durableConversations(adapter, url, get(url.pathname), redact);
+    const body = await res.json();
+    expect(body).toMatchObject({ next: KEY, items: [{ id: KEY, paneId: KEY }] });
+    expect(body.items[0].title.includes(KEY)).toBe(!redact);
+    expect(body.items[0].subtitle.includes(KEY)).toBe(!redact);
+  });
+
   test("history: conversations on an adapter without the read, or a refusal, is an ordinary answer", async () => {
     const none = await durableConversations({}, new URL("http://x/api/durable/conversations"), get("/"), true);
     expect(await none.json()).toEqual({ available: false, reason: "unsupported" });
