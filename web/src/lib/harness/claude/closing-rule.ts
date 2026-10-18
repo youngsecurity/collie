@@ -18,7 +18,8 @@
 // re-derivation (`dialogDetector` goes through `adapter.buildBlocks`) and the unread-dialog probes
 // therefore all read the same rows, so a tap's signature is identical on both sides and the bridge's
 // binding check sees a region that ends one row above the buffer's end, well inside its tail window
-// (`DEFAULT_PROMPT_TAIL_LINES`). No grammar learns about the rule.
+// (`DEFAULT_PROMPT_TAIL_LINES`). No grammar learns about the rule. Its sibling repair,
+// task-checklist.ts, takes off the task checklist 2.1.299 draws below this rule, and runs first.
 //
 // FAIL CLOSED. Exactly ONE trailing row is dropped, and only when all of these hold:
 //   1. the last non-blank row is a horizontal rule: a run of `─`, optionally followed by one short
@@ -33,7 +34,7 @@
 import { lineText, type StyledLine } from "../../blocks";
 import { readKeyHintFooter } from "../menu-hints";
 import { hasInputBox } from "./chrome";
-import { classifyFooter, isBlank } from "./markers";
+import { classifyFooter, isBlank, isRuleRow, ruleTop } from "./markers";
 import { parseOptionRow } from "./prompt-select";
 
 // A run of rule glyphs and, optionally, ONE label set into it: ` capture lab ─`. The label holds no
@@ -58,15 +59,27 @@ function endsReviewPair(texts: string[], last: number): boolean {
 }
 
 /**
+ * The row of the closing rule that ends `texts`, or -1. A rule that wrapped beside a theme's gutter
+ * (a plugin or theme narrows the dialog while Claude Code draws the rule at the full pane width, so it
+ * overflows by the gutter's width) ends in a stub row (`isRuleRow`), and the rule starts at the top of
+ * the run of rule rows that stub ends (`ruleTop`).
+ */
+function closingRuleRow(texts: string[]): number {
+  let last = texts.length - 1;
+  while (last >= 0 && isBlank(texts[last]!)) last--;
+  const rule = last >= 1 && isRuleRow(texts, last) ? ruleTop(texts, last, 1) : last;
+  return rule >= 1 && isClosingRule(texts[rule]!) ? rule : -1;
+}
+
+/**
  * `lines` without the closing rule 2.1.296 draws under a dialog in a named session, or the very same
  * array when the screen does not end that way. Pure; the caller owns pane access.
  */
 export function dropClosingRule(lines: StyledLine[]): StyledLine[] {
   const texts = lines.map(lineText);
 
-  let rule = texts.length - 1;
-  while (rule >= 0 && isBlank(texts[rule]!)) rule--;
-  if (rule < 1 || !isClosingRule(texts[rule]!)) return lines;
+  const rule = closingRuleRow(texts);
+  if (rule < 0) return lines;
 
   // What is left once the rule is gone: the screen a grammar would have read in an unnamed session.
   const head = texts.slice(0, rule);

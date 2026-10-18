@@ -1,5 +1,6 @@
 import {
   maskAskAnswer,
+  maskControlReply,
   maskChatBody,
   maskDiff,
   maskFileBody,
@@ -53,6 +54,8 @@ export const maskForwardedAnswer: AnswerMask = (answer: TextAnswer, raw: string)
 
 function maskBody(answer: TextAnswer, body: JsonObject, raw: string): string | null {
   switch (answer) {
+    case "control":
+      return JSON.stringify(maskControlReply(body));
     case "answer":
       return body.ask === undefined ? raw : JSON.stringify(maskAskAnswer(body));
     case "pane":

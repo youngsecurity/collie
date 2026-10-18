@@ -12,9 +12,11 @@ import {
 } from "./pairing";
 import { burstPaneId, resetPollIntent, sendCount } from "./poll-intent";
 import { __refusalSettled, WIPE_LAST_KEY } from "./wipe";
+import { resetServerClockForTests, serverSkewMs } from "./server-clock";
 import {
   apiErrorFields,
   checkForUpdates,
+  cancelHeldSend,
   checkRun,
   clearRecentRuns,
   createTab,
@@ -28,6 +30,7 @@ import {
   filesImagePath,
   getNotifyPrefs,
   POLL_TIMEOUT_MS,
+  postSend,
   readFailureKind,
   imageSrc,
   refreshNow,
@@ -50,6 +53,8 @@ import {
   XHR_HEADER,
   XHR_HEADER_VALUE,
 } from "./api";
+
+afterEach(() => resetServerClockForTests());
 
 // The default happy-path handlers live in test/handlers.ts; here we focus on the write paths and the
 // ApiError-on-non-2xx contract that every mutation depends on (and uploadFile's separate code path).
@@ -77,6 +82,23 @@ describe("api client", () => {
     expect(isNotPaired()).toBe(true);
     expect(isPairingExpired()).toBe(true);
     expect(getDeviceToken()).toBeNull();
+  });
+
+  it("Send Protocol observes opt-out and clock metadata without enabling anonymous storage", async () => {
+    expect(getDeviceToken()).toBeNull();
+    resetServerClockForTests();
+    let authorization: string | null | undefined;
+    server.use(http.post("/api/send", ({ request }) => {
+      authorization = request.headers.get("Authorization");
+      return HttpResponse.json({ receipt: { outcome: "sent", keys: [] }, offers: [] }, {
+        headers: { "X-Collie-Pairing": "off", Date: new Date(Date.now() + 60_000).toUTCString() },
+      });
+    }));
+    await expect(postSend({ id: "adoption-send", pane: "w1:p1", text: "hello", mode: "send" })).resolves.toMatchObject({ outcome: "sent" });
+    expect(authorization).toBeNull();
+    expect(isBrowserPairingEnforced()).toBe(false);
+    expect(sessionCacheAllowed()).toBe(false);
+    expect(serverSkewMs()).toBeGreaterThan(50_000);
   });
 
   describe("pairing policy from protected responses", () => {
@@ -1438,5 +1460,63 @@ describe("one-off runs and their history (ADR 0095)", () => {
       { url: "/api/launch/recent/remove?host=badger", method: "POST", body: { line: "make test" } },
       { url: "/api/launch/recent/clear?host=badger", method: "POST", body: {} },
     ]);
+  });
+});
+
+describe("api client: the bridge's clock", () => {
+
+  it("reads the Date header of a response, so a phone five minutes ahead counts on the bridge's clock", async () => {
+    server.use(
+      http.get("/api/snapshot", () =>
+        HttpResponse.json(fixtureSnapshot, { headers: { date: new Date(Date.now() - 5 * 60_000).toUTCString() } }),
+      ),
+    );
+    await fetchSnapshot();
+    expect(Math.abs(serverSkewMs() + 5 * 60_000)).toBeLessThan(2000);
+  });
+
+  it("a response without the header leaves the phone's own clock", async () => {
+    server.use(http.get("/api/snapshot", () => HttpResponse.json(fixtureSnapshot)));
+    await fetchSnapshot();
+    expect(serverSkewMs()).toBe(0);
+  });
+});
+
+describe("cancelHeldSend (M56 spec 15)", () => {
+  it("DELETEs the request with its pane and the session, and reads a cancel and a dismiss", async () => {
+    const seen: string[] = [];
+    server.use(
+      http.delete("/api/send/:id", ({ request, params }) => {
+        seen.push(`${String(params.id)} ${new URL(request.url).search}`);
+        return HttpResponse.json({ result: seen.length === 1 ? "cancelled" : "dismissed" });
+      }),
+    );
+    expect(await cancelHeldSend("req00001", "w1:p1", { session: "demo" })).toEqual({ result: "cancelled" });
+    expect(await cancelHeldSend("req00002", "w1:p1")).toEqual({ result: "dismissed" });
+    expect(seen).toEqual(["req00001 ?pane=w1%3Ap1&session=demo", "req00002 ?pane=w1%3Ap1"]);
+  });
+
+  it("a 409 is the answer 'going out now', not an error", async () => {
+    server.use(http.delete("/api/send/:id", () => HttpResponse.json({ result: "refused", reason: "busy" }, { status: 409 })));
+    expect(await cancelHeldSend("req00001", "w1:p1")).toEqual({ result: "refused", reason: "busy" });
+  });
+
+  it("a refused cancel carries the stored receipt when the request already went out", async () => {
+    server.use(http.delete("/api/send/:id", () => HttpResponse.json({ result: "refused", reason: "busy", receipt: { requestId: "req00001", outcome: "sent", keys: [] } }, { status: 409 })));
+    expect(await cancelHeldSend("req00001", "w1:p1")).toEqual({ result: "refused", reason: "busy", receipt: { outcome: "sent" } });
+  });
+
+  it("an unknown request (404) and a body that is not an answer both throw", async () => {
+    server.use(http.delete("/api/send/:id", () => HttpResponse.json({ error: "no such request" }, { status: 404 })));
+    await expect(cancelHeldSend("req00001", "w1:p1")).rejects.toMatchObject({ status: 404 });
+    server.use(http.delete("/api/send/:id", () => HttpResponse.json({ nope: true })));
+    await expect(cancelHeldSend("req00001", "w1:p1")).rejects.toMatchObject({ status: 502 });
+  });
+
+  it("never leaves this machine: a crew member's pane throws before any request", async () => {
+    const urls: string[] = [];
+    server.use(http.delete("/api/send/:id", ({ request }) => (urls.push(request.url), HttpResponse.json({ result: "cancelled" }))));
+    await expect(cancelHeldSend("req00001", "w1:p1", { host: "badger" })).rejects.toMatchObject({ status: 400 });
+    expect(urls).toEqual([]);
   });
 });

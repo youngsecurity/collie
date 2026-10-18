@@ -180,7 +180,7 @@ export class TernMux implements MuxAdapter {
     return muxAck();
   }
 
-  async sendKeys(paneId: string, keys: readonly string[]): Promise<MuxAck> {
+  async writeKeys(paneId: string, keys: readonly string[]): Promise<MuxAck> {
     const translated: string[] = [];
     for (const key of keys) {
       const res = toTernKey(key);

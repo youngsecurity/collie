@@ -13,6 +13,12 @@
 // the ADR is about. The interactive blocks (prompt/wizard/preview/multi-select) are siblings of the
 // mirror, not children, so they keep normal app theming and never invert.
 //
+// THE GROUND AND INK ARE A THEME'S, WITH THE LITERALS AS FALLBACKS (M57 spec 17). A theme's `ansi`
+// block sets `--mirror-ground` and `--mirror-ink` beside the sixteen `--ansi-N` slots, gate-checked
+// in dark space (lib/theme/schema.ts); without one, `var()` falls back to the literals below, which
+// are byte-exact matches for --background / --foreground's dark halves, so the default pixels are the
+// ones they always were. lib/ansi.ts paints inverse video through the same two properties.
+//
 // The colours are LITERAL dark-space values rather than theme tokens. That is a CONVENTION, not a
 // constraint: `color-scheme: dark` on the element DOES flip an inherited light-dark() token
 // (resolution is element-scoped, per spec), and these literals are byte-exact matches for
@@ -41,7 +47,8 @@ import type { CSSProperties } from "react";
 import type { TerminalColors } from "@/hooks/use-display-prefs";
 import type { AnsiSegment } from "@/lib/ansi";
 
-export const MIRROR_SPACE = "[color-scheme:dark] bg-[#0a0a0a] text-[#fafafa]";
+export const MIRROR_SPACE =
+  "[color-scheme:dark] bg-[color:var(--mirror-ground,#0a0a0a)] text-[color:var(--mirror-ink,#fafafa)]";
 export const MIRROR_INVERT = "[filter:invert(1)_hue-rotate(180deg)] dark:[filter:none]";
 
 /** Dark-space grey by default; only a native light mirror defines the override. */
@@ -94,9 +101,10 @@ export function mirrorColorStyle(colors: TerminalColors): MirrorColorStyle {
  *  The `dark:` variants here are CORRECT, which deserves a sentence because the NEVER rule above
  *  forbids them inside inverted mirrors: this surface is not inverted, so it follows the root
  *  theme like any other element instead of backwards. `color-scheme` is inherited (light dark),
- *  so native UI inside (scrollbar, selection) follows too. */
+ *  so native UI inside (scrollbar, selection) follows too. The dark half reads a theme's `ansi`
+ *  ground and ink (M57 spec 17) like MIRROR_SPACE, with the same literals as fallbacks. */
 export const MUSE_MIRROR =
-  "terminal-muse bg-[#fffbf8] text-[#0a0a0a] dark:bg-[#0a0a0a] dark:text-[#fafafa]";
+  "terminal-muse bg-[#fffbf8] text-[#0a0a0a] dark:bg-[color:var(--mirror-ground,#0a0a0a)] dark:text-[color:var(--mirror-ink,#fafafa)]";
 
 /** Marker classes for the light-gated custom properties above. Plain string building, not cn():
  *  these custom classes can never conflict, so twMerge buys nothing on this per-segment hot path. */

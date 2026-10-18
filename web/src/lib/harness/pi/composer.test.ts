@@ -236,6 +236,96 @@ describe("pi 1.1.0 composer (PR 397 captures)", () => {
   });
 });
 
+// Issue 442, pi 1.2.0 with `editorPaddingX` above 0: every editor row, the draft's included, opens with
+// that many spaces (pi--v120-*, real pi 1.2.0 reads through Herdr's pane.read; the fixtures README has
+// the padding of each). A first row opening with a space is also what a panel's title looks like, so
+// the editor is told from a panel by its own cursor cell and by a padding every row shares. The
+// two-row footer is pi 1.2.0's: the cwd row, then the stats row.
+describe("pi 1.2.0 composer with editorPaddingX (issue 442)", () => {
+  it("reads the empty padded editor as a composer with no draft", () => {
+    const lines = fixture("pi--v120-idle-padded");
+    expect(locateComposer(lines)).toEqual({ layout: "stock", top: 0, bottom: 2, statusStart: 3, end: 5 });
+    expect(composerDraft(lines)).toBeNull();
+    expect(composerStatusLines(lines)).toHaveLength(2);
+  });
+
+  it("reads a draft indented by one column of padding", () => {
+    const lines = fixture("pi--v120-draft-padded");
+    expect(lineText(lines[1]!).startsWith(" hello from the probe")).toBe(true);
+    expect(locateComposer(lines)).toEqual({ layout: "stock", top: 0, bottom: 2, statusStart: 3, end: 5 });
+    expect(composerDraft(lines)).toBe("hello from the probe");
+    expect(composerPrompt(lines)?.split("\n")[1]).toBe(" hello from the probe");
+  });
+
+  it("reads the same draft at padding zero, the control", () => {
+    const lines = fixture("pi--v120-draft-unpadded");
+    expect(lineText(lines[1]!).startsWith("hello from the probe")).toBe(true);
+    expect(locateComposer(lines)).toEqual({ layout: "stock", top: 0, bottom: 2, statusStart: 3, end: 5 });
+    expect(composerDraft(lines)).toBe("hello from the probe");
+  });
+
+  it("reads a two-line draft indented by two columns of padding", () => {
+    const lines = fixture("pi--v120-draft-padded-multiline");
+    expect(lineText(lines[1]!).startsWith("  line one")).toBe(true);
+    expect(lineText(lines[2]!).startsWith("  line two")).toBe(true);
+    expect(locateComposer(lines)).toEqual({ layout: "stock", top: 0, bottom: 3, statusStart: 4, end: 6 });
+    expect(composerDraft(lines)).toBe("line one line two");
+    expect(composerPrompt(lines)).not.toBeNull();
+  });
+
+  it("still keeps a pasted indented row inside a padded draft", () => {
+    const lines = fixture("pi--v120-draft-padded");
+    const draft = (rows: StyledLine[]) => composerDraft([lines[0]!, ...rows, ...lines.slice(2)]);
+    expect(draft([lines[1]!, row("     indented code line")])).toBe("hello from the probe indented code line");
+  });
+
+  it("refuses a padded-looking panel: no cursor cell, or a row the padding did not reach", () => {
+    const lines = fixture("pi--v120-draft-padded");
+    const tail = lines.slice(2);
+    // The same one-space title the question dialogs open with, with no cursor cell in it.
+    expect(locateComposer([lines[0]!, row(" Pick a color for the Collie probe?"), ...tail])).toBeNull();
+    // A cursor cell, but a pointer row at column zero under a padded title: pi's select dialogs.
+    expect(locateComposer([lines[0]!, lines[1]!, row("> 1. Red"), row("  2. Green"), ...tail])).toBeNull();
+    // A cursor cell, but a row under the draft that no padding reached: pi pads every row it draws.
+    expect(locateComposer([lines[0]!, lines[1]!, row("not padded"), ...tail])).toBeNull();
+  });
+
+  it("reads the slash palette that pi pads with the editor, and still binds nothing past the tail window", () => {
+    const lines = fixture("pi--v120-slash-palette-padded");
+    expect(lineText(lines[3]!).startsWith(" → settings")).toBe(true);
+    expect(tailRule(lines)).toMatchObject({ bottom: 2, statusStart: 9, end: 11, palette: true });
+    expect(composerDraft(lines)).toBe("/");
+    expect(composerPrompt(lines)).toBeNull();
+    expect(composerStatusLines(lines)).toHaveLength(2);
+  });
+
+  it("refuses the padded palette under a draft that is not a slash command", () => {
+    const lines = fixture("pi--v120-slash-palette-padded");
+    expect(locateComposer(lines)).not.toBeNull();
+    expect(locateComposer([lines[0]!, row(` plain text${"\x1b[7m \x1b[0m"}`), ...lines.slice(2)])).toBeNull();
+  });
+
+  it("adds no composer to the pi corpus: the padded path changes none of the captures' answers", () => {
+    const PANES = new URL("../../../fixtures/panes/", import.meta.url);
+    const dialogs = readdirSync(PANES).filter((n) => /^pi--(v0871|v110|omo-v5130)-.*(question|single|multi|tabs|review|submit|picker|selector|editor)/.test(n) && !/draft|idle/.test(n));
+    expect(dialogs.length).toBeGreaterThan(30);
+    const found = dialogs.filter((name) => locateComposer(fixture(name.slice(0, -4))) !== null);
+    // Pickers and answered rows whose rows start at column zero were already read as a frame before
+    // padding existed (index.ts refuses them through piModalOnScreen). No other dialog joins them.
+    expect(found).toEqual([
+      "pi--omo-v5130-picker-model.txt",
+      "pi--omo-v5130-picker-resume.txt",
+      "pi--omo-v5130-question-banner.txt",
+      // pi 0.87.1's model selector, its rows at column zero between the box's rules (lab, 2026-10-17).
+      "pi--v0871-model-selector-empty--w120.txt",
+      "pi--v0871-question-answered.txt",
+      "pi--v110-core-selector.txt",
+      "pi--v110-question-answered.txt",
+      "pi--v110-stock-picker-resume.txt",
+    ]);
+  });
+});
+
 // Issue 416, OmO 5.1.30 as installed (fixtures README): the badge row is plain, and the `/` list
 // stands between the bottom rule and the status rows, two spaces in, four before the others.
 describe("OmO default install (issue 416)", () => {
@@ -287,6 +377,39 @@ describe("OmO default install (issue 416)", () => {
   });
 });
 
+describe("pi with an empty footer (issue 445)", () => {
+  const bare = (draft: string) => [row(rule), row(draft), row(rule)];
+
+  it("reads the editor when the bottom rule is the last non-blank row", () => {
+    const lines = [...bare("hello"), row(""), row("")];
+    expect(locateComposer(lines)).toEqual({ layout: "stock", top: 0, bottom: 2, statusStart: 3, end: 3 });
+    expect(composerDraft(lines)).toBe("hello");
+    expect(composerPrompt(lines)).toBe(`${rule}\nhello\n${rule}`);
+    expect(composerStatusLines(lines)).toEqual([]);
+  });
+
+  it("reads the empty editor with no draft", () => {
+    expect(composerDraft(bare(""))).toBeNull();
+    expect(locateComposer(bare(""))).not.toBeNull();
+  });
+
+  it("still reads the editor when status rows stand under the rule", () => {
+    const lines = [...bare("hello"), row(`${blue}~/proj`), row(`${blue}model`)];
+    expect(locateComposer(lines)).toEqual({ layout: "stock", top: 0, bottom: 2, statusStart: 3, end: 5 });
+  });
+
+  it("refuses a lone rule, a rule with no matching top rule, and a differently styled pair", () => {
+    expect(locateComposer([row(rule)])).toBeNull();
+    expect(locateComposer([row("some text"), row("more"), row(rule)])).toBeNull();
+    expect(locateComposer([row(`${blue}${rule}`), row("hello"), row(rule)])).toBeNull();
+  });
+
+  it("refuses a pane whose last row is not a full-width rule", () => {
+    expect(tailRule([row(rule), row("hello"), row("───")])).toBeNull();
+    expect(tailRule([row(rule), row("hello")])).toBeNull();
+  });
+});
+
 // Design point 1 of issue 416 loosened the status rows by one plain last row. Nothing outside pi's
 // own captures reads as a pi editor because of it: the same three agy screens did before.
 describe("the status rule across the whole corpus", () => {
@@ -296,7 +419,7 @@ describe("the status rule across the whole corpus", () => {
   it("finds a pi editor in no other harness's capture but agy's prompt rows", () => {
     expect(foreign.length).toBeGreaterThan(400);
     const found = foreign.filter((name) => locateComposer(fixture(name.slice(0, -4))) !== null);
-    expect(found).toEqual(["agy--done.txt", "agy--fresh-idle.txt", "agy--working.txt"]);
+    expect(found).toEqual(["agy--after-plan-idle.txt", "agy--done.txt", "agy--fresh-idle.txt"]);
   });
 
   it("keeps prose under a markdown rule out: a plain row straight under the rule is not a status row", () => {

@@ -147,10 +147,43 @@ describe("which answers the lead masks", () => {
     expect(textAnswerOf("workspace/w1/changes")).toBe("changes");
     expect(textAnswerOf("pane/w1%3Ap1/files")).toBe("files");
     expect(textAnswerOf("workspace/w1/files")).toBe("files");
-    for (const route of ["pane/w1/files/image", "workspace/w1/files/image", `blobs/${"ab".repeat(32)}`, "launchers", "folders", "pane/w1/reply", "tab"]) {
+    for (const route of ["pane/w1/reply", "pane/w1/send", "pane/w1/abort", "pane/w1/action"]) {
+      expect(textAnswerOf(route)).toBe("control");
+    }
+    for (const route of ["pane/w1/files/image", "workspace/w1/files/image", `blobs/${"ab".repeat(32)}`, "launchers", "folders", "tab"]) {
       expect(textAnswerOf(route)).toBeNull();
     }
   });
+});
+
+describe("new protocol control replies preserve the fork mask", () => {
+  for (const status of [200, 409]) {
+    test(`Send Protocol and durable refusals at ${status} mask prose, not identity`, async () => {
+      const body = { ok: false, send: {
+        id: key, requestId: key, paneId: key, outcome: "refused", reason: key,
+        surface: { hash: key, rowsHash: key, textHash: key, ask: { id: key, options: [{ id: key, label: key }] } },
+      }, turnId: key, askIds: [key], detail: key };
+      const original = JSON.stringify(body);
+      for (const route of ["reply", "send", "abort", "action"]) {
+        for (const mask of [maskForwardedAnswer, undefined]) {
+          const url = new URL(`https://lead.example/api/pane/p/${route}?host=laptop`);
+          const res = await forwardToPeer(new Request(url, { method: "POST", body: "{}" }), url, {
+            link: LINK, state: REACHABLE, maxUploadBytes: DEFAULT_MAX_UPLOAD_BYTES,
+            transport: member(original, status).transport, mask,
+          });
+          expect(res.status).toBe(status);
+          // SAFETY: the controlled fixture is checked in full immediately below.
+          const out = await res.json() as typeof body;
+          expect(out).toEqual(mask === undefined ? body : {
+            ...body, detail: masked, send: { ...body.send, reason: masked,
+              surface: { ...body.send.surface, ask: { id: key, options: [{ id: key, label: masked }] } },
+            },
+          });
+        }
+      }
+      expect(JSON.stringify(body)).toBe(original);
+    });
+  }
 });
 
 describe("a member's key reaches the phone masked through the lead", () => {

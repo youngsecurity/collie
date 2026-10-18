@@ -3,7 +3,7 @@ import { expect, test } from "@playwright/test";
 import { de } from "@/lib/i18n/messages/de";
 import { en } from "@/lib/i18n/messages/en";
 
-import { fill, installApiStub, pinLocale } from "./fixtures/api";
+import { fill, installApiStub } from "./fixtures/api";
 import {
   E2E_DEVICE_TOKEN,
   installMirrorWorld,
@@ -211,7 +211,7 @@ test("the History view renders the journal's own picture", async ({ page }) => {
 
 // Replaces the hand check "switch to German and read the image card", run by hand 2026-09-09.
 test("in German the image card speaks German", async ({ page }) => {
-  await pinLocale(page, "de");
+  await page.addInitScript(() => localStorage.setItem("collie:locale:v1", "de"));
   await stubBlob(page, "bytes");
   await page.goto(PANE_URL);
 
