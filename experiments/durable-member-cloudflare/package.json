@@ -26,6 +26,8 @@
     "wrangler": "4.147.0"
   },
   "overrides": {
-    "sharp": "0.35.5"
+    "sharp": "0.35.5",
+    "@modelcontextprotocol/client": "2.2.0",
+    "@modelcontextprotocol/sdk": "1.31.0"
   }
 }

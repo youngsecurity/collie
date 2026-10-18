@@ -302,6 +302,29 @@ the cooldown for them on 2026-10-13:
 The exclusions can go once each pinned version is 7 days old: after 2026-10-14 22:12 UTC for Pi, after
 2026-10-16 14:08 UTC for `agents`.
 
+### MCP OAuth dependency fix in the fork
+
+The fork overrides `agents` 0.28.0's exact MCP peers to client `2.2.0` and SDK `1.31.0`
+for [GHSA-6qxp-vccf-f47h](https://github.com/advisories/GHSA-6qxp-vccf-f47h).
+The client's own core is `2.2.0`; the unaffected server keeps core `2.0.0`. These
+September 28 releases meet the seven-day age policy. Normal Collie installs do not
+use this lock. Keep these overrides until a reviewed `agents` pin supplies the fix.
+
+The advisory concerns HTTP OAuth clients sending saved credentials to an
+MCP-server-selected authorization server. This program installs PiHarness and Lifecycle,
+not the separate MCP client capability. The fork patches the installed packages rather
+than treating that limited source observation as a security waiver.
+
+> **Warning.** Upgrading alone does not protect credentials saved without `issuer`.
+> Before enabling MCP OAuth in an adapted or previously deployed program, bind saved
+> credentials to their trusted issuer or clear them and sign in again. Custom providers
+> must preserve `issuer`; bundled credential providers need `expectedIssuer`. Do not
+> enable `skipIssuerMetadataValidation`. Direct `refreshAuthorization()` and
+> `exchangeAuthorization()` calls are outside this fix; new sign-ins still require a
+> trusted server. If credentials may have reached an untrusted server, rotate secrets
+> and revoke tokens as the advisory directs. This repository's
+> local fixture checks do not inspect or migrate any deployment's credentials.
+
 ## Test
 
 ```sh
