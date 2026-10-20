@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { MemoryRouter } from "react-router";
 
@@ -10,6 +10,7 @@ import { AnsiOutput } from "./ansi-output";
 import { FileLinksProvider } from "./file-links";
 import { paneLinkHandlers, PaneFileLinks, testFileOpener } from "@/test/file-links";
 import { server } from "@/test/setup";
+import { setDeviceToken } from "@/lib/pairing";
 import { codexPaddingScreen } from "@/test/codex-padding";
 
 const ESC = "\x1b";
@@ -29,7 +30,7 @@ describe("AnsiOutput: terminal colours", () => {
     expect(pre.style.getPropertyValue("--terminal-foreground")).toBe("#00ff00");
     expect(pre.style.getPropertyValue("--terminal-background")).toBe("#000000");
     // Still one <pre> in dark-space classes underneath: the inline style outranks them.
-    expect(pre.className).toContain("bg-[#0a0a0a]");
+    expect(pre.className).toContain("bg-[color:var(--mirror-ground,#0a0a0a)]");
   });
 
   it("does not invert a painted mirror in light: the colours are absolute", () => {
@@ -214,10 +215,12 @@ describe("terminal mirror colour space", () => {
   // inherited light-dark() token resolves against THIS element's colour-scheme (dark), not the
   // root's — but the mirror deliberately keeps a single spelling so nobody has to know that to read
   // it. Mixing the two is the regression this catches; a computed-style test would not.
-  it("uses literal dark-space colours, never theme tokens", () => {
+  // Since M57 spec 17 a theme's `ansi` block may set the mirror's own ground and ink; the literals
+  // stay as the fallbacks, so without one the pixels are the dark-space values they always were.
+  it("uses the mirror's own dark-space colours, the literals as fallbacks, never page tokens", () => {
     const pre = mirror("hello");
-    expect(pre.className).toContain("bg-[#0a0a0a]");
-    expect(pre.className).toContain("text-[#fafafa]");
+    expect(pre.className).toContain("bg-[color:var(--mirror-ground,#0a0a0a)]");
+    expect(pre.className).toContain("text-[color:var(--mirror-ink,#fafafa)]");
     expect(pre.className).not.toMatch(/\bbg-background\b/);
     expect(pre.className).not.toMatch(/\btext-foreground\b/);
   });
@@ -292,8 +295,8 @@ describe("native mirror (muse)", () => {
     expect(pre.className).toContain("terminal-muse");
     expect(pre.className).toContain("bg-[#fffbf8]");
     expect(pre.className).toContain("text-[#0a0a0a]");
-    expect(pre.className).toContain("dark:bg-[#0a0a0a]");
-    expect(pre.className).toContain("dark:text-[#fafafa]");
+    expect(pre.className).toContain("dark:bg-[color:var(--mirror-ground,#0a0a0a)]");
+    expect(pre.className).toContain("dark:text-[color:var(--mirror-ink,#fafafa)]");
     expect(pre.className).not.toContain("invert(1)");
   });
 
@@ -409,7 +412,7 @@ describe.each([undefined, "muse", "omp", "codex"])("mirror reconciliation: agent
       const inverted = !painted && agent !== "muse";
       expect(pre.classList.contains("terminal-muse")).toBe(native);
       expect(pre.className.includes("[filter:invert(1)_hue-rotate(180deg)]")).toBe(inverted);
-      expect(pre.className.includes("dark:bg-[#0a0a0a]")).toBe(native);
+      expect(pre.className.includes("dark:bg-[color:var(--mirror-ground,#0a0a0a)]")).toBe(native);
       expect(pre.className.includes("whitespace-pre-wrap")).toBe(wrap === true);
       expect(pre.className.includes("overflow-x-auto")).toBe(wrap !== true);
       expect(pre.style.getPropertyValue("--terminal-foreground")).toBe(colors?.foreground ?? "");
@@ -439,8 +442,13 @@ describe.each([undefined, "muse", "omp", "codex"])("mirror reconciliation: agent
       expect(fill.classList.contains("terminal-mobile-transparent-bg")).toBe(mobileTransparent);
       expect(fill.style.backgroundColor).toBe(mobileTransparent ? "" : "rgb(240, 240, 240)");
       expect(fill.style.getPropertyValue("--terminal-seg-bg")).toBe(mobileTransparent ? "rgb(240,240,240)" : "");
-      expect(screen.getByText("inverse").style.color).toBe("var(--terminal-background, #0a0a0a)");
-      expect(screen.getByText("inverse").style.backgroundColor).toBe("var(--terminal-foreground, #fafafa)");
+      const inverse = screen.getByText("inverse");
+      const inverseInk = "var(--terminal-foreground, var(--mirror-ink, #fafafa))";
+      expect(inverse.style.color).toBe("var(--terminal-background, var(--mirror-ground, #0a0a0a))");
+      // Literal inverse data now participates in the adapter's bright-fill projection too.
+      expect(inverse.classList.contains("terminal-mobile-transparent-bg")).toBe(mobileTransparent);
+      expect(inverse.style.backgroundColor).toBe(mobileTransparent ? "" : inverseInk);
+      expect(inverse.style.getPropertyValue("--terminal-seg-bg")).toBe(mobileTransparent ? inverseInk : "");
     });
   });
 });
@@ -648,6 +656,20 @@ describe("mirror line wrapping", () => {
     )!;
     expect(diffSpan.classList.contains("terminal-mobile-transparent-bg")).toBe(false);
     expect(diffSpan.getAttribute("style")).toContain("rgb(33, 58, 43)");
+  });
+
+  it("drops Codex's composer padding band from the mirror: no painted blank row is left behind", () => {
+    const body = Array.from({ length: 60 }, (_, i) => `Earlier output ${i}`).join("\n") + "\n";
+    const { container } = render(<AnsiOutput text={body + codexPaddingScreen} agent="codex" />);
+    const pre = container.querySelector("pre")!;
+
+    // The transcript stays, down to its last line; the prompt, its two background-only rows and the
+    // statusline belong to the composer and are not drawn in the mirror.
+    expect(pre.textContent).toBe(`${body}• Verification complete. Keep this transcript.`);
+    const paintedBlanks = [...pre.querySelectorAll("span")].filter(
+      (span) => span.textContent?.trim() === "" && span.style.backgroundColor !== "",
+    );
+    expect(paintedBlanks).toHaveLength(0);
   });
 
   it("does not suppress the same ANSI background for an unknown agent", () => {
@@ -1048,6 +1070,61 @@ describe("terminal mirror image placeholders", () => {
     fireEvent.error(await firstImg(container));
     expect(container.querySelector("img")).toBeNull();
     expect(container.textContent).toContain("[Image]");
+  });
+
+  it("fetches the picture's bytes with the pairing token, from the blob path the journal named", async () => {
+    const seen: { path: string; auth: string | null }[] = [];
+    server.use(
+      http.get("/api/blobs/:hash", ({ request }) => {
+        seen.push({ path: new URL(request.url).pathname, auth: request.headers.get("authorization") });
+        return new HttpResponse(new Uint8Array([1]), { headers: { "content-type": "image/png" } });
+      }),
+    );
+    setDeviceToken("tok-test-placeholder");
+    const { container } = render(
+      <AnsiOutput text={`header\n${KITTY_PLACEHOLDER}\nfooter`} images={[BLOB]} />,
+    );
+    const img = await firstImg(container);
+    // The link around the picture is the object URL the page minted itself, not the bridge path.
+    expect(img.closest("a")?.getAttribute("href")).toMatch(/^blob:/);
+    expect(seen).toEqual([{ path: BLOB, auth: "Bearer tok-test-placeholder" }]);
+  });
+
+  it("speaks German: the badge and the matched-by-order line come from the German catalog", async () => {
+    vi.resetModules();
+    const [{ AnsiOutput: FreshOutput }, { __resetLocale, setLocale, whenLocaleReady }, { de }, { en }] =
+      await Promise.all([
+        import("./ansi-output"),
+        import("@/lib/i18n"),
+        import("@/lib/i18n/messages/de"),
+        import("@/lib/i18n/messages/en"),
+      ]);
+    __resetLocale();
+    try {
+      const { container } = render(
+        <FreshOutput text={`header\n${KITTY_PLACEHOLDER}\n${"x"}\n${KITTY_PLACEHOLDER}\nfooter`} images={[BLOB]} />,
+      );
+      await act(async () => {
+        setLocale("de");
+        await whenLocaleReady("de");
+      });
+      await vi.waitFor(() => expect(container.textContent).toContain(de["mirror.imageBadge"]));
+      expect(container.textContent).toContain(de["mirror.imageMatchedByOrder"]);
+      // All three differ from English, so this cannot pass by falling back to it.
+      expect(de["mirror.imageBadge"]).not.toBe(en["mirror.imageBadge"]);
+      expect(de["mirror.imageMatchedByOrder"]).not.toBe(en["mirror.imageMatchedByOrder"]);
+      expect(de["mirror.imageAlt"]).not.toBe(en["mirror.imageAlt"]);
+      expect(container.textContent).not.toContain(en["mirror.imageBadge"]);
+      expect(container.textContent).not.toContain(en["mirror.imageMatchedByOrder"]);
+      const img = await vi.waitFor(() => {
+        const found = container.querySelector("img");
+        if (found === null) throw new Error("no picture yet");
+        return found;
+      });
+      expect(img.getAttribute("alt")).toBe(de["mirror.imageAlt"]);
+    } finally {
+      __resetLocale();
+    }
   });
 
   it("falls back to the badge when the bridge refuses the bytes", async () => {

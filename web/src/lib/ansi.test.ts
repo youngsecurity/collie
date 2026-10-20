@@ -106,14 +106,23 @@ describe("parseAnsi — SGR colour & weight", () => {
     expect(parseAnsi(`${ESC}[38;2;10;20;30mx`)[0]!.fg).toBe("rgb(10,20,30)");
   });
 
-  it("swaps fg/bg for inverse video (7m), with terminal appearance fallbacks", () => {
+  it("keeps inverse-video data literal for readers and styled prompt binding", () => {
     const segs = parseAnsi(`${ESC}[7mx`);
-    // The fallbacks are literal dark-space values, not theme tokens (.adr/0002 rule 2): they are
-    // --background/--foreground's dark halves. The `--terminal-*` properties are set only on a
-    // mirror surface the operator coloured (Young Security fork), so every other surface still
-    // resolves to the literal.
-    expect(segs[0]!.fg).toBe("var(--terminal-background, #0a0a0a)");
-    expect(segs[0]!.bg).toBe("var(--terminal-foreground, #fafafa)");
+    // Device and theme colors affect paint only, never these shared protocol values.
+    expect(segs[0]!.fg).toBe("#0a0a0a");
+    expect(segs[0]!.bg).toBe("#fafafa");
+  });
+
+  // M57 spec 17: the DATA stays the literal (a reader compares it, and the styled region the phone
+  // sends spells it), and only the PAINT reads the theme's mirror colours, with the literal as the
+  // fallback, so the default pixels do not move.
+  it("paints a colourless inverse through the theme's mirror colours, with the literals as fallbacks", () => {
+    const segs = parseAnsi(`${ESC}[7mx`);
+    expect(segs[0]!.style.color).toBe("var(--terminal-background, var(--mirror-ground, #0a0a0a))");
+    expect(segs[0]!.style.backgroundColor).toBe("var(--terminal-foreground, var(--mirror-ink, #fafafa))");
+    const coloured = parseAnsi(`${ESC}[7;31;42mx`);
+    expect(coloured[0]!.style.color).toBe("var(--ansi-2)");
+    expect(coloured[0]!.style.backgroundColor).toBe("var(--ansi-1)");
   });
 
   it("skips OSC sequences (window title) without leaking them into the text", () => {

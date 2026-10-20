@@ -1,4 +1,5 @@
-import type { JsonObject } from "../json.ts";
+import { apiError } from "../error-codes.ts";
+import type { JsonObject, JsonValue } from "../json.ts";
 import { MASK_VERSION } from "../redact.ts";
 import { MAX_UPLOAD_OVERHEAD, uploadTooLarge } from "../uploads.ts";
 import { DEVICE_HEADER, DEVICE_KIND_HEADER, encodeDeviceHeader } from "./admission.ts";
@@ -67,7 +68,9 @@ const FORWARDABLE: readonly RegExp[] = [
   // pane, where its receipt lives. Additive-optional (§7.1): a member that predates it answers 404.
   // `send` and `abort` (ADR 0101): a control that names the turn the phone saw, a WRITE to the member
   // that owns the pane, where its receipt lives. Additive-optional the same way.
-  /^pane\/[^/]+(?:\/(?:reply|keys|upload|close|rename|history|chat|changes|files|focus|answer|send|abort))?$/,
+  // `action` (M53 spec 07): a tap on one of the program's belt buttons, a WRITE to the member that owns the
+  // pane, where its receipt lives. Additive-optional the same way.
+  /^pane\/[^/]+(?:\/(?:reply|keys|upload|close|rename|history|chat|changes|files|focus|answer|send|abort|action))?$/,
   // One picture under the Files root, as bytes (ADR 0090): off the disk of the member that owns the
   // pane or the space, like the Files read it sits beside. Mirrors `PANE_FILES_IMAGE_ROUTE` and
   // `WORKSPACE_FILES_IMAGE_ROUTE` in bridge/server.ts one-for-one. Additive-optional (§7.1).
@@ -75,6 +78,9 @@ const FORWARDABLE: readonly RegExp[] = [
   /^workspace\/[^/]+\/files\/image$/,
   /^tab$/,
   /^tab\/[^/]+\/(?:rename|close)$/,
+  // A space's rename (M53 spec 05): a WRITE to the member that owns the space. Mirrors `SPACE_ACTION_ROUTE` in
+  // bridge/server.ts. Additive-optional (§7.1): a member that predates it answers 404.
+  /^space\/[^/]+\/rename$/,
   /^workspace$/,
   // The Changes view asked by workspace (ADR 0065): read-only git over the folder of a space that
   // lives on ONE member, so a `?host=` call is proxied like `pane/:id/changes`. Mirrors
@@ -110,15 +116,23 @@ const FORWARDABLE: readonly RegExp[] = [
   // `history` (CREW_PROTOCOL.md §9.1). The hash is matched as an opaque segment, mirroring
   // `BLOB_ROUTE` in bridge/server.ts one-for-one — `forward.test.ts` pins that correspondence.
   /^blobs\/[^/]+$/,
+  // A durable program's own history (M53 spec 11): the program runs on ONE member, so its conversation list,
+  // the items of one and a reopen are asked of that member. The list and the items are reads; a reopen is a
+  // WRITE. Mirrors `DURABLE_CONVERSATIONS_ROUTE` and `DURABLE_CONVERSATION_ROUTE` in bridge/server.ts
+  // one-for-one. Additive-optional (§7.1): a member that predates them answers 404.
+  /^durable\/conversations$/,
+  /^durable\/conversation\/[^/]+\/(?:items|reopen)$/,
 ];
 
 /**
  * The answers that carry text a pane or an agent wrote, which the lead masks before the phone reads
  * them (§9.1): the mirror (`pane`), a History page, a Chat body, and a Changes or Files answer, asked
  * by pane or by space. A picture (`files/image`) and a blob are bytes, never text, and stay byte for
- * byte. Writes also stay untouched except for an ask answer, whose 409 can carry the current ask.
+ * byte. Control replies carry program diagnostics too. Durable reads and writes also mask failure
+ * responses, including program-authored refusal details.
  */
-export type TextAnswer = "pane" | "history" | "chat" | "changes" | "files" | "answer";
+export type TextAnswer = "pane" | "history" | "chat" | "changes" | "files" | "answer" | "control"
+  | "conversations" | "conversation-items" | "durable-control" | "diagnostic";
 
 /** Which {@link TextAnswer} a crew route answers with, or `null` for a route whose answer is not text. */
 export function textAnswerOf(route: string): TextAnswer | null {
@@ -126,8 +140,12 @@ export function textAnswerOf(route: string): TextAnswer | null {
   if (/^pane\/[^/]+\/history$/.test(route)) return "history";
   if (/^pane\/[^/]+\/chat$/.test(route)) return "chat";
   if (/^pane\/[^/]+\/answer$/.test(route)) return "answer";
+  if (/^pane\/[^/]+\/(?:reply|send|abort|action)$/.test(route)) return "control";
   if (/^(?:pane|workspace)\/[^/]+\/changes$/.test(route)) return "changes";
   if (/^(?:pane|workspace)\/[^/]+\/files$/.test(route)) return "files";
+  if (route === "durable/conversations") return "conversations";
+  if (/^durable\/conversation\/[^/]+\/items$/.test(route)) return "conversation-items";
+  if (/^durable\/conversation\/[^/]+\/reopen$/.test(route) || /^space\/[^/]+\/rename$/.test(route)) return "durable-control";
   return null;
 }
 
@@ -182,6 +200,8 @@ export function forwardKind(route: string): ForwardKind {
   // too: it needs an authorised device on the member (ADR 0083), but it changes nothing, so it is
   // attempted against a stale member and rides the read budget like any other read.
   if (isWorkspaceRead(route)) return "read";
+  // A durable program's list and the items of a conversation change nothing (M53 spec 11); a reopen does.
+  if (route === "durable/conversations" || /^durable\/conversation\/[^/]+\/items$/.test(route)) return "read";
   if (!route.startsWith("pane/")) return "write";
   const action = route.split("/")[2];
   // `changes` is read-only git over the owning member's folder (ADR 0065): a read, like history.
@@ -224,7 +244,9 @@ export function forwardAuditAction(route: string): string | null {
   if (route === "folders" || route === "folders/star") return null; // a read, and a preference
   if (route.startsWith("blobs/")) return null; // a read
   if (isWorkspaceRead(route)) return null; // a read
+  if (route.startsWith("durable/")) return route.endsWith("/reopen") ? "durable.reopen" : null; // the list and the items are reads
   if (route.startsWith("tab/")) return route.endsWith("/close") ? "tab.close" : "tab.rename";
+  if (route.startsWith("space/")) return "space.rename";
   const action = route.split("/")[2];
   if (isPaneRead(action)) return null; // reads, and a read is audited on neither side
   if (action === "close" || action === "rename") return `pane.${action}`;
@@ -533,19 +555,26 @@ export interface ForwardDeps {
    * means every answer is re-emitted byte for byte, as before the lead masked anything.
    */
   readonly mask?: AnswerMask | undefined;
+  /**
+   * The Surface reader version this member sent on its last hello, `null` when it sent none (an older
+   * build). Absent means the caller does not know, and nothing is refused. A `null` makes the lead refuse
+   * a text submit to this member's reply route before any peer call ({@link REPLY_OLD_MEMBER_TEXT}).
+   */
+  readonly surfaceVersion?: number | null | undefined;
 }
 
 /**
- * A member's text answer, masked for the phone. A `2xx` or an ask's `409` with a body is read: a `304` has no
- * body, and an error body (`404 unknown-path`, `502 transcript read failed`) carries no session text
- * on either side, so it streams on as itself.
+ * A member's text answer, masked for the phone. Read successful bodies, ask/control 409s, and
+ * durable-route errors, which can carry program-authored diagnostics. A 304 has no body. Other
+ * errors keep their existing streaming path.
  *
  * ── FAIL CLOSED ──────────────────────────────────────────────────────────────
  * A body that is not the answer it should be (not JSON, or not the shape the route answers with) is
  * never passed on raw: it is a `502 answer_unmaskable` naming the member. Raw would be the one way a
  * member's key reached the phone through a lead that masks, and a failed read is a state the phone
  * already draws (the last mirror stays, Chat says it could not load). A body the transport lost
- * mid-read is a failed read like any other, `host_unreachable`.
+ * mid-read is a failed read like any other, `host_unreachable`. Durable HTTP errors may also be
+ * plain text; the diagnostic mask handles those as text rather than requiring a success shape.
  *
  * ── HEADERS ─────────────────────────────────────────────────────────────────
  * The member's ETag rides on, salted with the mask's version ({@link saltTag}). The mask is a function
@@ -556,8 +585,9 @@ export interface ForwardDeps {
  * `content-length` is copied ({@link proxiedResponse}), so the new body is framed by its own length.
  */
 async function maskedAnswer(res: Response, answer: TextAnswer, mask: AnswerMask, memberId: string): Promise<Response> {
-  const staleAsk = answer === "answer" && res.status === 409;
-  if ((!staleAsk && (res.status < 200 || res.status >= 300)) || res.status === 204 || res.body === null) return res;
+  const staleAsk = (answer === "answer" || answer === "control") && res.status === 409;
+  const durableFailure = (answer === "conversations" || answer === "conversation-items" || answer === "durable-control") && res.status >= 400;
+  if ((!staleAsk && !durableFailure && (res.status < 200 || res.status >= 300)) || res.status === 204 || res.body === null) return res;
   let raw: string;
   try {
     raw = await res.text();
@@ -566,7 +596,7 @@ async function maskedAnswer(res: Response, answer: TextAnswer, mask: AnswerMask,
       host: memberId,
     });
   }
-  const masked = mask(answer, raw);
+  const masked = mask(durableFailure ? "diagnostic" : answer, raw);
   if (masked === null) {
     return forwardError(
       "answer_unmaskable",
@@ -618,6 +648,67 @@ function withSaltedTag(res: Response): Response {
 }
 
 /**
+ * What a text reply to a member that sent no Surface reader version answers (M56). That member is an
+ * older build: it would type the text blind and answer a bare `ok`, with no check of the screen.
+ */
+export const REPLY_OLD_MEMBER_TEXT = "that machine runs an older Collie and cannot take checked text from this phone; update it, or use the keys";
+
+/**
+ * The sentence the phone shows under its "refused" note for that same refusal (see
+ * {@link oldMemberRefusal}), in the voice of the Send Protocol's own detail lines.
+ */
+export const SEND_OLD_MEMBER_DETAIL = "This machine runs an older Collie and cannot take a send from the phone yet. Update it from the Crew page.";
+
+/**
+ * The lead's answer to a text submit for a member with no Surface reader: the reply route's old
+ * refusal for an old reader, and beside it, under `send`, a Send Protocol answer the phone reads (an
+ * outcome of `refused`, nothing typed, and {@link SEND_OLD_MEMBER_DETAIL}). Before 2026-10-17 it
+ * carried no `send`, and the phone said "a body this phone cannot read". No receipt is stored: the
+ * request never left the lead, and the phone's request id stays the phone's.
+ */
+function oldMemberRefusal(requestId: string | null): Response {
+  const receipt: JsonObject = { outcome: "refused" };
+  if (requestId !== null) receipt.requestId = requestId;
+  const send: JsonObject = { receipt, offers: ["keys"], detail: SEND_OLD_MEMBER_DETAIL };
+  const refusal = { ok: false, textDelivered: false, ...apiError("reply.send_failed", { reason: REPLY_OLD_MEMBER_TEXT }), send };
+  return new Response(JSON.stringify(refusal), {
+    status: 200,
+    headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
+  });
+}
+
+/**
+ * The request id a text submit names, or null. Read from a clone like {@link isTextSubmit}.
+ */
+async function textSubmitId(req: Request): Promise<string | null> {
+  try {
+    const body: JsonValue = await req.clone().json();
+    if (typeof body !== "object" || body === null || Array.isArray(body)) return null;
+    return typeof body.id === "string" ? body.id : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether this request is a text submit to a pane's reply route: `POST pane/:id/reply` with a body of
+ * `submit: true` (or no `submit`, which means true) and non-empty text. The body is read from a clone,
+ * so the original still streams to the member. A body that is not JSON is not a text submit here, and
+ * is left to the member to refuse.
+ */
+async function isTextSubmit(req: Request, route: string): Promise<boolean> {
+  if (req.method !== "POST" || !/^pane\/[^/]+\/reply$/.test(route)) return false;
+  try {
+    const body: JsonValue = await req.clone().json();
+    if (typeof body !== "object" || body === null || Array.isArray(body)) return false;
+    const { text, submit } = body;
+    return typeof text === "string" && text !== "" && (submit === undefined || submit === true);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Forward one session-scoped request to the peer that owns it, and answer the phone.
  *
  * Never throws: a peer being down is a rendered state, never a 500 (milestone constraint), and this
@@ -638,6 +729,23 @@ export async function forwardToPeer(req: Request, url: URL, deps: ForwardDeps): 
   if (kind === "write") {
     const refusal = refuseWriteBeforeAttempt(deps.state);
     if (refusal !== null) return refusal;
+  }
+
+  // A text reply to a member with no Surface reader (an older build) is refused here, before any dial:
+  // that member types blind and answers a bare `ok`. The phone locks its own field for such a member, so
+  // this guards the callers that are not that phone. Keys and `submit: false` text go on as they were.
+  // The lead writes its own line for it, like every forward it refuses: one `reply` row naming the
+  // member, `forwarded: "old_member"`, so the audit says why no forward followed the tap.
+  if (deps.surfaceVersion === null && (await isTextSubmit(req, route))) {
+    if (deps.audit !== undefined) {
+      const entry: ForwardAuditEntry = { action: "reply", host: deps.link.memberId, outcome: "old_member" };
+      const paneId = forwardPaneId(route);
+      const session = url.searchParams.get("session");
+      if (paneId !== undefined) entry.paneId = paneId;
+      if (session !== null) entry.session = session;
+      deps.audit(entry);
+    }
+    return oldMemberRefusal(await textSubmitId(req));
   }
 
   // §13: the size bound is enforced BEFORE forwarding as well as by the peer. A phone on cellular

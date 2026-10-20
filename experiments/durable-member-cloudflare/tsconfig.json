@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "skipLibCheck": true,
+    "lib": ["ESNext"],
+    "types": ["@cloudflare/workers-types", "@cloudflare/vitest-plugin/types"],
+    // The shared files in ../../examples/durable-member import Pi; take its types from this folder.
+    // A paths folder lookup does not read package exports. Map the SDK's context subpath
+    // explicitly, as the local example does, rather than relying on a copy above the SDK.
+    "paths": {
+      "@earendil-works/chord/context": ["./node_modules/@earendil-works/chord/dist/context"],
+      "@earendil-works/*": ["./node_modules/@earendil-works/*"]
+    }
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts", "vitest.config.ts"],
+  "exclude": ["node_modules"]
+}

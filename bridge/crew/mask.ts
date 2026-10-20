@@ -1,5 +1,7 @@
 import {
   maskAskAnswer,
+  maskControlReply,
+  maskDurableConversations,
   maskChatBody,
   maskDiff,
   maskFileBody,
@@ -9,7 +11,8 @@ import {
 import type { JsonObject, JsonValue } from "../json.ts";
 import type { TranscriptEntry } from "../journal/types.ts";
 import type { ChatBody } from "../journal/live.ts";
-import type { ChangeDiff, FileReadAnswer, PaneReadResponse } from "../types.ts";
+import { redactText } from "../redact.ts";
+import type { ChangeDiff, DurableConversationRow, FileReadAnswer, PaneReadResponse } from "../types.ts";
 import type { AnswerMask, TextAnswer } from "./forward.ts";
 
 // The LEAD's mask over a member's text answer (CREW_PROTOCOL.md §9.1). The member's body is parsed,
@@ -39,11 +42,14 @@ export const maskForwardedAnswer: AnswerMask = (answer: TextAnswer, raw: string)
     // SAFETY: `JSON.parse` returns a JSON value by definition; `JsonValue` is the name for that type.
     body = JSON.parse(raw) as JsonValue;
   } catch {
-    return null;
+    // HTTP errors may be plain text (including the local route's 400 validation errors).
+    // Mask those bytes as text, retaining the member's status rather than inventing a 502.
+    return answer === "diagnostic" ? redactText(raw) : null;
   }
-  if (!isObject(body)) return null;
   try {
-    return maskBody(answer, body, raw);
+    // Errors need not have a success envelope. Mask JSON strings/arrays too, retaining their shape.
+    if (answer === "diagnostic") return JSON.stringify(maskControlReply(body));
+    return isObject(body) ? maskBody(answer, body, raw) : null;
   } catch {
     // The checks above the mask cover every field it reads; a throw past them is a shape nobody
     // planned for, and it is refused like any other.
@@ -53,6 +59,20 @@ export const maskForwardedAnswer: AnswerMask = (answer: TextAnswer, raw: string)
 
 function maskBody(answer: TextAnswer, body: JsonObject, raw: string): string | null {
   switch (answer) {
+    case "control":
+    case "durable-control":
+    case "diagnostic":
+      return JSON.stringify(maskControlReply(body));
+    case "conversations":
+      if (body.available === false) return JSON.stringify(maskControlReply(body));
+      return body.available === true && isConversationList(body)
+        ? JSON.stringify(maskDurableConversations(body))
+        : null;
+    case "conversation-items":
+      if (body.available === false) return JSON.stringify(maskControlReply(body));
+      return body.available === true && isHistoryPage(body)
+        ? JSON.stringify(maskHistoryPage(body))
+        : null;
     case "answer":
       return body.ask === undefined ? raw : JSON.stringify(maskAskAnswer(body));
     case "pane":
@@ -78,6 +98,11 @@ function maskBody(answer: TextAnswer, body: JsonObject, raw: string): string | n
 
 function isObject(value: JsonValue | undefined): value is JsonObject {
   return value !== null && value !== undefined && typeof value === "object" && !Array.isArray(value);
+}
+
+function isConversationList(body: JsonObject): body is JsonObject & { items: DurableConversationRow[] } {
+  return Array.isArray(body.items) && body.items.every((row) =>
+    isObject(row) && typeof row.title === "string" && (row.subtitle === undefined || typeof row.subtitle === "string"));
 }
 
 function isPaneRead(body: JsonObject): body is JsonObject & PaneReadResponse {

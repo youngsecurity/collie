@@ -12,13 +12,16 @@
 //
 // Pure: no disk, no clock, no config. The `COLLIE_REDACT` switch is the caller's.
 
-import type { Ask, ChangeCommitDiff, ChangeDiff, FileReadAnswer, FilesListing, PaneReadResponse } from "./types.ts";
+import type { ChangeCommitDiff, ChangeDiff, DurableConversationRow, FileReadAnswer, FilesListing, PaneReadResponse, PaneWire } from "./types.ts";
 import { redactEntry } from "./journal/text.ts";
 import type { TranscriptEntry } from "./journal/types.ts";
 import { maskAsk } from "./durable/parse.ts";
 import { redactAnsi, redactText } from "./redact.ts";
 
 export { maskAsk } from "./durable/parse.ts";
+
+/** Send/Ask replies carry display details and surfaces beside opaque control identifiers. */
+export const maskControlReply = maskAsk;
 
 /**
  * A mirror read with its text masked. The grid keeps its escapes and its columns (`redactAnsi`), and
@@ -34,6 +37,18 @@ export function maskPaneRead<T extends PaneReadResponse>(body: T): T {
 /** A History page with every turn masked (`redactEntry`). Cursor, counts and flags are untouched. */
 export function maskHistoryPage<T extends { entries: TranscriptEntry[] }>(page: T): T {
   return { ...page, entries: page.entries.map(redactEntry) };
+}
+
+/** Program-authored labels only; conversation/pane ids and paging cursors remain opaque. */
+export function maskDurableConversations<T extends { items: DurableConversationRow[] }>(body: T): T {
+  return {
+    ...body,
+    items: body.items.map((row) => {
+      const masked = { ...row, title: redactText(row.title) };
+      if (row.subtitle !== undefined) masked.subtitle = redactText(row.subtitle);
+      return masked;
+    }),
+  };
 }
 
 /** A Chat body masked: the turns and, on a live window, the queued messages. */
@@ -68,9 +83,18 @@ export function maskAskAnswer<T extends object>(body: T): T {
   return "ask" in body && body.ask !== undefined ? { ...body, ask: maskAsk(body.ask) } : body;
 }
 
-function maskPaneDisplay<P extends { terminalTitle?: string; asks?: Ask[] }>(pane: P): P {
-  const masked = maskTerminalTitle(pane);
-  return pane.asks === undefined ? masked : { ...masked, asks: pane.asks.map(maskAsk) };
+type PaneDisplay = Pick<PaneWire, "terminalTitle" | "asks" | "surface" | "hold" | "held" | "actions">;
+
+function maskPaneDisplay<P extends PaneDisplay>(pane: P): P {
+  let masked = maskTerminalTitle(pane);
+  if (pane.asks !== undefined) masked = { ...masked, asks: pane.asks.map(maskAsk) };
+  // These arrive from a peer as well as the local runtime. Mask at the final snapshot boundary,
+  // not only while assembling local panes, so a peer's redaction opt-out cannot leak through a lead.
+  if (pane.surface !== undefined) masked = { ...masked, surface: maskAsk(pane.surface) };
+  if (pane.hold !== undefined) masked = { ...masked, hold: maskAsk(pane.hold) };
+  if (pane.held !== undefined) masked = { ...masked, held: pane.held.map(maskAsk) };
+  if (pane.actions !== undefined) masked = { ...masked, actions: pane.actions.map(maskAsk) };
+  return masked;
 }
 
 /**
@@ -78,7 +102,7 @@ function maskPaneDisplay<P extends { terminalTitle?: string; asks?: Ask[] }>(pan
  * carries its members' panes as sent, so a member that does not mask sent its display text in clear.
  */
 export function maskSnapshotTitles<
-  S extends { agents: readonly { terminalTitle?: string; asks?: Ask[] }[]; shellPanes: readonly { terminalTitle?: string; asks?: Ask[] }[] },
+  S extends { agents: readonly PaneDisplay[]; shellPanes: readonly PaneDisplay[] },
 >(snapshot: S): S {
   return { ...snapshot, agents: snapshot.agents.map(maskPaneDisplay), shellPanes: snapshot.shellPanes.map(maskPaneDisplay) };
 }

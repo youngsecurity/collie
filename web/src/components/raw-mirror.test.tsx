@@ -34,7 +34,10 @@ describe("RawMirror", () => {
     const spans = [...pre.querySelectorAll("span")];
     const leaf = (text: string) => spans.find((s) => s.textContent === text && !s.querySelector("span"))!;
     expect(leaf("red").style.color).toBe("var(--ansi-1)");
-    expect(leaf("inverse").style.color).toBe("var(--terminal-background, #0a0a0a)");
+    // Device paint wins; an unset side uses the theme before the literal dark-space fallback.
+    // e2e/terminal-colors.spec.ts checks this cascade in a real CSS engine on this card path.
+    expect(leaf("inverse").style.color).toBe("var(--terminal-background, var(--mirror-ground, #0a0a0a))");
+    expect(leaf("inverse").style.backgroundColor).toBe("var(--terminal-foreground, var(--mirror-ink, #fafafa))");
     expect(leaf("────").style.color).toBe(colors.foreground ? "rgb(17, 34, 51)" : "var(--terminal-muted-fg, #a1a1a1)");
     rerender(
       <RawMirrorAppearanceContext value={{ colors: { foreground: "", background: "" }, nativeMirror: true }}>

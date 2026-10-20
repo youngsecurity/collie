@@ -8,6 +8,8 @@ import { encodeStyledRegion, styledRegionLines } from "../web/src/lib/styled-reg
 import {
   afterPaneInput,
   isPaneInput,
+  isTopologyWrite,
+  freeSpaceName,
   paneGateLevel,
   blobRoute,
   BLOB_MAX_BYTES,
@@ -16,6 +18,8 @@ import {
   canonicalizeHost,
   muxConfigBody,
   muxLogoResponse,
+  sessionConfigMux,
+  sessionMuxWire,
   BUILD_HEADER,
   cacheControlFor,
   checkAccess,
@@ -49,6 +53,10 @@ import {
   cacheRulesRoute,
   launchersRoute,
   normalizeTabLabel,
+  renameSpace,
+  durableConversations,
+  durableConversationItems,
+  reopenConversation,
   hasSplitUrl,
   paneReadResponse,
   paneHistory,
@@ -60,12 +68,15 @@ import {
   parseCacheWatchForget,
   cacheWatchable,
   replyPane,
+  REPLY_OFF_TEXT,
+  REPLY_OLD_PHONE_TEXT,
   requestBodyCap,
   pairedLabel,
   requestDevice,
   resetStaticGzipCache,
   resolveStaticPath,
   sendReplySteps,
+  typeIntoFreshShell,
   serveStatic,
   STT_WORKER_CSP,
   isSttWorkerScript,
@@ -115,6 +126,11 @@ import {
   muxGone,
   muxOk,
   muxRefused,
+  muxUnreachable,
+  type MuxConversationItems,
+  type MuxConversationPage,
+  type MuxHistoryPage,
+  type MuxReopened,
   type MuxAck,
   type MuxAdapter,
   type MuxCreatedPane,
@@ -236,6 +252,8 @@ function cfg(overrides: Partial<Config> = {}): Config {
     vapidSubject: "mailto:admin@example.com",
     stateDir: "/tmp/state",
     multiSession: true,
+    surfaceShadow: false,
+    sendProtocol: false,
     skipServe: false,
     basePath: "/",
     maxUploadBytes: DEFAULT_MAX_UPLOAD_BYTES,
@@ -757,24 +775,22 @@ describe("sendReplySteps — two-step send & partial-failure clarity", () => {
       this.calls.push("text");
       return this.failOn === "text" ? Promise.reject(new Error("text rejected")) : Promise.resolve(muxAck());
     }
-    sendKeys(_paneId: string, _keys: readonly string[]): Promise<MuxAck> {
+    writeKeys(_paneId: string, _keys: readonly string[]): Promise<MuxAck> {
       this.calls.push("keys");
       return this.failOn === "keys" ? Promise.reject(new Error("keys rejected")) : Promise.resolve(muxAck());
     }
   }
 
-  const noSleep = async () => {};
-
-  test("types then submits on the happy path", async () => {
+  test("types then submits on the happy path, with no wait between the two (the blind 350 ms is gone, M56 spec 06)", async () => {
     const client = new FakeClient();
-    const out = await sendReplySteps(client, "p1", "hello", true, ["Enter"], noSleep);
+    const out = await sendReplySteps(client, "p1", "hello", true, ["Enter"]);
     expect(out).toEqual({ ok: true, textDelivered: true });
     expect(client.calls).toEqual(["text", "keys"]);
   });
 
   test("text lands but submit fails → distinguishable error + textDelivered:true (don't resend)", async () => {
     const client = new FakeClient("keys");
-    const out = await sendReplySteps(client, "p1", "hello", true, ["Enter"], noSleep);
+    const out = await sendReplySteps(client, "p1", "hello", true, ["Enter"]);
     expect(out).toEqual({
       ok: false,
       textDelivered: true,
@@ -786,7 +802,7 @@ describe("sendReplySteps — two-step send & partial-failure clarity", () => {
 
   test("text step fails → nothing delivered, surfaces Herdr's message (safe to resend)", async () => {
     const client = new FakeClient("text");
-    const out = await sendReplySteps(client, "p1", "hello", true, ["Enter"], noSleep);
+    const out = await sendReplySteps(client, "p1", "hello", true, ["Enter"]);
     // The English is byte-for-byte the multiplexer's own words, as it always was; `code` and
     // `detail.reason` are the machine half the phone translates against (bridge/error-codes.ts).
     expect(out).toEqual({
@@ -801,7 +817,7 @@ describe("sendReplySteps — two-step send & partial-failure clarity", () => {
 
   test("submit-only (empty text) failure is a plain failure, not the partial-delivery message", async () => {
     const client = new FakeClient("keys");
-    const out = await sendReplySteps(client, "p1", "", true, ["Enter"], noSleep);
+    const out = await sendReplySteps(client, "p1", "", true, ["Enter"]);
     expect(out).toEqual({
       ok: false,
       textDelivered: false,
@@ -814,9 +830,41 @@ describe("sendReplySteps — two-step send & partial-failure clarity", () => {
 
   test("no-submit reply just types the text", async () => {
     const client = new FakeClient();
-    const out = await sendReplySteps(client, "p1", "hello", false, ["Enter"], noSleep);
+    const out = await sendReplySteps(client, "p1", "hello", false, ["Enter"]);
     expect(out).toEqual({ ok: true, textDelivered: true });
     expect(client.calls).toEqual(["text"]);
+  });
+});
+
+describe("typeIntoFreshShell: the order of the writes", () => {
+  test("writes the text first and the Enter second, with no wait between them", async () => {
+    const events: string[] = [];
+    let clock = 0;
+    const client = {
+      readGrid: (paneId: string): Promise<MuxOutcome<MuxGrid>> => {
+        events.push("read");
+        return Promise.resolve(muxOk({ paneId, text: "user@host:~$ ", truncated: false, revision: 1 }));
+      },
+      typeText: (_paneId: string, text: string): Promise<MuxAck> => {
+        events.push(`text:${text}`);
+        return Promise.resolve(muxAck());
+      },
+      writeKeys: (_paneId: string, keys: readonly string[]): Promise<MuxAck> => {
+        events.push(`keys:${keys.join("+")}`);
+        return Promise.resolve(muxAck());
+      },
+    };
+    const sleep = (ms: number): Promise<void> => {
+      events.push("sleep");
+      clock += ms;
+      return Promise.resolve();
+    };
+    const out = await typeIntoFreshShell(client, "p1", "ls -la", { sleep, now: () => clock }, "launch");
+    expect(out).toEqual({ ok: true, textDelivered: true });
+    const writes = events.filter((e) => e.startsWith("text:") || e.startsWith("keys:"));
+    expect(writes).toEqual(["text:ls -la", "keys:Enter"]);
+    // Nothing sits between the two writes: the blind settle of the old route is gone (M56 spec 06).
+    expect(events.slice(events.indexOf("text:ls -la"))).toEqual(["text:ls -la", "keys:Enter"]);
   });
 });
 
@@ -876,6 +924,7 @@ describe("pane write prompt binding", () => {
     keys?: string[];
     text?: string;
     submit?: boolean;
+    id?: string;
     expected_prompt?: string | number | null;
     expected_styled?: string | number | null;
     expected_columns?: { start: number; end: number } | number[] | string | null;
@@ -997,6 +1046,18 @@ describe("pane write prompt binding", () => {
     expect(res.status).toBe(200);
     expect(client.reads).toEqual([]);
     expect(client.keys).toEqual([["w1:p1", ["1"]]]);
+  });
+
+  test("Send now while the turn runs: the queue's declared keys pass with no read of the screen", async () => {
+    // The screen of a running Claude Code 2.1.301 turn with a message queued (`ctrl+enter to send now`).
+    // The keys door never asks the Surface: a running turn is never a refusal here, like the Stop key.
+    const client = new FakePaneClient();
+    client.text = readFileSync(join(import.meta.dir, "../web/src/fixtures/panes/claude--v2301-working-queued-message--w100.txt"), "utf8");
+    const { audit } = auditEntries();
+    const res = await keysPane(asMux(client), cfg(), "w1:p1", request({ keys: ["ctrl+Enter"] }), audit, "phone", "default");
+    expect(res.status).toBe(200);
+    expect(client.reads).toEqual([]);
+    expect(client.keys).toEqual([["w1:p1", ["ctrl+Enter"]]]);
   });
 
   test("reply without expected_prompt writes without an extra pane read", async () => {
@@ -1138,6 +1199,69 @@ describe("pane write prompt binding", () => {
     });
   });
 
+  test("a reply that submits text never types blind: with no protocol it is refused 409 and nothing reaches the pane (M56 spec 06)", async () => {
+    const client = new FakePaneClient();
+    const { audit } = auditEntries();
+    const res = await replyPane(asMux(client), cfg(), "w1:p1", request({ text: "hello", submit: true, id: "phone-req-0001" }), audit, null, "default");
+    expect(res.status).toBe(409);
+    expect(await res.text()).toBe(REPLY_OFF_TEXT);
+    expect(client.texts).toEqual([]);
+    expect(client.keys).toEqual([]);
+  });
+
+  test("a text submit with no request id is an old phone: refused at once, before any read or key (M56 compat)", async () => {
+    const client = new FakePaneClient();
+    const { audit, entries } = auditEntries();
+    const bodies = [
+      { text: "hello", submit: true },
+      { text: "hello" },
+      { text: "hello", submit: true, expected_prompt: "Approve this command?\n1. Yes\n2. No" },
+    ];
+    for (const body of bodies) {
+      const res = await replyPane(asMux(client), cfg(), "w1:p1", request(body), audit, null, "default");
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        ok: false,
+        textDelivered: false,
+        error: REPLY_OLD_PHONE_TEXT,
+        code: "reply.send_failed",
+        detail: { reason: REPLY_OLD_PHONE_TEXT },
+      });
+    }
+    expect(client.reads).toEqual([]);
+    expect(client.texts).toEqual([]);
+    expect(client.keys).toEqual([]);
+    expect(entries[0]?.detail).toMatchObject({ submitted: false, textDelivered: false, reason: "old_phone" });
+  });
+
+  test("an old phone's keys and its raw text with submit false still work (M56 compat)", async () => {
+    const client = new FakePaneClient();
+    const { audit } = auditEntries();
+    const typed = await replyPane(asMux(client), cfg(), "w1:p1", request({ text: "hello", submit: false }), audit, null, "default");
+    expect(typed.status).toBe(200);
+    expect(await typed.json()).toEqual({ ok: true });
+    expect(client.texts).toEqual([["w1:p1", "hello"]]);
+    const keyed = await keysPane(asMux(client), cfg(), "w1:p1", request({ keys: ["1"] }), audit, null, "default");
+    expect(keyed.status).toBe(200);
+    expect(client.keys).toEqual([["w1:p1", ["1"]]]);
+  });
+
+  test("a text submit that names an id runs the Send Protocol as before, so the old-phone rule does not widen (M56 compat)", async () => {
+    const client = new FakePaneClient();
+    const { audit } = auditEntries();
+    const res = await replyPane(asMux(client), cfg(), "w1:p1", request({ text: "hello", submit: true, id: "phone-req-0001" }), audit, null, "default");
+    expect(res.status).toBe(409);
+    expect(await res.text()).toBe(REPLY_OFF_TEXT);
+  });
+
+  test("a submit with no text and no binding is refused: an unbound Enter is the blind path (M56 spec 06)", async () => {
+    const client = new FakePaneClient();
+    const { audit } = auditEntries();
+    const res = await replyPane(asMux(client), cfg(), "w1:p1", request({ text: "", submit: true }), audit, null, "default");
+    expect(res.status).toBe(400);
+    expect(client.keys).toEqual([]);
+  });
+
   test("stale expected_prompt returns prompt_changed and sends no reply text or keys", async () => {
     const client = new FakePaneClient();
     client.text = "Command finished";
@@ -1149,6 +1273,7 @@ describe("pane write prompt binding", () => {
       request({
         text: "hello",
         submit: true,
+        id: "phone-req-0001",
         expected_prompt: "Approve this command?\n1. Yes\n2. No",
       }),
       audit,
@@ -1308,7 +1433,7 @@ describe("pane write prompt binding", () => {
         asMux(client),
         cfg(),
         "w1:p1",
-        request({ text: "hello", expected_prompt: TEXT_REGION, expected_styled: styledOf(chips(0)) }),
+        request({ text: "hello", id: "phone-req-0001", expected_prompt: TEXT_REGION, expected_styled: styledOf(chips(0)) }),
         audit,
         null,
         "default",
@@ -1497,6 +1622,33 @@ describe("pane write prompt binding", () => {
       );
       expect(entries[0]?.detail).toMatchObject({ promptBinding: { styled: "checked" } });
       expect(entries[1]?.detail).not.toHaveProperty("promptBinding.styled");
+    });
+  });
+
+  // M56 spec 03, shadow mode: an input box under the bound region is recorded in the audit line and
+  // never refuses (bridge/prompt-binding.ts composerBelowShadow says why: Muse draws a live question
+  // above its own box).
+  describe("an input box under the region (shadow)", () => {
+    const RULE = "─".repeat(40);
+    const REGION = ["Do you want to proceed?", "❯ 1. Yes", "  2. No"].join("\n");
+
+    test("the keys go, and the audit records shadow composer_below", async () => {
+      const client = new FakePaneClient();
+      client.text = [REGION, "", RULE, "❯ ", RULE, "  ? for shortcuts"].join("\n");
+      const { audit, entries } = auditEntries();
+      const res = await keysPane(asMux(client), cfg(), "w1:p1", request({ keys: ["1"], expected_prompt: REGION }), audit, null, "default");
+      expect(res.status).toBe(200);
+      expect(client.keys).toEqual([["w1:p1", ["1"]]]);
+      expect(entries[0]?.detail).toMatchObject({ promptBinding: { checked: true, passed: true, shadow: "composer_below" } });
+    });
+
+    test("no box under the region leaves no shadow key", async () => {
+      const client = new FakePaneClient();
+      client.text = [RULE, "❯ an old prompt", RULE, REGION].join("\n");
+      const { audit, entries } = auditEntries();
+      const res = await keysPane(asMux(client), cfg(), "w1:p1", request({ keys: ["1"], expected_prompt: REGION }), audit, null, "default");
+      expect(res.status).toBe(200);
+      expect(entries[0]?.detail).not.toHaveProperty("promptBinding.shadow");
     });
   });
 
@@ -2597,6 +2749,203 @@ describe("normalizeTabLabel", () => {
   });
 });
 
+// A space is renamed through `POST /api/space/:id/rename` (M53 spec 05), on an adapter that has `renameSpace`.
+describe("renameSpace", () => {
+  const request = (body: string) => new Request("http://x/api/space/triage/rename", { method: "POST", body });
+  const rig = (rename?: (spaceId: string, label: string) => Promise<MuxAck>) => {
+    const calls: string[] = [];
+    const audit: AuditEntry[] = [];
+    const adapter: Pick<MuxAdapter, "renameSpace" | "refresh"> = {
+      refresh: async () => {
+        calls.push("refresh");
+      },
+    };
+    if (rename !== undefined) adapter.renameSpace = rename;
+    const engine = { pokeNow: () => void calls.push("poke") };
+    const run = (body: string) => renameSpace(adapter, engine, "triage", request(body), { record: (entry: AuditEntry) => void audit.push(entry) }, "pixel", "default");
+    return { calls, audit, run };
+  };
+
+  test("it passes the trimmed label to the adapter, looks again, and writes an audit line", async () => {
+    const seen: string[] = [];
+    const { run, calls, audit } = rig(async (id, label) => (seen.push(`${id}|${label}`), muxAck()));
+    const res = await run(JSON.stringify({ label: "  Support  " }));
+    expect([res.status, await res.json()]).toEqual([200, { ok: true }]);
+    expect(seen).toEqual(["triage|Support"]);
+    expect(calls).toEqual(["refresh", "poke"]);
+    expect(audit).toEqual([{ action: "space.rename", session: "default", device: "pixel", detail: { spaceId: "triage", label: "Support" } }]);
+  });
+
+  test("a blank label, a label that is not a string and a body that is not JSON are 400, and the adapter is not asked", async () => {
+    const seen: string[] = [];
+    const { run } = rig(async (id, label) => (seen.push(`${id}|${label}`), muxAck()));
+    for (const body of [JSON.stringify({ label: "   " }), JSON.stringify({ label: 4 }), JSON.stringify({}), "not json"]) {
+      expect((await run(body)).status).toBe(400);
+    }
+    expect(seen).toEqual([]);
+  });
+
+  test("the program's refusal rides the space.rename_failed code with its words, and nothing is audited", async () => {
+    const { run, audit } = rig(async () => muxRefused("The durable agent did not accept this name."));
+    const res = await run(JSON.stringify({ label: "Taken" }));
+    expect(await res.json()).toMatchObject({ ok: false, code: "space.rename_failed", detail: { reason: "The durable agent did not accept this name." } });
+    expect(audit).toEqual([]);
+  });
+
+  test("an adapter with no renameSpace answers unsupported in the same shape", async () => {
+    const { run } = rig();
+    const res = await run(JSON.stringify({ label: "x" }));
+    expect(await res.json()).toMatchObject({ ok: false, code: "space.rename_failed", detail: { reason: expect.stringContaining("does not take a new name for a space") } });
+  });
+
+  test("the route is a write behind the device gate, ahead of the pane routes, and crosses a crew link", () => {
+    const src = readFileSync(join(import.meta.dir, "server.ts"), "utf8");
+    expect(src).toContain("const SPACE_ACTION_ROUTE = /^\\/api\\/space\\/([^/]+)\\/rename$/;");
+    const at = src.indexOf("const spaceMatch = pathname.match(SPACE_ACTION_ROUTE);");
+    expect(at).toBeGreaterThan(0);
+    expect(src.slice(at, at + 400)).toContain('caller.gate("write")');
+    expect(at).toBeLessThan(src.indexOf("const paneMatch = pathname.match(PANE_ROUTE);"));
+    expect(crewRouteFor("/api/space/triage/rename")).toBe("space/triage/rename");
+  });
+});
+
+// A durable program's own history (M53 spec 11): the list, the items of one, and a reopen.
+describe("durable history routes", () => {
+  const get = (path: string) => new Request(`http://x${path}`);
+  // A placeholder key, as bridge/redact.test.ts writes one: the mask must hide it, and it is no secret.
+  const KEY = `sk-ant-api03-your-key-here-${"0".repeat(30)}`;
+  const ROW = { id: "conv-1", title: `Ticket ${KEY}`, subtitle: "open", startedAt: "2026-10-13T09:00:00.000Z", state: "open" as const, items: 2, paneId: "conv-1" };
+
+  test("history: conversations passes the page through, keeps next, and masks the program's titles", async () => {
+    const pages: MuxHistoryPage[] = [];
+    const adapter: Pick<MuxAdapter, "listConversations"> = {
+      listConversations: async (page) => (pages.push(page), muxOk<MuxConversationPage>({ items: [ROW], next: "c1" })),
+    };
+    const url = new URL("http://x/api/durable/conversations?after=c0&limit=20");
+    const res = await durableConversations(adapter, url, get(url.pathname + url.search), true);
+    const body = await res.json();
+    expect(pages).toEqual([{ after: "c0", limit: 20 }]);
+    expect(body).toMatchObject({ available: true, next: "c1", items: [{ id: "conv-1", state: "open", paneId: "conv-1", items: 2 }] });
+    expect(body.items[0].title).not.toContain(KEY);
+    // A limit that is not a whole number is not passed on: the program's own default stands.
+    await durableConversations(adapter, new URL("http://x/api/durable/conversations?limit=x"), get("/"), true);
+    expect(pages.at(-1)).toEqual({});
+  });
+
+  test.each([true, false])("durable route diagnostics honor redact=%s without changing error contracts", async (redact) => {
+    const detail = `program refused with ${KEY}`;
+    const adapter = {
+      listConversations: async () => muxUnreachable(detail),
+      conversationItems: async () => muxGone(detail),
+      reopenConversation: async () => muxRefused(detail),
+      renameSpace: async () => muxRefused(detail),
+      refresh: async () => { throw new Error("a refused write must not refresh"); },
+    };
+    const url = new URL("http://x/api/durable/conversations");
+    const audit = { record: () => { throw new Error("a refused write must not be audited as success"); } };
+    const engine = { pokeNow: () => {} };
+    const responses = [
+      await durableConversations(adapter, url, get(url.pathname), redact),
+      await durableConversationItems(adapter, KEY, url, get("/"), redact),
+      await reopenConversation(adapter, engine, KEY, new Request(url, { method: "POST" }), audit, "phone", "default", redact),
+      await renameSpace(adapter, engine, KEY, new Request(url, { method: "POST", body: JSON.stringify({ label: "New title" }) }), audit, "phone", "default", redact),
+    ];
+    const bodies = [];
+    for (const response of responses) {
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(JSON.stringify(body).includes(KEY)).toBe(!redact);
+      bodies.push(body);
+    }
+    expect(bodies[0]).toMatchObject({ available: false, reason: "unreachable" });
+    expect(bodies[1]).toMatchObject({ available: false, reason: "gone" });
+    expect(bodies[2]).toMatchObject({ ok: false, code: "durable.reopen_failed" });
+    expect(bodies[3]).toMatchObject({ ok: false, code: "space.rename_failed" });
+  });
+
+  test.each([true, false])("durable titles honor redact=%s and preserve opaque ids/cursors", async (redact) => {
+    const row = { ...ROW, id: KEY, paneId: KEY, subtitle: KEY };
+    const adapter = { listConversations: async () => muxOk({ items: [row], next: KEY }) };
+    const url = new URL("http://x/api/durable/conversations");
+    const res = await durableConversations(adapter, url, get(url.pathname), redact);
+    const body = await res.json();
+    expect(body).toMatchObject({ next: KEY, items: [{ id: KEY, paneId: KEY }] });
+    expect(body.items[0].title.includes(KEY)).toBe(!redact);
+    expect(body.items[0].subtitle.includes(KEY)).toBe(!redact);
+  });
+
+  test("history: conversations on an adapter without the read, or a refusal, is an ordinary answer", async () => {
+    const none = await durableConversations({}, new URL("http://x/api/durable/conversations"), get("/"), true);
+    expect(await none.json()).toEqual({ available: false, reason: "unsupported" });
+    const down: Pick<MuxAdapter, "listConversations"> = { listConversations: async () => muxUnreachable("program starting") };
+    const res = await durableConversations(down, new URL("http://x/api/durable/conversations"), get("/"), true);
+    expect(await res.json()).toEqual({ available: false, reason: "unreachable", detail: "program starting" });
+  });
+
+  test("history: items become History entries through the durable journal, with more and next", async () => {
+    // The wire's items carry more than the mux names (`text`), so they are built first and passed as they are.
+    const items = [
+      { id: "u1", kind: "user", text: "hello", ts: "2026-10-13T09:00:00.000Z" },
+      { id: "r1", kind: "reply", text: "hi there", ts: "2026-10-13T09:00:01.000Z" },
+    ];
+    const adapter: Pick<MuxAdapter, "conversationItems"> = {
+      conversationItems: async (id) =>
+        id === "conv-1" ? muxOk<MuxConversationItems>({ items, next: "i2", more: true }) : muxGone("The durable agent does not know this conversation."),
+    };
+    const res = await durableConversationItems(adapter, "conv-1", new URL("http://x/api/durable/conversation/conv-1/items"), get("/"), true);
+    const body = await res.json();
+    expect(body).toMatchObject({ available: true, id: "conv-1", next: "i2", more: true });
+    expect(body.entries.map((entry: { uuid: string; role: string }) => [entry.uuid, entry.role])).toEqual([
+      ["u1", "user"],
+      ["r1", "assistant"],
+    ]);
+    const gone = await durableConversationItems(adapter, "nobody", new URL("http://x/"), get("/"), true);
+    expect(await gone.json()).toEqual({ available: false, reason: "gone", detail: "The durable agent does not know this conversation." });
+    expect(await (await durableConversationItems({}, "conv-1", new URL("http://x/"), get("/"), true)).json()).toEqual({ available: false, reason: "unsupported" });
+  });
+
+  test("reopen: one call to the adapter, an audit line, a fresh look, and the pane in the answer", async () => {
+    const calls: string[] = [];
+    const audit: AuditEntry[] = [];
+    const adapter: Pick<MuxAdapter, "reopenConversation" | "refresh"> = {
+      reopenConversation: async (id) => (calls.push(`reopen ${id}`), muxOk<MuxReopened>({ paneId: id })),
+      refresh: async () => void calls.push("refresh"),
+    };
+    const engine = { pokeNow: () => void calls.push("poke") };
+    const run = () => reopenConversation(adapter, engine, "conv-1", new Request("http://x/", { method: "POST" }), { record: (entry: AuditEntry) => void audit.push(entry) }, "pixel", "default");
+    expect(await (await run()).json()).toEqual({ ok: true, paneId: "conv-1" });
+    expect(calls).toEqual(["reopen conv-1", "refresh", "poke"]);
+    expect(audit).toEqual([{ action: "durable.reopen", session: "default", device: "pixel", detail: { id: "conv-1" } }]);
+  });
+
+  test("reopen: a refusal rides durable.reopen_failed with its words, nothing is audited, and no adapter is unsupported", async () => {
+    const audit: AuditEntry[] = [];
+    const record = { record: (entry: AuditEntry) => void audit.push(entry) };
+    const engine = { pokeNow: () => {} };
+    const refused: Pick<MuxAdapter, "reopenConversation" | "refresh"> = { reopenConversation: async () => muxRefused("The durable agent did not bring this conversation back."), refresh: async () => {} };
+    const res = await reopenConversation(refused, engine, "conv-1", new Request("http://x/", { method: "POST" }), record, "pixel", "default");
+    expect(await res.json()).toMatchObject({ ok: false, code: "durable.reopen_failed", detail: { reason: "The durable agent did not bring this conversation back." } });
+    const bare: Pick<MuxAdapter, "reopenConversation" | "refresh"> = { refresh: async () => {} };
+    const none = await reopenConversation(bare, engine, "conv-1", new Request("http://x/", { method: "POST" }), record, "pixel", "default");
+    expect(await none.json()).toMatchObject({ ok: false, code: "durable.reopen_failed" });
+    expect(audit).toEqual([]);
+  });
+
+  test("history: the list and the items are reads, a reopen is a write, all ahead of the pane routes, and all cross a crew link", () => {
+    const src = readFileSync(join(import.meta.dir, "server.ts"), "utf8");
+    const list = src.indexOf("if (DURABLE_CONVERSATIONS_ROUTE.test(pathname)) {");
+    const one = src.indexOf("const conversationMatch = pathname.match(DURABLE_CONVERSATION_ROUTE);");
+    expect(list).toBeGreaterThan(0);
+    expect(src.slice(list, list + 200)).toContain('caller.gate("read")');
+    expect(src.slice(one, one + 300)).toContain('caller.gate(reopen ? "write" : "read")');
+    expect(one).toBeLessThan(src.indexOf("const paneMatch = pathname.match(PANE_ROUTE);"));
+    expect(crewRouteFor("/api/durable/conversations")).toBe("durable/conversations");
+    expect(crewRouteFor("/api/durable/conversation/conv-1/items")).toBe("durable/conversation/conv-1/items");
+    expect(crewRouteFor("/api/durable/conversation/conv-1/reopen")).toBe("durable/conversation/conv-1/reopen");
+    expect(crewRouteFor("/api/durable/conversation/conv-1")).toBeNull();
+  });
+});
+
 // The X-Collie-Build response header is what a no-service-worker client polls to notice a live
 // rebuild (web/src/lib/server-build.ts). withBuildHeader is the pure attach helper; the handlers
 // that call it (snapshot/pane) stay untested by convention (they need Bun.serve + the socket).
@@ -2613,6 +2962,18 @@ describe("GET /api/health", () => {
     // `deposed` is always false here because a deposed collie never reaches this route — its one
     // page answers every path first. The field states the rule the prober applies.
     expect(healthBody("1.2.3", "lead").deposed).toBe(false);
+  });
+
+  test("carries the Surface counters' totals when it has them, and no key at all when it has none (M56 spec 09)", () => {
+    expect(healthBody("1.2.3", "solo", { free: 120, unknown: 7, manual: 2 })).toEqual({
+      ok: true,
+      version: "1.2.3",
+      deposed: false,
+      mode: "solo",
+      surface: { free: 120, unknown: 7, manual: 2 },
+    });
+    expect("surface" in healthBody("1.2.3", "solo", null)).toBe(false);
+    expect("surface" in healthBody("1.2.3", "solo")).toBe(false);
   });
 });
 
@@ -3059,6 +3420,43 @@ describe("bridgeConfigBody — the masking switch is reported, and omitted when 
   });
 });
 
+// M55: `/api/config?session=<name>` answers that session's capabilities. No `session` is the primary's
+// body, byte for byte as before; an unknown name is the route's 404.
+describe("/api/config?session= answers that session's capabilities (M55)", () => {
+  const herdr = { mux: "herdr", capabilities: declareCapabilities({ supports: ["typeText", "sendKeys"], topologyLatency: { kind: "push" } }), logo: "<svg/>" };
+  const program = { mux: "durable", capabilities: declareCapabilities({ supports: ["steerTurn"], topologyLatency: { kind: "bounded", ms: 10_000 } }), logo: "<svg/>" };
+
+  test("no session, or the primary named: the route builds the body it always built", () => {
+    expect(sessionConfigMux({ name: "default", isPrimary: true, herdr }, undefined)).toBeUndefined();
+    expect(sessionConfigMux({ name: "default", isPrimary: true, herdr }, "default")).toBeUndefined();
+  });
+
+  test("a program session answers its own declaration, with its mark under its own name", () => {
+    const wire = sessionConfigMux({ name: "desk", isPrimary: false, herdr: program }, "desk");
+    expect(wire).toEqual({ ...muxConfigBody(program), logoUrl: `${MUX_LOGO_PATH}?session=desk` });
+    if (wire === undefined || wire === "unknown") throw new Error("expected a block");
+    expect(wire.capabilities.steerTurn).toBe(true);
+    expect(wire.capabilities.typeText).toBe(false);
+    expect(wire.name).toBe("durable");
+  });
+
+  test("an unknown named session is the route's 404; no session and no runtime is the primary's absence", () => {
+    expect(sessionConfigMux(undefined, "nope")).toBe("unknown");
+    expect(sessionConfigMux(undefined, undefined)).toBeUndefined();
+  });
+
+  test("a session with no mark publishes no logoUrl, and a name is encoded into the query", () => {
+    expect("logoUrl" in sessionMuxWire({ name: "desk", herdr: { ...program, logo: undefined } })).toBe(false);
+    expect(sessionMuxWire({ name: "a-b", herdr: program }).logoUrl).toBe(`${MUX_LOGO_PATH}?session=a-b`);
+  });
+
+  test("the route asks the helper, and the logo route reads the same `?session=`", () => {
+    const src = readFileSync(join(import.meta.dir, "server.ts"), "utf8");
+    expect(src).toContain("const localMux = host.kind === \"local\" ? sessionConfigMux(activeMux, sessionName) : null;");
+    expect(src).toContain('const logo = registry.get(url.searchParams.get("session") ?? undefined)?.herdr.logo;');
+  });
+});
+
 // ADR 0096: the Whistle block rides `/api/config` right after `stt`, and is absent on a peer's own
 // answer. The routes are lead-local and gated like `/api/stt`; the handler lives inside Bun.serve, so
 // the gate levels and the crew wiring are asserted on the source and through the pure pieces.
@@ -3235,7 +3633,9 @@ describe("muxConfigBody — the capability declaration, as the phone reads it", 
 
   test("the real Herdr adapter publishes every capability — nothing changes for its operators", () => {
     const wire = muxConfigBody(herdrMuxFactory.create({ endpoint: "/tmp/none.sock", timeoutMs: 100, options: {} }));
-    for (const cap of MUX_CAPABILITIES) expect(wire.capabilities[cap]).toBe(true);
+    // The controls of a durable program (M51 spec 08, M53 spec 05) are the program's to declare, never Herdr's.
+    const program = new Set(["steerTurn", "abortTurn", "starters", "renameSpace", "programActions", "programHistory", "reopenConversation"]);
+    for (const cap of MUX_CAPABILITIES) expect(wire.capabilities[cap]).toBe(!program.has(cap));
     expect(wire.notes).toEqual({});
   });
 
@@ -3584,16 +3984,17 @@ describe("the host gate — `?host=` selects among enrolled members and nothing 
     // The load-bearing claim: `?h=laptop` + `w1:p1` must never be served the DESK's `w1:p1`, and
     // pane ids collide across machines, so a fall-through here is a cross-host write.
     //
-    // All NINETEEN session-scoped route handlers (tab create, workspace create, launch, this host's launcher
+    // All TWENTY-TWO session-scoped route handlers (tab create, workspace create, launch, this host's launcher
     // rows, this host's folder list and a star on it, one journal blob, a workspace's Changes list,
     // a workspace's Files view, the Files existence check by pane or workspace, the Files image read
-    // by pane or workspace (ADR 0090), tab action, the pane family, "look now", the New sheet's
+    // by pane or workspace (ADR 0090), tab action, the space rename (M53 spec 05), the pane family, "look now", the New sheet's
     // branch plan and create from a folder (ADR 0093), and the
     // three writes on a phone's own launcher rows, served by one function (ADR 0094), and the two
     // writes on this machine's one-off command history, served by one function (ADR 0095), and the
-    // read that checks a typed line before it runs (ADR 0095, amendment)) reach
+    // read that checks a typed line before it runs (ADR 0095, amendment), and a durable program's
+    // conversation list and the items or reopen of one (M53 spec 11)) reach
     // their runtime through the caller's resolver and nothing else.
-    expect([...src.matchAll(/await caller\.resolve\(\);/g)]).toHaveLength(19);
+    expect([...src.matchAll(/await caller\.resolve\(\);/g)]).toHaveLength(22);
     // Exactly eight `registry.get(` calls remain, and each is a sanctioned one, named here rather
     // than exempted: assembling THIS collie's own snapshot body; `localRuntime`, the single
     // "(session) → runtime, or 404" helper both callers share; `/api/config`, which reports THIS
@@ -3613,9 +4014,10 @@ describe("the host gate — `?host=` selects among enrolled members and nothing 
     // §10.1). It runs after the forward has answered and writes nothing. A NINTH would be a route
     // reaching past the gate.
     expect([...src.matchAll(/registry\.get\(/g)]).toHaveLength(8);
-    // The mux read is a read of the LOCAL primary — never `?host=`, because a peer's capabilities
-    // are its own business and reach the lead over the crew API, never out of this registry.
-    expect(src).toContain("const activeMux = registry.get();");
+    // The mux read is a read of a LOCAL session (the primary unless `?session=` names one, M55), never
+    // `?host=`, because a peer's capabilities are its own business and reach the lead over the crew
+    // API, never out of this registry.
+    expect(src).toContain("const activeMux = registry.get(sessionName);");
     // An unknown or ill-formed host is a 404, mirroring unknownSession() (§4)… The words now come
     // from the error catalogue (bridge/error-codes.ts), so what this pins is the SELECTION — that
     // both host shapes still name themselves in the refusal, and both still land on `host.unknown`.
@@ -3927,6 +4329,12 @@ describe("launch — an allowlisted space create, then the command and Enter", (
     readonly texts: Array<[string, string]> = [];
     readonly keys: Array<[string, readonly string[]]> = [];
     readonly closes: string[] = [];
+    readonly tabRenames: Array<[string, string]> = [];
+    // A new space is followed by a tab rename, which `launch` asks the declaration about first.
+    readonly capabilities = declareCapabilities({
+      supports: ["createSpace", "createTab", "renameTab"],
+      topologyLatency: { kind: "push" },
+    });
     failOn: "create" | "text" | "keys" | null = null;
     closeThrows = false;
     /** Successive screens the new pane shows; the last one repeats for every further read. */
@@ -3950,6 +4358,10 @@ describe("launch — an allowlisted space create, then the command and Enter", (
         muxOk({ paneId: "w2:p9", spaceId: request_.spaceId, spaceLabel: "MySpace", tabId: "w2:t9", cwd: request_.cwd ?? "/home/op" }),
       );
     }
+    renameTab(tabId: string, label: string): Promise<MuxAck> {
+      this.tabRenames.push([tabId, label]);
+      return Promise.resolve(muxAck());
+    }
     readGrid(paneId: string): Promise<MuxOutcome<MuxGrid>> {
       // SAFETY: `screens` is never empty in this suite and the index is clamped to its last entry.
       const text = this.screens[Math.min(this.grids, this.screens.length - 1)] as string;
@@ -3961,7 +4373,7 @@ describe("launch — an allowlisted space create, then the command and Enter", (
       this.texts.push([paneId, text]);
       return this.failOn === "text" ? Promise.resolve(muxRefused("text failed")) : Promise.resolve(muxAck());
     }
-    sendKeys(paneId: string, keys: readonly string[]): Promise<MuxAck> {
+    writeKeys(paneId: string, keys: readonly string[]): Promise<MuxAck> {
       this.keys.push([paneId, keys]);
       return this.failOn === "keys" ? Promise.resolve(muxRefused("keys failed")) : Promise.resolve(muxAck());
     }
@@ -3977,13 +4389,17 @@ describe("launch — an allowlisted space create, then the command and Enter", (
 
   // `Partial<T>` on both stubs keeps the compiler checking every member they DO supply against the
   // real contract, exactly as `asMux` above does for a HerdrClient fake.
-  const engineStub: Partial<StateEngine> = { pokeNow: () => {} };
-  // SAFETY: after a create, `launch` asks the engine for exactly one thing — `pokeNow()` — and the
-  // adapter for exactly the five calls FakeLaunchMux implements. No other member of either is
+  const engineStub: Partial<StateEngine> = {
+    pokeNow: () => {},
+    current: () => ({ agents: [], shellPanes: [], workspaces: [], tabs: [], bridge: "connected" }),
+  };
+  // SAFETY: `launch` asks the engine for two things — `current()` (the names already taken, before a
+  // new space is named after its folder) and `pokeNow()` after the create — and the
+  // adapter for exactly the calls FakeLaunchMux implements (and its `capabilities` declaration). No other member of either is
   // reachable from this code path, which is the only step these two casts assert.
   const engine = engineStub as StateEngine;
   function asLaunchMux(fake: Partial<MuxAdapter>): MuxAdapter {
-    // SAFETY: as above — only the five calls the fake implements are reachable from `launch`.
+    // SAFETY: as above — only the calls the fake implements are reachable from `launch`.
     return fake as MuxAdapter;
   }
   const rowsOf = (rows: Launcher[]) => () => Promise.resolve(rows);
@@ -4039,7 +4455,7 @@ describe("launch — an allowlisted space create, then the command and Enter", (
     expect(entries).toHaveLength(0);
   });
 
-  test("a listed row creates a space with that row's label AND cwd, then types the command + Enter", async () => {
+  test("a listed row creates a space named after its folder, the tab takes the row's label, then types the command + Enter", async () => {
     const clock = fakeClock();
     const mux = new FakeLaunchMux(clock.now);
     const { audit, entries } = launchAudit();
@@ -4055,8 +4471,10 @@ describe("launch — an allowlisted space create, then the command and Enter", (
     );
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ ok: true });
-    // The row's own cwd and label, never the client's — the request carried neither.
-    expect(mux.createArgs).toEqual({ cwd: "/home/op/project", label: "Runs & quota" });
+    // The row's own cwd, never the client's — the request carried none. The space takes the folder's
+    // name (`basename` of that cwd) and the row's label goes on the tab.
+    expect(mux.createArgs).toEqual({ cwd: "/home/op/project", label: "project" });
+    expect(mux.tabRenames).toEqual([["w1:t1", "Runs & quota"]]);
     expect(mux.texts).toEqual([["w1:p1", "rumen-peek"]]);
     // A bare Enter, NOT cfg.submitKeys: this is a shell prompt, not an agent's composer.
     expect(mux.keys).toEqual([["w1:p1", ["Enter"]]]);
@@ -4200,6 +4618,7 @@ describe("launch — an allowlisted space create, then the command and Enter", (
       expect(res.status).toBe(200);
       expect(await res.json()).toMatchObject({ ok: true, pane: { workspaceId: "w3" } });
       expect(mux.createArgs).toBeNull(); // never createSpace
+      expect(mux.tabRenames).toEqual([]); // the tab already carries the row's label
       expect(mux.createTabArgs).toEqual({ spaceId: "w3", label: "Runs & quota", cwd: "/home/op/project" });
       expect(mux.texts).toEqual([["w2:p9", "rumen-peek"]]);
       expect(entries[0]?.action).toBe("tab.launch");
@@ -4289,7 +4708,8 @@ describe("launch — an allowlisted space create, then the command and Enter", (
         clock,
       );
       expect(res.status).toBe(200);
-      expect(mux.createArgs).toEqual({ cwd: "/home/op/project", label: "Runs & quota" });
+      expect(mux.createArgs).toEqual({ cwd: "/home/op/project", label: "project" });
+      expect(mux.tabRenames).toEqual([["w1:t1", "Runs & quota"]]);
       expect(mux.createTabArgs).toBeNull();
       expect(entries[0]?.action).toBe("workspace.launch");
     });
@@ -5128,6 +5548,20 @@ describe("an input written to a pane makes its engine hot", () => {
     expect(isPaneInput("/api/tab/w1%3At1/close", "POST")).toBe(false);
   });
 
+  // A pane launched on minibuch stayed a shell on the phone for up to 12 s (2026-10-14): the lead's
+  // sweep of the member rode a cold engine, and only inputs warmed it.
+  test("isTopologyWrite names the launch, create, close and rename routes, as POSTs, and nothing else", () => {
+    for (const path of ["/api/launch", "/api/workspace", "/api/tab", "/api/tab/w1%3At1/close", "/api/tab/w1%3At1/rename"]) {
+      expect(isTopologyWrite(path, "POST")).toBe(true);
+    }
+    expect(isTopologyWrite("/api/pane/w1%3Ap1/close", "POST")).toBe(true);
+    expect(isTopologyWrite("/api/pane/w1%3Ap1/rename", "POST")).toBe(true);
+    expect(isTopologyWrite("/api/launch", "GET")).toBe(false);
+    for (const path of ["/api/launch/recent/clear", "/api/launch/check", "/api/launchers", "/api/folders/star", "/api/pane/w1%3Ap1/reply", "/api/pane/w1%3Ap1/focus", "/api/pane/w1%3Ap1/upload"]) {
+      expect(isTopologyWrite(path, "POST")).toBe(false);
+    }
+  });
+
   test("afterPaneInput tells the engine only when the write landed, and hands the response back", () => {
     let noted = 0;
     const engine = { noteInput: () => void noted++ };
@@ -5144,7 +5578,7 @@ describe("an input written to a pane makes its engine hot", () => {
     expect(src).toContain("return afterPaneInput(rt.engine, await replyPane(");
     expect(src).toContain("return afterPaneInput(rt.engine, await keysPane(");
     // On the lead: the forward's answer, so the lead's sweep follows the member it typed into.
-    expect(src).toContain("const input = isPaneInput(pathname, req.method);");
+    expect(src).toContain("const input = isPaneInput(pathname, req.method) || isTopologyWrite(pathname, req.method);");
     expect(src).toContain("return input && own !== undefined ? afterPaneInput(own, forwarded) : forwarded;");
     expect([...src.matchAll(/afterPaneInput\(/g)]).toHaveLength(4); // the definition and three calls
   });
@@ -5534,7 +5968,7 @@ describe("the send and abort routes", () => {
     // The refusal sits in front of both raw routes, so neither handler is reached for such a pane.
     const refusal = src.indexOf("const refusal = rawInputRefusal(herdr);");
     expect(refusal).toBeGreaterThan(0);
-    expect(refusal).toBeLessThan(src.indexOf("await replyPane(herdr, cfg, paneId, req, audit_, device, session)"));
+    expect(refusal).toBeLessThan(src.indexOf('await replyPane(herdr, cfg, paneId, req, audit_, device, session, replySendOf(rt, caller.deviceKind?.() !== "anonymous"))'));
     expect(refusal).toBeLessThan(src.indexOf("await keysPane(herdr, cfg, paneId, req, audit_, device, session)"));
   });
 
@@ -5785,5 +6219,17 @@ describe("paneHistory — two muse tabs in one workspace read their own transcri
     } finally {
       await rm(base, { recursive: true, force: true });
     }
+  });
+});
+
+// A launcher row in a new space takes its folder's name (2026-10-14). tmux refuses a second session
+// of one name, so a second launch from the same folder must not ask for a taken one.
+describe("freeSpaceName — a folder-named space never takes a name already in use", () => {
+  test("the folder's own name when it is free, then -2, -3 in order", () => {
+    expect(freeSpaceName("app", [])).toBe("app");
+    expect(freeSpaceName("app", [{ label: "other" }])).toBe("app");
+    expect(freeSpaceName("app", [{ label: "app" }])).toBe("app-2");
+    expect(freeSpaceName("app", [{ label: "app" }, { label: "app-2" }])).toBe("app-3");
+    expect(freeSpaceName("app", [{ label: "app-2" }])).toBe("app");
   });
 });

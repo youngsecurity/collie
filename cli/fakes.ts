@@ -263,6 +263,11 @@ export interface FakeFiles extends Files {
   undeletable: Set<string>;
   /** Paths owned by uid 0 — how a test states a package-manager-owned tree. Everything else reads as uid 1000. */
   rootOwned: Set<string>;
+  /**
+   * Permission bits per path, for `mode`. `mkdirp` records the mode it was given and a write records
+   * the file's. An existing path with no entry reads 0o700; a missing one reads null.
+   */
+  modes: Map<string, number>;
   /** Paths this process may not write — how a test states a read-only root. Everything else is writable. */
   readOnly: Set<string>;
   /**
@@ -297,6 +302,7 @@ export function fakeFiles(seed: SeededFiles = {}): FakeFiles {
   for (const [p, text] of Object.entries(seed)) entries.set(p, { text, mtimeMs: clock.now });
   const undeletable = new PathSet();
   const rootOwned = new PathSet();
+  const modes = new PathMap<number>();
   const readOnly = new PathSet();
   const notExecutable = new PathSet();
   const stats = new PathMap<{ inode: number; mtimeMs: number }>();
@@ -316,6 +322,7 @@ export function fakeFiles(seed: SeededFiles = {}): FakeFiles {
     entries,
     undeletable,
     rootOwned,
+    modes,
     readOnly,
     notExecutable,
     stats,
@@ -328,6 +335,7 @@ export function fakeFiles(seed: SeededFiles = {}): FakeFiles {
     clock,
     locks,
     ownerUid: (p) => (rootOwned.has(p) ? 0 : 1000),
+    mode: (p) => modes.get(p) ?? entries.get(p)?.mode ?? (under(p).length > 0 ? 0o700 : null),
     writable: (p) => !readOnly.has(p),
     exists: (p) => under(p).length > 0,
     executable: (p) => under(p).length > 0 && !notExecutable.has(p),
@@ -369,7 +377,10 @@ export function fakeFiles(seed: SeededFiles = {}): FakeFiles {
       return p;
     },
     write: (p, text, mode) => void entries.set(p, { text, mode, mtimeMs: clock.now }),
-    mkdirp: (p) => void entryTypes.set(p, "directory"),
+    mkdirp: (p, mode) => {
+      if (mode !== undefined && !entryTypes.has(p)) modes.set(p, mode);
+      entryTypes.set(p, "directory");
+    },
     remove: (p) => {
       if (undeletable.has(p)) return;
       if (p.endsWith(".lock") || p.endsWith(".break")) locks.push(`unlock ${p}`);
@@ -406,6 +417,7 @@ export function fakeFiles(seed: SeededFiles = {}): FakeFiles {
   return {
     ...raw,
     ownerUid: one(raw.ownerUid),
+    mode: one(raw.mode),
     writable: one(raw.writable),
     exists: one(raw.exists),
     executable: one(raw.executable),

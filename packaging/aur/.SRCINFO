@@ -1,6 +1,6 @@
 pkgbase = collie-bin
 	pkgdesc = Phone web UI for the AI agents running in your terminal, served over Tailscale (official binary release)
-	pkgver = 1.20.2
+	pkgver = 1.22.4
 	pkgrel = 1
 	url = https://github.com/AltanS/collie
 	install = collie-bin.install
@@ -16,9 +16,9 @@ pkgbase = collie-bin
 	conflicts = collie
 	options = !strip
 	options = !debug
-	source_x86_64 = collie-bin-1.20.2-x86_64.tar.gz::https://github.com/AltanS/collie/releases/download/v1.20.2/collie-1.20.2-linux-x64.tar.gz
-	sha256sums_x86_64 = 9b88f32aa99b82ca68bfaa695e66a393fc59e4f0d24fb962c540fd934e966907
-	source_aarch64 = collie-bin-1.20.2-aarch64.tar.gz::https://github.com/AltanS/collie/releases/download/v1.20.2/collie-1.20.2-linux-arm64.tar.gz
-	sha256sums_aarch64 = 9a84a0c2697a5278990b7c7822f964e639d9ee5923dabbb030c708821609ee70
+	source_x86_64 = collie-bin-1.22.4-x86_64.tar.gz::https://github.com/AltanS/collie/releases/download/v1.22.4/collie-1.22.4-linux-x64.tar.gz
+	sha256sums_x86_64 = 1ac3772a2a9b83d4a72d761dbee23a93a0d015f7d5ab5bdbcf60445396850433
+	source_aarch64 = collie-bin-1.22.4-aarch64.tar.gz::https://github.com/AltanS/collie/releases/download/v1.22.4/collie-1.22.4-linux-arm64.tar.gz
+	sha256sums_aarch64 = 321ff779de30efff3b9120200dc532f1653a423e51ae3180649bdbb90012c1d1
 
 pkgname = collie-bin

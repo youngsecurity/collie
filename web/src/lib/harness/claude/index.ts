@@ -20,6 +20,7 @@ import { detectSwitchModelRegion } from "./switch-model";
 import { detectMarketplacesRegion } from "./marketplaces";
 import { detectMenuRegion } from "./menu";
 import { detectAutocompleteRegion } from "./autocomplete";
+import { detectAbovePromptNotice } from "./above-prompt-notice";
 import {
   stripChrome,
   extractStatusLines,
@@ -30,6 +31,7 @@ import {
   inputBoxTail,
 } from "./chrome";
 import { dropClosingRule } from "./closing-rule";
+import { dropTaskChecklist } from "./task-checklist";
 import { collapsesAsPaste, isPastePlaceholderOnly, pasteCarriesSend } from "./paste";
 
 /**
@@ -41,8 +43,9 @@ import { collapsesAsPaste, isPastePlaceholderOnly, pasteCarriesSend } from "./pa
 export function claudeBuildBlocks(input: StyledLine[]): Block[] {
   // The ONE place the closing rule a named session draws under a dialog (2.1.296, closing-rule.ts)
   // is taken off, so every grammar below, the race guard that re-derives through this function and
-  // the unread-dialog probes read the same rows an unnamed session shows.
-  const lines = dropClosingRule(input);
+  // the unread-dialog probes read the same rows an unnamed session shows. The task checklist 2.1.299
+  // draws under the dialog (task-checklist.ts) sits below that rule, so it goes first.
+  const lines = dropClosingRule(dropTaskChecklist(input));
   // The preview variant runs FIRST: its footer is the most specific anchor ("n to add notes"),
   // and although the wizard/prompt-select detectors can't match its layout (their footer-gap
   // guards fail on the tall preview pane), ordering by specificity keeps the arbitration obvious.
@@ -159,6 +162,18 @@ export function claudeBuildBlocks(input: StyledLine[]): Block[] {
     return blocks;
   }
 
+  // A NOTICE above the live box (above-prompt-notice.ts): the one card on a screen whose box keeps the
+  // keyboard. Every grammar above needs the box gone or a footer that names keys, so none claims it;
+  // the transcript above the notice stays raw, and the box is stripped as on any idle screen.
+  const noticeRegion = detectAbovePromptNotice(lines);
+  if (noticeRegion) {
+    const before = trimTrailingBlank(lines.slice(0, noticeRegion.startLine));
+    const blocks: Block[] = [];
+    if (before.length > 0) blocks.push({ kind: "raw", lines: before });
+    blocks.push({ kind: "menu", menu: noticeRegion.model, lines: lines.slice(noticeRegion.startLine, noticeRegion.endLine + 1) });
+    return blocks;
+  }
+
   // The COMPLETION POPUP (autocomplete.ts) — the one non-raw block that is not a dialog. It runs last
   // because it is the least specific tail shape, and it is gated on the input box's tail being
   // CLASSIFIED as the popup (chrome.ts), because that is what separates a live composer with a popup
@@ -202,7 +217,7 @@ const PRESS_KEY_PROMPT = /\bpress\s+(?:enter|esc|escape|any key)\b/i;
 /** Whether the screen's last non-blank rows show a Claude modal: a row naming a key the way a modal's
  *  footer does, a pointed numbered option, or a "Press Enter" prompt. */
 function tailNamesAKey(input: StyledLine[]): boolean {
-  const lines = dropClosingRule(input);
+  const lines = dropClosingRule(dropTaskChecklist(input));
   const rows: string[] = [];
   for (let i = lines.length - 1; i >= 0 && rows.length < MODAL_HINT_ROWS; i--) {
     const text = lineText(lines[i]!);
@@ -220,7 +235,7 @@ export const claudeAdapter: HarnessAdapter = {
   extractInputDraft,
   // The reply path's pre-flight: Claude's input box is exactly what `hasInputBox` finds, and its
   // absence is exactly the condition under which typing lands in a modal instead (#34's shape).
-  composerReady: (lines) => hasInputBox(dropClosingRule(lines)),
+  composerReady: (lines) => hasInputBox(dropClosingRule(dropTaskChecklist(lines))),
   // The way OUT of a Claude modal, for the unread-dialog card (.adr/0053). Every Claude footer that
   // names one names `Esc to cancel` — the `/model` picker, the rewind screen, the config screens and
   // the `/effort` slider all print it, and `claude/markers.ts` treats the phrase as background chrome

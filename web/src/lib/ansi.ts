@@ -49,14 +49,22 @@ function ansiVar(n: number): string {
   return `var(--ansi-${n})`;
 }
 
-/** The mirror's own ground, for inverse video that names no colours of its own. The fallbacks are
- *  byte-exact matches for --background / --foreground's dark halves, and for MIRROR_SPACE in
- *  components/mirror-space. The custom properties are the Young Security fork's seam: a mirror
- *  surface the operator has coloured sets them on itself (see mirrorSurface in
- *  hooks/use-display-prefs), so inverse video swaps the operator's ground rather than the dark one.
- *  Nowhere else defines them, so every other surface resolves to the literal. */
-const MIRROR_BG = "var(--terminal-background, #0a0a0a)";
-const MIRROR_FG = "var(--terminal-foreground, #fafafa)";
+/** The mirror's own ground and ink as DATA, for inverse video that names no colours of its own: the
+ *  `fg` and `bg` a segment carries. Byte-exact matches for --background / --foreground's dark halves.
+ *  They stay literals because they are compared and sent, not only painted: a reader matches them
+ *  (lib/harness/pi/composer.ts) and the canonical styled region the phone sends and the bridge
+ *  recomputes (lib/styled-region.ts) spells them in its tags, so a phone and a bridge of different
+ *  builds must agree on the text. */
+export const MIRROR_BG = "#0a0a0a";
+export const MIRROR_FG = "#fafafa";
+
+/** The same two as PAINT, the inline colour of an inverse segment: a theme's `ansi` block sets
+ *  `--mirror-ground` and `--mirror-ink` (M57 spec 17), and without one the fallbacks are the literals
+ *  above, so the default pixels are the ones they always were. The same spelling as MIRROR_SPACE in
+ *  components/mirror-space.ts. */
+// Device-chosen colors win over theme paint, but never change the protocol's literal data.
+export const MIRROR_GROUND_PAINT = `var(--terminal-background, var(--mirror-ground, ${MIRROR_BG}))`;
+export const MIRROR_INK_PAINT = `var(--terminal-foreground, var(--mirror-ink, ${MIRROR_FG}))`;
 
 // One axis of xterm's 6x6x6 colour cube: level 0 is black, the rest start at 55 and step by 40.
 const cubeLevel = (x: number): number => (x === 0 ? 0 : 55 + x * 40);
@@ -175,13 +183,13 @@ export function parseAnsi(input: string): AnsiSegment[] {
 
   const flush = () => {
     if (!buf) return;
-    // Inverse video with no explicit colours swaps the mirror's own ground. Not
-    // var(--background)/var(--foreground): everything inside the <pre> is dark-space (.adr/0002,
-    // rule 2), and the fallbacks ARE those tokens' dark halves. The `--terminal-*` properties are
-    // not theme tokens: they are unset except on a surface the operator coloured by hand, where
-    // they hold that surface's own absolute values (fork amendment to the ADR).
+    // Inverse video carries stable dark-space data for readers and prompt binding.
+    // Only paint reads the device and theme properties; neither may change a wire hash.
     const fg = state.inverse ? (state.bg ?? MIRROR_BG) : state.fg;
     const bg = state.inverse ? (state.fg ?? MIRROR_FG) : state.bg;
+    // The paint reads the theme's mirror colours; the data above stays the literal (see MIRROR_BG).
+    const paintFg = state.inverse ? (state.bg ?? MIRROR_GROUND_PAINT) : state.fg;
+    const paintBg = state.inverse ? (state.fg ?? MIRROR_INK_PAINT) : state.bg;
     segs.push({
       text: buf,
       fg,
@@ -191,7 +199,7 @@ export function parseAnsi(input: string): AnsiSegment[] {
       italic: state.italic,
       underline: state.underline,
       strike: state.strike,
-      style: buildStyle(state, fg, bg),
+      style: buildStyle(state, paintFg, paintBg),
       muted: checkMuted(buf),
     });
     buf = "";
