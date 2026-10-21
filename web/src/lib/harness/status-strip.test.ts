@@ -7,7 +7,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parseAnsi } from "../ansi";
-import { splitLines } from "../blocks";
+import { lineText, splitLines } from "../blocks";
 import { adapterFor, registeredAgents } from "./registry";
 
 const PANES = join(import.meta.dirname, "../../fixtures/panes");
@@ -35,7 +35,9 @@ describe("the status strip never doubles a row the blocks still show", () => {
   it.each(fixtures)("%s", (name) => {
     const adapter = adapterFor(agentOf(name))!;
     const lines = splitLines(parseAnsi(readFileSync(join(PANES, name), "utf8")));
-    const shown = new Set(adapter.buildBlocks(lines).flatMap((block) => ("lines" in block ? block.lines : [])));
-    expect(adapter.extractStatusLines(lines).filter((row) => shown.has(row))).toEqual([]);
+    // Compared by the text a person reads, not by object: an adapter may rebuild a status row, and
+    // a rebuilt copy drawn twice is the same doubling (review on PR #107).
+    const shown = new Set(adapter.buildBlocks(lines).flatMap((block) => ("lines" in block ? block.lines : [])).map(lineText));
+    expect(adapter.extractStatusLines(lines).map(lineText).filter((row) => shown.has(row))).toEqual([]);
   });
 });
