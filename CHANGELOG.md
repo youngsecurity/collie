@@ -37,11 +37,13 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 ## [Unreleased]
 
+## [1.22.5+ys.3] - 2026-10-21
+
 ### Fixed
 
-- **Type here sends custom answers from nested question editors.** Broken since 1.21.0+ys.1, when pi panes moved to the guarded send. A confirmed manual send no longer treats the whole question panel as the input box. After the probe and text read-back pass, an unchanged dialog footer that explicitly says Enter submits takes Enter instead of the normal composer's queue key. A returned empty composer confirms the answer was taken, and an answer worded like the footer is still found in its own field. Changed screens and failed probes still withhold submission.
-- **Discard confirms an emptied question answer field.** A typed but unsubmitted answer in a question's answer editor was cleared by Discard, yet the result read unknown, because a field with nothing before its text cannot be found again by that text. Discard now reports discarded when only the answer's own rows changed and now read blank, and every other row stands as it did.
-- **Pi status lines no longer show twice while a question is open.** Since 1.21.0+ys.1 a pi pane with a question, picker or dialog open showed its status lines in the mirror or the question card, and again in Collie's status strip under it. The strip now shows them only when it has taken them off the mirror, on a ready input box.
+- **Type here sends custom answers from nested question editors.** Broken since 1.21.0+ys.1, when pi panes moved to the guarded send. A confirmed manual send no longer treats the whole question panel as the input box. After the probe and text read-back pass, an unchanged dialog footer that explicitly says Enter submits takes Enter instead of the normal composer's queue key. A returned empty composer confirms the answer was taken, and an answer worded like the footer is still found in its own field. Changed screens and failed probes still withhold submission. ([e6ac3b8e](https://github.com/youngsecurity/collie/commit/e6ac3b8e))
+- **Discard confirms an emptied question answer field.** A typed but unsubmitted answer in a question's answer editor was cleared by Discard, yet the result read unknown, because a field with nothing before its text cannot be found again by that text. Discard now reports discarded when only the answer's own rows changed and now read blank, and every other row stands as it did. ([20434dce](https://github.com/youngsecurity/collie/commit/20434dce))
+- **Pi status lines no longer show twice while a question is open.** Since 1.21.0+ys.1 a pi pane with a question, picker or dialog open showed its status lines in the mirror or the question card, and again in Collie's status strip under it. The strip now shows them only when it has taken them off the mirror, on a ready input box. ([f9d40704](https://github.com/youngsecurity/collie/commit/f9d40704))
 
 ## [1.22.5+ys.2] - 2026-10-18
 
