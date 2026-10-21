@@ -36,6 +36,24 @@ describeAdapterConformance(piAdapter, {
 });
 
 describe("pi adapter routing", () => {
+  // The strip re-surfaces only the status rows the adapter took off the mirror (types.ts,
+  // extractStatusLines). With a question, picker or dialog open the rows stay in the mirror or the
+  // card, so a second copy in the strip is the doubled status lines of the 2026-10-20 field report.
+  it("never shows a status row in the strip that the mirror or a card still shows", () => {
+    const doubled = pi.filter((name) => {
+      const lines = load(name);
+      const shown = new Set(buildBlocks(lines, { agent: "pi" }).flatMap((block) => ("lines" in block ? block.lines : [])));
+      return piAdapter.extractStatusLines(lines).some((row) => shown.has(row));
+    });
+    expect(doubled).toEqual([]);
+  });
+
+  it("keeps the strip on a ready editor", () => {
+    for (const name of ["pi--v0871-idle.txt", "pi--v110-stock-idle.txt", "pi--omo-v5130-idle.txt"]) {
+      expect(piAdapter.extractStatusLines(load(name)).length, name).toBeGreaterThan(0);
+    }
+  });
+
   it("lifts every question screen the corpus proves, and no fewer", () => {
     expect(lifted).toHaveLength(51);
   });
