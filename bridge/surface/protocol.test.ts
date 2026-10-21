@@ -362,6 +362,128 @@ function neverEscape(pane: FakePane): void {
   expect(pane.keysSeen.filter((key) => /^esc(ape)?$/iu.test(key))).toEqual([]);
 }
 
+describe("manual send into a question's nested answer editor", () => {
+  // The ask_user screen from the field report: an outer labelled rule contains the
+  // question, options and a separate indented editor. The outer panel matches the
+  // profile's frame shape, but the Surface rejects it as a composer.
+  function answerPane(hint = "Enter submit • Esc back to options"): FakePane {
+    const pane = new FakePane();
+    const paint = (s: string) => `\u001b[38;2;167;152;215m${s}\u001b[0m`;
+    pane.render = () => [
+      paint(`─ Question ${"─".repeat(29)}`),
+      " Choose how to handle the cache.",
+      "",
+      "   1. Move cache",
+      "   2. Keep cache",
+      paint(" ❯ ✎ Write my own answer…"),
+      "",
+      paint(" Your answer:"),
+      paint(` ${"─".repeat(38)}`),
+      ` ${pane.box}`,
+      paint(` ${"─".repeat(38)}`),
+      "",
+      paint(` ${hint}`),
+      paint(RULE),
+      paint("~/project (dev)"),
+      paint("↑91k ↓2.0k 33.4%/272k (auto)"),
+    ].join("\n");
+    return pane;
+  }
+
+  test.each(["Enter submit • Esc back to options", "Enter to submit • Esc to go back"])("Type here submits the answer using the printed hint: %s", async (hint) => {
+    const pane = answerPane(hint);
+    pane.afterInput = (p, what) => {
+      if (what === "keys:Enter") p.render = () => readFileSync(join(import.meta.dir, "../../web/src/fixtures/panes/pi--v0871-idle.txt"), "utf8");
+    };
+    const { send } = rig({ pane, harness: "pi", version: "1.3.0" });
+    const first = await send("my custom answer");
+    expect(first.receipt).toMatchObject({ outcome: "refused", reason: "unconfirmed", keys: [] });
+    expect(first.surface).toMatchObject({ modal: "unreadable", composer: "unknown" });
+    expect(pane.calls).toEqual([]);
+    const second = await send("my custom answer", { rowsHash: first.rowsHash! });
+    expect(second.receipt).toMatchObject({ outcome: "sent", keys: ["probe", "Backspace", "Enter"] });
+    expect(pane.calls).toEqual([`type:${PROBE}`, "paste:my custom answer"]);
+    expect(pane.transcript.at(-1)).toBe("> my custom answer");
+    neverEscape(pane);
+  });
+
+  test.each(["Press Enter to select the second option", "I will press Escape to cancel afterwards", "Enter submit \u2022 Esc back to options"])("answer text cannot replace the real footer: %s", async (text) => {
+    const pane = answerPane();
+    pane.afterInput = (p, what) => {
+      if (what === "keys:Enter") p.render = () => readFileSync(join(import.meta.dir, "../../web/src/fixtures/panes/pi--v0871-idle.txt"), "utf8");
+    };
+    const { send } = rig({ pane, harness: "pi", version: "1.3.0" });
+    const first = await send(text);
+    const second = await send(text, { rowsHash: first.rowsHash! });
+    expect(second.receipt).toMatchObject({ outcome: "sent", keys: ["probe", "Backspace", "Enter"] });
+  });
+
+  test("Submit retries a failed Enter and confirms the returned empty composer", async () => {
+    const pane = answerPane();
+    const writeKeys = pane.writeKeys;
+    let failEnter = true;
+    pane.writeKeys = (id, keys) => {
+      if (keys.includes("Enter") && failEnter) {
+        failEnter = false;
+        return Promise.resolve(muxRefused("temporary key write failure"));
+      }
+      return writeKeys(id, keys);
+    };
+    pane.afterInput = (p, what) => {
+      if (what === "keys:Enter") p.render = () => readFileSync(join(import.meta.dir, "../../web/src/fixtures/panes/pi--v0871-idle.txt"), "utf8");
+    };
+    const { send } = rig({ pane, harness: "pi", version: "1.3.0" });
+    const text = "Press Enter to select the second option";
+    const first = await send(text);
+    const second = await send(text, { rowsHash: first.rowsHash! });
+    expect(second.receipt).toMatchObject({ outcome: "typed_not_submitted", reason: "submit_failed" });
+    const retry = await send(text, { mode: "submit", rowsHash: second.rowsHash! });
+    expect(retry.receipt).toMatchObject({ outcome: "sent", keys: ["Enter"] });
+    expect(pane.calls).toEqual([`type:${PROBE}`, `paste:${text}`]);
+    expect(pane.transcript.filter((row) => row === `> ${text}`)).toHaveLength(1);
+  });
+
+  test("a swallowed Enter is not reported as a sent answer", async () => {
+    const pane = answerPane();
+    pane.enterSubmits = false;
+    const { send } = rig({ pane, harness: "pi", version: "1.3.0" });
+    const first = await send("my custom answer");
+    const second = await send("my custom answer", { rowsHash: first.rowsHash! });
+    expect(second.receipt).toMatchObject({ outcome: "unknown", reason: "no_evidence", keys: ["probe", "Backspace", "Enter"] });
+    expect(pane.box).toBe("my custom answer");
+  });
+
+  test.each(["Enter select • Esc cancel", "Alt+Enter submit • Esc cancel"])("does not invent an Enter submit hint from %s", async (hint) => {
+    const pane = answerPane(hint);
+    const { send } = rig({ pane, harness: "pi", version: "1.3.0" });
+    const first = await send("my custom answer");
+    const second = await send("my custom answer", { rowsHash: first.rowsHash! });
+    expect(second.receipt?.keys).toEqual(["probe", "Backspace", "alt+Enter"]);
+    expect(pane.keysSeen).not.toContain("Enter");
+  });
+
+  test("a changed footer after the text lands keeps every submit key home", async () => {
+    const pane = answerPane();
+    const render = pane.render.bind(pane);
+    pane.render = () => pane.box.length > 1 ? render().replace("Enter submit", "Enter select") : render();
+    const { send } = rig({ pane, harness: "pi", version: "1.3.0" });
+    const first = await send("my custom answer");
+    const second = await send("my custom answer", { rowsHash: first.rowsHash! });
+    expect(second.receipt).toMatchObject({ outcome: "typed_not_submitted", reason: "mismatch", keys: ["probe", "Backspace"] });
+  });
+
+  test("a question that swallows the probe still receives no answer or submit key", async () => {
+    const pane = answerPane();
+    pane.swallow = true;
+    const { send } = rig({ pane, harness: "pi", version: "1.3.0" });
+    const first = await send("my custom answer");
+    const second = await send("my custom answer", { rowsHash: first.rowsHash! });
+    expect(second.receipt).toMatchObject({ outcome: "refused", reason: "probe_failed", keys: ["probe"] });
+    expect(pane.calls).toEqual([`type:${PROBE}`]);
+    expect(pane.keysSeen).toEqual([]);
+  });
+});
+
 // ── the happy paths ──
 
 describe("a send that goes through", () => {

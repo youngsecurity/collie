@@ -37,6 +37,10 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 ## [Unreleased]
 
+### Fixed
+
+- **Type here sends custom answers from nested question editors.** A confirmed manual send no longer treats the whole question panel as the input box. After the probe and text read-back pass, an unchanged dialog footer that explicitly says Enter submits takes Enter instead of the normal composer's queue key. A returned empty composer confirms the answer was taken; changed screens and failed probes still withhold submission.
+
 ## [1.22.5+ys.2] - 2026-10-18
 
 ### Fixed

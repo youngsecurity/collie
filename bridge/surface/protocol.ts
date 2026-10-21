@@ -82,9 +82,10 @@ import type { MuxAck, MuxGrid, MuxGridRequest, MuxOutcome } from "../mux/types.t
 import { parseAnsi } from "../../web/src/lib/ansi.ts";
 import { splitLines } from "../../web/src/lib/blocks.ts";
 import { noEchoPromptIn } from "../../web/src/lib/no-echo.ts";
-import { commandListAt, isRunningRow, noticeOver, ownCommandList, readCues, readCuesFor, runningSign, withoutCommandList, type CommandListRead, type Cue } from "../../web/src/lib/surface/cues.ts";
+import { commandListAt, isKeyHintRow, isRunningRow, noticeOver, ownCommandList, readCues, readCuesFor, runningSign, withoutCommandList, type CommandListRead, type Cue } from "../../web/src/lib/surface/cues.ts";
 import { surfaceOfScreen } from "../../web/src/lib/surface/fold.ts";
-import { findInputFrame, rowText, type Frame, type FrameRow } from "../../web/src/lib/surface/frame.ts";
+import { keyRowItems } from "../../web/src/lib/surface/key-row.ts";
+import { rowText, type Frame, type FrameRow } from "../../web/src/lib/surface/frame.ts";
 import { liftAsk, liftDialog, readerBlocks } from "../../web/src/lib/surface/lift.ts";
 import type { AboveNotice } from "../../web/src/lib/surface/notice.ts";
 import type { OtherScreenRow, ProfileMatch, QueuedRow } from "../../web/src/lib/surface/profile.ts";
@@ -849,7 +850,38 @@ function commitKeys(state: RunState): readonly string[] {
     return [keys.queueKey];
   }
   if (state.command || state.request.mode === "command") return keys.commandSubmit ?? keys.submit;
+  // A confirmed manual answer belongs to the dialog, not the normal composer.
+  // Use Enter only when its unchanged footer explicitly names Enter as submit.
+  if (manualSubmitHint(state)) return GENERIC_SUBMIT;
   return keys.submit;
+}
+
+/** A submit hint on the unread dialog the person confirmed, still present after read-back. */
+function manualSubmitHint(state: RunState): boolean {
+  if (!state.manual || state.command || state.queued || state.streamed) return false;
+  const { s0, s1 } = state.marks;
+  if (s0 === null || s1 === null || s0.frame !== null || s1.frame !== null) return false;
+  if (s0.surface.modal !== "unreadable" || s1.surface.modal !== "unreadable") return false;
+  const before = submitHintTail(s0);
+  const after = submitHintTail(s1);
+  return before !== null && after !== null && before.length === after.length && before.every((row, i) => row === after[i]);
+}
+
+/** The last key-hint row and its tail, not the first cue, which may be quoted in the answer. */
+function submitHintTail(snap: Snap): readonly string[] | null {
+  const { first, end } = bottomWindow(snap.texts);
+  for (let row = end - 1; row >= first; row--) {
+    const text = snap.texts[row] ?? "";
+    if (!isKeyHintRow(text)) continue;
+    if (!keyRowItems(text).some((item) => /^Enter(?: to)? submit$/iu.test(item))) return null;
+    return snap.texts.slice(row, end);
+  }
+  return null;
+}
+
+/** The submitted inline dialog closed to a recognised empty composer. Shared by Send and Submit. */
+function manualDialogClosed(state: RunState, snap: Snap): boolean {
+  return manualSubmitHint(state) && snap.frame !== null && snap.surface.modal === "none" && boxText(snap.frame).length === 0;
 }
 
 /**
@@ -1287,6 +1319,9 @@ function typedOnLanding(s0: readonly string[], now: readonly string[], landing: 
   const win = bottomWindow(now);
   for (let row = win.end - 1; row >= win.first; row--) {
     if (!flat(now.slice(row)).startsWith(line)) continue;
+    // A row that reads as it did at S0 was not typed into. It only quotes the text, as a footer that
+    // says the same words as the answer does; the search goes on up to the row that changed.
+    if (wsFree(now[row] ?? "") === wsFree(s0[row] ?? "")) continue;
     return lostTextOnly(s0.slice(0, landing.row), now.slice(0, row));
   }
   return false;
@@ -2695,13 +2730,14 @@ export class SendProtocol {
     if (!grid.ok) return null;
     const rows = splitLines(parseAnsi(grid.value.text));
     const idle = state.match?.profile.idle ?? null;
-    const frame = idle === null ? null : findInputFrame(rows, idle);
     const blocks = readerBlocks(rows, harness);
     const ask =
       this.deps.asks === undefined
         ? liftAsk(blocks, grid.value.revision)
         : this.deps.asks.publish(paneId, this.deps.generation(paneId) ?? "gone", liftDialog(blocks), askLifetimeOf(state.match));
-    const { surface } = surfaceOfScreen({ seq: 0, source: "screen", at: this.now(), revision: grid.value.revision, rows, ask }, idle);
+    // A dialog can reuse the composer's frame. The Surface discards that frame;
+    // the probe must use its landing spot, not compare the whole dialog as a draft.
+    const { surface, frame } = surfaceOfScreen({ seq: 0, source: "screen", at: this.now(), revision: grid.value.revision, rows, ask }, idle);
     const texts = rows.map((row) => rowText(row).trimEnd());
     const plainRaw = rows.map(plainOf);
     const signs = (idle?.runningRows ?? []).map((source) => new RegExp(source, "u"));
@@ -3163,6 +3199,9 @@ export class SendProtocol {
         return boxText(snap.frame).length === 0 || runningSign(snap.rows, snap.frame, state.match?.profile.idle.runningRows) ? "pass" : "wait";
       }
       if (landing === null) return "wait";
+      // A submitted inline answer closes the whole dialog, rather than restoring
+      // its blank landing row. A recognised empty composer is positive evidence.
+      if (manualDialogClosed(state, snap)) return "pass";
       if (command) return flat(snap.plain).includes(flat([landing.probed.slice(0, landing.index) + lines.join("") + afterProbe(landing)])) ? "wait" : "pass";
       // No frame: the landing row, found at its S0 distance from the last non-blank row, reads as it
       // did at S0 again, and the typed text no longer stands there. The rows under it may change (a
@@ -3230,7 +3269,7 @@ export class SendProtocol {
    * nothing from there down holds the text. With no box found there is no evidence: `unknown`.
    */
   private async awaitBareEmpty(state: RunState, located: Located | null): Promise<void> {
-    const result = located === null ? null : await this.poll(state, "s2", BOUNDS.s2, (snap) => (emptiedTo(located.head, snap.plain, located.text) ? "pass" : "wait"));
+    const result = located === null ? null : await this.poll(state, "s2", BOUNDS.s2, (snap) => (manualDialogClosed(state, snap) || emptiedTo(located.head, snap.plain, located.text) ? "pass" : "wait"));
     state.marks.s2 = result?.snap ?? null;
     if (result?.verdict !== "pass") throw new Ended("unknown", "no_evidence", { detail: "The submit key went out, but the box did not show it was taken." });
   }
