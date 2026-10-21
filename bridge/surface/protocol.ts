@@ -1342,6 +1342,22 @@ function emptyBoxBack(s0: readonly string[], now: readonly string[], landing: La
  * a placeholder's plain part) and from that row down nothing holds the typed text. An empty form that
  * is blank proves nothing and never passes.
  */
+/**
+ * Whether a box drawn with nothing before its text (a question's answer editor, one space in) was
+ * emptied in place: the rows that changed since S0 are next to each other, read blank now, and held
+ * exactly one of `texts` at S0, and every other row reads as it did. A blank row alone proves nothing
+ * ({@link emptiedTo}), so the rest of the screen standing still is the evidence.
+ */
+function blankedInPlace(s0: readonly string[], now: readonly string[], texts: readonly string[]): boolean {
+  const changed: number[] = [];
+  for (let i = 0; i < Math.max(s0.length, now.length); i++) if (wsFree(s0[i] ?? "") !== wsFree(now[i] ?? "")) changed.push(i);
+  if (changed.length === 0) return false;
+  if (changed.some((row, i) => i > 0 && row !== changed[i - 1]! + 1)) return false;
+  if (changed.some((row) => wsFree(now[row] ?? "").length > 0)) return false;
+  const removed = flat(changed.map((row) => s0[row] ?? ""));
+  return texts.some((text) => flat([text]) === removed);
+}
+
 function emptiedTo(emptyRow: string, now: readonly string[], typed: string): boolean {
   const empty = wsFree(emptyRow);
   if (empty.length === 0) return false;
@@ -2350,7 +2366,7 @@ export class SendProtocol {
         if (s0.frame === null && located === null) throw new Ended("refused", "not_free", { surface: s0.surface, detail: "The box no longer holds this text." });
         this.lap(state, "s0");
         if (located === null) await this.clear(state, s0);
-        else await this.clearBare(state, located);
+        else await this.clearBare(state, located, s0, lines);
         this.lap(state, "clear");
         return;
       }
@@ -3278,11 +3294,15 @@ export class SendProtocol {
    * Discard on a pane with no frame: the clear key as many times as the text has characters plus the
    * profile's slack, in one batch through the gate, then reads until the box found at S0 reads empty.
    */
-  private async clearBare(state: RunState, located: Located): Promise<void> {
+  private async clearBare(state: RunState, located: Located, s0: Snap, lines: readonly string[]): Promise<void> {
     const clearKey = state.match?.profile.keys.clear ?? GENERIC_CLEAR;
     const count = Math.min(CLEAR_BATCH, [...located.text].length + clearKey.slack);
     await this.keysThroughGate(state, Array.from({ length: count }, () => clearKey.key), "unknown");
-    const result = await this.poll(state, "clear", CLEAR_BOUND, (snap) => (emptiedTo(located.head, snap.plain, located.text) ? "pass" : "wait"));
+    // A box with no glyph before its text cannot be found again by its head: judge the whole screen.
+    const blankHead = wsFree(located.head).length === 0;
+    const emptied = (snap: Snap): boolean =>
+      blankHead ? blankedInPlace(s0.plain, snap.plain, [located.text, lines.join("")]) : emptiedTo(located.head, snap.plain, located.text);
+    const result = await this.poll(state, "clear", CLEAR_BOUND, (snap) => (emptied(snap) ? "pass" : "wait"));
     if (result.verdict !== "pass") throw new Ended("unknown", "no_evidence", { detail: "The box did not empty inside the bound." });
   }
 

@@ -443,6 +443,48 @@ describe("manual send into a question's nested answer editor", () => {
     expect(pane.transcript.filter((row) => row === `> ${text}`)).toHaveLength(1);
   });
 
+  /** A confirmed answer typed into the field whose Enter write failed: the text stands, unsubmitted. */
+  async function strandedAnswer(text: string) {
+    const pane = answerPane();
+    const writeKeys = pane.writeKeys;
+    pane.writeKeys = (id, keys) => (keys.includes("Enter") ? Promise.resolve(muxRefused("temporary key write failure")) : writeKeys(id, keys));
+    const r = rig({ pane, harness: "pi", version: "1.3.0" });
+    const first = await r.send(text);
+    const second = await r.send(text, { rowsHash: first.rowsHash! });
+    expect(second.receipt).toMatchObject({ outcome: "typed_not_submitted", reason: "submit_failed" });
+    expect(pane.box).toBe(text);
+    return { ...r, pane, rowsHash: second.rowsHash! };
+  }
+
+  test.each(["my custom answer", "Enter submit \u2022 Esc back to options"])("Discard empties a stranded answer and says so: %s", async (text) => {
+    const { pane, send, rowsHash } = await strandedAnswer(text);
+    const discard = await send(text, { mode: "discard", rowsHash });
+    expect(discard.receipt).toMatchObject({ outcome: "discarded" });
+    expect(pane.box).toBe("");
+    expect(pane.keysSeen.every((key) => key === "Backspace")).toBe(true);
+    neverEscape(pane);
+  });
+
+  test("Discard that leaves text in the field is never reported discarded", async () => {
+    const { pane, send, rowsHash } = await strandedAnswer("my custom answer");
+    pane.backspaceRestores = false;
+    const discard = await send("my custom answer", { mode: "discard", rowsHash });
+    expect(discard.receipt).toMatchObject({ outcome: "unknown", reason: "no_evidence" });
+    expect(pane.box).toBe("my custom answer");
+  });
+
+  test("Discard whose screen changed elsewhere is never reported discarded", async () => {
+    const { pane, send, rowsHash } = await strandedAnswer("my custom answer");
+    pane.afterInput = (p, what) => {
+      if (what.startsWith("keys:Backspace")) {
+        const render = p.render.bind(p);
+        p.render = () => render().replace("2. Keep cache", "2. Keep cache and more");
+      }
+    };
+    const discard = await send("my custom answer", { mode: "discard", rowsHash });
+    expect(discard.receipt).toMatchObject({ outcome: "unknown", reason: "no_evidence" });
+  });
+
   test("a swallowed Enter is not reported as a sent answer", async () => {
     const pane = answerPane();
     pane.enterSubmits = false;

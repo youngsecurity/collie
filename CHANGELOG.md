@@ -39,7 +39,8 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 ### Fixed
 
-- **Type here sends custom answers from nested question editors.** A confirmed manual send no longer treats the whole question panel as the input box. After the probe and text read-back pass, an unchanged dialog footer that explicitly says Enter submits takes Enter instead of the normal composer's queue key. A returned empty composer confirms the answer was taken; changed screens and failed probes still withhold submission.
+- **Type here sends custom answers from nested question editors.** Broken since 1.21.0+ys.1, when pi panes moved to the guarded send. A confirmed manual send no longer treats the whole question panel as the input box. After the probe and text read-back pass, an unchanged dialog footer that explicitly says Enter submits takes Enter instead of the normal composer's queue key. A returned empty composer confirms the answer was taken, and an answer worded like the footer is still found in its own field. Changed screens and failed probes still withhold submission.
+- **Discard confirms an emptied question answer field.** A typed but unsubmitted answer in a question's answer editor was cleared by Discard, yet the result read unknown, because a field with nothing before its text cannot be found again by that text. Discard now reports discarded when only the answer's own rows changed and now read blank, and every other row stands as it did.
 
 ## [1.22.5+ys.2] - 2026-10-18
 
