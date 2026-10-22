@@ -17,6 +17,7 @@ const PREFIX_AGENT = new Map([
   ["oc", "opencode"],
 ]);
 
+/** The registered agent a fixture was captured under, from its file-name prefix, or undefined for none. */
 function agentOf(name: string): string | undefined {
   const prefix = name.split("--")[0]!;
   return PREFIX_AGENT.get(prefix) ?? (registeredAgents().includes(prefix) ? prefix : undefined);

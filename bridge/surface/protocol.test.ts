@@ -363,9 +363,11 @@ function neverEscape(pane: FakePane): void {
 }
 
 describe("manual send into a question's nested answer editor", () => {
-  // The ask_user screen from the field report: an outer labelled rule contains the
-  // question, options and a separate indented editor. The outer panel matches the
-  // profile's frame shape, but the Surface rejects it as a composer.
+  /**
+   * The ask_user screen from the field report: an outer labelled rule contains the
+   * question, options and a separate indented editor, with `hint` as its footer. The outer
+   * panel matches the profile's frame shape, but the Surface rejects it as a composer.
+   */
   function answerPane(hint = "Enter submit • Esc back to options"): FakePane {
     const pane = new FakePane();
     const paint = (s: string) => `\u001b[38;2;167;152;215m${s}\u001b[0m`;
