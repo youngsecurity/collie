@@ -458,7 +458,38 @@ describe("manual send into a question's nested answer editor", () => {
     return { ...r, pane, rowsHash: second.rowsHash! };
   }
 
-  test.each(["my custom answer", "Enter submit \u2022 Esc back to options"])("Discard empties a stranded answer and says so: %s", async (text) => {
+  // An answer worded like the footer is found on the footer row (the scan runs up from the bottom),
+  // and Discard confirms only the row it found: the field still empties, the receipt says unknown.
+  test("Discard of an answer worded like the footer empties the field but does not claim discarded", async () => {
+    const text = "Enter submit \u2022 Esc back to options";
+    const { pane, send, rowsHash } = await strandedAnswer(text);
+    const discard = await send(text, { mode: "discard", rowsHash });
+    expect(discard.receipt).toMatchObject({ outcome: "unknown", reason: "no_evidence" });
+    expect(pane.box).toBe("");
+  });
+
+  test("Discard that blanks a duplicate row while the answer stays is never reported discarded", async () => {
+    const { pane, send, rowsHash } = await strandedAnswer("my custom answer");
+    const render = pane.render.bind(pane);
+    let quoteCleared = false;
+    pane.render = () => render().replace(" Choose how to handle the cache.", quoteCleared ? " " : " my custom answer");
+    const writeKeys = pane.writeKeys;
+    pane.writeKeys = (id, keys) => {
+      if (keys.every((key) => key === "Backspace")) {
+        quoteCleared = true;
+        pane.revision++;
+        return Promise.resolve(muxAck());
+      }
+      return writeKeys(id, keys);
+    };
+    // The person's rows hash is of the screen with the quoted copy on it.
+    const look = await send("my custom answer", { mode: "discard", rowsHash });
+    const discard = look.receipt?.reason === "stale_surface" ? await send("my custom answer", { mode: "discard", rowsHash: look.rowsHash! }) : look;
+    expect(discard.receipt?.outcome).not.toBe("discarded");
+    expect(pane.box).toBe("my custom answer");
+  });
+
+  test.each(["my custom answer"])("Discard empties a stranded answer and says so: %s", async (text) => {
     const { pane, send, rowsHash } = await strandedAnswer(text);
     const discard = await send(text, { mode: "discard", rowsHash });
     expect(discard.receipt).toMatchObject({ outcome: "discarded" });
