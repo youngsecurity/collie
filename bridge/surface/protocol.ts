@@ -1339,14 +1339,15 @@ function emptyBoxBack(s0: readonly string[], now: readonly string[], landing: La
 
 /**
  * Whether a box drawn with nothing before its text (a question's answer editor, one space in) was
- * emptied in place: the rows that changed since S0 are next to each other, read blank now, and held
- * exactly one of `texts` at S0, and every other row reads as it did. A blank row alone proves nothing
- * ({@link emptiedTo}), so the rest of the screen standing still is the evidence.
+ * emptied in place: the rows that changed since S0 include `targetRow`, the row the text was found
+ * on, are next to each other, read blank now, and held exactly one of `texts` at S0, and every other
+ * row reads as it did. A blank row alone proves nothing ({@link emptiedTo}), so the rest of the screen
+ * standing still is the evidence, and a duplicate of the text that emptied elsewhere is not the box.
  */
-function blankedInPlace(s0: readonly string[], now: readonly string[], texts: readonly string[]): boolean {
+function blankedInPlace(s0: readonly string[], now: readonly string[], targetRow: number, texts: readonly string[]): boolean {
   const changed: number[] = [];
   for (let i = 0; i < Math.max(s0.length, now.length); i++) if (wsFree(s0[i] ?? "") !== wsFree(now[i] ?? "")) changed.push(i);
-  if (changed.length === 0) return false;
+  if (changed.length === 0 || !changed.includes(targetRow)) return false;
   if (changed.some((row, i) => i > 0 && row !== changed[i - 1]! + 1)) return false;
   if (changed.some((row) => wsFree(now[row] ?? "").length > 0)) return false;
   const removed = flat(changed.map((row) => s0[row] ?? ""));
@@ -3301,7 +3302,7 @@ export class SendProtocol {
     // A box with no glyph before its text cannot be found again by its head: judge the whole screen.
     const blankHead = wsFree(located.head).length === 0;
     const emptied = (snap: Snap): boolean =>
-      blankHead ? blankedInPlace(s0.plain, snap.plain, [located.text, lines.join("")]) : emptiedTo(located.head, snap.plain, located.text);
+      blankHead ? blankedInPlace(s0.plain, snap.plain, located.row, [located.text, lines.join("")]) : emptiedTo(located.head, snap.plain, located.text);
     const result = await this.poll(state, "clear", CLEAR_BOUND, (snap) => (emptied(snap) ? "pass" : "wait"));
     if (result.verdict !== "pass") throw new Ended("unknown", "no_evidence", { detail: "The box did not empty inside the bound." });
   }

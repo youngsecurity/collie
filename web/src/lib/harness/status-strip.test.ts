@@ -33,6 +33,26 @@ describe("the status strip never doubles a row the blocks still show", () => {
     for (const agent of ["agy", "claude", "codex", "grok", "muse", "omp", "opencode", "pi"]) expect(covered.has(agent), agent).toBe(true);
   });
 
+  // The check below passes trivially for a strip that is always empty, so each adapter must still
+  // show its strip somewhere, and Muse on its ready composer in particular (review on PR #108).
+  it("still shows the strip on at least one captured screen of every adapter", () => {
+    const stripped = new Set(
+      fixtures
+        .filter((name) => adapterFor(agentOf(name))!.extractStatusLines(splitLines(parseAnsi(readFileSync(join(PANES, name), "utf8")))).length > 0)
+        .map(agentOf),
+    );
+    expect([...new Set(fixtures.map(agentOf))].filter((agent) => !stripped.has(agent))).toEqual([]);
+  });
+
+  it("shows Muse's statusline once on its ready composer", () => {
+    const lines = splitLines(parseAnsi(readFileSync(join(PANES, "muse--fresh-idle.txt"), "utf8")));
+    const muse = adapterFor("muse")!;
+    expect(muse.composerReady!(lines)).toBe(true);
+    const strip = muse.extractStatusLines(lines).map(lineText);
+    expect(strip).toHaveLength(1);
+    expect(strip[0]!.trim()).toMatch(/^muse-spark-/u);
+  });
+
   it.each(fixtures)("%s", (name) => {
     const adapter = adapterFor(agentOf(name))!;
     const lines = splitLines(parseAnsi(readFileSync(join(PANES, name), "utf8")));
