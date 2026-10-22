@@ -485,7 +485,9 @@ describe("manual send into a question's nested answer editor", () => {
     // The person's rows hash is of the screen with the quoted copy on it.
     const look = await send("my custom answer", { mode: "discard", rowsHash });
     const discard = look.receipt?.reason === "stale_surface" ? await send("my custom answer", { mode: "discard", rowsHash: look.rowsHash! }) : look;
-    expect(discard.receipt?.outcome).not.toBe("discarded");
+    // The Backspaces went out and blanked the duplicate, and that is still no evidence for the box.
+    expect(quoteCleared).toBe(true);
+    expect(discard.receipt).toMatchObject({ outcome: "unknown", reason: "no_evidence" });
     expect(pane.box).toBe("my custom answer");
   });
 
