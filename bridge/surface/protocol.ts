@@ -1338,11 +1338,6 @@ function emptyBoxBack(s0: readonly string[], now: readonly string[], landing: La
 }
 
 /**
- * Whether a row of the bottom window reads as `empty` (the box with nothing in it: its prompt glyph,
- * a placeholder's plain part) and from that row down nothing holds the typed text. An empty form that
- * is blank proves nothing and never passes.
- */
-/**
  * Whether a box drawn with nothing before its text (a question's answer editor, one space in) was
  * emptied in place: the rows that changed since S0 are next to each other, read blank now, and held
  * exactly one of `texts` at S0, and every other row reads as it did. A blank row alone proves nothing
@@ -1358,6 +1353,11 @@ function blankedInPlace(s0: readonly string[], now: readonly string[], texts: re
   return texts.some((text) => flat([text]) === removed);
 }
 
+/**
+ * Whether a row of the bottom window reads as `empty` (the box with nothing in it: its prompt glyph,
+ * a placeholder's plain part) and from that row down nothing holds the typed text. An empty form that
+ * is blank proves nothing and never passes.
+ */
 function emptiedTo(emptyRow: string, now: readonly string[], typed: string): boolean {
   const empty = wsFree(emptyRow);
   if (empty.length === 0) return false;
