@@ -37,10 +37,12 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 ## [Unreleased]
 
+## [1.22.5+ys.4] - 2026-10-22
+
 ### Fixed
 
-- **Muse status lines no longer show twice while a question is open.** A Muse question, approval or multi-select card keeps the rows down to the screen's last one, its statusline included, and Collie's status strip showed that line again under the card. The strip now stays empty while a card shows it. A new check over every adapter's captured screens holds them all to one copy.
-- **Discard reports discarded only when the answer's own row emptied.** For an answer typed into a question's answer field, Discard confirmed success from any rows that went blank and held the answer, so a duplicate of the text emptying elsewhere could read as discarded while the answer stayed. It now requires the row the answer was found on to be one of them. An answer worded exactly like the question's footer is found on the footer row, so its Discard still empties the field but reports unknown.
+- **Muse status lines no longer show twice while a question is open.** A Muse question, approval or multi-select card keeps the rows down to the screen's last one, its statusline included, and Collie's status strip showed that line again under the card. The strip now stays empty while a card shows it. A new check over every adapter's captured screens holds them all to one copy. ([f3e0e12c](https://github.com/youngsecurity/collie/commit/f3e0e12c))
+- **Discard reports discarded only when the answer's own row emptied.** For an answer typed into a question's answer field, Discard confirmed success from any rows that went blank and held the answer, so a duplicate of the text emptying elsewhere could read as discarded while the answer stayed. It now requires the row the answer was found on to be one of them. An answer worded exactly like the question's footer is found on the footer row, so its Discard still empties the field but reports unknown. ([91f77a95](https://github.com/youngsecurity/collie/commit/91f77a95))
 
 ## [1.22.5+ys.3] - 2026-10-21
 
