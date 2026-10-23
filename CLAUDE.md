@@ -189,6 +189,16 @@ branch, dispatch **Verify release** with an explicit tag for a late publication 
 Select a branch with the updated verifier. Rerunning an old failed run still uses that run's old
 workflow; use dispatch instead.
 
+**Adopted upstream issues close by workflow, not by memory.** The upstream watcher opens one
+`Adopt upstream AltanS/collie vX.Y.Z` issue (label `upstream-sync`) per upstream release, and one
+adoption usually covers several of them. `.github/workflows/upstream-sync-close.yml` runs on every
+push to `main` and closes each open release issue whose upstream tag is an ancestor of `main`. It
+leaves everything else open: newer releases, a tag it cannot find, and the rolling
+`Upstream AltanS/collie:main is N commit(s) ahead` issue. After an adoption reaches `main`, check
+that run's summary instead of closing release issues by hand. If it failed, fix it and dispatch
+it again (`dry_run` lists what would close). Do not reimplement the check in a session. A merge
+into `dev-joe` closes nothing, because only `main` counts as adopted.
+
 **The GitHub Release page is built from the CHANGELOG, not written from scratch.** Upstream's
 release tooling runs `scripts/release-notes.ts` over `CHANGELOG.md`; here the same script is run
 locally before publication and its output, after the fork edits below, is the `--notes-file` for

@@ -1,0 +1,60 @@
+name: Close adopted upstream issues
+
+# The upstream watcher opens one `Adopt upstream AltanS/collie vX.Y.Z` issue per upstream release.
+# One adoption usually covers several releases, so after every push to `main` this closes each open
+# `upstream-sync` release issue whose upstream tag is an ancestor of `main`. Nobody has to remember.
+# A newly opened issue is checked too, in case it names a release `main` already holds.
+# The script always runs from `main`, never from an issue or a PR, and reads issue titles only
+# through a fixed pattern.
+
+on:
+  push:
+    branches: [main]
+  issues:
+    types: [opened]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "List what would close without closing anything"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  issues: write
+
+# Runs never overlap, so two pushes cannot comment on the same issue twice.
+concurrency:
+  group: upstream-sync-close
+  cancel-in-progress: false
+
+jobs:
+  close:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Full history: ancestry needs every commit on `main`.
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+
+      # Upstream's tags go under refs/tags/upstream/, apart from the fork's `+ys` tags.
+      - name: Fetch upstream release tags
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --force https://github.com/AltanS/collie.git '+refs/tags/v*:refs/tags/upstream/v*'
+
+      - name: Close adopted release issues
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRY_RUN: ${{ inputs.dry_run || 'false' }}
+        run: |
+          set -euo pipefail
+          MAIN_SHA="$(git rev-parse HEAD)" bun .github/scripts/close-adopted-upstream.ts

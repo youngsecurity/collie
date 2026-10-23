@@ -156,3 +156,22 @@ test("tag movement is rejected instead of recreating the tag", () => {
 	expect(result.code).not.toBe(0);
 	expect(result.stderr).toContain("tag moved");
 });
+
+test("adopted upstream issues close on every push to main, from main's own script", () => {
+	expect(workflow("upstream-sync-close")).toMatchObject({
+		on: { push: { branches: ["main"] }, issues: { types: ["opened"] }, workflow_dispatch: { inputs: { dry_run: { type: "boolean", default: false } } } },
+		permissions: { contents: "read", issues: "write" },
+		concurrency: { group: "upstream-sync-close", "cancel-in-progress": false },
+		jobs: { close: { steps: expect.arrayContaining([
+			{ uses: "actions/checkout@v4", with: { ref: "main", "fetch-depth": 0, "persist-credentials": false } },
+		]) } },
+	});
+	const fetch = runStep("upstream-sync-close", "close", "Fetch upstream release tags");
+	expect(fetch).toContain("https://github.com/AltanS/collie.git '+refs/tags/v*:refs/tags/upstream/v*'");
+	const close = runStep("upstream-sync-close", "close", "Close adopted release issues");
+	const result = shell(`git() { echo 0123456789012345678901234567890123456789; }\nbun() { printf '%s %s\\n' "$MAIN_SHA" "$*"; }\n${close}`);
+	expect(result.code).toBe(0);
+	expect(result.stdout).toBe("0123456789012345678901234567890123456789 .github/scripts/close-adopted-upstream.ts\n");
+	const source = readFileSync(new URL("../.github/workflows/upstream-sync-close.yml", import.meta.url), "utf8");
+	expect(source).not.toMatch(/pull_request|contents: write|github\.event\.issue/);
+});
