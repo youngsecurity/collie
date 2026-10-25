@@ -8,7 +8,7 @@ import { server } from "@/test/setup";
 import { ROOT_ROUTE_ID, type HomeData } from "@/lib/loaders";
 import { __resetReloadGuard, isReloadHeld } from "@/lib/reload-guard";
 import { __resetUpdateRunStore } from "@/lib/update-run-store";
-import { getDeviceToken, getPairingExpiry, sessionCacheAllowed, setDeviceToken } from "@/lib/pairing";
+import { getDeviceToken, getPairingExpiry, setDeviceToken } from "@/lib/pairing";
 import { putRecord } from "@/lib/store";
 import type {
   PreflightReport,
@@ -308,7 +308,6 @@ describe("release notes on the card", () => {
     expect(screen.getByText(lead)).toBeInTheDocument();
     expect(rendered.container.querySelector("img")).toBeNull();
     expect(screen.getByRole("link", { name: /Release page/ })).toHaveAttribute("href", current.latestUrl);
-    expect(sessionCacheAllowed()).toBe(false);
     expect(await putRecord("snapshot", "anonymous-update-read", { secret: "live only" })).toBe(false);
     expect(getDeviceToken()).toBe("expired-device-token");
     expect(getPairingExpiry()).toBe(1);

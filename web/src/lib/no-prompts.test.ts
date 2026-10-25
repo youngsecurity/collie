@@ -1,5 +1,4 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { observePairingPolicy } from "./pairing";
 
 import {
   forgetNoPromptsConfirms,
@@ -41,18 +40,6 @@ describe("one confirm per device", () => {
     expect(Object.keys(JSON.parse(localStorage.getItem(NO_PROMPTS_KEY) ?? "{}"))).toHaveLength(MAX_NO_PROMPTS_CONFIRMS);
     expect(noPromptsConfirmed("", "line 0")).toBe(false);
     expect(noPromptsConfirmed("", `line ${MAX_NO_PROMPTS_CONFIRMS + 4}`)).toBe(true);
-  });
-
-  it("keeps opt-out command lines out of storage even after enforcement resumes", () => {
-    rememberNoPromptsConfirm("", danger.command, 1);
-    const before = localStorage.getItem(NO_PROMPTS_KEY);
-    observePairingPolicy("off");
-    expect(needsNoPromptsConfirm(danger, "")).toBe(true);
-    rememberNoPromptsConfirm("anonymous", "private-command", 2);
-    observePairingPolicy("on");
-    rememberNoPromptsConfirm("anonymous", "late-command", 3);
-    expect(localStorage.getItem(NO_PROMPTS_KEY)).toBe(before);
-    expect(noPromptsConfirmed("", danger.command)).toBe(false);
   });
 
   it("is forgotten with the pairing", () => {

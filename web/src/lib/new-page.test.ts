@@ -38,7 +38,6 @@ import {
   type LastStart,
 } from "./new-page";
 import { hostHealth } from "./host-health";
-import { observePairingPolicy } from "./pairing";
 import type { HarnessInfo, Launcher, LauncherItem, RecentRun, ServerSummary } from "./types";
 
 // The New page's rules (M48 spec 01): what is offered and what is listed as not working, the summary's
@@ -579,19 +578,6 @@ describe("Again", () => {
     expect(readAgain("", store)).toEqual(start(1));
     expect(readAgain("mini", store)?.what).toEqual({ kind: "shell" });
     expect(readAgain("other", store)).toBeNull();
-  });
-
-  it("keeps opt-out starts live-only even after enforcement resumes", () => {
-    const store = memory();
-    rememberAgain("", start(1), store);
-    const before = store.getItem(AGAIN_KEY);
-    observePairingPolicy("off");
-    expect(readAgain("", store)).toBeNull();
-    rememberAgain("anonymous", start(2), store);
-    observePairingPolicy("on");
-    rememberAgain("anonymous", start(3), store);
-    expect(store.getItem(AGAIN_KEY)).toBe(before);
-    expect(readAgain("", store)).toBeNull();
   });
 
   it("keeps a branch start's folder kind", () => {

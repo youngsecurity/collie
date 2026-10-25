@@ -47,7 +47,7 @@
 // then wiped for a password prompt is therefore gone, whatever the two transactions' timing.
 
 import { basePath } from "@/lib/base-path";
-import { getPairingExpiry, sessionCacheAllowed } from "@/lib/pairing";
+import { getPairingExpiry } from "@/lib/pairing";
 import { paneScopeKey, type Scope } from "@/lib/scope";
 import { onWipe, WIPE_CHANNEL, WIPE_TAB_ID, type WipeAnnouncement, type WipeContext } from "@/lib/wipe";
 
@@ -636,7 +636,6 @@ export function storeStatus(): StoreStatus {
  */
 export function putRecord<T>(kind: RecordKind, key: string, value: T, options: PutOptions = {}): Promise<boolean> {
   registerStoreWipe();
-  if (!sessionCacheAllowed()) return Promise.resolve(false);
   const fetchedAt = options.fetchedAt ?? now();
   const ttl = options.ttlMs ?? DEFAULT_TTL_MS;
   // No record outlives the pairing it was saved under: the effective lifetime is
@@ -645,7 +644,6 @@ export function putRecord<T>(kind: RecordKind, key: string, value: T, options: P
   const pane = options.pane === undefined ? null : paneOf(options.pane);
   const inst = instance();
   return enqueue(async (backend) => {
-    if (!sessionCacheAllowed()) return false;
     const id = recordId(inst, kind, key);
     let json: string | undefined;
     try {
@@ -711,10 +709,8 @@ function toRecord(meta: Meta, body: Body, at: number, staleAfterMs: number): Sto
 
 /** Read one record of this instance. A miss, an expired record or an unreadable one is null. */
 export function getRecord(kind: RecordKind, key: string, options: GetOptions = {}): Promise<StoredRecord | null> {
-  if (!sessionCacheAllowed()) return Promise.resolve(null);
   const inst = instance();
   return enqueue(async (backend) => {
-    if (!sessionCacheAllowed()) return null;
     const id = recordId(inst, kind, key);
     const at = now();
     const found = await backend.run(false, async (tx) => {
@@ -728,16 +724,14 @@ export function getRecord(kind: RecordKind, key: string, options: GetOptions = {
       lastWrites.delete(id);
       await backend.run(true, async (tx) => tx.remove(id));
     }
-    return sessionCacheAllowed() ? found.record : null;
+    return found.record;
   }, null);
 }
 
 /** Every live record of one kind for this instance, newest fetch first. */
 export function listRecords(kind: RecordKind, options: GetOptions = {}): Promise<StoredRecord[]> {
-  if (!sessionCacheAllowed()) return Promise.resolve([]);
   const inst = instance();
   return enqueue(async (backend) => {
-    if (!sessionCacheAllowed()) return [];
     const at = now();
     const records = await backend.run(false, async (tx) => {
       const metas = (await tx.metas())
@@ -751,7 +745,7 @@ export function listRecords(kind: RecordKind, options: GetOptions = {}): Promise
       }
       return out;
     });
-    return sessionCacheAllowed() ? records : [];
+    return records;
   }, []);
 }
 

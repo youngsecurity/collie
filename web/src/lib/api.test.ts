@@ -8,7 +8,7 @@ import { DEAD_DEBOUNCE_MS, isLive, resetLiveness } from "./liveness";
 import { resetBasePathForTests } from "./base-path";
 import {
   getDeviceToken, getPairingExpiry, isBrowserPairingEnforced, isNotPaired, isPairingExpired,
-  markExpired, sessionCacheAllowed, setDeviceToken,
+  markExpired, setDeviceToken,
 } from "./pairing";
 import { burstPaneId, resetPollIntent, sendCount } from "./poll-intent";
 import { __refusalSettled, WIPE_LAST_KEY } from "./wipe";
@@ -72,10 +72,8 @@ describe("api client", () => {
     expect(isNotPaired()).toBe(false);
     expect(getDeviceToken()).toBe("expired-token");
     expect(getPairingExpiry()).toBe(1);
-    expect(sessionCacheAllowed()).toBe(false);
     await expect(sendReply("w1:p1", "hello")).resolves.toEqual({ ok: true });
     // A missing policy header never undoes the known opt-out.
-    expect(sessionCacheAllowed()).toBe(false);
     server.use(http.get(/\/api\/(snapshot|devices)$/, () => new HttpResponse("device expired", {
       status: 403, headers: { "X-Collie-Pairing": "on" },
     })));
@@ -100,7 +98,6 @@ describe("api client", () => {
     await expect(postSend({ id: "adoption-send", pane: "w1:p1", text: "hello", mode: "send" })).resolves.toMatchObject({ outcome: "sent" });
     expect(authorization).toBeNull();
     expect(isBrowserPairingEnforced()).toBe(false);
-    expect(sessionCacheAllowed()).toBe(false);
     expect(serverSkewMs()).toBeGreaterThan(50_000);
   });
 
@@ -143,7 +140,6 @@ describe("api client", () => {
           expect(getDeviceToken()).toBeNull();
           expect(getPairingExpiry()).toBeNull();
           expect(localStorage.getItem(WIPE_LAST_KEY)).toBe(credential.wipe);
-          expect(sessionCacheAllowed()).toBe(false);
         });
       }
     }
@@ -218,7 +214,6 @@ describe("api client", () => {
         expect(isBrowserPairingEnforced()).toBe(true);
         expect(isNotPaired()).toBe(false);
         expect(getDeviceToken()).toBe("valid-token");
-        expect(sessionCacheAllowed()).toBe(false);
       });
     }
   });
@@ -229,7 +224,6 @@ describe("api client", () => {
       return HttpResponse.json(fixtureSnapshot, { headers: { "X-Collie-Pairing": "off" } });
     }));
     await fetchSnapshot();
-    expect(sessionCacheAllowed()).toBe(false);
     expect(isNotPaired()).toBe(false);
   });
   it("sendReply returns the bridge's ok result on success", async () => {

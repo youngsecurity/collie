@@ -1,5 +1,4 @@
 import type { StartWhat } from "@/lib/api";
-import { sessionCacheAllowed } from "@/lib/pairing";
 import { asJsonNumber, asJsonObject, asJsonString, parseJsonObject, type JsonValue } from "@/lib/json";
 import { hostHealth, writeRefusal, type HostHealth } from "@/lib/host-health";
 import { isMultiHost, leadHost } from "@/lib/hosts";
@@ -656,7 +655,7 @@ function readFile(storage: Pick<Storage, "getItem"> | undefined): AgainFile {
 
 /** The last start on `machine` (`""` is the lead or a solo install), or `null`. */
 export function readAgain(machine: string, storage: Pick<Storage, "getItem"> | undefined = safeStorage()): LastStart | null {
-  return sessionCacheAllowed() ? readFile(storage)[machine] ?? null : null;
+  return readFile(storage)[machine] ?? null;
 }
 
 /** Remember a start that worked. A storage that refuses keeps no memory. */
@@ -665,8 +664,6 @@ export function rememberAgain(
   start: LastStart,
   storage: Pick<Storage, "getItem" | "setItem"> | undefined = safeStorage(),
 ): void {
-  // Commands and folders from an opt-out session must stay live-only.
-  if (!sessionCacheAllowed()) return;
   const file = readFile(storage);
   file[machine] = start;
   const kept = Object.entries(file)
