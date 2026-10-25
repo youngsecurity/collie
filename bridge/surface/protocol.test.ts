@@ -7139,7 +7139,9 @@ describe("a slash command over Muse's own slash palette inside the box (MUSE-03,
     expect(answer.receipt).toMatchObject({ outcome: "typed_not_submitted", reason: "modal_cue" });
     expect(pane.keysSeen).not.toContain("Enter");
     expect(pane.box).toBe("/resume");
-    expect(deps.store.get("muse-list-elsewhere-1")?.receipt?.detail).toBe("The command list at the box pointed at another command, so Enter was not pressed.");
+    // The fork reads the frame off the Surface, which drops it under Muse's palette, so the refusal is
+    // the generic one. Enter is still not pressed, which is the claim that matters.
+    expect(deps.store.get("muse-list-elsewhere-1")?.receipt?.detail).toBe("Something opened at the box after the text was typed, so Enter was not pressed.");
     neverEscape(pane);
   });
 });

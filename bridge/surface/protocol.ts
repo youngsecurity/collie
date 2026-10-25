@@ -121,7 +121,7 @@ import { pointsAt } from "../../web/src/lib/surface/command-list.ts";
 import { commandListAt, isKeyHintRow, isRunningRow, noticeOver, ownCommandList, readCues, readCuesFor, runningSign, withoutCommandList, type CommandListRead, type Cue } from "../../web/src/lib/surface/cues.ts";
 import { surfaceOfScreen } from "../../web/src/lib/surface/fold.ts";
 import { keyRowItems } from "../../web/src/lib/surface/key-row.ts";
-import { findInputFrame, rowText, type Frame, type FrameRow } from "../../web/src/lib/surface/frame.ts";
+import { rowText, type Frame, type FrameRow } from "../../web/src/lib/surface/frame.ts";
 import { liftAsk, liftDialog, readerBlocks } from "../../web/src/lib/surface/lift.ts";
 import type { AboveNotice } from "../../web/src/lib/surface/notice.ts";
 import type { CommandListRows, OtherScreenRow, ProfileMatch, QueuedRow, SteerWitness } from "../../web/src/lib/surface/profile.ts";
@@ -3313,19 +3313,10 @@ export class SendProtocol {
       this.deps.asks === undefined
         ? liftAsk(blocks, grid.value.revision)
         : this.deps.asks.publish(paneId, this.deps.generation(paneId) ?? "gone", liftDialog(blocks), askLifetimeOf(state.match));
-    // A dialog can reuse the composer's frame. The Surface discards that frame (a pi question's own
-    // answer editor, 1.22.5+ys.3); the probe must use its landing spot, not compare the whole dialog
-    // as a draft. ONE exception, read off the profile: a frame the Surface dropped that holds the
-    // harness's own command list (Muse's slash palette inside the box, #519) IS the box, and it is
-    // kept, as upstream keeps it, so the list under the typed command can be read against it.
-    const read = surfaceOfScreen({ seq: 0, source: "screen", at: this.now(), revision: grid.value.revision, rows, ask }, idle);
-    const { surface } = read;
+    // A dialog can reuse the composer's frame. The Surface discards that frame;
+    // the probe must use its landing spot, not compare the whole dialog as a draft.
+    const { surface, frame } = surfaceOfScreen({ seq: 0, source: "screen", at: this.now(), revision: grid.value.revision, rows, ask }, idle);
     const texts = rows.map((row) => rowText(row).trimEnd());
-    let frame = read.frame;
-    if (frame === null && idle !== null) {
-      const found = findInputFrame(rows, idle);
-      if (found !== null && commandListAt(texts, found, idle.volatile.below.commandList, rows) !== null) frame = found;
-    }
     const plainRaw = rows.map(plainOf);
     const signs = (idle?.runningRows ?? []).map((source) => new RegExp(source, "u"));
     const plain = plainRaw.map((row) => steadyRow(row, signs));
