@@ -37,9 +37,11 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 ## [Unreleased]
 
+## [1.24.0+ys.1] - 2026-10-25
+
 ### Changed
 
-- **Collie adopts upstream 1.24.0 while preserving the fork's safeguards.** Import the large-screen layout, pane navigation gestures, usage dots and the Stop button, the Sent view, walky talky across the crew, paste chips, CJK column alignment, the Agents pill and the Edge and Stable release lines. The line resolver sees only the install's own `+ys` family and orders by the fork counter; `--to-tag` keeps the family refusal and the pinned crew lead; the Herdr 0.8.0 minimum, the updater's lock release, default-on pairing, response masking and manual source-only publication stay. Bun moves to 1.4.4. Closes #103, #104, #105, #109, #112, #113, #114 and #116.
+- **Collie adopts upstream 1.24.0 while preserving the fork's safeguards.** Import the large-screen layout, pane navigation gestures, usage dots and the Stop button, the Sent view, walky talky across the crew, paste chips, CJK column alignment, the Agents pill and the Edge and Stable release lines. The line resolver sees only the install's own `+ys` family and orders by the fork counter; `--to-tag` keeps the family refusal and the pinned crew lead; the Herdr 0.8.0 minimum, the updater's lock release, default-on pairing, response masking and manual source-only publication stay. Bun moves to 1.4.4. Closes #103, #104, #105, #109, #112, #113, #114 and #116. ([c0129db9](https://github.com/youngsecurity/collie/commit/c0129db9))
 
 ## [1.22.5+ys.4] - 2026-10-22
 
