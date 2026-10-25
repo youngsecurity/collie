@@ -396,19 +396,6 @@ describe("record points: the Send Protocol's blind send on a shell pane", () => 
     expect(io.text).toBeNull();
   });
 
-  test("an anonymous device's send on a shell pane is typed but never recorded (the fork's opt-out boundary)", async () => {
-    const { io, store } = sentStore();
-    const { rt, pane, requests } = session(store);
-    const { audit: log } = audit();
-    // `allowHold: false` is how the admission names an anonymous caller: live sends work, words are not kept.
-    const anon = await (await sendRoute(rt, { id: "sent-shell-0009", pane: "%7", text: "git status" }, { ...context(log), allowHold: false })).json();
-    expect(anon.receipt).toMatchObject({ outcome: "sent", keys: ["Enter"] });
-    expect(pane.written.map(([id]) => id)).toEqual(["%7"]);
-    await settle();
-    expect(io.text).toBeNull();
-    expect(JSON.stringify(requests.get("sent-shell-0009"))).not.toContain("git status");
-  });
-
   test("a refused send on a shell pane (a password prompt) is not recorded", async () => {
     const { io, store } = sentStore();
     const { rt, pane } = session(store);

@@ -152,32 +152,6 @@ function auditLines() {
 }
 
 describe("sendRoute", () => {
-  test("local and crew reply paths cannot queue anonymous text or trust a body override", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "collie-anonymous-send-"));
-    try {
-      const holds = new HoldStore(join(dir, "held"));
-      holds.add({ id: "paired-queued-01", session: "main", paneId: "%1", harness: "claude",
-        text: "attributed text", mode: "send", revision: 1, command: false });
-      const { rt, pane } = runtime(true, dir, holds);
-      const { audit, lines } = auditLines();
-      const context = { audit, device: null, allowHold: false, redact: true, acceptEncoding: null };
-      const local = await sendRoute(rt, { id: "anonymous-local-01", pane: "%1", text: "anonymous private text", allowHold: true }, context);
-      expect(await local.json()).toMatchObject({ receipt: { outcome: "refused" } });
-      const crew = await replyThroughProtocol(replySendOf(rt, false), "%1", "main", {
-        id: "anonymous-crew-01", text: "anonymous private text", submit: true, allowHold: true,
-      }, context);
-      expect(await crew.json()).toMatchObject({ ok: false, send: { receipt: { outcome: "refused" } } });
-      expect(holds.list().map((row) => row.id)).toEqual(["paired-queued-01"]);
-      expect(pane.written).toEqual([]);
-      expect(lines.join("\n")).not.toContain("anonymous private text");
-      const source = readFileSync(join(import.meta.dir, "..", "server.ts"), "utf8");
-      expect(source).toContain('allowHold: whoKind(req) !== "anonymous"');
-      expect(source).toContain('replySendOf(rt, caller.deviceKind?.() !== "anonymous")');
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
   test("with the flag off the route is not there: a 404 that says why, and nothing is read", async () => {
     const dir = mkdtempSync(join(tmpdir(), "collie-route-"));
     try {

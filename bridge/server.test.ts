@@ -6148,7 +6148,7 @@ describe("the send and abort routes", () => {
     // The refusal sits in front of both raw routes, so neither handler is reached for such a pane.
     const refusal = src.indexOf("const refusal = rawInputRefusal(herdr);");
     expect(refusal).toBeGreaterThan(0);
-    expect(refusal).toBeLessThan(src.indexOf('await replyPane(herdr, cfg, paneId, req, audit_, device, session, replySendOf(rt, caller.deviceKind?.() !== "anonymous"))'));
+    expect(refusal).toBeLessThan(src.indexOf('await replyPane(herdr, cfg, paneId, req, audit_, device, session, replySendOf(rt))'));
     expect(refusal).toBeLessThan(src.indexOf("await keysPane(herdr, cfg, paneId, req, audit_, device, session)"));
   });
 

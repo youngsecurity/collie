@@ -1491,7 +1491,6 @@ export function startServer(opts: {
   const worktreeReceipts = opts.worktreeReceipts ?? memoryWorktreeReceipts();
   const worktreeBases = opts.worktreeBases ?? memoryWorktreeBases();
   const launchReceipts = opts.launchReceipts ?? memoryLaunchReceipts();
-  const anonymousLaunchReceipts = memoryLaunchReceipts();
   const starterReceipts = opts.starterReceipts ?? memoryStarterReceipts();
   const answerReceipts = opts.answerReceipts ?? memoryAnswerReceipts();
   const controlReceipts = opts.controlReceipts ?? memoryControlReceipts();
@@ -1930,7 +1929,7 @@ export function startServer(opts: {
       if (rt instanceof Response) return rt;
       return launch(rt.herdr, rt.engine, req, caller.audit, caller.device(), rt.name, allowedLaunchers, {}, {
         harnesses,
-        receipts: caller.deviceKind?.() === "anonymous" ? anonymousLaunchReceipts : launchReceipts,
+        receipts: launchReceipts,
         starterReceipts,
         folders,
         switches: launcherSources.switches,
@@ -2275,7 +2274,7 @@ export function startServer(opts: {
       // A reply that submits text runs this session's Send Protocol (M56 spec 06), on any terminal
       // pane: an agent's (its string picks the profile) or a bare shell's (no profile, typed and Entered blind).
       if (action === "reply" && req.method === "POST")
-        return afterPaneInput(rt.engine, await replyPane(herdr, cfg, paneId, req, audit_, device, session, replySendOf(rt, caller.deviceKind?.() !== "anonymous")));
+        return afterPaneInput(rt.engine, await replyPane(herdr, cfg, paneId, req, audit_, device, session, replySendOf(rt)));
       if (action === "keys" && req.method === "POST")
         return afterPaneInput(rt.engine, await keysPane(herdr, cfg, paneId, req, audit_, device, session));
       if (action === "upload" && req.method === "POST") return uploadPane(cfg, paneId, req, audit_, device, session);
@@ -2855,7 +2854,7 @@ export function startServer(opts: {
         } catch {
           body = undefined;
         }
-        return sendRoute(rt, body, { audit, device: whois(req).device, allowHold: whoKind(req) !== "anonymous", redact: cfg.redact, acceptEncoding: req.headers.get("accept-encoding") });
+        return sendRoute(rt, body, { audit, device: whois(req).device, redact: cfg.redact, acceptEncoding: req.headers.get("accept-encoding") });
       }
       // `DELETE /api/send/<id>?session=<name>&pane=<id>` (M56 spec 15): the Cancel on a queued row. A held
       // request ends `cancelled`, an ended row is dismissed, one going out now is refused `busy`.
@@ -5179,7 +5178,6 @@ export async function typeIntoFreshShell(
  */
 export interface ReplySendContext {
   readonly protocol: SendProtocol | undefined;
-  readonly allowHold?: boolean;
   readonly harnessOf: (paneId: string) => string | null;
 }
 
@@ -5207,10 +5205,9 @@ export const REPLY_OLD_PHONE_TEXT =
  * exported for its test.
  */
 /** A session runtime's {@link ReplySendContext}: its protocol, and the harness of a pane its engine knows. */
-export function replySendOf(rt: Pick<SendRouteRuntime, "send" | "engine">, allowHold = true): ReplySendContext {
+export function replySendOf(rt: Pick<SendRouteRuntime, "send" | "engine">): ReplySendContext {
   return {
     protocol: rt.send,
-    allowHold,
     harnessOf: (paneId) => {
       const { agents, shellPanes } = rt.engine.current();
       const agent = agents.find((pane) => pane.paneId === paneId);
@@ -5243,7 +5240,7 @@ export async function replyThroughProtocol(
   // A request id the caller minted is the phone's, on a crew member's pane (M56 spec 06): a person's
   // send, which may steer (M69). A caller that names no id is not the phone and never steers.
   const sendRequest: SendRequest = fields.id === undefined ? asked : { ...asked, fromPhone: true };
-  const answer = await send.protocol.handle(sendRequest, { session, paneId: target, harness, allowHold: send.allowHold });
+  const answer = await send.protocol.handle(sendRequest, { session, paneId: target, harness });
   const receipt = answer.receipt;
   const auditDetail: AuditDetail = { mode: sendRequest.mode, submit: true, textLength: words.length };
   if (receipt !== undefined) {
@@ -7054,7 +7051,7 @@ export async function launch(
   const answer = await work;
   // A folder the sheet named that worked joins Recent, as a space created there does. Never a row's
   // pinned folder, which the operator already wrote down, and never on a failure.
-  if (answer.ok && deps.deviceKind !== "anonymous" && asked !== undefined && row?.cwd === undefined && deps.folders !== undefined) {
+  if (answer.ok && asked !== undefined && row?.cwd === undefined && deps.folders !== undefined) {
     await deps.folders.recordRecent(answer.pane.cwd);
   }
   if (!answer.ok || picked.kind !== "run" || row === undefined) return json(answer, ae);
@@ -7062,7 +7059,7 @@ export async function launch(
   // refusal returned above, and a replay or a joined retry never reaches this line. A history that
   // cannot be written does not undo a run that happened.
   // A line that seems to carry a secret ran, and is not kept (bridge/recent-runs.ts).
-  if (deps.deviceKind !== "anonymous" && deps.recentRuns !== undefined && !looksSecret(row.command)) {
+  if (deps.recentRuns !== undefined && !looksSecret(row.command)) {
     const where = asked ?? besidePane?.cwd ?? null;
     try {
       const recorded = await deps.recentRuns.record({ line: row.command, cwd: where, at: Date.now(), noPrompts: picked.noPrompts === true });
@@ -7074,8 +7071,7 @@ export async function launch(
   // The same run joins Sent as kind `run` (ADR 0107), on this machine, after the line was typed and
   // Enter sent. The skip rules read the line as the phone sent it, before the run's own trim, so a
   // leading space keeps it out here too. The store never throws and logs no line.
-  // Not for an anonymous device, which keeps no history here either (the `recentRuns` gate above).
-  if (deps.sent !== undefined && deps.deviceKind !== "anonymous") {
+  if (deps.sent !== undefined) {
     await deps.sent.record(typeof fields.run === "string" ? fields.run : row.command, asked ?? besidePane?.cwd ?? null, "run");
   }
   return json({ ...answer, noPrompts: picked.noPrompts === true } satisfies CreateResponse, ae);
@@ -8064,7 +8060,7 @@ export interface SendRouteRuntime {
 export async function sendRoute(
   rt: SendRouteRuntime,
   body: JsonValue | undefined,
-  context: { readonly audit: AuditLog; readonly device: string | null; readonly allowHold?: boolean; readonly redact: boolean; readonly acceptEncoding: string | null },
+  context: { readonly audit: AuditLog; readonly device: string | null; readonly redact: boolean; readonly acceptEncoding: string | null },
 ): Promise<Response> {
   if (rt.driver !== undefined) return programSendRoute(rt, rt.driver, body, context);
   if (rt.send === undefined) return text(SEND_OFF_TEXT, 404);
@@ -8087,7 +8083,7 @@ export async function sendRoute(
     const { when: _steer, ...plain } = asked;
     sendRequest = { ...plain, text: source.text, mode: source.mode };
   }
-  const answer = await rt.send.handle(sendRequest, { session: rt.name, paneId, harness, allowHold: context.allowHold });
+  const answer = await rt.send.handle(sendRequest, { session: rt.name, paneId, harness });
   const receipt = answer.receipt;
   // The old row goes once the new request was taken; a refusal keeps it, text and all.
   if (resendOf !== undefined && receipt !== undefined && receipt.outcome !== "refused") rt.send.dismissHeld(rt.name, paneId, resendOf);

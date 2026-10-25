@@ -39,6 +39,7 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 ### Changed
 
+- **An unpaired phone keeps its content like a paired one.** On a host that opted out of pairing, an unpaired phone can now queue a send behind a turn, its typed lines join Sent and the run history, and a launcher it adds is written to disk. The fork rule that kept such content out of every store is gone; the host opt-out itself is unchanged.
 - **The Send Protocol reads the input frame off the Surface again.** 1.24.0+ys.1 kept a frame the Surface had dropped when it held the harness's own command list, so a Muse command left unsent named the list in its refusal. That rule is gone: the frame comes from the Surface read as in 1.22.5+ys.3, the refusal is the generic one, and Enter is not pressed either way.
 
 ## [1.24.0+ys.1] - 2026-10-25

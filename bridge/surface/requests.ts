@@ -67,12 +67,6 @@ export interface AcceptInput {
   readonly surfaceRevision: number;
   readonly mode: SendMode;
   readonly text: string;
-  /**
-   * Whether the text may be kept as `line` at all. The fork's anonymous caller (a device on a host
-   * that opted out of pairing) may send live but never persists its words: its record keeps the hash
-   * and the length only, whatever `sentLineOf` would have said. Absent reads as true.
-   */
-  readonly keepLine?: boolean;
 }
 
 export type AcceptResult =
@@ -376,7 +370,7 @@ export class RequestStore {
       acceptedAt: this.now(),
       phase: "accepted",
     };
-    const line = input.keepLine === false ? null : sentLineOf(input.text);
+    const line = sentLineOf(input.text);
     if (line !== null) record = { ...record, line };
     this.write(record);
     return { kind: "new", record };

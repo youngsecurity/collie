@@ -239,8 +239,6 @@ export interface ProtocolMux {
 export interface SendTarget {
   readonly session: string;
   readonly paneId: string;
-  /** Admission-owned policy: anonymous callers may send live but never persist queued text. */
-  readonly allowHold?: boolean;
   /** The agent string the multiplexer reports; it picks the profile by id. */
   readonly harness: string;
 }
@@ -2111,9 +2109,6 @@ export class SendProtocol {
       surfaceRevision: request.revision ?? 0,
       mode: request.mode,
       text: request.text,
-      // Anonymous callers never persist their words (the admission's `allowHold`): not as a held
-      // draft, and not as the Sent line either.
-      keepLine: target.allowHold !== false,
     });
     if (accepted.kind === "id_reused") {
       // The stored request is someone else's; this refusal is not stored under its id.
@@ -2208,11 +2203,6 @@ export class SendProtocol {
 
   /** The request goes to the end of its pane's queue; the answer's receipt says `held`. */
   private hold(state: RunState, end: Ended): SendAnswer {
-    if (state.target.allowHold === false) {
-      return this.settle(state, new Ended("refused", end.reason, {
-        ...end.extra, detail: "Anonymous sends cannot be kept for later. Send it when the pane is free.",
-      }));
-    }
     const holds = this.deps.holds!;
     const { request, target } = state;
     if (holds.waiting(target.session, target.paneId).length >= HOLD_PANE_MAX) {
@@ -2717,10 +2707,8 @@ export class SendProtocol {
     }
   }
 
-  /** Tell {@link SendDeps.blindSent} a blind send went out. Never throws, and never changes the answer.
-   *  An anonymous caller's line (the admission's `allowHold`) never reaches Sent: that store keeps words. */
+  /** Tell {@link SendDeps.blindSent} a blind send went out. Never throws, and never changes the answer. */
   private noteBlindSent(state: RunState): void {
-    if (state.target.allowHold === false) return;
     try {
       this.deps.blindSent?.({ session: state.target.session, paneId: state.target.paneId, text: state.request.text });
     } catch (err) {

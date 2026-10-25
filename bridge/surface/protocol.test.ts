@@ -4546,31 +4546,6 @@ describe("the held send (M56 spec 15)", () => {
     expect(r.protocol.recent("%1")[0]).toMatchObject({ requestId: "held-000001", outcome: "held" });
   });
 
-  test("anonymous sends never persist held text, including behind an existing queue", async () => {
-    const r = untrusted();
-    const target = { session: "main", paneId: "%1", harness: "claude", allowHold: false };
-    for (const id of ["anon-held-0001", "anon-held-0002"]) {
-      if (id === "anon-held-0002") await r.send("attributed queued message", { id: "paired-held-01" });
-      const answer = await r.protocol.handle({ id, text: "private anonymous message", mode: "send" }, target);
-      expect(answer.receipt).toMatchObject({ outcome: "refused", reason: "turn_running", keys: [] });
-      expect(answer.detail).toContain("Anonymous sends cannot be kept");
-      expect(existsSync(join(dir, "held", `${id}.json`))).toBe(false);
-      expect(JSON.stringify(r.deps.store.get(id))).not.toContain("private anonymous message");
-    }
-    expect(r.holds.list()).toHaveLength(1);
-    expect(r.holds.list()[0]?.id).toBe("paired-held-01");
-    expect(r.pane.calls).toEqual([]);
-  });
-
-  test("anonymous live sends still work when no queue or turn blocks the pane", async () => {
-    const r = rig({ holds: new HoldStore(join(dir, "held")) });
-    const answer = await r.protocol.handle({ id: "anon-live-0001", text: "live message", mode: "send" }, {
-      session: "main", paneId: "%1", harness: "claude", allowHold: false,
-    });
-    expect(answer.receipt?.outcome).toBe("sent");
-    expect(existsSync(join(dir, "held", "anon-live-0001.json"))).toBe(false);
-  });
-
   test("the same id again while held answers the stored held receipt and holds nothing twice", async () => {
     const r = untrusted();
     await r.send("then give it a title", { id: "held-000002" });

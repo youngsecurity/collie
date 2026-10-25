@@ -167,7 +167,7 @@ function fixture(over: { switches?: Partial<LauncherSwitches>; device?: string |
 }
 
 describe("POST /api/launch `{ run }`: the shape", () => {
-  test("an admitted anonymous opt-out run works without a credential or persistent history", async () => {
+  test("an admitted anonymous opt-out run works without a credential, and keeps history like any device", async () => {
     const f = fixture({ device: null });
     const folders: string[] = [];
     const sent = memorySent();
@@ -175,11 +175,8 @@ describe("POST /api/launch `{ run }`: the shape", () => {
     expect((await f.run({ run: "make test", cwd: "/synthetic", requestId: ID }, deps)).status).toBe(200);
     expect((await f.run({ run: "make test", cwd: "/synthetic", requestId: ID }, deps)).body).toMatchObject({ replayed: true });
     expect(f.mux.texts).toEqual([["w1:p1", "make test"]]);
-    expect(f.io.writes).toBe(0);
-    expect(await f.recent.list()).toEqual([]);
-    // Sent (ADR 0107) keeps words, so an anonymous run joins it no more than it joins the history.
-    expect(await sent.list()).toEqual([]);
-    expect(folders).toEqual([]);
+    expect((await f.recent.list()).map((r) => r.line)).toEqual(["make test"]);
+    expect((await sent.list()).map((r) => r.line)).toEqual(["make test"]);
     f.setSwitches({ run: false });
     expect((await f.run({ run: "make test", requestId: ID2 }, deps)).body).toMatchObject({ code: "launch.run_off" });
   });
