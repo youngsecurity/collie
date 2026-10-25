@@ -4,16 +4,19 @@ import { resolve } from "node:path";
 import { expect, test } from "@playwright/test";
 
 import { installApiStub } from "./fixtures/api";
+import { collieHalves } from "./fixtures/collie-theme";
 
 // CSS variables and filters need an engine. Exercise the real lifted menu's RawMirror, not a
 // synthetic element: persisted device paint must beat theme paint on plain AND inverse text.
 const web = resolve(import.meta.dirname, "..");
-const collie = JSON.parse(readFileSync(resolve(web, "src/themes/collie.json"), "utf8"));
+// Collie's two halves with the required tokens only (e2e/fixtures/collie-theme.ts): since schema
+// version 3 the shipped file names `pane-active`, which a version 2 fixture may not carry.
 const theme = {
-  ...collie,
   version: 2,
   id: "terminal-test",
   name: "Terminal test",
+  light: collieHalves.light,
+  dark: collieHalves.dark,
   ansi: {
     "0": "#000000", "1": "#cd3131", "2": "#0dbc79", "3": "#e5e510",
     "4": "#2472c8", "5": "#bc3fbc", "6": "#11a8cd", "7": "#e5e5e5",
