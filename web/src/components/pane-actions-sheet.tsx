@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Copy, GitBranchPlus, Maximize2, MessagesSquare, Monitor, Pencil, Pin, PinOff, ScrollText, Search, SlidersHorizontal, SquareTerminal, XCircle } from "lucide-react";
 
 import { BottomSheet } from "@/components/ui/sheet";
+import { WalkyIcon } from "@/components/walky-icon";
 import { ActionRow, DestructiveActionRow, RenameView } from "@/components/action-sheet-rows";
 import { HostChip } from "@/components/host-chip";
 import { useHostWriteBlock, useCrew } from "@/components/crew-provider";
@@ -37,7 +38,8 @@ interface PaneActionsSheetProps {
    * this device's own preference and writes nothing to the machine.
    */
   savedCopy?: boolean;
-  /** Fired after a successful rename so the parent can revalidate (the label lands on the next poll). */
+  /** Fired after a successful rename so the parent can revalidate. The sheet also stamps a topology
+   *  burst (lib/poll-intent.ts), so the label lands within a beat even when that read is early. */
   onRenamed: () => void;
   /** Fired after a successful close, with the closed pane id — the parent navigates Home if it's the
    *  pane currently open, or revalidates so it drops out of the list. */
@@ -62,6 +64,12 @@ interface PaneActionsSheetProps {
    *  absent over plain HTTP, a supported deploy), so an unusable row is HIDDEN — the same "a row is a
    *  thing you can do" rule find/history/zen follow. */
   onCopyOutput?: () => void;
+  /**
+   * Open the pane's Messages sheet (M62): the walky talky messages kept for this pane, newest first. A
+   * read in the sense find and history are, so the row sits with them and outside every write gate. The
+   * pane view passes it; the strip does not, and absence is the gate as it is for the others.
+   */
+  onMessages?: () => void;
   /** Open this pane's own settings — today one switch, the prompt-cache warning (ADR 0042).
    *
    *  The FOURTH read row, and it is a read in the sense the other three are: it changes a preference on
@@ -167,6 +175,7 @@ export function PaneActionsSheet({
   onHistory,
   onCopyOutput,
   onSettings,
+  onMessages,
   openInRename = false,
   onZen,
   paneView,
@@ -256,6 +265,10 @@ export function PaneActionsSheet({
       const res = await api.renamePane(pane.paneId, next, scope);
       if (res.ok) {
         setStatus(next ? t("paneActions.status.renamed") : t("paneActions.status.labelCleared"), "success");
+        // The same catch-up as a close. The bridge pokes its own re-read before it answers but does
+        // not wait for it, so the revalidate below can still read the old name; the burst brings
+        // the new one within a beat instead of after a gap timed for an idle screen.
+        stampTopology();
         onRenamed();
         onClose();
       } else {
@@ -420,6 +433,18 @@ export function PaneActionsSheet({
               onClick={() => {
                 onClose();
                 onCopyOutput();
+              }}
+            />
+          )}
+          {/* The pane's walky talky messages: one more way to LOOK at what happened here, so it sits with
+              the looking rows. Close-then-act, for the reason the find row states. */}
+          {onMessages && (
+            <ActionRow
+              icon={<WalkyIcon className="size-4 shrink-0 text-muted-foreground" />}
+              label={t("walky.sheet.row")}
+              onClick={() => {
+                onClose();
+                onMessages();
               }}
             />
           )}

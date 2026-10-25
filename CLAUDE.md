@@ -419,7 +419,9 @@ component, not a spec. On 2026-10-17 the specs that did not pass that test moved
   under `web/e2e/rig/` with its own config (`cd web && bunx playwright test -c
   e2e/rig/playwright.config.ts`, the provider key file named by `COLLIE_RIG_KEY_FILE`), it spends
   model turns (about 5 minutes and a few cents a run), and it never runs in CI. On this fork it is
-  optional and requires separate authorization, never a release or merge gate. No nightly runner
+  optional and requires separate authorization, never a release or merge gate. Beside it runs **the
+  crew leg** (`-c e2e/rig/crew.config.ts`): the same phone against a lead and a member, for the walky
+  talky cases that need a crew; upstream runs both nightly and before every tag, this fork does not. No nightly runner
   is installed by adoption. Unit tests do not prove behavior on a live agent; report that limitation
   rather than claiming the imported upstream evidence as a fork rehearsal.
 
@@ -596,7 +598,7 @@ lint guard, the crew-wire guard or the `flake.lock` guard.
   and the length, not the line ([ADR 0095](./.adr/0095-one-off-commands-and-their-history.md)).
 - **Every user-facing string goes through `t()`/`tn()` from `@/lib/i18n`**, and a component that
   calls them subscribes via `useLocale()` so it re-renders on a locale (or lazy-dictionary) change.
-  `messages/en.ts` is the source of truth; all six dictionary files change together, enforced by
+  `messages/en.ts` is the source of truth; all twelve dictionary files change together, enforced by
   `tsc`. Not translated: terminal/agent output, quick replies, menu/dialog labels the screen printed,
   key caps, crew role names, push notification bodies, service-worker strings, crew-link errors, and
   the slash-command descriptions in `web/src/lib/agent-commands.ts` (another tool's vocabulary —
@@ -657,9 +659,17 @@ lint guard, the crew-wire guard or the `flake.lock` guard.
   may read that row as one line, and no mid-flight identity may reach above the question.
   Feedback is sent as a verified sequence, never a keystroke — the ground truth for every state is
   [`PLAN_FEEDBACK_NOTES.md`](./web/src/lib/grammar/PLAN_FEEDBACK_NOTES.md); re-walk it before touching
-  `harness/claude/prompt-select.ts` or `lib/prompt-action.ts`. AskUserQuestion's "Type something."
-  row and a permission dialog's amend note are the same kind of field, found by position, modelled
-  with the `free-text` purpose, and never typed into (same notes file, 2026-09-26 section).
+  `harness/claude/prompt-select.ts` or `lib/prompt-action.ts`. A permission dialog's amend note is
+  the same kind of field, found by position, modelled with the `free-text` purpose, and never typed
+  into (same notes file, 2026-09-26 section).
+- **AskUserQuestion's "Type something." field IS typed into, by one recipe** (`lib/answer-field.ts`,
+  [ADR 0113](./.adr/0113-an-askuserquestion-answer-is-typed-into-its-field.md)), on a single
+  question, a wizard step and a multi-select question. Its digit is sent only while the field is
+  EMPTY: on a filled field it submits the held text. A filled field is reached by a verified
+  `Up`/`Down` walk and cleared with `ctrl+u ctrl+k` rounds only while it holds exactly what the
+  person saw. The ground truth is
+  [`ASK_FIELD_NOTES.md`](./web/src/lib/grammar/ASK_FIELD_NOTES.md); re-walk it before touching the
+  recipe. Other harnesses' free-text rows (Grok, pi, opencode) stay `free-text` and untyped.
 - **The phone parses what the phone draws; the bridge parses only what it must act on alone.** Every
   pane grammar is client-side, under `web/src/lib/harness/`. The bridge holds one,
   `extractClaudeSessionName`, and only because the bridge itself consumes it, for a label that must
@@ -719,7 +729,9 @@ don't drop a `-c` there without reading the module header. The Files view (`brid
 root comes off the snapshot, never the request, and its real path must pass the same bound; the
 client's path is relative, refused on its shape before any disk call, and its real path must sit
 inside the root's through `containedRealpath`; `.git` and the bridge's state and config folders are
-denied on top. It needs an authorised device (`device-read`), and its bytes go out as JSON, never as
+denied on top. The New page's folder browser (`bridge/folder-browse.ts`, #467) is the same place
+with home as the root: folder names only, the same shape check, containment, deny list, refusal and
+gate, and no new rule. It needs an authorised device (`device-read`), and its bytes go out as JSON, never as
 a document, with one exception: `files/image` ([ADR 0090](./.adr/0090-files-shows-images.md)) sends a
 picture's raw bytes, typed by `sniffImageType` from the bytes alone (PNG, JPEG, GIF, WebP, AVIF; no
 SVG), with `no-store` and a `default-src 'none'; sandbox` CSP, through the same `readFile` checks. `GET /api/fonts/<basename>` does not become a fourth such place: the request's name is **looked up** in the rows the operator's own

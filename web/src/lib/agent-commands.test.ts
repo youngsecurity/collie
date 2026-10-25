@@ -1,4 +1,4 @@
-import { commandsFor } from "./agent-commands";
+import { commandsFor, suggestCommands } from "./agent-commands";
 
 describe("commandsFor", () => {
   it("returns the Claude catalog for 'claude'", () => {
@@ -28,6 +28,15 @@ describe("commandsFor", () => {
     expect(cmds.some((c) => c.command === "/branch")).toBe(false); // in Claude's and omp's, not here
   });
 
+  it("offers only the verified Kiro V3 built-ins and confirms disruptive commands", () => {
+    const commands = commandsFor("kiro");
+    expect(commands.map((c) => c.command)).toEqual(["/help", "/model", "/agent", "/compact", "/clear", "/quit"]);
+    expect(commands.filter((c) => c.dangerous).map((c) => c.command)).toEqual(["/clear", "/quit"]);
+    // The pickers the adapter does not lift are not surfaced first.
+    expect(commands.filter((c) => c.common).map((c) => c.command)).toEqual(["/compact"]);
+    expect(commandsFor("kiro-cli")).toEqual([]);
+  });
+
   it("returns the Grok catalog for 'grok'", () => {
     const cmds = commandsFor("grok");
     expect(cmds.length).toBeGreaterThan(0);
@@ -36,6 +45,24 @@ describe("commandsFor", () => {
     // One tap from a phone would skip every tool-permission prompt (xAI: `/always-approve`
     // bypasses those prompts; deny rules and hooks still apply). Two-tap like /quit / /new.
     expect(cmds.find((c) => c.command === "/always-approve")?.dangerous).toBe(true);
+  });
+
+  it("asks first on the rows that change a harness configuration, like /logout", () => {
+    const dangerous = (agent: string, command: string): boolean | undefined => commandsFor(agent).find((c) => c.command === command)?.dangerous;
+    expect(dangerous("agy", "/plugin")).toBe(true);
+    expect(dangerous("grok", "/statusline")).toBe(true);
+    expect(dangerous("muse", "/manage-settings")).toBe(true);
+    expect(dangerous("claude", "/logout")).toBe(true);
+  });
+
+  it("returns the Muse catalog for 'muse'", () => {
+    const cmds = commandsFor("muse");
+    // Muse 1.4.7 completes /mod to /model only; its configuration doc's /models does not exist.
+    expect(cmds.some((c) => c.command === "/model")).toBe(true);
+    expect(cmds.some((c) => c.command === "/models")).toBe(false);
+    // Both start a fresh session; Muse's docs differ only in whether the scrollback is wiped.
+    expect(cmds.find((c) => c.command === "/new")?.dangerous).toBe(true);
+    expect(cmds.find((c) => c.command === "/clear")?.dangerous).toBe(true);
   });
 
   it("returns the omp catalog for 'omp'", () => {
@@ -78,6 +105,35 @@ describe("commandsFor", () => {
     expect(commandsFor("agy-cli")).toEqual(agyCmds);
   });
 
+  it("returns the Muse catalog for 'muse', proven on Muse captures only", () => {
+    const cmds = commandsFor("muse");
+    expect(cmds.length).toBeGreaterThan(0);
+    // Palette rows with Muse's own summaries (muse--slash-palette-1410.txt).
+    for (const command of ["/bug", "/clear", "/compact", "/copy", "/deep-research", "/export"]) {
+      expect(cmds.some((c) => c.command === command), command).toBe(true);
+    }
+    // Typed or probed: /usage ran, /model and /resume show arg hints, /effort and /hud opened
+    // their pickers live, /loop is the placeholder tip, /permissions the approval hint row.
+    expect(cmds.find((c) => c.command === "/model")).toMatchObject({ takesArg: true, argHint: "[<model-id>]" });
+    expect(cmds.find((c) => c.command === "/resume")).toMatchObject({ takesArg: true, argHint: "[--last|<id-or-name>]" });
+    expect(cmds.find((c) => c.command === "/loop")).toMatchObject({ takesArg: true });
+    for (const command of ["/usage", "/effort", "/hud", "/permissions"]) {
+      expect(cmds.some((c) => c.command === command), command).toBe(true);
+    }
+    // Built-in skill rows, shipped with the CLI rather than the capturing machine.
+    for (const command of ["/plan", "/resume-claude", "/resume-codex"]) {
+      expect(cmds.some((c) => c.command === command), command).toBe(true);
+    }
+    // Clearing the terminal wipes the session: two-tap like every other catalog's /clear.
+    expect(cmds.find((c) => c.command === "/clear")?.dangerous).toBe(true);
+    // Rows neither 453's docs/1.4.7 sourcing nor a screen capture vouches for stay out: never
+    // invent commands the CLI is not proven to have. (453 documents /new, /fork, /rewind, /tasks
+    // and /workflows from docs plus 1.4.7's own completion, so only the truly-unseen stay out.)
+    for (const command of ["/init", "/quit", "/exit", "/logout", "/tree", "/skills"]) {
+      expect(cmds.some((c) => c.command === command), command).toBe(false);
+    }
+  });
+
   it("is case-insensitive", () => {
     expect(commandsFor("CLAUDE")).toBe(commandsFor("claude"));
     expect(commandsFor("Codex")).toBe(commandsFor("codex"));
@@ -85,6 +141,7 @@ describe("commandsFor", () => {
     expect(commandsFor("OpenCode")).toBe(commandsFor("opencode"));
     expect(commandsFor("OMP")).toBe(commandsFor("omp"));
     expect(commandsFor("GROK")).toBe(commandsFor("grok"));
+    expect(commandsFor("MUSE")).toBe(commandsFor("muse"));
   });
 
   it("trims surrounding whitespace", () => {
@@ -98,6 +155,7 @@ describe("commandsFor", () => {
     expect(commandsFor("pi-go")).toBe(commandsFor("pi"));
     expect(commandsFor("omp-dev")).toBe(commandsFor("omp"));
     expect(commandsFor("grok-build")).toBe(commandsFor("grok"));
+    expect(commandsFor("muse-code")).toBe(commandsFor("muse"));
   });
 
   it("returns [] for unknown / absent agents", () => {
@@ -121,7 +179,7 @@ describe("commandsFor", () => {
     }
   });
 
-  it.each(["claude", "codex", "pi", "opencode", "omp", "grok"])(
+  it.each(["claude", "codex", "pi", "opencode", "omp", "grok", "muse"])(
     "exposes for '%s' a 'common' subset that is a proper, non-empty subset of all commands",
     (agent) => {
       const all = commandsFor(agent);
@@ -133,13 +191,14 @@ describe("commandsFor", () => {
     },
   );
 
-  it.each(["claude", "codex", "pi", "opencode", "omp", "grok"])(
+  it.each(["claude", "codex", "pi", "opencode", "omp", "grok", "muse"])(
     "'%s' entries are well-formed (slash-prefixed, unique, arg hints only when takesArg)",
     (agent) => {
       const all = commandsFor(agent);
       const seen = new Set<string>();
       for (const c of all) {
-        expect(c.command.startsWith("/")).toBe(true);
+        // Codex names a skill with its `$` mention sigil; every other row is a slash command.
+        expect(c.command.startsWith("/") || (agent === "codex" && c.command.startsWith("$"))).toBe(true);
         expect(seen.has(c.command)).toBe(false); // no duplicate commands within a catalog
         seen.add(c.command);
         expect(c.description.length).toBeGreaterThan(0);
@@ -148,6 +207,59 @@ describe("commandsFor", () => {
       }
     },
   );
+});
+
+describe("built-in skills in the shipped catalogs", () => {
+  // Each row was seen in the agent's own completion on 2026-10-15; the per-agent picks are pinned so
+  // a regeneration that drops one is a red test rather than a quiet gap.
+  const names = (agent: string) => commandsFor(agent).map((c) => c.command);
+
+  it("lists Codex's five system skills as `$` mentions", () => {
+    expect(names("codex").filter((c) => c.startsWith("$"))).toEqual([
+      "$imagegen",
+      "$openai-docs",
+      "$review-agent",
+      "$skill-creator",
+      "$skill-installer",
+    ]);
+  });
+
+  it("lists opencode's one built-in skill, which its `/` menu does not show", () => {
+    expect(names("opencode")).toContain("/customize-opencode");
+  });
+
+  it("lists Grok's bundled skills a person can invoke, and none it hides", () => {
+    const grok = names("grok");
+    for (const skill of ["/build-with-ai", "/create-skill", "/pr-babysit", "/resume-claude", "/statusline"]) {
+      expect(grok).toContain(skill);
+    }
+    for (const hidden of ["/docx", "/pdf", "/pptx"]) expect(grok).not.toContain(hidden);
+  });
+
+  it("lists only the built-in skills agy's default agent puts in its `/` menu", () => {
+    const agy = names("agy");
+    for (const skill of ["/agy-customizations", "/antigravity-guide", "/plugin"]) expect(agy).toContain(skill);
+    for (const off of ["/automation", "/generative_ui", "/run-workflow"]) expect(agy).not.toContain(off);
+  });
+
+  it("lists Muse's ten user-invocable bundled skills, and none it hides", () => {
+    const muse = names("muse");
+    const ten = [
+      "/create-plugin",
+      "/create-skill",
+      "/doctor",
+      "/grill",
+      "/import",
+      "/manage-settings",
+      "/migrate",
+      "/plan",
+      "/resume-claude",
+      "/resume-codex",
+    ];
+    expect(ten).toHaveLength(10);
+    for (const skill of ten) expect(muse).toContain(skill);
+    for (const hidden of ["/taste", "/git", "/read-session"]) expect(muse).not.toContain(hidden);
+  });
 });
 
 // The operator's own rows (commands.toml → /api/config). The shipped catalogs cannot carry a
@@ -280,6 +392,9 @@ describe("commandsFor with the operator's own rows", () => {
     const mine = { agent: "claude", command: "/mine", description: "Mine", takesArg: false, argHint: "" };
     // The scope resolves the variant, and having done so it owns that pane's palette.
     expect(commandsFor("claude-code", [mine]).map((c) => c.command)).toEqual(["/mine"]);
+    // Same for the Muse family: `muse` reaches a `muse-code` pane's palette.
+    const museMine = { agent: "muse", command: "/mine", description: "Mine", takesArg: false, argHint: "" };
+    expect(commandsFor("muse-code", [museMine]).map((c) => c.command)).toEqual(["/mine"]);
   });
 
   it("does not let the catalog's prefix tolerance widen a narrow scope", () => {
@@ -292,6 +407,10 @@ describe("commandsFor with the operator's own rows", () => {
     // Same for every other family with a bare-prefix rule.
     const omp = { agent: "omp-experimental", command: "/deploy", description: "X", takesArg: false, argHint: "" };
     expect(commandsFor("omp", [omp]).some((c) => c.command === "/deploy")).toBe(false);
+    const muse = { agent: "muse-experimental", command: "/deploy", description: "X", takesArg: false, argHint: "" };
+    expect(commandsFor("muse", [muse]).some((c) => c.command === "/deploy")).toBe(false);
+    expect(commandsFor("muse-code", [muse]).some((c) => c.command === "/deploy")).toBe(false);
+    expect(commandsFor("muse-experimental", [muse]).some((c) => c.command === "/deploy")).toBe(true);
   });
 
   it("prefers the exact scope over the family one, whichever was declared first", () => {
@@ -314,3 +433,111 @@ describe("commandsFor with the operator's own rows", () => {
     expect(commandsFor("omp", [mine]).some((c) => c.command === "/mine")).toBe(false);
   });
 });
+
+describe("commandsFor with the commands found on the pane's machine", () => {
+  const toSpec = { command: "/to-spec", description: "Write the spec", argHint: "" };
+  const deploy = { command: "/deploy", description: "Ship it", argHint: "[env]" };
+
+  it("joins Claude's catalog as searchable staged rows, never on the first screen", () => {
+    const all = commandsFor("claude", [], [toSpec, deploy]);
+    expect(all.find((c) => c.command === "/to-spec")).toEqual({
+      command: "/to-spec",
+      description: "Write the spec",
+      takesArg: true,
+      argHint: "",
+      common: false,
+      dangerous: false,
+    });
+    expect(all.find((c) => c.command === "/deploy")).toEqual({
+      command: "/deploy",
+      description: "Ship it",
+      takesArg: true,
+      argHint: "[env]",
+      common: false,
+      dangerous: false,
+    });
+  });
+
+  it("leaves shipped built-in rows untouched when a discovered file shares the name", () => {
+    const local = { command: "/clear", description: "My own clear", argHint: "[force]" };
+    const rows = commandsFor("claude", [], [local]).filter((c) => c.command === "/clear");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toEqual({
+      command: "/clear",
+      description: "Start a fresh conversation with empty context",
+      takesArg: false,
+      argHint: "",
+      common: true,
+      dangerous: true,
+    });
+  });
+
+  it("is replaced when the operator's own rows address the pane (ADR 0018)", () => {
+    const mine = { agent: "claude", command: "/to-spec", description: "My own to-spec", takesArg: false, argHint: "" };
+    const rows = commandsFor("claude", [mine], [toSpec, deploy]);
+    expect(rows.map((c) => c.command)).toEqual(["/to-spec"]);
+    expect(rows[0]).toMatchObject({ description: "My own to-spec", common: true, takesArg: false });
+  });
+
+  it("stays out of every other harness", () => {
+    expect(commandsFor("codex", [], [toSpec]).some((c) => c.command === "/to-spec")).toBe(false);
+  });
+});
+
+describe("suggestCommands (#458)", () => {
+  it("ranks command prefix matches ahead of command and description substring matches", () => {
+    const all = [
+      ...commandsFor("claude"),
+      {
+        command: "/to-compact-note",
+        description: "Substring on command",
+        takesArg: false,
+        argHint: "",
+        common: false,
+        dangerous: false,
+      },
+    ];
+    const hits = suggestCommands("/co", all).map((c) => c.command);
+    expect(hits.slice(0, 6)).toEqual([
+      "/compact",
+      "/context",
+      "/code-review",
+      "/config",
+      "/copy",
+      "/cost",
+    ]);
+    expect(hits.indexOf("/to-compact-note")).toBeGreaterThan(hits.indexOf("/cost"));
+    expect(hits.indexOf("/to-compact-note")).toBeLessThan(hits.indexOf("/export"));
+    // `/compact` matches via description ("Summarize the conversation to free up context; optional focus").
+    const descOnly = suggestCommands("/summarize", all).map((c) => c.command);
+    expect(descOnly).toContain("/compact");
+  });
+
+  it("lists common commands first on a bare `/`, and `$` skills on a bare `$`", () => {
+    const claude = suggestCommands("/", commandsFor("claude"));
+    expect(claude[0]?.common).toBe(true);
+    expect(claude.some((c) => !c.common)).toBe(true);
+
+    const codexSkills = suggestCommands("$", commandsFor("codex")).map((c) => c.command);
+    expect(codexSkills).toEqual([
+      "$imagegen",
+      "$openai-docs",
+      "$review-agent",
+      "$skill-creator",
+      "$skill-installer",
+    ]);
+
+    // Claude has no `$` commands, so `$` returns nothing there.
+    expect(suggestCommands("$100", commandsFor("claude"))).toEqual([]);
+  });
+
+  it("closes on empty input, non-sigil start, or any whitespace (including after a tap adds a trailing space)", () => {
+    const all = commandsFor("claude");
+    expect(suggestCommands("", all)).toEqual([]);
+    expect(suggestCommands("hello", all)).toEqual([]);
+    expect(suggestCommands(" /compact", all)).toEqual([]);
+    expect(suggestCommands("/compact ", all)).toEqual([]);
+    expect(suggestCommands("/compact focus", all)).toEqual([]);
+  });
+});
+

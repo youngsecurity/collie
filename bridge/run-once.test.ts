@@ -25,6 +25,7 @@ import {
   type RecentRun,
 } from "./recent-runs.ts";
 import { createWorktreeAt, launch, launchersRoute, serveLaunchCheckRoute, serveRecentRunRoute, type LaunchDeps } from "./server.ts";
+import { memorySent } from "./sent.ts";
 import type { SessionRuntime } from "./sessions.ts";
 import type { StateEngine } from "./state-engine.ts";
 import type { CreateResponse, LaunchCheckResponse, LaunchersResponse, RecentRunsResponse, WorktreeCreateResponse } from "./types.ts";
@@ -169,12 +170,15 @@ describe("POST /api/launch `{ run }`: the shape", () => {
   test("an admitted anonymous opt-out run works without a credential or persistent history", async () => {
     const f = fixture({ device: null });
     const folders: string[] = [];
-    const deps: LaunchDeps = { deviceKind: "anonymous", folders: { recordRecent: async (path) => { folders.push(path); } } };
+    const sent = memorySent();
+    const deps: LaunchDeps = { deviceKind: "anonymous", sent, folders: { recordRecent: async (path) => { folders.push(path); } } };
     expect((await f.run({ run: "make test", cwd: "/synthetic", requestId: ID }, deps)).status).toBe(200);
     expect((await f.run({ run: "make test", cwd: "/synthetic", requestId: ID }, deps)).body).toMatchObject({ replayed: true });
     expect(f.mux.texts).toEqual([["w1:p1", "make test"]]);
     expect(f.io.writes).toBe(0);
     expect(await f.recent.list()).toEqual([]);
+    // Sent (ADR 0107) keeps words, so an anonymous run joins it no more than it joins the history.
+    expect(await sent.list()).toEqual([]);
     expect(folders).toEqual([]);
     f.setSwitches({ run: false });
     expect((await f.run({ run: "make test", requestId: ID2 }, deps)).body).toMatchObject({ code: "launch.run_off" });

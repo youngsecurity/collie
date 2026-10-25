@@ -2,7 +2,7 @@
 //
 // The journal answers in `TranscriptEntry[]` — one turn holding several parts — and a card draws ONE
 // thing. This is the whole distance between the two, and it is small on purpose: the tool vocabulary
-// on both sides is already the same nine kinds (`bridge/journal/tool-call.ts`), so what is left is a
+// on both sides is already the same ten kinds (`bridge/journal/tool-call.ts`), so what is left is a
 // role-to-kind table, an `output` field, and a status.
 //
 // It lives beside the cards rather than in the bridge because it is a VIEW decision. Whether a
@@ -20,6 +20,7 @@
 
 import { t } from "./i18n";
 import type { ToolCall, TranscriptEntry, TranscriptPart } from "./types";
+import { firstLine, parseEnvelopeHeader, type EnvelopeHeader } from "./walky";
 
 /** What became of a tool call, as a card colours it. */
 export type ChatToolStatus = "running" | "done" | "failed" | "denied";
@@ -27,9 +28,10 @@ export type ChatToolStatus = "running" | "done" | "failed" | "denied";
 /**
  * The five kinds whose card can show what the call PRINTED, given the room.
  *
- * The other three have nothing to print: an edit draws its diff, a read draws its range, and a
- * delete leaves no output at all. Writing the union as a conditional over {@link ToolCall} rather
- * than as a second list of branches is what stops the two from drifting when a tenth kind lands.
+ * The others have nothing to print: an edit draws its diff, a read draws its range, a delete leaves
+ * no output at all, and a plan's result is the list the card already draws (ADR 0119). Writing the
+ * union as a conditional over {@link ToolCall} rather than as a second list of branches is what stops
+ * the two from drifting when another kind lands.
  */
 type WithOutput<T> = T extends { kind: "execute" | "search" | "fetch" | "task" | "other" }
   ? T & { output?: string }
@@ -47,7 +49,9 @@ export type ChatToolCall = WithOutput<ToolCall>;
 export type ChatItem =
   // `requestId`: the send that made this line, when the program says so (a durable pane): the phone's own pending line
   // is matched to it and replaced (lib/durable-pending.ts).
-  | { id: string; ts?: string; kind: "user"; text: string; requestId?: string }
+  // `walky`: the turn's first line is a walky talky envelope header (lib/walky.ts). A CLAIM, not a fact:
+  // the card draws only when the pane's own log holds the id (components/walky-card.tsx).
+  | { id: string; ts?: string; kind: "user"; text: string; requestId?: string; walky?: EnvelopeHeader }
   // `partial`: the program is still writing this text and will write it again under the same id (a durable pane,
   // WIRE.md 7.15). The card draws a cursor at its end until the flag goes.
   | { id: string; ts?: string; kind: "reply"; text: string; partial?: true }
@@ -88,6 +92,7 @@ export function withToolOutput(call: ToolCall, output: string): ChatToolCall {
       return { ...call, output };
     case "other":
       return { ...call, output };
+    // A plan has no output to print: its result only echoes the list the card draws row by row.
     default:
       return call;
   }
@@ -119,6 +124,8 @@ export function toolStatus(part: Extract<TranscriptPart, { kind: "tool" }>): Cha
   if (result === undefined) return "running";
   if (result.denied) return "denied";
   if (result.isError) return "failed";
+  // A background job or sub-agent answers "started" at once; the call says it has not ended.
+  if (part.call && "ongoing" in part.call && part.call.ongoing === true) return "running";
   return "done";
 }
 
@@ -148,21 +155,32 @@ export function itemsOf(entry: TranscriptEntry, showCompactions = false): ChatIt
   // Only a turn the program is still writing, and only a text a person reads: never a tool, never the user's own line.
   const grows = entry.partial === true && entry.role !== "user" ? ({ partial: true } as const) : {};
   const asked = entry.role === "user" && entry.requestId !== undefined ? { requestId: entry.requestId } : {};
+  // Only the FIRST text of a turn can open with an envelope: the body follows the header, and a header
+  // quoted further down a turn is only text.
+  let firstText = true;
   entry.parts.forEach((part, i) => {
     const id = part.kind === "tool" && part.id ? part.id : `${entry.uuid}:${i}`;
     switch (part.kind) {
-      case "text":
+      case "text": {
         // A `note` is machine-injected, so it is a notice rather than a reply. (A compaction summary
         // never gets here: it is its own item above.)
         if (!part.text.trim()) return;
+        if (said === "user") {
+          const header = firstText ? parseEnvelopeHeader(firstLine(part.text)) : null;
+          const item: ChatItem = { id, ts, kind: said, text: part.text, ...asked };
+          if (header !== null) item.walky = header;
+          firstText = false;
+          items.push(item);
+          return;
+        }
+        firstText = false;
         items.push(
           said === "notice"
             ? { id, ts, kind: said, text: part.text, note: true, ...grows }
-            : said === "user"
-              ? { id, ts, kind: said, text: part.text, ...asked }
-              : { id, ts, kind: said, text: part.text, ...grows },
+            : { id, ts, kind: said, text: part.text, ...grows },
         );
         return;
+      }
       case "thinking":
         if (part.text.trim()) items.push({ id, ts, kind: "thinking", text: part.text, ...grows });
         return;

@@ -128,6 +128,24 @@ describe("toolStatus", () => {
   it("is done for an ordinary result", () => {
     expect(toolStatus(toolPart({ result: { text: "ok" } }))).toBe("done");
   });
+
+  it("is running when the result came back but the call is ongoing (a background job, a subagent)", () => {
+    const call: ToolCall = { kind: "execute", command: "sleep 9", background: true, ongoing: true };
+    expect(toolStatus(toolPart({ call, result: { text: "started" } }))).toBe("running");
+    const agent: ToolCall = { kind: "task", agent: "explore", summary: "look", ongoing: true };
+    expect(toolStatus(toolPart({ call: agent, result: { text: "queued" } }))).toBe("running");
+  });
+
+  it("lets a refusal or a fault win over ongoing", () => {
+    const call: ToolCall = { kind: "execute", command: "x", ongoing: true };
+    expect(toolStatus(toolPart({ call, result: { text: "", denied: true } }))).toBe("denied");
+    expect(toolStatus(toolPart({ call, result: { text: "boom", isError: true } }))).toBe("failed");
+  });
+
+  it("is done once the ongoing flag is gone", () => {
+    const call: ToolCall = { kind: "execute", command: "x", background: true };
+    expect(toolStatus(toolPart({ call, result: { text: "ok" } }))).toBe("done");
+  });
 });
 
 describe("withToolOutput", () => {
@@ -142,8 +160,9 @@ describe("withToolOutput", () => {
     for (const call of calls) expect(withToolOutput(call, "out")).toMatchObject({ output: "out" });
   });
 
-  it("returns the other three unchanged", () => {
+  it("returns the other four unchanged, a plan among them: its result is the list, which the card already draws", () => {
     const calls: ToolCall[] = [
+      { kind: "plan", name: "todo", tasks: [{ title: "a", status: "done" }] },
       { kind: "edit", path: "a.ts", added: 1, removed: 0 },
       { kind: "read", path: "a.ts" },
       { kind: "delete", path: "a.ts" },
@@ -177,5 +196,28 @@ describe("a durable turn that is still being written, and a line with a request 
     expect(done).not.toHaveProperty("partial");
     const [tool] = itemsOf(entry({ parts: [toolPart({ id: "t1" })] }));
     expect(finished(tool!)).toBe(tool);
+  });
+});
+
+describe("itemsOf and a walky talky envelope (M62)", () => {
+  const envelope = (text: string, role: "user" | "assistant" = "user") => ({
+    uuid: "u9",
+    ts: "2026-10-17T09:30:00Z",
+    role,
+    parts: [{ kind: "text" as const, text }],
+  });
+
+  it("tags a user turn whose first line is a header, with what the header claims", () => {
+    const [item] = itemsOf(envelope("[walky-talky wt_k3f9x2m8q1a0] from agent bluefin/w6:p3 (claude, x#y) reply to wt_8ab2c3d4e5f6\nbody"));
+    expect(item).toMatchObject({ kind: "user", walky: { id: "wt_k3f9x2m8q1a0", kind: "agent", replyTo: "wt_8ab2c3d4e5f6" } });
+  });
+
+  it("leaves an ordinary turn, and a header quoted on a later line, untagged", () => {
+    expect(itemsOf(envelope("fix the tests"))[0]).not.toHaveProperty("walky");
+    expect(itemsOf(envelope("see:\n[walky-talky wt_k3f9x2m8q1a0] from agent x (y)"))[0]).not.toHaveProperty("walky");
+  });
+
+  it("tags only a user turn: an assistant that prints a header is just speaking", () => {
+    expect(itemsOf(envelope("[walky-talky wt_k3f9x2m8q1a0] from agent x (y)", "assistant"))[0]).not.toHaveProperty("walky");
   });
 });

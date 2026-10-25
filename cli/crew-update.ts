@@ -7,8 +7,8 @@ import type { OpsRecord } from "../bridge/crew/ops-store.ts";
 import { buildStamp } from "../bridge/version.ts";
 import type { TrustedMember, TrustStoreData } from "../bridge/crew/trust-store.ts";
 import { STALE_AFTER_MS, type UpdateRun } from "../bridge/update-run.ts";
-import { parsePrereleaseTag, versionOfTag } from "../bridge/update.ts";
-import { answersThisBuild } from "../bridge/version.ts";
+import { compareSemver, parsePrereleaseTag, versionOfTag } from "../bridge/update.ts";
+import { answersThisBuild, developmentBase } from "../bridge/version.ts";
 import { collieVersionBare } from "./context.ts";
 import { updateDeps } from "./deps.ts";
 import { INSTALLER_SH } from "./installer-embed.ts";
@@ -369,7 +369,9 @@ async function updateRun(deps: Wired, args: readonly string[]): Promise<number> 
     // 3. THE ONE CONSENT, and it names the lead when the lead is part of what is being consented to.
     //    A binary or packaged lead is never behind what it is handing out: the release it hands out
     //    IS the one it is running, so there is nothing for its own updater to do first.
-    const behind = build.route === "bundle" && leadIsBehind(deps, version, build.commit);
+    const behind =
+      build.route === "bundle" &&
+      leadIsBehind(collieVersionBare(deps.ctx.root, (p) => deps.files.read(p)), version, build.commit);
     const consent = await confirmBatch(deps, ready, outcomes, build, behind);
     if (consent !== EXIT.OK) return consent;
 
@@ -881,10 +883,17 @@ const nMembers = (n: number): string => `${n} member${n === 1 ? "" : "s"}`;
  *
  * The question is asked of what this machine ANSWERS with, not of what its checkout says: a checkout
  * that has advanced without being built is exactly the case where the peers would end up on a build
- * their lead has never run.
+ * their lead has never run. A development build is the exception, see below: it is past the release,
+ * and the only thing the lead's updater could do for it is a release it already has.
  */
-function leadIsBehind(deps: Wired, version: string, commit: string): boolean {
-  return !answersThisBuild(collieVersionBare(deps.ctx.root, (p) => deps.files.read(p)), version, commit);
+export function leadIsBehind(reported: string, version: string, commit: string): boolean {
+  if (answersThisBuild(reported, version, commit)) return false;
+  // A DEVELOPMENT build at or past the version being handed out is ahead of that release, not behind
+  // it: the lead's own updater takes releases only, so it has nothing to give this lead and starts no
+  // run (2026-10-19, a `1.22.6-dev+c7ac1e91` lead waited minutes on a record that never came). A dev
+  // build on an OLDER version is still behind, and so is a release build that is not this one.
+  const base = developmentBase(reported);
+  return base === null || compareSemver(base, version) < 0;
 }
 
 /**

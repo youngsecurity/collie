@@ -9,6 +9,7 @@ import {
   markSaved,
   mergeChat,
   savedChatWindow,
+  sessionChanged,
   type ChatAnswer,
   type ChatWindow,
 } from "@/lib/chat-window";
@@ -111,6 +112,7 @@ export function useChatWindow({
   scope,
   enabled,
   savedCopy = false,
+  seen = true,
 }: {
   paneId: string;
   /** Which machine + which named session this pane lives in — every other pane read carries it. */
@@ -122,6 +124,11 @@ export function useChatWindow({
    * gave up waiting for the bridge. An empty window then reads its own saved copy at once.
    */
   savedCopy?: boolean;
+  /**
+   * Whether this read counts as opening the pane (its unseen mark clears). False for a large
+   * screen's read-only column beside the focused one (ADR 0120): only the focused pane is opened.
+   */
+  seen?: boolean;
 }): ChatFeed {
   const revalidator = useRevalidator();
   const [held, setHeld] = useState<ChatWindow>(EMPTY_CHAT_WINDOW);
@@ -176,10 +183,18 @@ export function useChatWindow({
     };
   }, []);
 
+  // A window also belongs to the SESSION it was read from (#526). When the pane's agent starts
+  // another one (pi's `/new`), the answer carries another `session` tag and `mergeChat` replaces the
+  // thread and every older page with the new session's turns, which may be none. A "load older" tap
+  // still in flight belonged to the old session: its page is thrown away on arrival, and its
+  // spinner goes now, so the new thread does not stand under a load it never asked for.
   const apply = useCallback((answer: ChatAnswer) => {
-    const next = mergeChat(window.current, answer);
+    const previous = window.current;
+    const next = mergeChat(previous, answer);
     window.current = next;
-    if (alive.current) setHeld(next);
+    if (!alive.current) return;
+    setHeld(next);
+    if (sessionChanged(previous, next)) setLoadingOlder(false);
   }, []);
 
   /** Write the held window through to the store (see the header). Live windows with turns only. */
@@ -274,6 +289,8 @@ export function useChatWindow({
           paneId,
           cursor.gen === 0 ? {} : { after: { gen: cursor.gen, rev: cursor.rev } },
           scope,
+          undefined,
+          { seen },
         );
         apply(answer);
         lastAnsweredAt.current = Date.now();
@@ -304,7 +321,7 @@ export function useChatWindow({
     })();
     // `scope` is safe in a dependency array: scopes read off a URL are interned to one frozen
     // instance per (host, session), so its identity is as stable as the string it replaced.
-  }, [enabled, idle, paneId, scope, address, apply, writeThrough, readBack, readSaved]);
+  }, [enabled, idle, paneId, scope, address, seen, apply, writeThrough, readBack, readSaved]);
 
   const loadOlder = useCallback(() => {
     const cursor = window.current;

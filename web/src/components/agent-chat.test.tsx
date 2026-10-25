@@ -27,8 +27,12 @@ vi.mock("@/lib/chat-gate", async (importOriginal) => ({
 }));
 
 import { server } from "@/test/setup";
+import { __resetBeltIntents, queueBeltIntent, takeBeltIntent } from "@/lib/belt-intent";
+import { paneScopeKey } from "@/lib/scope";
 import { clearStatus, setStatus, useStatus } from "@/lib/status";
 import { setAutoZenEnabled, setZenEnabled, __resetZen } from "@/lib/zen";
+import { HarnessPrefsControl } from "@/components/harness-prefs-control";
+import { __resetHarnessPrefs, setHarnessStatusLineShown } from "@/lib/harness-prefs";
 import { noPromptsConfirmed, rememberNoPromptsConfirm } from "@/lib/no-prompts";
 import { setStripsCollapsed, __resetStripsCollapsed } from "@/lib/strips-collapsed";
 import { __resetOperatorCommands } from "@/lib/operator-config";
@@ -47,6 +51,7 @@ import { COLLAPSE_MS } from "./ui/collapse";
 import { AgentChat } from "./agent-chat";
 import { saveChatTail } from "@/lib/chat-tail";
 import { __resetMaskedHint, maskedHintRetired } from "@/lib/masked-hint";
+import { ARM_DWELL_MS } from "@/lib/arm";
 
 // M46 spec 11 turns every send off for a pane the bridge has not answered lately (lib/liveness.ts).
 // These suites drive sends against a mocked network and never poll first, so they pin the pane live;
@@ -74,6 +79,8 @@ beforeEach(() => {
   // Same shape, same reason: a case that folds the strips would otherwise leave every later case
   // rendering a bead bar it never asked for.
   __resetStripsCollapsed();
+  // And the per-harness status line switch: a case that turns a strip off must not blank the next.
+  __resetHarnessPrefs();
   // Same shape once more: launchers.toml's rows are cached for the life of the page (one successful
   // /api/config read), so a case that declares launchers would otherwise leak them into every case
   // that comes after it.
@@ -1911,6 +1918,15 @@ describe("AgentChat — no session reported", () => {
     // Prose, not an affordance: nothing here is tappable, and the history button stays absent.
     expect(note?.closest("button")).toBeNull();
     expect(screen.queryByRole("button", { name: /show entire history/i })).not.toBeInTheDocument();
+  });
+
+  // Kiro's adapter discovers its own session, so the bridge sets `hasSession` on every Kiro pane
+  // (`toPaneWire`), with or without a Herdr ref. The note never applies; the History link shows.
+  it("offers History on a Kiro pane and advises no hook", () => {
+    const agent = { ...fixtureAgents[0]!, agent: "kiro", hasSession: true };
+    renderChat({ agent, agents: [agent] });
+    expect(noSessionNote()).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /show entire history/i })).toBeInTheDocument();
   });
 
   it("says nothing once the pane has reported a session", () => {
@@ -4650,6 +4666,13 @@ describe("AgentChat — the model above the belt", () => {
     expect(tag.previousElementSibling).toHaveAttribute("data-slot", "draft-notice-slot");
   });
 
+  it("draws the pane's effort after its model", () => {
+    const agent: AgentView = { ...fixtureAgents[0]!, model: "anthropic:claude-opus-5-5", effort: "high" };
+    const { container } = renderChat({ agent, agents: [agent, ...fixtureAgents.slice(1)] });
+    const tag = container.querySelector<HTMLElement>('[data-slot="model-tag"]')!;
+    expect(tag.querySelector("[aria-hidden]")?.textContent).toBe("Opus 5.5 · high");
+  });
+
   it("draws no model when the pane names none", () => {
     const { container } = renderChat();
     expect(container.querySelector('[data-slot="model-tag"]')).toBeNull();
@@ -4674,8 +4697,9 @@ describe("AgentChat — the model label and a footer that already names it", () 
 
   it("Claude Code: a statusline that prints the model hides the label, and one that does not keeps it", () => {
     terminal();
-    const named = renderChat({ text: STATUS_TEXT, agent: on("claude", "claude-opus-4-8") });
+    const named = renderChat({ text: STATUS_TEXT, agent: on("claude", "claude-opus-4-8", { effort: "high" }) });
     expect(screen.getByText("[Opus 4.8] ~/webapp · main")).toBeInTheDocument(); // the strip is up
+    // The effort goes with the model: a screen that names the model hides the whole tag (#463).
     expect(tag(named.container)).toBeNull();
     cleanup();
     const behind = renderChat({ text: STATUS_TEXT, agent: on("claude", "Fable 5.1") });
@@ -4740,6 +4764,100 @@ describe("AgentChat — the model label and a footer that already names it", () 
     });
     expect(await screen.findByText("what changed today?")).toBeInTheDocument();
     expect(tag(container)?.textContent).toContain("Sonnet 4.5");
+  });
+});
+
+// Settings → Harness configurations. The switch is per harness and only DRAWS less: the strip, and for
+// Claude Code the background-agents block, leave the Chat view, and the model label comes back above
+// the belt because nothing on screen names the model any more.
+describe("AgentChat — the status line switch of Harness configurations", () => {
+  const pane = (name: string) => readFileSync(join(import.meta.dirname, "..", "fixtures", "panes", name), "utf8");
+  const tag = (container: HTMLElement) => container.querySelector('[data-slot="model-tag"]');
+  const on = (agent: string, model: string, extra: Partial<AgentView> = {}): AgentView => ({
+    ...fixtureAgents[0]!,
+    agent,
+    model,
+    ...extra,
+  });
+  const strip = (container: HTMLElement) =>
+    Array.from(container.querySelectorAll("div")).find((el) => el.className.includes("max-h-[18dvh]"));
+  const chat = () =>
+    localStorage.setItem("collie:dash-prefs:v1", JSON.stringify({ paneView: "chat", showToolCalls: true }));
+
+  it("on (the default): the strip is drawn and the label stands down", async () => {
+    chat();
+    const { container } = renderChat({
+      text: STATUS_TEXT,
+      agent: on("claude", "claude-opus-4-8", { hasSession: true }),
+    });
+    expect(await screen.findByText("what changed today?")).toBeInTheDocument();
+    expect(screen.getByText("[Opus 4.8] ~/webapp · main")).toBeInTheDocument();
+    expect(strip(container)).toBeDefined();
+    expect(tag(container)).toBeNull();
+  });
+
+  it("off for the pane's harness: no strip, and the model label returns", async () => {
+    chat();
+    setHarnessStatusLineShown("claude", false);
+    const { container } = renderChat({
+      text: STATUS_TEXT,
+      agent: on("claude", "claude-opus-4-8", { hasSession: true }),
+    });
+    expect(await screen.findByText("what changed today?")).toBeInTheDocument();
+    expect(screen.queryByText("[Opus 4.8] ~/webapp · main")).toBeNull();
+    expect(strip(container)).toBeUndefined();
+    expect(tag(container)?.textContent).toContain("Opus 4.8");
+  });
+
+  it("off for another harness: this pane's strip stays", async () => {
+    chat();
+    setHarnessStatusLineShown("codex", false);
+    const { container } = renderChat({
+      text: STATUS_TEXT,
+      agent: on("claude", "claude-opus-4-8", { hasSession: true }),
+    });
+    expect(await screen.findByText("what changed today?")).toBeInTheDocument();
+    expect(screen.getByText("[Opus 4.8] ~/webapp · main")).toBeInTheDocument();
+    expect(tag(container)).toBeNull();
+  });
+
+  it("off: Claude Code's background-agents block stays out, on: it is drawn", async () => {
+    chat();
+    const text = pane("claude--draft-footer-single.txt");
+    renderChat({ text, agent: on("claude", "claude-opus-4-8", { hasSession: true }) });
+    expect(await screen.findByText("what changed today?")).toBeInTheDocument();
+    expect(screen.getByText(/worker:scout/)).toBeInTheDocument();
+    cleanup();
+    setHarnessStatusLineShown("claude", false);
+    renderChat({ text, agent: on("claude", "claude-opus-4-8", { hasSession: true }) });
+    expect(await screen.findByText("what changed today?")).toBeInTheDocument();
+    expect(screen.queryByText(/worker:scout/)).toBeNull();
+  });
+
+  it.each(["agy", "antigravity"])(
+    "the Antigravity row turns the strip off for a pane whose agent is %s",
+    async (agentString) => {
+      localStorage.setItem("collie:dash-prefs:v1", JSON.stringify({ paneView: "terminal" }));
+      const text = pane("agy--done.txt");
+      const before = renderChat({ text, agent: on(agentString, "gemini-3") });
+      expect(strip(before.container)).toBeDefined();
+      cleanup();
+
+      render(<HarnessPrefsControl />);
+      await userEvent.click(screen.getByRole("switch", { name: /Antigravity/ }));
+      cleanup();
+
+      const after = renderChat({ text, agent: on(agentString, "gemini-3") });
+      expect(strip(after.container)).toBeUndefined();
+    },
+  );
+
+  it("off: the Terminal body still shows the real rows", () => {
+    localStorage.setItem("collie:dash-prefs:v1", JSON.stringify({ paneView: "terminal" }));
+    setHarnessStatusLineShown("claude", false);
+    const { container } = renderChat({ text: STATUS_TEXT, agent: on("claude", "claude-opus-4-8") });
+    expect(strip(container)).toBeUndefined();
+    expect(tag(container)?.textContent).toContain("Opus 4.8");
   });
 });
 
@@ -4907,5 +5025,141 @@ describe("AgentChat, the newest turn's picture on a pi pane (M39, #292)", () => 
     });
     expect(screen.queryByText("the agent's newest picture, from its log")).toBeNull();
     expect(screen.queryByRole("img", { name: "Terminal graphics" })).toBeNull();
+  });
+});
+
+// M68 spec 02: Stop on the belt of a pane with a screen. The rule is `stopFor` (the bridge says a key exists;
+// the turn only decides live or dimmed); the first tap arms, the second posts the request id alone and the receipt shows under the box.
+describe("AgentChat: Stop on a pane with a screen", () => {
+  const RUNNING: Surface = { revision: 4, turn: "running", modal: "none", composer: "empty" };
+  const IDLE_SURFACE: Surface = { revision: 4, turn: "idle", modal: "none", composer: "empty" };
+  const stopAgent = (over: Partial<AgentView>): AgentView => ({ ...fixtureAgents[0]!, sendProtocol: true, ...over });
+  const beltStop = () => document.querySelector("[data-slot='belt-stop']");
+  /** A second tap counts only ARM_DWELL_MS after the arm (lib/arm.ts): wait it out, as a thumb does. */
+  const pastTheDwell = () => new Promise<void>((resolve) => setTimeout(resolve, ARM_DWELL_MS));
+
+  function serveStop(receipt: JsonValue) {
+    const posted: JsonValue[] = [];
+    server.use(
+      http.post(/\/api\/pane\/[^/]+\/abort$/, async ({ request }) => {
+        // SAFETY: the phone's own JSON.stringify body is JSON, a JsonValue.
+        posted.push((await request.json()) as JsonValue);
+        return HttpResponse.json(receipt);
+      }),
+    );
+    return posted;
+  }
+
+  it("draws no Stop on a pane the bridge has no key for, running or idle", async () => {
+    renderChat({ agent: stopAgent({ surface: RUNNING }) });
+    await screen.findByRole("button", { name: "Pane actions" });
+    expect(beltStop()).toBeNull();
+    cleanup();
+    renderChat({ agent: stopAgent({ surface: IDLE_SURFACE }) });
+    await screen.findByRole("button", { name: "Pane actions" });
+    expect(beltStop()).toBeNull();
+  });
+
+  it("draws a dimmed Stop on an idle pane that has a key, and a tap posts nothing and arms nothing", async () => {
+    const user = userEvent.setup();
+    const posted = serveStop({ requestId: "echo-0003", outcome: "refused", reason: "turn_idle" });
+    renderChat({ agent: stopAgent({ surface: IDLE_SURFACE, canStop: true }) });
+    const stop = await screen.findByRole("button", { name: "Stop the turn" });
+    expect(stop).toHaveAttribute("data-slot", "belt-stop");
+    expect(stop).toHaveAttribute("aria-disabled", "true");
+    await user.click(stop);
+    await pastTheDwell();
+    await user.click(stop);
+    expect(posted).toHaveLength(0);
+    expect(screen.queryByRole("button", { name: "Tap again to stop the turn" })).toBeNull();
+  });
+
+  it("arms on the first tap, posts one fresh request id on the second and tells the receipt under the box", async () => {
+    const user = userEvent.setup();
+    const posted = serveStop({ requestId: "echo-0001", outcome: "stopped", keys: ["Escape"] });
+    renderChat({ agent: stopAgent({ surface: RUNNING, canStop: true }) });
+    await user.click(await screen.findByRole("button", { name: "Stop the turn" }));
+    expect(posted).toHaveLength(0);
+    await pastTheDwell();
+    await user.click(screen.getByRole("button", { name: "Tap again to stop the turn" }));
+    await waitFor(() => expect(posted).toHaveLength(1));
+    expect(posted[0]).toEqual({ requestId: expect.stringMatching(/^[A-Za-z0-9_-]{8,64}$/) });
+    expect(await screen.findByText("Stopped.")).toBeInTheDocument();
+  });
+
+  it("tells a refusal in its own words and presses nothing more", async () => {
+    const user = userEvent.setup();
+    const posted = serveStop({ requestId: "echo-0002", outcome: "refused", reason: "draft_present" });
+    renderChat({ agent: stopAgent({ surface: RUNNING, canStop: true }) });
+    await user.click(await screen.findByRole("button", { name: "Stop the turn" }));
+    await pastTheDwell();
+    await user.click(screen.getByRole("button", { name: "Tap again to stop the turn" }));
+    expect(await screen.findByText("The box holds your text and this harness's stop key would clear it.")).toBeInTheDocument();
+    expect(posted).toHaveLength(1);
+  });
+});
+
+describe("AgentChat — the focused column of a large screen's strip (ADR 0120)", () => {
+  afterEach(() => __resetBeltIntents());
+
+  it("hides the belt's Switch pill, which the sidebar replaces, and keeps it below 600 px", () => {
+    const phone = renderChat();
+    expect(within(phone.container).queryByRole("button", { name: "Switch pane" })).not.toBeNull();
+    cleanup();
+    const { container } = renderChat({ inStrip: true });
+    expect(within(container).queryByRole("button", { name: "Switch pane" })).toBeNull();
+    // The belt itself stays, with the reply box under it.
+    expect(within(container).getByRole("button", { name: "Keys" })).toBeInTheDocument();
+    expect(within(container).getByPlaceholderText(/type a reply/i)).toBeInTheDocument();
+    // The column is the bound, so the phone's width ladder stands down.
+    expect(container.querySelector(".md\\:max-w-screen-md")).toBeNull();
+  });
+
+  it("runs a belt tap left in another column through this pane's own composer, once", async () => {
+    const agent = fixtureAgents[0]!;
+    queueBeltIntent(paneScopeKey(undefined, agent.paneId), { kind: "action", id: "keys" });
+    const { container } = renderChat({ inStrip: true });
+    await waitFor(() => expect(within(container).getByRole("button", { name: "Keys" })).toHaveAttribute("aria-expanded", "true"));
+    // Taken: a remount of the same pane does not open the dock again.
+    expect(takeBeltIntent(paneScopeKey(undefined, agent.paneId))).toBeNull();
+  });
+
+  it("leaves the tab row and the pane row to the space header and the sidebar, and the space name to the space header", () => {
+    const sibling: AgentView = { ...fixtureAgents[0]!, paneId: "w1:p9" };
+    const strips = { tabs: fixtureTabs, agents: [...fixtureAgents, sibling] };
+    const phone = renderChat(strips);
+    expect(within(phone.container).queryByRole("navigation", { name: "Tabs" })).not.toBeNull();
+    expect(within(phone.container).queryByRole("navigation", { name: "Panes" })).not.toBeNull();
+    expect(phone.container.querySelector('[data-slot="pane-place"]')?.textContent).not.toBe("");
+    cleanup();
+    const { container } = renderChat({ ...strips, inStrip: true });
+    expect(within(container).queryByRole("navigation", { name: "Tabs" })).toBeNull();
+    expect(within(container).queryByRole("navigation", { name: "Panes" })).toBeNull();
+    expect(within(container).queryByRole("button", { name: /^Show tabs/ })).toBeNull();
+    // The header's second line keeps the pane's own facts and drops the space's name.
+    expect(container.querySelector('[data-slot="pane-place"]')?.textContent).toBe("");
+  });
+
+  it("leaves another pane's belt tap alone", () => {
+    queueBeltIntent(paneScopeKey(undefined, "w9:p9"), { kind: "action", id: "keys" });
+    const { container } = renderChat({ inStrip: true });
+    expect(within(container).getByRole("button", { name: "Keys" })).toHaveAttribute("aria-expanded", "false");
+    expect(takeBeltIntent(paneScopeKey(undefined, "w9:p9"))).toEqual({ kind: "action", id: "keys" });
+  });
+});
+
+describe("AgentChat — a tabletop fold (ADR 0120, folded postures)", () => {
+  it("marks the chrome block for the bottom segment: the belt, then the reply box; the header stays above", () => {
+    const { container } = renderChat({ tabletop: true });
+    const bottom = container.querySelector<HTMLElement>('[data-segment="bottom"]');
+    expect(bottom?.dataset.slot).toBe("chrome-block");
+    expect(within(bottom!).getByRole("button", { name: "Keys" })).toBeInTheDocument();
+    expect(within(bottom!).getByPlaceholderText(/type a reply/i)).toBeInTheDocument();
+    expect(container.querySelector("header")?.closest('[data-segment="bottom"]') ?? null).toBeNull();
+  });
+
+  it("marks nothing when the screen is flat", () => {
+    const { container } = renderChat();
+    expect(container.querySelector("[data-segment]")).toBeNull();
   });
 });

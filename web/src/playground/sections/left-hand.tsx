@@ -44,6 +44,7 @@ const PREFS = {
   rawTerminal: false,
   tapToFocus: true,
   expandClippedReply: true,
+  stretchText: false,
 } as const;
 
 interface VariantDef {

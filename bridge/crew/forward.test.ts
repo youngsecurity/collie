@@ -198,6 +198,17 @@ describe("which routes cross a link", () => {
     expect(forwardAuditAction("folders/star")).toBeNull();
   });
 
+  test("the folder browser crosses the link as a READ — it lists the member's own disk (#467)", () => {
+    expect(crewRouteFor("/api/folders/browse")).toBe("folders/browse");
+    expect(apiPathFor("folders/browse")).toBe("/api/folders/browse");
+    expect(crewRouteFor("/api/folders/browse/x")).toBeNull();
+    // A GET that changes nothing: attempted against a stale member, on the read budget, never audited.
+    expect(forwardKind("folders/browse")).toBe("read");
+    expect(forwardAuditAction("folders/browse")).toBeNull();
+    // Names only, never session text: the lead does not read or mask the answer.
+    expect(textAnswerOf("folders/browse")).toBeNull();
+  });
+
   test("a blob crosses the link as a READ — the bytes live on the member that named them", () => {
     const hash = "a".repeat(64);
     expect(crewRouteFor(`/api/blobs/${hash}`)).toBe(`blobs/${hash}`);
@@ -251,7 +262,7 @@ describe("which routes cross a link", () => {
     // The list IS the inventory of what crosses a link; `chat` joined it with the live window, and
     // `files` with the Files view (ADR 0083).
     expect(paneActions).toEqual([
-      "abort", "action", "answer", "changes", "chat", "close", "files", "focus", "history", "keys", "rename", "reply", "send", "upload",
+      "abort", "action", "answer", "changes", "chat", "clear", "close", "files", "focus", "history", "keys", "rename", "reply", "send", "upload",
     ]);
     for (const action of paneActions) expect(crewRouteFor(`/api/pane/x/${action}`)).toBe(`pane/x/${action}`);
     const tabActions = tab.match(alternation)![1]!.split("|").toSorted();
@@ -307,6 +318,12 @@ describe("which routes cross a link", () => {
     expect(crewRouteFor("/api/durable/conversation/c1/close")).toBeNull();
     expect(crewRouteFor("/api/durable/conversations/x")).toBeNull();
     expect(apiPathFor("durable/conversation/c1/items")).toBe("/api/durable/conversation/c1/items");
+    // Walky talky's message from the lead (CREW_PROTOCOL.md §21): one opaque pane segment, then the
+    // literal `walky`, on a route of its own beside `PANE_ROUTE` in server.ts.
+    const walky = server.match(/^const WALKY_PANE_ROUTE = (.+);$/m)![1]!;
+    expect(walky).toBe("/^\\/api\\/pane\\/([^/]+)\\/walky$/");
+    expect(crewRouteFor("/api/pane/x/walky")).toBe("pane/x/walky");
+    expect(crewRouteFor("/api/pane/x/walky/y")).toBeNull();
   });
 
   test("history: the program's list and items are reads, a reopen is a write audited as durable.reopen, and the items are masked as History", () => {
@@ -330,7 +347,7 @@ describe("which routes cross a link", () => {
     // must be attempted against a stale member rather than refused before it is tried (§10.3).
     expect(forwardKind("pane/w1:p1/chat")).toBe("read");
     expect(forwardKind("pane/w1:p1/changes")).toBe("read");
-    for (const action of ["reply", "keys", "upload", "close", "rename", "answer", "send", "abort"]) {
+    for (const action of ["reply", "keys", "upload", "close", "rename", "answer", "send", "abort", "clear"]) {
       expect(forwardKind(`pane/w1:p1/${action}`)).toBe("write");
     }
     expect(forwardKind("tab")).toBe("write");
@@ -782,6 +799,19 @@ describe("a write to a member that is not reachable (§10.3)", () => {
     expect(calls[0]!.route).toBe("folders");
   });
 
+  test("a `?host=` browse reaches the member with its text, and the member's answer — a refusal included — comes back", async () => {
+    const refusal = `{"error":"unknown-path"}`;
+    const { transport, calls } = transportOf(() => ok(new Response(refusal, { status: 404 })));
+    const [req, url] = get(`/api/folders/browse?host=laptop&path=${encodeURIComponent("~/src/plek")}`);
+    const res = await forward(req, url, { transport, state: DEAD });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.route).toBe("folders/browse");
+    expect(calls[0]!.params).toEqual({ path: "~/src/plek" });
+    expect(calls[0]!.budgetMs).toBeUndefined();
+    expect(res.status).toBe(404);
+    expect(await res.text()).toBe(refusal);
+  });
+
   test("a READ to a dead member is still attempted — a stale mirror is worth asking for", async () => {
     const { transport, calls } = transportOf(() => ok(new Response(`{"lines":[]}`)));
     const [req, url] = get("/api/pane/w1:p1?host=laptop");
@@ -862,6 +892,31 @@ describe("an attempted write whose outcome is unknown (§10.3, .adr/0010 over a 
       const res = await forward(req, url, { transport, state });
       expect(res.status).not.toBe(500);
       expect((await failureBody(res)).code).toBeString();
+    }
+  });
+});
+
+// ── A Stop and a steer cross once (counsel on the Edge 5 candidate) ───────────
+//
+// Both are a key into a running turn on the member. A Stop on a member reads twice, presses, and reads
+// back up to 2.4 s; a Codex steer pauses 1 s before the key and reads up to 2 s after it. Both fit the
+// WRITE_BUDGET_MS of a forwarded write, and when the member does not answer inside it the lead says
+// `write_outcome_unknown` and never dials again: a second dial would be a second key.
+describe("a Stop and a steer over a crew link", () => {
+  test("the Stop (`abort`) and the steer (a `reply` with `when: steer`) dial once, on WRITE_BUDGET_MS, and a timeout is unknown", async () => {
+    for (const [path, body] of [
+      ["/api/pane/w1:p1/abort?host=laptop", `{"requestId":"stop-req-0001"}`],
+      // A Clear (ADR 0116) is the same kind of write: the key may have gone in, so it never dials twice.
+      ["/api/pane/w1:p1/clear?host=laptop", `{"requestId":"clear-req-0001"}`],
+      ["/api/pane/w1:p1/reply?host=laptop", `{"text":"use the other table","submit":true,"id":"steer-req-0001","when":"steer"}`],
+    ] as const) {
+      const { transport, calls } = transportOf(() => ({ ok: false, state: "unreachable", reason: "timed out after 5000ms", receivedAt: 2 }));
+      const [req, url] = post(path, body);
+      const res = await forward(req, url, { transport });
+      expect(res.status).toBe(504);
+      expect((await failureBody(res)).code).toBe("write_outcome_unknown");
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.budgetMs).toBe(WRITE_BUDGET_MS);
     }
   });
 });

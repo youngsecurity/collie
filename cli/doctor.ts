@@ -1,3 +1,4 @@
+import { readRefusals, refusalLine, refusalsPath } from "../bridge/walky/refusals.ts";
 import { basename, dirname, join } from "node:path";
 
 import { BEACON_HOOKS } from "./beacon.ts";
@@ -10,6 +11,7 @@ import {
   resolveHookCommand,
   type HookTarget,
 } from "./hooks.ts";
+import { skillReport } from "./skill-install.ts";
 import { HOST, type Host } from "../bridge/host.ts";
 import { beaconReader } from "../bridge/beacon-io.ts";
 import { readBeacons, type BeaconSweepDeps } from "../bridge/beacon/reader.ts";
@@ -58,6 +60,8 @@ import { DEVICES_FILENAME, isExpired, parseRegistryText } from "../bridge/pairin
 import { pairedRegistryOf } from "./pairing.ts";
 import { collieVersionBare, type CliContext } from "./context.ts";
 import { aboutCrew, bad, ok, skipped, warn, type DoctorStatus, type Finding } from "./finding.ts";
+import { parseAccountWindowsSetting } from "../bridge/account-windows-setting.ts";
+import { accountWindowsDoctorLine, grokAuthPath, hasOpencodeGoEntry, opencodeAuthPath } from "../bridge/account-windows.ts";
 import { explicitMux, probeMuxes, refusedMux, type MuxSighting } from "./mux.ts";
 import { cacheFindings } from "./cache-findings.ts";
 import { surfaceFindings } from "./surface-findings.ts";
@@ -258,6 +262,9 @@ export async function cmdDoctor(deps: DoctorDeps, args: readonly string[]): Prom
     ...(deps.host.platform === "win32" ? [windowsTask(deps), windowsLongPaths(deps), secretsPrivate(deps)] : []),
     beaconHooks(deps, hookEntries, declaration?.supports.agentDetection ?? true),
     await beacons(deps, hookEntries.length > 0),
+    skillWalkyTalky(deps),
+    ...walkyRefusals(deps),
+    accountWindowsFinding(deps),
     // The Whistle model (ADR 0096): one finding when the model, or the host engine that needs it, is
     // on this host, and none otherwise. A host that never heard of Whistle reads exactly as before.
     ...(await whistleModelFindings(deps)),
@@ -2070,6 +2077,68 @@ function beaconHooks(
     `v${String(HOOK_MARKER_VERSION)} in ${String(perFile.size)} settings file${perFile.size === 1 ? "" : "s"},` +
       ` running \`${hookBinaryOf(entries[0]?.command ?? "") ?? would.binary}\`${spare}${holds}`,
   );
+}
+
+/**
+ * `skill-walky-talky` — does any instruction file carry a walky talky skill older than this build's?
+ *
+ * Warn on stale, ok otherwise, as `hooksAreBehind` treats the hooks: a target with no skill is not
+ * drift (the harness is not here, the sync is off, or the operator uninstalled it, ADR 0111). A refused
+ * target is named, because install would not heal it, but it is not a warning either.
+ */
+function skillWalkyTalky(deps: DoctorDeps): Finding {
+  const check = "skill-walky-talky";
+  const report = skillReport({ ctx: deps.ctx, files: deps.files, fs: deps.link });
+  const stale = report.filter((r) => r.state.kind === "stale");
+  const installed = report.filter((r) => r.state.kind === "installed");
+  if (stale.length > 0) {
+    return warn(
+      check,
+      `${String(stale.length)} installed copy behind this build (${stale.map((r) => r.file.target.harness).join(", ")}) — the agent reads old advice`,
+      "`collie skill install all` — it replaces our own file or block in place and leaves every other line alone",
+    );
+  }
+  if (installed.length === 0) return ok(check, "not installed — `collie skill install all` teaches agents to message each other");
+  const refused = report.filter((r) => r.state.kind === "refused").length;
+  const left = refused > 0 ? `; ${String(refused)} target${refused === 1 ? "" : "s"} refused, see \`collie skill status\`` : "";
+  return ok(check, `current in ${installed.map((r) => r.file.target.harness).join(", ")}${left}`);
+}
+
+/**
+ * `walky-refusals` — how many walky talky messages this machine refused, per reason (M62 hardening I).
+ *
+ * One row when `<stateDir>/walky/refusals.json` exists, none otherwise, so a host that never refused a
+ * message reads as before. Never a warning: a refusal is the bridge doing its job. The row says which
+ * limit agents keep hitting, which is the operator's question. The file holds no body and no sender.
+ */
+function walkyRefusals(deps: DoctorDeps): Finding[] {
+  const raw = deps.files.read(refusalsPath(deps.ctx.stateDir));
+  if (raw === null) return [];
+  const held = readRefusals(raw);
+  const total = Object.values(held.counts).reduce((sum, count) => sum + count, 0);
+  if (total === 0) return [ok("walky-refusals", "none counted")];
+  const since = held.since === null ? "" : ` since ${new Date(held.since).toISOString().slice(0, 10)}`;
+  return [ok("walky-refusals", `${String(total)} refused${since}: ${refusalLine(held.counts)}`)];
+}
+
+/**
+ * `account-windows` — whether the bridge reads the operator's own harness logins to ask the vendors for
+ * the 5-hour and 7-day windows (ADR 0118), what each harness reads and where it asks. Never a warning:
+ * off is a choice, and on reads nothing until a pane of the harness exists. OpenCode and Grok are off
+ * unless named (or `all`), unverified until one real login has proven their shape. The line names files and
+ * hosts, never anything in a file. It looks at OpenCode's auth store for an `opencode-go` entry and at
+ * Grok's login file for existence, so the line can say which of them has a login.
+ */
+export function accountWindowsFinding(deps: Pick<DoctorDeps, "ctx" | "host" | "files">): Finding {
+  const { env, home } = deps.ctx;
+  const setting = parseAccountWindowsSetting(env["COLLIE_ACCOUNT_WINDOWS"]);
+  // A file of an off harness is not looked at, not even to say whether it has a login.
+  const store = setting.harnesses.includes("opencode") ? deps.files.read(opencodeAuthPath(env, home)) : null;
+  const facts = {
+    opencodeGoKey: store !== null && hasOpencodeGoEntry(store),
+    grokLogin: setting.harnesses.includes("grok") && deps.files.exists(grokAuthPath(env, home)),
+  };
+  return ok("account-windows", accountWindowsDoctorLine(setting, env, home, deps.host.platform, facts));
 }
 
 /**

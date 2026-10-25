@@ -7,7 +7,7 @@ import { isPlainClick, useFileLinks, type FileLinkOpener, type FileLinkTarget } 
 import {
   MIRROR_INVERT, MIRROR_SPACE, MUSE_MIRROR, mirrorColorStyle, segmentClassName, segmentStyle,
 } from "@/components/mirror-space";
-import { renderCells } from "@/components/painted-cells";
+import { renderCells, renderWideCells } from "@/components/painted-cells";
 import { findFilePaths } from "@/lib/file-paths";
 import { cn } from "@/lib/utils";
 
@@ -31,7 +31,7 @@ export const RawMirrorAppearanceContext = createContext<RawMirrorAppearance>({})
 const MIRROR_LINK_CLASS = "underline decoration-1 underline-offset-2 cursor-pointer py-[0.35em]";
 
 /** The styled spans of one row's slice `[from, to)`, keyed so siblings never collide. */
-function styledSlice(segments: readonly AnsiSegment[], from: number, to: number, foreground?: string): ReactNode[] {
+function styledSlice(segments: readonly AnsiSegment[], from: number, to: number, paintCells: typeof renderCells, foreground?: string): ReactNode[] {
   const nodes: ReactNode[] = [];
   let at = 0;
   segments.forEach((s, si) => {
@@ -42,7 +42,7 @@ function styledSlice(segments: readonly AnsiSegment[], from: number, to: number,
     if (a >= b) return;
     nodes.push(
       <span key={`${si}:${a}`} style={segmentStyle(s, foreground)} className={segmentClassName(s)}>
-        {renderCells(s.text.slice(a - start, b - start))}
+        {paintCells(s.text.slice(a - start, b - start))}
       </span>,
     );
   });
@@ -60,20 +60,21 @@ function rowLinks(text: string, open: FileLinkOpener): { start: number; end: num
 }
 
 /** One row: its styled spans, and any path in it wrapped in a link that keeps those spans. */
-function MirrorRow({ line, open, foreground }: { line: StyledLine; open: FileLinkOpener | null; foreground?: string }) {
+function MirrorRow({ line, open, wrap, foreground }: { line: StyledLine; open: FileLinkOpener | null; wrap: boolean; foreground?: string }) {
   const text = useMemo(() => line.segments.map((s) => s.text).join(""), [line]);
   const links = useMemo(() => (open === null ? [] : rowLinks(text, open)), [text, open]);
+  const paintCells = wrap ? renderCells : renderWideCells;
   if (links.length === 0) {
     return line.segments.map((s, si) => (
       <span key={si} style={segmentStyle(s, foreground)} className={segmentClassName(s)}>
-        {renderCells(s.text)}
+        {paintCells(s.text)}
       </span>
     ));
   }
   const nodes: ReactNode[] = [];
   let at = 0;
   for (const { start, end, target } of links) {
-    if (start > at) nodes.push(...styledSlice(line.segments, at, start, foreground));
+    if (start > at) nodes.push(...styledSlice(line.segments, at, start, paintCells, foreground));
     nodes.push(
       <a
         key={`link:${start}`}
@@ -85,12 +86,12 @@ function MirrorRow({ line, open, foreground }: { line: StyledLine; open: FileLin
         }}
         className={MIRROR_LINK_CLASS}
       >
-        {styledSlice(line.segments, start, end, foreground)}
+        {styledSlice(line.segments, start, end, paintCells, foreground)}
       </a>,
     );
     at = end;
   }
-  if (at < text.length) nodes.push(...styledSlice(line.segments, at, text.length, foreground));
+  if (at < text.length) nodes.push(...styledSlice(line.segments, at, text.length, paintCells, foreground));
   return nodes;
 }
 
@@ -137,7 +138,7 @@ export function RawMirror({
       {lines.map((line, li) => (
         <span key={li}>
           {li > 0 ? "\n" : null}
-          <MirrorRow line={line} open={open} foreground={paint?.foreground} />
+          <MirrorRow line={line} open={open} wrap={wrap} foreground={paint?.foreground} />
         </span>
       ))}
     </pre>

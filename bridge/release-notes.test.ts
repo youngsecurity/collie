@@ -117,6 +117,14 @@ describe("the running version's notes, from its own CHANGELOG", () => {
     expect(notesFromChangelog("## [1.0.0] - 2026-01-01\n\n- no group\n", "1.0.0")).toBeNull();
   });
 
+  it("an Edge build reads the section of its base version (M60 spec 01)", async () => {
+    expect(notesFromChangelog(CHANGELOG, "1.21.0-edge.2")).toEqual(notesFromChangelog(CHANGELOG, "1.21.0"));
+    const reader = currentNotesReader("/root", "1.21.0-edge.2", "u", async () => CHANGELOG);
+    // The version stays the build's own, so the page names what is running; the notes are the base's.
+    expect((await reader())?.version).toBe("1.21.0-edge.2");
+    expect((await reader())?.groups[0]?.name).toBe("Added");
+  });
+
   it("reads the file once, and a missing file is null", async () => {
     let reads = 0;
     const reader = currentNotesReader("/root", "1.21.0", "https://example.test/v1.21.0", async (path) => {
@@ -258,7 +266,12 @@ describe("UpdateMonitor.notes, what GET /api/update/check carries", () => {
       },
       offered: [],
     });
-    expect(asked).toEqual([offered]);
+    // The unpublished tag is dropped for this check (#503), and the check then probes the next
+    // candidates on the SAME family: the major above and what is left of this one. Never a bare tag.
+    expect(asked[0]).toBe(offered);
+    expect(asked).toContain("2.0.0+ys.1");
+    expect(asked.every((v) => v.includes("+ys."))).toBe(true);
+    const before = asked.length;
     published = true;
     await m.checkRelease();
     expect((await m.notes()).offered).toEqual([{
@@ -268,7 +281,8 @@ describe("UpdateMonitor.notes, what GET /api/update/check carries", () => {
     }]);
     await m.notes();
     await m.checkRelease();
-    expect(asked).toEqual([offered, offered]);
+    // The published reading is remembered: one more ask when it appeared, none after.
+    expect(asked.slice(before).filter((v) => v === offered)).toEqual([offered]);
   });
 
   it("before any check, and with no CHANGELOG reader, there is nothing to list", async () => {
