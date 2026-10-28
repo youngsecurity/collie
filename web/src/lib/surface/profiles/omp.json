@@ -10,22 +10,22 @@
   },
   "versions": [
     {
-      "range": "18.4.0 - 18.4.10",
+      "range": "18.4.0 - 18.6.1",
       "status": "verified",
-      "verifiedThrough": "18.4.10",
-      "verifiedOn": "2026-10-02"
+      "verifiedThrough": "18.6.1",
+      "verifiedOn": "2026-10-18"
     }
   ],
   "idle": {
     "frame": {
       "walk": "interior",
       "top": {
-        "pattern": "^(?:╭─{2}.*|\\s?(?:π|[⠀-⣿]\\s+\\d+s)\\s.*▶─.*)$",
+        "pattern": "^(?:╭─{2}.*|(?:\\u{E0B6} |\\s?)(?:π|\\u{F0D57}|[⠀-⣿]\\s+\\d+[smh])\\s.*(?:▶|\\u{E0B0})─.*|\\s?(?:\\u{E0B6} )?(?:(?![\\u{E0A0}-\\u{E0D7}])[\\p{Co}\\p{So}π]|pi|[⠀-⣿]\\s+\\d+[smh])\\s.*(?:─{3}|-{3}).*)$",
         "column": 0,
         "maxColumn": 1
       },
       "prompt": {
-        "pattern": "^(?:╰─|│) {0,2}(?<draft>(?:(?!\\s{8,}\\S).)*)(?:\\s{8,}\\S.*)?$",
+        "pattern": "^(?:╰─|│) {0,2}(?<draft>(?:(?!\\s{8,}\\S).)*?)(?:\\s{8,}\\S.*?)?(?:\\s*(?:│|█|─?╯))?$",
         "column": 0
       },
       "bottom": {
@@ -34,8 +34,8 @@
         "maxColumn": 3,
         "open": true
       },
-      "rows": "^(?:\\s?(?:π|[⠀-⣿]\\s+\\d+s)\\s.*▶.*|╭─.*|╰─.*|│.*|\\s{3}.*|\\s*)$",
-      "continuation": "^(?:│|╰─)? ?(?<text>.*)$",
+      "rows": "^(?:(?:\\u{E0B6} |\\s?)(?:π|\\u{F0D57}|[⠀-⣿]\\s+\\d+[smh])\\s.*(?:▶|\\u{E0B0}).*|\\s?(?:\\u{E0B6} )?(?:(?![\\u{E0A0}-\\u{E0D7}])[\\p{Co}\\p{So}π]|pi|[⠀-⣿]\\s+\\d+[smh])\\s.*(?:─{3}|-{3}).*|╭─.*|╰─.*|│.*|\\s{3}.*|\\s*)$",
+      "continuation": "^(?:│|╰─)? ?(?<text>.*?)(?:\\s*(?:│|█|─?╯))?$",
       "continuationIndent": 0,
       "maxDraftRows": 40,
       "maxTailRows": 3
@@ -144,18 +144,29 @@
           "sides": [
             "under"
           ],
-          "pointer": "^❯ (?:[^\\x00-\\x7F\\s]\\S* {1,2})?(?<command>\\w[\\w:.-]*)(?: {2,}\\S.*)?$",
+          "pointer": "^(?:❯|\\u{F054}) (?:[^\\x00-\\x7F\\s]\\S* {1,2})?(?<command>\\w[\\w:.-]*)(?: {2,}\\S.*)?$",
           "entry": "^ {2}(?:[^\\x00-\\x7F\\s]\\S* {1,2})?(?<command>\\w[\\w:.-]*)(?: {2,}\\S.*)?$",
-          "wrapped": "^ {8,}\\S"
+          "wrapped": "^ {8,}\\S",
+          "namespaces": [
+            "skill:"
+          ],
+          "argumentList": true
         }
       }
     },
     "runningRows": [
       "^\\s*[⠀-⣿] Working…",
       "^\\s*⎋ Working…",
-      "^\\s?[⠀-⣿]\\s+\\d+s\\s.*▶"
+      "^(?:\\u{E0B6} |\\s?)[⠀-⣿]\\s+\\d+[smh]\\s.*(?:▶|\\u{E0B0})",
+      "^\\s?(?:\\u{E0B6} )?[⠀-⣿]\\s+\\d+[smh]\\s.*(?:─{3}|-{3})",
+      "^╭─{2} [⠀-⣿] \\d+[smh] "
     ],
-    "dialogsInBox": true
+    "dialogsInBox": true,
+    "inlineHint": {
+      "fg": [
+        "rgb(107,114,128)"
+      ]
+    }
   },
   "keys": {
     "submit": [
@@ -182,14 +193,39 @@
     },
     "enterWhileRunning": "steers",
     "queueKey": "ctrl+q",
+    "commandsRunInTurn": [
+      "/goal"
+    ],
+    "commandsRunInTurnNote": "Measured on OMP 18.12.2 through Herdr 0.9.5 with the probe, the text and Enter while a goal turn streamed. Lab 2026-10-19: /goal status, /goal pause, /goal resume and a bare /goal each ran at once and none became a steering row; a prompt-template command (/labnote) became a Steering row. Lab 2026-10-22 ran /goal pause, /goal resume and a bare /goal again and kept every screen the send reads (web/src/fixtures/panes/omp--v18-12-2-goal-*): OMP printed Goal mode paused. and Goal mode resumed., the status segment went from 🎯 Goal to ⏸ Goal and back, the turn kept running, and the bare /goal opened the goal menu. With /goal pause or /goal resume typed OMP draws the argument's own list under the box, the pointer on the argument typed; commandList.argumentList reads that list as the typed command's own.",
     "queuedRow": {
       "pattern": "^\\s*\\d+\\. (?<text>\\S.*?)\\s*$",
       "hint": "^\\s*└ Alt\\+↑ to edit\\s*$",
-      "hintGap": 0
-    }
+      "hintGap": 0,
+      "between": "^\\s*Steering · \\d+\\s*$",
+      "header": "^\\s*After yield · \\d+\\s*$"
+    },
+    "steer": [
+      "Enter"
+    ],
+    "steerWitness": [
+      {
+        "pattern": "^\\s*│\\s*Backgrounded early to handle an incoming message\\b"
+      },
+      {
+        "pattern": "^ (?<text>\\S.*?)\\s*$",
+        "transcript": true
+      },
+      {
+        "pattern": "^\\s*\\d+\\. (?<text>\\S.*?)\\s*$",
+        "hint": "^\\s*└ Alt\\+↑ to edit\\s*$",
+        "hintGap": 0,
+        "between": "^\\s*After yield · \\d+\\s*$",
+        "header": "^\\s*Steering · \\d+\\s*$"
+      }
+    ]
   },
   "collapse": {
-    "pattern": "📄 #\\d+"
+    "pattern": "(?:📄|🖼|\\u{F15C}|\\u{F03E}) #\\d+"
   },
   "reservedLeads": [
     "/",

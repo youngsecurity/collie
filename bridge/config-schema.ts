@@ -18,6 +18,7 @@
 // not change what any process reads; `bridge/solo-baseline.test.ts` pins the same 37 names it always
 // pinned, now read from {@link CONFIG_SETTINGS} instead of from `bridge/config.ts`'s source.
 
+import { ACCOUNT_WINDOW_HARNESSES } from "./account-windows-setting.ts";
 import { DEFAULT_MUX } from "./mux/registry.ts";
 import { DEFAULT_MAX_UPLOAD_MB } from "./uploads.ts";
 
@@ -75,10 +76,11 @@ export const SECTION_DOC = {
  * How a value is read.
  *
  * One per reader in `bridge/config.ts` (`envInt`, `envBool`, `envEnum`, `envList`, `envRoots`) plus
- * `string` for a raw read and `secret` — a `string` that `config show` masks and that raises the
+ * `flags` (an on/off switch that may also name which of a closed set of ids are on, the file taking a
+ * boolean, a string or an array of strings), `string` for a raw read and `secret` — a `string` that `config show` masks and that raises the
  * `.env` permission rule on the file holding it.
  */
-export type ConfigKind = "int" | "bool" | "enum" | "list" | "roots" | "string" | "secret";
+export type ConfigKind = "int" | "bool" | "enum" | "flags" | "list" | "roots" | "string" | "secret";
 
 /** A default as it would appear in the file: the TOML value `config init` writes, commented out. */
 export type ConfigDefault = string | number | boolean | readonly string[];
@@ -126,6 +128,13 @@ export type ConfigSetting =
       readonly kind: "enum";
       /** One of {@link values}, or `""` when the feature is absent until something configures it. */
       readonly default: string;
+      readonly values: readonly string[];
+    })
+  | (ConfigSettingBase & {
+      readonly kind: "flags";
+      /** The words the environment reads: `on`, `off`, `all`, or a comma list of {@link values}. */
+      readonly default: string;
+      /** The ids a list may name. An id outside it is refused. */
       readonly values: readonly string[];
     })
   | (ConfigSettingBase & { readonly kind: "list" | "roots"; readonly default: readonly string[] })
@@ -224,6 +233,25 @@ export const CONFIG_SETTINGS: readonly ConfigSetting[] = [
     default: true,
     doc: "Send from the phone through the bridge-side Send Protocol (probe, predicted-state check, key gate, receipt). Off turns sending text off; the keys still work.",
     configField: "sendProtocol",
+  },
+  {
+    key: "walky",
+    env: "COLLIE_WALKY",
+    section: "bridge",
+    kind: "bool",
+    default: true,
+    doc: "Take walky talky messages for this machine's agent panes. Off refuses each one; the CLI here still sends.",
+    configField: "walky",
+  },
+  {
+    key: "account_windows",
+    env: "COLLIE_ACCOUNT_WINDOWS",
+    section: "bridge",
+    kind: "flags",
+    default: "on",
+    values: ACCOUNT_WINDOW_HARNESSES,
+    doc: "Show the 5-hour and 7-day windows. on = claude and codex, off = none, all = every source, or name harnesses (claude, codex, opencode, grok). Claude reads your login on this machine and asks api.anthropic.com; opencode and grok are unverified and off unless named.",
+    configField: "accountWindows",
   },
   {
     key: "transcript",
@@ -528,6 +556,16 @@ export const CONFIG_SETTINGS: readonly ConfigSetting[] = [
     doc: "Mask known secret shapes in pane text before it reaches a phone or a push.",
     configField: "redact",
   },
+  {
+    key: "sent",
+    env: "COLLIE_SENT",
+    section: "access",
+    kind: "enum",
+    values: ["on", "off"],
+    default: "on",
+    doc: "Keep a record of the shell lines sent through Collie on this machine.",
+    configField: "sent",
+  },
 
   // ── push ───────────────────────────────────────────────────────────────────
   {
@@ -643,7 +681,16 @@ export const CONFIG_SETTINGS: readonly ConfigSetting[] = [
     section: "journal",
     kind: "roots",
     default: [],
-    doc: "Where Hermes keeps its session logs. Empty takes ~/.hermes.",
+    doc: "Where Hermes keeps its session logs. Empty takes $HERMES_HOME, else ~/.hermes. Its named profiles (profiles/<name>/) are read too.",
+    configField: "journalRoots",
+  },
+  {
+    key: "kiro_root",
+    env: "COLLIE_KIRO_ROOT",
+    section: "journal",
+    kind: "roots",
+    default: [],
+    doc: "Where Kiro V3 keeps its sessions. Empty follows KIRO_HOME, else ~/.kiro/sessions.",
     configField: "journalRoots",
   },
   {
@@ -756,6 +803,14 @@ export const CONFIG_SETTINGS: readonly ConfigSetting[] = [
     default: 30_000,
     min: 1,
     doc: "How long an update waits for the restarted bridge to answer.",
+  },
+  {
+    key: "skill_sync",
+    env: "COLLIE_SKILL_SYNC",
+    section: "update",
+    kind: "bool",
+    default: true,
+    doc: "After each update, install the walky talky skill into every harness on this machine and keep it current. Off only prints a note when it is behind.",
   },
 
   // ── serve ──────────────────────────────────────────────────────────────────

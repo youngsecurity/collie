@@ -12,12 +12,16 @@ import { CrewSettingsCard } from "@/components/crew-settings-card";
 import { KeepChatControl } from "@/components/keep-chat-control";
 import { FontSettingsControl } from "@/components/font-settings";
 import { HandControl } from "@/components/hand-control";
+import { SentSuggestionsControl } from "@/components/sent-suggestions-control";
 import { SpeechControl } from "@/components/speech-control";
 import { HapticsControl } from "@/components/haptics-control";
 import { HarnessBarControl } from "@/components/harness-bar-control";
+import { HarnessPrefsControl } from "@/components/harness-prefs-control";
 import { LanguageControl } from "@/components/language-control";
 import { NotifyPrefsControl } from "@/components/notify-prefs-control";
+import { PaneNavControl } from "@/components/pane-nav-control";
 import { PaneOrderControl } from "@/components/pane-order-control";
+import { WideLayoutControl } from "@/components/wide-layout-control";
 import { PairedDevices } from "@/components/paired-devices";
 import { PushControl, usePushAvailability } from "@/components/push-control";
 import { SnoozeControl } from "@/components/snooze-control";
@@ -55,6 +59,8 @@ import { useScope } from "@/lib/session";
 // ── THE SPLIT ────────────────────────────────────────────────────────────────
 // Appearance — how this phone PRESENTS itself. Anything you would change to make the app look
 //              different, including what the mirror renders with.
+// Harnesses  — what Chat lifts out of each harness's own screen, per harness. The status line is
+//              the first member; it sits after Appearance because it decides what the screen shows.
 // Device     — how this phone TREATS you. Feedback, input, and what the pane menu is allowed to
 //              offer. Nothing here changes a pixel until you do something.
 // Voice      — how your voice becomes text: a hub with this phone's own choice and hands-free, and
@@ -97,12 +103,32 @@ export function SettingsAppearanceRoute() {
           surface is ARRANGED, which is the same question every card above answers. The pane
           switcher's own toggle writes the same value; this is where you go to find it. */}
       <PaneOrderControl />
+      {/* Whether a tablet or an open Fold may show the sidebar and the strip of panes (ADR 0120). The
+          way out for a screen where the layout misbehaves, so it sits with the other arrangement
+          choices. Stored per device. */}
+      <WideLayoutControl />
+      {/* How the pane screen moves between panes and spaces by gesture (ADR 0121): Two fingers,
+          Joystick or Off. Beside Large-screen layout, because both decide how the pane screen is
+          arranged and moved through. Stored per device with the hand. */}
+      <PaneNavControl />
       {/* Last, and it is the odd one here: every card above changes how a surface LOOKS, and this
           one changes what a surface CONTAINS. It earns the place anyway, because the question it
           answers is the same question — what do I want on screen — and filing it under Device would
           put a rendering choice beside haptics. */}
       <ToolCallsControl />
       <CompactionsControl />
+    </SettingsPage>
+  );
+}
+
+export function SettingsHarnessesRoute() {
+  return (
+    <SettingsPage title="settings.section.harnesses.title">
+      {/* One card, one row per harness the web has an adapter for, Claude Code first. Its own page
+          rather than a card on Appearance: the rows are per HARNESS, a list that grows with every
+          adapter, and Appearance is a handful of cards about the phone. Each switch is a standing
+          per-device choice about what Chat lifts out of that harness's screen. */}
+      <HarnessPrefsControl />
     </SettingsPage>
   );
 }
@@ -116,6 +142,9 @@ export function SettingsDeviceRoute() {
           sheet offers the "Zen mode" row at all. Off by default, because zen takes away every way
           back except one floating button. */}
       <ZenControl />
+      {/* Whether a shell pane offers lines from Sent above its box as you type (M61). A standing choice
+          about this phone's composer, stored with the display prefs. */}
+      <SentSuggestionsControl />
       {/* How a pane's Changes view finds repos (ADR 0065). Read by the pane menu, not by here. */}
       <ChangesControl />
       {/* What this phone keeps of each pane's Chat, and for how long (M46 spec 09). Here, beside the

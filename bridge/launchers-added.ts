@@ -78,8 +78,7 @@ export function coerceAddedRow(raw: JsonValue | undefined): AddedLauncher | null
   const r = asRecord(raw);
   if (r === null) return null;
   const { id, kind, harness, source, options, command, label, noPrompts, device, via, at, deviceKind, headerDevice } = r;
-  // Anonymous additions must never be restored from disk.
-  if (deviceKind !== undefined && deviceKind !== "paired" && deviceKind !== "header") return null;
+  if (deviceKind !== undefined && deviceKind !== "paired" && deviceKind !== "header" && deviceKind !== "anonymous") return null;
   if (!isRequestId(id)) return null;
   if (kind !== "agent" && kind !== "command") return null;
   if (source !== "recipe" && source !== "text") return null;
@@ -88,6 +87,9 @@ export function coerceAddedRow(raw: JsonValue | undefined): AddedLauncher | null
   if (device !== null && typeof device !== "string") return null;
   if (deviceKind === "header") {
     if (device !== null || typeof headerDevice !== "string" || headerDevice === "") return null;
+  } else if (deviceKind === "anonymous") {
+    // An unpaired phone on a host that opted out of pairing: no name of either kind.
+    if (device !== null || headerDevice !== undefined) return null;
   } else if (typeof device !== "string" || device === "" || headerDevice !== undefined) return null;
   if (typeof at !== "number" || !Number.isFinite(at)) return null;
   const line = cleanLauncherText(command, MAX_COMMAND_CHARS);
@@ -233,14 +235,13 @@ export function parseAddedText(text: string | null): Loaded {
 
 /** The text a list of rows is written as. */
 export function formatAddedFile(rows: readonly AddedLauncher[]): string {
-  return `${JSON.stringify({ version: ADDED_VERSION, rows: rows.filter((r) => r.deviceKind !== "anonymous") }, null, 2)}\n`;
+  return `${JSON.stringify({ version: ADDED_VERSION, rows }, null, 2)}\n`;
 }
 
 /** The file-backed store `bridge/index.ts` builds once. */
 export class AddedLauncherStore implements AddedLauncherSurface {
   private cache: { mtime: number | null; loaded: Loaded } | null = null;
   private queue: Promise<void> = Promise.resolve();
-  private anonymous: AddedLauncher[] = [];
 
   constructor(
     private readonly io: AddedFileIo,
@@ -266,7 +267,7 @@ export class AddedLauncherStore implements AddedLauncherSurface {
   }
 
   async list(): Promise<AddedLauncher[]> {
-    return [...((await this.load()).rows ?? []), ...this.anonymous];
+    return (await this.load()).rows ?? [];
   }
 
   async get(id: string): Promise<AddedLauncher | undefined> {
@@ -280,11 +281,10 @@ export class AddedLauncherStore implements AddedLauncherSurface {
       this.cache = null;
       const { rows } = await this.load();
       if (rows === null) return unwritable;
-      const out = edit([...rows, ...this.anonymous]);
+      const out = edit(rows);
       if (out.rows !== null) {
         const persisted = formatAddedFile(out.rows);
         if (persisted !== formatAddedFile(rows)) await this.io.write(persisted);
-        this.anonymous = out.rows.filter((r) => r.deviceKind === "anonymous");
         this.cache = null;
       }
       return out.answer;

@@ -247,6 +247,38 @@ Behavior details for Claude configuration changes:
   Project-level `.claude/settings.json` files are untouched.
 - Injects **five** hooks tagged `# collie-beacon v1` with 10-second timeouts. Existing hooks are
   preserved. `hooks uninstall claude` removes only Collie entries.
+- **Leaves your statusLine alone unless you ask.** Without a flag the install does not touch
+  `statusLine`. You still get the context dot beside the model above the belt: the hooks read the
+  session transcript, and the window size from the session start.
+- **The 5-hour and 7-day windows show on their own.** They need no hook and no statusLine. While a
+  Claude pane is open, the bridge reads your Claude login on this machine
+  (`~/.claude/.credentials.json`, or `$CLAUDE_CONFIG_DIR/.credentials.json`; the Keychain on a Mac
+  with no file) and asks `api.anthropic.com/api/oauth/usage`, the same call Claude Code's `/usage`
+  makes. It asks when the pane appears, after a turn ends (at most once a minute) and every five
+  minutes. It stores nothing of the login, never refreshes it and sends it nowhere else. It skips a
+  login file that others may read (anything looser than `0600`) and a login that has expired, and
+  Claude Code refreshes that one at its next call. An API-key, Bedrock or Vertex session has no
+  windows to show. Codex panes get theirs the same way, on the same schedule, from its own session
+  files with no login read. OpenCode Go and Grok are off until you name them, with
+  `COLLIE_ACCOUNT_WINDOWS=all` or a list (see [Usage windows](configure.md#usage-windows)).
+  `COLLIE_ACCOUNT_WINDOWS=0` (or `[bridge] account_windows = false`) turns all of it off, and
+  `collie doctor` says which in its `account-windows` row.
+- **Wrapping your statusLine is the second road.** With
+  `collie hooks install claude --statusline` Collie also wraps your own statusLine, and the windows
+  come from what Claude Code hands it. Take it if you prefer that to the login read, with
+  `COLLIE_ACCOUNT_WINDOWS=0`. Its command becomes `collie beacon statusline …`, and your script
+  still runs and prints as before. Collie never adds a statusLine, and `hooks uninstall claude`
+  puts your command back exactly. An install without the flag keeps a wrap you already have and
+  points it at the current binary. To drop a wrap you no longer want, run
+  `collie hooks uninstall claude` and then `collie hooks install claude` without `--statusline`.
+  Not on Windows.
+- **To change a wrapped statusLine, unwrap it first.** Run `collie hooks uninstall claude`, edit
+  `statusLine.command`, then run `collie hooks install claude --statusline` again. The wrapped
+  command names the collie binary by its path, so if that binary moves, the statusLine prints
+  nothing until you run the install again. `collie update` reminds you when a wrapped statusLine
+  points at an older binary. To try the wrapper by hand, run it outside the multiplexer
+  (`env -u HERDR_PANE_ID -u TMUX_PANE -u ZELLIJ_PANE_ID …`), or it writes a reading into every
+  running bridge.
 - **Claude Code reloads its hooks while it runs.** This holds for 2.1.301. Restart an older Claude
   if no hook edges come.
 - **Linux only.** The agent liveness check depends on `/proc`. Other operating systems do not emit
@@ -392,18 +424,24 @@ instead. So does a message that finds the input box not free, for example under 
 screen that changes between Collie's two reads, or a probe character that failed and that one
 Backspace took back out of a box Collie read clean again. Such a message goes after five free polls over ten
 seconds, or after a turn Collie sees. A command there is still refused, and so is a send on a
-screen you confirmed with Type here. A send on a pane with no profile is never held. Collie keeps the text and shows a row above the text box: "Queued. Sends when the turn
-ends." The row shows the text and a Cancel button. Collie sends it after the turn ends, once the
+screen you confirmed with Type here. A send on a pane with no profile is never held. Collie keeps the text and shows a card that floats over the bottom of the terminal view: "Queued.
+Sends when the turn ends." The card shows the text and a Cancel button. Collie sends it after the turn ends, once the
 pane reads free on two polls in a row, oldest first. Each later held send waits for the turn that
 the send before it started. If no turn shows, it goes after five free polls over ten seconds. A held
 command on pi, OMP or Codex sends Enter, and there Enter steers a turn. Such a command waits for a
-turn Collie sees, and so does any held command on an agent whose version Collie could not read. A
+turn Collie sees, and so does any held command on an agent whose version Collie could not read. OMP
+runs `/goal` at once during a turn, so Collie sends `/goal`, `/goal pause` or `/goal resume` right
+away with Enter. It never holds them, and they do not wait behind other held sends. A
 later message on that pane waits behind the held ones. A held text lasts 30 minutes, a held command
-10 minutes. After that the row says the message was not sent, and offers Resend. Some commands never
+10 minutes. After that the row says the message was not sent, and offers Resend. A walky talky
+message is also held over a draft, never typed into it, and its hold lasts 60 minutes
+([Walky talky](walky-talky.md)). Your own send over a draft is still refused, with Append and Replace. Some commands never
 wait, and Collie refuses them during a turn. On Claude Code these are `/clear`, `/exit`, `/quit`,
 `/logout`, `/resume`, `/branch` and every `!` line. On Codex these are `/quit`, `/exit`, `/new`,
-`/resume`, `/logout` and every `!` line. A held send survives a restart of Collie. Cancel works
-until the send starts to go out, and only on this machine's own panes. Collie keeps the held text on
+`/resume`, `/logout` and every `!` line. On Hermes these are `/exit`, `/quit`, `/clear`, `/new`,
+`/resume` and every `!` line. A held send survives a restart of Collie. Cancel works
+until the send starts to go out, and only on this machine's own panes. With two or more held sends the
+card shows a count and the first text, and Show all lists each send with its own Cancel. Collie keeps the held text on
 disk in plain form, in a file only your user can read (mode 0600). It deletes the text when the send
 goes out, and at most one hour after the hold ends.
 
@@ -571,6 +609,9 @@ on the last rows stops it: Collie types nothing there, and the phone offers Type
 | Grok | Not measured | Enter | Yes | 1.0.41 |
 | Antigravity (`agy`) | Not measured | Enter | Yes | Screens of 1.1.17 |
 | Muse | Not measured | Enter | Yes | 1.4.7 |
+| Hermes (classic CLI) | Interrupts the turn by default; Hermes's `/busy` can make it queue or steer | Enter | Yes | 0.22.2 |
+| Cursor CLI (`cursor-agent`) | Queues the message | Enter | Yes | 2026.10.16 |
+| Kiro (`kiro-cli`) | Steers the turn; Collie holds a send until the turn ends | Enter | Short texts | 2.32.0 |
 
 A command, such as `/model`, always goes with Enter. A probed send types one extra character first.
 Collie checks that the character lands in the box, then removes it.
@@ -616,6 +657,42 @@ Collie checks that the character lands in the box, then removes it.
   The list of background tasks under the box reads as unknown, and a send needs your tap.
   A running turn shows a row with a timer and `esc to interrupt`.
 
+- **Hermes** (the classic CLI; `hermes --tui` is not read) draws its box as a rule, a `❯` row and a rule.
+  Below 64 columns it draws no rule under the box. A named profile shows its name before the `❯`.
+  A newline goes in as Alt+Enter: Ctrl+J sends the message when `display.cli_multiline_shortcuts` is off.
+  The box shows at most eight rows. A longer message cannot be read back, so the send stops before Enter.
+  Submit sends it, and the phone then cannot confirm it went.
+  Hermes may show the rest of an earlier message in grey after your text.
+  That send stops before Enter too, and Submit sends only what you typed.
+  The model picker and the command palette open over the transcript, and the pane never reads free under one.
+
+- **Hermes during a turn** starts its row with `☤`, and Collie reads the turn from that mark.
+  What Enter does then is Hermes's own setting, so Collie never presses it during a turn.
+  A send during a turn is held, and it goes when the turn ends.
+  If a turn starts while Collie types, the send stops before Enter and the text stays in the box.
+
+- **Hermes's questions:** a question's typed answer opens a `✎` row, and a send from the phone answers it.
+  A held message never goes into that row. It waits until the question closes, then goes as a message.
+  While a held message waits, a new send joins it, so cancel the held one to answer from the phone.
+
+- **Cursor CLI** (`cursor-agent`) draws its box as a `▄` rule, a `→` row and a `▀` rule.
+  An empty box shows a grey hint, "Plan, search, build anything" or "Add a follow-up", and Collie reads that hint as no text.
+  `!` turns the box into a shell prompt with its own hint. Collie reads that hint as text, so a message never goes into shell mode.
+  A running turn shows a spinner row such as `Running` above the box and `ctrl+c to stop` at the right end of the `→` row. Collie cuts that hint.
+  Enter during a turn queues the message in a `follow-ups` box above the input box.
+  The box shows at most six rows and scrolls a longer draft. Collie cannot read a taller message back, so it leaves the typed text in the box and does not press Enter.
+  Its dialogs (a command approval, a question, the folder trust prompt) replace the box, so the screen reads as unreadable.
+  Live probed sends passed on 2026.10.14 and 2026.10.16.
+
+- **Kiro** draws its box under a rule: a status bar, the folder, a blank row and a `›` prompt row.
+  Collie types only when that whole frame is on screen.
+  A newline goes in as Ctrl+J.
+  While a turn runs, the prompt row reads `Kiro is working`.
+  In Kiro, Enter then steers the text into that turn. Collie does not press Enter into a running turn.
+  Ctrl+S switches Kiro between steering and queueing, so Collie names no queue key.
+  So Collie holds a send while Kiro is busy, and sends it when the box reads free.
+  Its profile was checked on Herdr only, not on tmux or zellij.
+
 Grok, Antigravity and Muse are not installed on the build host.
 Their profiles rest on saved screens of each agent.
 No live message has gone to them through a profile, so Collie probes every send there.
@@ -624,8 +701,39 @@ So Collie refuses a send while the screen shows the turn running, and it types n
 Where a harness draws no running sign, Collie cannot tell, and the agent decides what Enter does.
 OpenCode and OMP passed live sends on a version above the checked one.
 Collie probes every send on them until a send passes inside the checked range.
+Hermes (the classic CLI) passed live sends on 0.22.2, inside its range, on Herdr only.
+The Ink TUI (`hermes --tui`, or a config that starts it) is not read yet; tap Type here to send.
+The probe has not been tried in each Hermes dialog, so Collie probes every send there too.
 
 A version above the checked one still works, and the receipt says `provisional`.
+
+### Steer or queue
+
+While an agent works, a send from the phone can wait for the turn or go into it.
+A plain tap on Send queues your text for after the turn. This holds on every agent.
+Collie never steers a turn by accident.
+
+A **steer** is your own choice, made for one send. Hold the Send button and tap **Steer**.
+The agent reads the line after its current tool call, in the same turn. The row shows only
+while the agent works and only on an agent that has a steer key in its profile, for example
+pi, Codex and OMP today. A short hint under the box says that a tap queues and a hold steers.
+Codex reads a text that is followed at once by Enter as a paste, so Collie waits one second after
+the text before it presses the steer key.
+
+The receipt tells you what happened:
+
+- **Steered.** The agent took the line into the running turn. Collie saw the agent draw it.
+- **Queued instead.** The agent kept the line for after the turn, even though you asked to steer.
+  Nothing is lost.
+- **Typed, not submitted.** The text is in the box and the steer key did not send it. Tap Send, or clear the box.
+- **Not available on this pane.** The agent has no steer key in its profile, Collie does not
+  trust its version with a running turn, or the text is a command. Nothing was sent. Send it without Steer.
+- **Only a person at the phone can steer.** A steer from any other source is refused.
+
+If the turn ends while Collie types, the line goes as a normal send. Collie does not hold a steer.
+A long steer may end without a clear sign. The receipt then says Collie does not know, and the text is not sent again.
+
+An agent's message to another agent ([Walky talky](walky-talky.md)) never steers. It always waits for the turn.
 
 ---
 

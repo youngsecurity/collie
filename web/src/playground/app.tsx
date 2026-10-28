@@ -79,11 +79,13 @@ export const SECTIONS: readonly SectionEntry[] = [
   { def: { id: "motion", title: "Motion" }, load: () => import("./sections/motion").then((m) => ({ default: m.MotionSection })) },
   { def: { id: "cache", title: "Cache" }, load: () => import("./sections/cache").then((m) => ({ default: m.CacheSection })) },
   { def: { id: "pane-settings", title: "Pane settings" }, load: () => import("./sections/pane-settings").then((m) => ({ default: m.PaneSettingsSection })) },
+  { def: { id: "walky", title: "Walky talky" }, load: () => import("./sections/walky").then((m) => ({ default: m.WalkySection })) },
   { def: { id: "changes", title: "Changes" }, load: () => import("./sections/changes").then((m) => ({ default: m.ChangesSection })) },
   { def: { id: "dashboard-nav", title: "Dashboard nav" }, load: () => import("./sections/dashboard-nav").then((m) => ({ default: m.DashboardNavSection })) },
   { def: { id: "attention-icon", title: "Attention icon" }, load: () => import("./sections/attention-icon").then((m) => ({ default: m.AttentionIconSection })) },
   { def: { id: "left-hand", title: "Left-hand layout" }, load: () => import("./sections/left-hand").then((m) => ({ default: m.LeftHandSection })) },
   { def: { id: "dashboard-top", title: "Dashboard top" }, load: () => import("./sections/dashboard-top").then((m) => ({ default: m.DashboardTopSection })) },
+  { def: { id: "usage-row", title: "Usage row" }, load: () => import("./sections/usage-row").then((m) => ({ default: m.UsageRowSection })) },
 ];
 
 /** One `lazy` per section, made once: a fresh `lazy()` per render would suspend on every render. */

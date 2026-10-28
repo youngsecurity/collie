@@ -246,6 +246,14 @@ A deputy's standby door serves it at `/standby/update` while the main port is do
 
 If a new beacon hook event is available, `update` prints a notice to re-run `hooks install claude`.
 
+After each successful update, rollback or switch, the new build runs `collie skill sync`. It
+installs the walky talky skill into every agent harness on this machine and updates a copy that is
+behind, so your agents know the build you now run. It prints one line per file it changed, and it
+never fails the update: if it cannot run, `update` prints one note and you run `collie skill sync`
+by hand. It leaves out a harness where you ran `collie skill uninstall`. Set `COLLIE_SKILL_SYNC=off`
+to keep your instruction files as they are; the update then prints only a note when the skill is
+behind ([Install the skill](walky-talky.md#install-the-skill)).
+
 #### Where the versions live
 
 A binary install and a linked clone share one layout under the install root
@@ -464,8 +472,9 @@ are in [Updating to 1.9.0 from 1.7.0 or 1.8.x](crew.md#updating-to-190-from-170-
 the lead to 1.9.0: 1.9.0 answers the old paths with nothing, and a member still on 1.7.0 then shows
 red on the lead's preflight, naming both versions and the command to run on that machine. The
 `collie-release.json` asset the
-release publishes only feeds the wording of that notice on the band, on the Updates card and in the
-daily push; it never gates an update and never changes what one does.
+release publishes feeds the wording of that notice on the band, on the Updates card and in the
+daily push, and it never changes what an update does. It also tells the check that a release is
+out: a tag whose asset still answers 404 is not offered, and the next check asks again.
 
 > **Warning.** After 1.8.0 first starts, an automatic or manual rollback to 1.7.0 can
 > leave that machine running alone, disconnected from its group, until you restore the
@@ -516,10 +525,13 @@ take its own update touches no peer at all. Stopping there is safe, because a cr
 skew ([CREW_PROTOCOL.md §7.1](../CREW_PROTOCOL.md#71-version-skew-inside-a-protocol-version)), so a
 half-updated crew is a supported state and pressing on is not.
 
-**One case the phone cannot fix.** If you roll the lead back by hand after its peers have levelled,
-the peers are left ahead of their lead. Nothing steps a peer down: a lead that could move a peer
-backwards is a lead that could move it anywhere. The skew is harmless, and the remedy is
-`collie crew update <member>` on the lead.
+**One case the phone cannot fix.** If you roll the lead back by hand, with git or by copying files,
+after its peers have levelled, the peers are left ahead of their lead. Collie did not see the
+rollback, so no member steps down. A rollback made with the phone's **Roll back** or with
+`collie update --rollback`, and a switch back to Stable, do step the members down. See "The crew follows the lead" under
+[Release lines](#release-lines). Those two runs are the only ones that move a member to
+a lower version, because a lead that could move a peer backwards at will could move it anywhere. The
+skew from a hand rollback is harmless, and the remedy is `collie crew update <member>` on the lead.
 
 Code reaches a peer over your SSH and never over the crew link
 ([ADR 0016](../.adr/0016-updates-ride-the-operators-ssh.md), addendum 2026-09-04). When a peer
@@ -630,9 +642,78 @@ git ls-remote --tags --refs https://github.com/AltanS/collie | \
   sed 's#.*refs/tags/##' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+(\+ys\.[0-9]+)?$' | sort -V | tail -1
 ```
 
+### Release lines
+
+Each machine is on one of two release lines. The default is **Stable**.
+
+- **Stable** takes final releases only, for example `1.23.0`.
+- **Edge** also takes Edge builds, for example `1.23.0-edge.2`. An Edge build is a GitHub
+  pre-release, cut from the same tree a few days before the final release. It reaches volunteers
+  first, so a regression is found before it reaches everybody.
+
+Set the line on the phone: **Settings → Updates → Release line**. The switch installs nothing. It
+saves the line and shows a receipt. The Updates card then offers what the new line offers, through
+the normal update screen.
+
+> **Note.** On the Young Security fork a `+ys` install sees `+ys` tags only, on either line. The
+> fork publishes no Edge builds, so Edge offers nothing more than Stable there; the switch is
+> harmless and changes nothing. Fork releases are `X.Y.Z+ys.N` and `+ys.2` supersedes `+ys.1`.
+
+- On Edge, the offer is the newest build above the one you run, Edge builds and final releases
+  together, in the same major. A final release replaces its own Edge builds on both lines.
+- A build this machine rolled back from is never offered again, on either line.
+- On Edge, the push about a new build goes out at the next check, not in the next digest. It still
+  waits until 09:00 local time. Stable keeps the digest windows.
+
+**What rhythm to expect on Edge.** Expect about one Edge build a day at most, and each one carries a
+change you can see. The bridge checks for new builds every six hours. You get one push per build, and
+never before 09:00 host local time. When one check finds several new builds, they fold into one push.
+The update strip asks once per build, and you may skip a build: the next update takes the newest
+one. Dismissing the strip counts for that version only, so the next build asks again.
+
+**Back to Stable.** Switch to Stable on a machine that runs an Edge build, and the page shows one of
+three cases:
+
+1. A final release at or above your build is out. The Updates card offers it as a normal update.
+2. Your Edge build is ahead of every final release. The page offers two choices:
+   - **Go back now** installs the newest final release below your build, behind a confirm. It uses
+     the Stable build this machine kept, when there is one, and downloads it when there is not. If a
+     state file in your build cannot be read by that release, the page names the file before the
+     button.
+   - **Wait for Stable** keeps your build. No more Edge builds are offered, and the next final
+     release is offered the day it is out.
+3. You already run a final release. There is nothing to do.
+
+**Kept builds.** While a machine is on Edge, it keeps the live build, the previous build, and the
+last Stable build. The last Stable build is not pruned until the machine is back on Stable, so
+"Go back now" is a switch and not a download.
+
+**Roll back.** A rollback off an Edge build puts the machine on Stable and marks that build as
+rolled back from. This is true for **Roll back** on the phone and for `collie update --rollback`.
+An Edge build that fails its own health check is rolled back by the updater and marked the same
+way, so it is not offered again. The line stays Edge, and the next Edge build is offered as usual.
+
+**The crew follows the lead.** The lead's line is the crew's line. A member follows its lead to an
+Edge build when the lead is on Edge, and takes the lead's line for its own. A member steps down only
+when the lead rolled back or went back to Stable. Those are the only two cases where a member
+installs a lower version. The Crew page shows the line the members follow.
+
+**From the terminal.** The phone is where the line is set. Two flags exist for one run each:
+
+```bash
+collie update --line edge                     # resolve this one run on Edge; the saved line stays
+collie update --to-tag v1.22.6 --downgrade    # go down to a lower final release
+```
+
+`--to-tag` never takes a lower tag without `--downgrade`. It takes a higher Edge tag only on a
+machine on Edge. On a Herdr-managed install, both lines and the way back go through the same
+in-place update: the updater checks out the tag and writes the Edge suffix into the version files
+itself.
+
 ### Prereleases
 
-Stable installs do not receive prereleases. Opting into a prerelease tracks that major's prereleases
+Stable installs do not receive prereleases. Edge builds are the exception, on the Edge line (see
+[Release lines](#release-lines)). Opting into a prerelease tracks that major's prereleases
 until the final release arrives
 ([ADR 0020](../.adr/0020-a-major-upgrade-is-consented-by-flag.md)):
 
@@ -654,6 +735,36 @@ To return to stable releases:
 herdr plugin install AltanS/collie --yes
 herdr plugin action invoke restart --plugin herdr.collie
 ```
+
+## Upgrading to 1.24.0
+
+Version 1.24.0 adds usage dots, a Stop button and a large-screen layout. If you come from 1.23.4,
+nothing needs doing on upgrade day. What you will notice:
+
+- **Collie leaves your statusLine alone.** Wrapping it is opt-in with
+  `collie hooks install claude --statusline`. If you took the wrap from an Edge build and want it
+  gone, run `collie hooks uninstall claude`, then `collie hooks install claude`
+  ([Collie writes hooks into Claude's own settings](multiplexers.md#collie-writes-hooks-into-claudes-own-settings)).
+- **The context dot needs no new hook.** The hooks that 1.23.4 installed already include
+  `SessionStart`, and they run the same command. The new Collie reads the session file with them.
+  If you never ran `collie hooks install claude`, run it once. A Claude session that is already
+  running shows no dot until it starts again, resumes, clears or compacts, because the window size
+  comes from the session start.
+- **The 5-hour and 7-day dots read your own logins.** For Claude, Collie reads the login file on this
+  machine and asks `api.anthropic.com`. For Codex, it reads Codex's session files and asks nobody.
+  Both are on by default. Set `COLLIE_ACCOUNT_WINDOWS=0` in your `.env`, or `account_windows = false`
+  under `[bridge]`, to turn them off. OpenCode Go and Grok stay off until you name them
+  ([Usage windows](configure.md#usage-windows)).
+- **A Stop button, a Clear button and Steer.** Stop takes two taps and presses the agent's own stop
+  key ([Stop a turn](configure.md#stop-a-turn)). Clear empties the input box, and Restore types the
+  text back for two minutes ([Clear the box](configure.md#clear-the-box)). Hold Send to steer a
+  running turn on pi, Codex and OMP ([Steer or queue](multiplexers.md#steer-or-queue)).
+- **A theme that sets `pane-active` is version 3.** A Collie older than 1.24.0 refuses that file with
+  a message that names the version. The other themes keep their version
+  ([Versions](themes.md#versions)).
+- **A wide screen shows a sidebar.** From 600px wide and 480px tall, the pane screen shows several
+  panes side by side. To keep the phone layout on one device, set **Large-screen layout** to Off in
+  Settings.
 
 ## Upgrading to 1.19.0
 

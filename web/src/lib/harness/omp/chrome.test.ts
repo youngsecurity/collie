@@ -70,6 +70,75 @@ const BOX_COMPOSER_FIXTURES = [
   // omp 18.6.1 with `/settings` typed: a five-row palette under the open box (lab, 2026-10-17).
   "omp--v18-6-slash-settings-list--w120.txt",
   "omp--v18-6-slash-settings-list--w80.txt",
+  // omp 18.11.3's box composer, nerd and unicode symbol presets (issue 497, 2026-10-18).
+  "omp--v18-11-ghost-word--w130.txt",
+  "omp--v18-11-image-chip--w130.txt",
+  "omp--v18-11-nerd-box-path-text--w130.txt",
+  "omp--v18-11-nerd-box-path-text--w80.txt",
+  "omp--v18-11-nerd-box-two-lines--w130.txt",
+  "omp--v18-11-nerd-box-two-lines--w80.txt",
+  "omp--v18-11-nerd-box-wrapped--w130.txt",
+  "omp--v18-11-nerd-box-wrapped--w80.txt",
+  "omp--v18-11-nerd-ghost-word--w130.txt",
+  "omp--v18-11-nerd-ghost-word--w80.txt",
+  "omp--v18-11-nerd-image-chip--w130.txt",
+  "omp--v18-11-nerd-image-chip--w80.txt",
+  "omp--v18-11-nerd-running-tool--w130.txt",
+  "omp--v18-11-nerd-running-tool--w80.txt",
+  "omp--v18-11-nerd-running-tool-minute--w130.txt",
+  "omp--v18-11-nerd-running-tool-minute--w80.txt",
+  "omp--v18-11-nerd-skill-long-form--w130.txt",
+  "omp--v18-11-nerd-skill-pointed--w130.txt",
+  "omp--v18-11-nerd-skill-pointed--w80.txt",
+  "omp--v18-11-skill-pointed--w130.txt",
+  // omp 18.12.2 in a goal turn: the screens of /goal pause, /goal resume and a bare /goal (lab 2026-10-22, PR 541).
+  "omp--v18-12-2-goal-bare-before--w119.txt",
+  "omp--v18-12-2-goal-bare-probe--w119.txt",
+  "omp--v18-12-2-goal-pause-result--w119.txt",
+  "omp--v18-12-2-goal-pause-result-later--w119.txt",
+  "omp--v18-12-2-goal-pause-typed--w119.txt",
+  "omp--v18-12-2-goal-resume-before--w119.txt",
+  "omp--v18-12-2-goal-resume-probe--w119.txt",
+  "omp--v18-12-2-goal-resume-result--w119.txt",
+  "omp--v18-12-2-goal-resume-typed--w119.txt",
+  "omp--v18-12-2-goal-turn-running--w119.txt",
+  "omp--v18-12-2-goal-turn-running-probe--w119.txt",
+  // omp 18.12.1's default `band` composer under the nerd preset, and one unicode control (issue 505).
+  "omp--v18-12-band-idle--w130.txt",
+  "omp--v18-12-nerd-band-done--w130.txt",
+  "omp--v18-12-nerd-band-done--w80.txt",
+  "omp--v18-12-nerd-band-draft--w130.txt",
+  "omp--v18-12-nerd-band-draft--w80.txt",
+  "omp--v18-12-nerd-band-idle--w130.txt",
+  "omp--v18-12-nerd-band-idle--w80.txt",
+  "omp--v18-12-nerd-band-running--w130.txt",
+  "omp--v18-12-nerd-band-running--w80.txt",
+  "omp--v18-12-nerd-band-running-minute--w130.txt",
+  "omp--v18-12-nerd-band-two-lines--w130.txt",
+  "omp--v18-12-nerd-band-two-lines--w80.txt",
+  "omp--v18-12-nerd-band-wrapped--w130.txt",
+  "omp--v18-12-nerd-band-wrapped--w80.txt",
+  // omp 18.11.1's band, stock and with a transparent, slash, minimal or ascii status line (issue 505).
+  "omp--v18.11.1-ascii-idle--w120.txt",
+  "omp--v18.11.1-minimal-idle--w120.txt",
+  "omp--v18.11.1-powerline-draft--w120.txt",
+  "omp--v18.11.1-powerline-idle--w120.txt",
+  "omp--v18.11.1-powerline-transparent-draft--w120.txt",
+  "omp--v18.11.1-powerline-transparent-idle--w120.txt",
+  "omp--v18.11.1-slash-idle--w120.txt",
+  // omp 18.6.1 mid-turn with a line typed, then after a steer (Enter) or a queue (Ctrl+Q), and once the
+  // turn ended (M69 spec 01, lab 2026-10-23). The box stays a box: an `After yield · 1` block over it,
+  // or a tool box ending `Backgrounded early to handle an incoming message`, stands above its top edge.
+  "omp--v18-6-queue-after--w120.txt",
+  "omp--v18-6-queue-after-now--w120.txt",
+  "omp--v18-6-queue-done--w120.txt",
+  "omp--v18-6-queue-typed--w120.txt",
+  "omp--v18-6-steer-after--w120.txt",
+  "omp--v18-6-steer-after-now--w120.txt",
+  "omp--v18-6-steer-done--w120.txt",
+  "omp--v18-6-steer-over-queued--w120.txt",
+  "omp--v18-6-steer-pending-block--w120.txt",
+  "omp--v18-6-steer-typed--w120.txt",
 ];
 
 // omp 18.6.1 with `/model` or `/mod` typed (lab, 2026-10-17): a ten-row palette under the open box. The
@@ -79,6 +148,12 @@ const TALL_PALETTE_FIXTURES = [
   "omp--v18-6-slash-mod-partial--w120.txt",
   "omp--v18-6-slash-model-list--w120.txt",
   "omp--v18-6-slash-model-list--w80.txt",
+  // omp 18.11.3, nerd preset: `/ship` and `/model` with a ten-row palette (issue 497, 2026-10-18).
+  "omp--v18-11-nerd-skill-and-command--w130.txt",
+  "omp--v18-11-nerd-slash-model--w130.txt",
+  "omp--v18-11-nerd-slash-model--w80.txt",
+  // omp 18.12.2, a bare `/goal` typed in a goal turn: the ten-row command list under the box (lab, 2026-10-22).
+  "omp--v18-12-2-goal-bare-typed--w119.txt",
 ];
 
 const ALL_OMP_FIXTURES = readdirSync(PANES_DIR)
@@ -129,6 +204,73 @@ describe("locateComposer — the real corpus, pinned so any change to the walk s
     // omp 18.6.1: the `/settings` palette under the open box, at 120 and 80 columns.
     { fixture: "omp--v18-6-slash-settings-list--w120.txt", top: 17, bottom: 18, suggestEnd: 23 },
     { fixture: "omp--v18-6-slash-settings-list--w80.txt", top: 18, bottom: 19, suggestEnd: 24 },
+    // omp 18.11.3's box composer (issue 497): drafts, chips, a short skill list and a running turn.
+    { fixture: "omp--v18-11-ghost-word--w130.txt", top: 15, bottom: 16, suggestEnd: 17 },
+    { fixture: "omp--v18-11-image-chip--w130.txt", top: 21, bottom: 22, suggestEnd: 23 },
+    { fixture: "omp--v18-11-nerd-box-path-text--w130.txt", top: 14, bottom: 16, suggestEnd: 17 },
+    { fixture: "omp--v18-11-nerd-box-path-text--w80.txt", top: 15, bottom: 18, suggestEnd: 19 },
+    { fixture: "omp--v18-11-nerd-box-two-lines--w130.txt", top: 14, bottom: 16, suggestEnd: 17 },
+    { fixture: "omp--v18-11-nerd-box-two-lines--w80.txt", top: 15, bottom: 17, suggestEnd: 18 },
+    { fixture: "omp--v18-11-nerd-box-wrapped--w130.txt", top: 14, bottom: 16, suggestEnd: 17 },
+    { fixture: "omp--v18-11-nerd-box-wrapped--w80.txt", top: 15, bottom: 18, suggestEnd: 19 },
+    { fixture: "omp--v18-11-nerd-ghost-word--w130.txt", top: 14, bottom: 15, suggestEnd: 16 },
+    { fixture: "omp--v18-11-nerd-ghost-word--w80.txt", top: 15, bottom: 16, suggestEnd: 17 },
+    { fixture: "omp--v18-11-nerd-image-chip--w130.txt", top: 20, bottom: 21, suggestEnd: 22 },
+    { fixture: "omp--v18-11-nerd-image-chip--w80.txt", top: 21, bottom: 22, suggestEnd: 23 },
+    { fixture: "omp--v18-11-nerd-running-tool--w130.txt", top: 43, bottom: 44, suggestEnd: 45 },
+    { fixture: "omp--v18-11-nerd-running-tool--w80.txt", top: 43, bottom: 44, suggestEnd: 45 },
+    { fixture: "omp--v18-11-nerd-running-tool-minute--w130.txt", top: 43, bottom: 44, suggestEnd: 45 },
+    { fixture: "omp--v18-11-nerd-running-tool-minute--w80.txt", top: 43, bottom: 44, suggestEnd: 45 },
+    { fixture: "omp--v18-11-nerd-skill-long-form--w130.txt", top: 14, bottom: 15, suggestEnd: 17 },
+    { fixture: "omp--v18-11-nerd-skill-pointed--w130.txt", top: 14, bottom: 15, suggestEnd: 17 },
+    { fixture: "omp--v18-11-nerd-skill-pointed--w80.txt", top: 15, bottom: 16, suggestEnd: 19 },
+    { fixture: "omp--v18-11-skill-pointed--w130.txt", top: 15, bottom: 16, suggestEnd: 18 },
+    // omp 18.12.2 in a goal turn (lab 2026-10-22): the status band is the top row, `╰─` the prompt.
+    { fixture: "omp--v18-12-2-goal-bare-before--w119.txt", top: 23, bottom: 24, suggestEnd: 25 },
+    { fixture: "omp--v18-12-2-goal-bare-probe--w119.txt", top: 23, bottom: 24, suggestEnd: 25 },
+    { fixture: "omp--v18-12-2-goal-pause-result--w119.txt", top: 21, bottom: 22, suggestEnd: 23 },
+    { fixture: "omp--v18-12-2-goal-pause-result-later--w119.txt", top: 22, bottom: 23, suggestEnd: 24 },
+    { fixture: "omp--v18-12-2-goal-pause-typed--w119.txt", top: 19, bottom: 20, suggestEnd: 22 },
+    { fixture: "omp--v18-12-2-goal-resume-before--w119.txt", top: 22, bottom: 23, suggestEnd: 24 },
+    { fixture: "omp--v18-12-2-goal-resume-probe--w119.txt", top: 22, bottom: 23, suggestEnd: 24 },
+    { fixture: "omp--v18-12-2-goal-resume-result--w119.txt", top: 22, bottom: 23, suggestEnd: 24 },
+    { fixture: "omp--v18-12-2-goal-resume-typed--w119.txt", top: 22, bottom: 23, suggestEnd: 25 },
+    { fixture: "omp--v18-12-2-goal-turn-running--w119.txt", top: 19, bottom: 20, suggestEnd: 21 },
+    { fixture: "omp--v18-12-2-goal-turn-running-probe--w119.txt", top: 19, bottom: 20, suggestEnd: 21 },
+    // omp 18.12.1's default `band` composer (issue 505): the status band is the top row, `╰─` the prompt.
+    { fixture: "omp--v18-12-band-idle--w130.txt", top: 10, bottom: 11, suggestEnd: 12 },
+    { fixture: "omp--v18-12-nerd-band-done--w130.txt", top: 38, bottom: 39, suggestEnd: 40 },
+    { fixture: "omp--v18-12-nerd-band-done--w80.txt", top: 38, bottom: 39, suggestEnd: 40 },
+    { fixture: "omp--v18-12-nerd-band-draft--w130.txt", top: 11, bottom: 12, suggestEnd: 13 },
+    { fixture: "omp--v18-12-nerd-band-draft--w80.txt", top: 11, bottom: 12, suggestEnd: 13 },
+    { fixture: "omp--v18-12-nerd-band-idle--w130.txt", top: 11, bottom: 12, suggestEnd: 13 },
+    { fixture: "omp--v18-12-nerd-band-idle--w80.txt", top: 11, bottom: 12, suggestEnd: 13 },
+    { fixture: "omp--v18-12-nerd-band-running--w130.txt", top: 26, bottom: 27, suggestEnd: 28 },
+    { fixture: "omp--v18-12-nerd-band-running--w80.txt", top: 38, bottom: 39, suggestEnd: 40 },
+    { fixture: "omp--v18-12-nerd-band-running-minute--w130.txt", top: 26, bottom: 27, suggestEnd: 28 },
+    { fixture: "omp--v18-12-nerd-band-two-lines--w130.txt", top: 11, bottom: 12, suggestEnd: 14, draftEnd: 14 },
+    { fixture: "omp--v18-12-nerd-band-two-lines--w80.txt", top: 11, bottom: 12, suggestEnd: 14, draftEnd: 14 },
+    { fixture: "omp--v18-12-nerd-band-wrapped--w130.txt", top: 11, bottom: 12, suggestEnd: 14, draftEnd: 14 },
+    { fixture: "omp--v18-12-nerd-band-wrapped--w80.txt", top: 11, bottom: 12, suggestEnd: 15, draftEnd: 15 },
+    // omp 18.11.1's band (issue 505), stock and with other status line styles: the band is the top row.
+    { fixture: "omp--v18.11.1-ascii-idle--w120.txt", top: 13, bottom: 14, suggestEnd: 15 },
+    { fixture: "omp--v18.11.1-minimal-idle--w120.txt", top: 13, bottom: 14, suggestEnd: 15 },
+    { fixture: "omp--v18.11.1-powerline-draft--w120.txt", top: 13, bottom: 14, suggestEnd: 15 },
+    { fixture: "omp--v18.11.1-powerline-idle--w120.txt", top: 13, bottom: 14, suggestEnd: 15 },
+    { fixture: "omp--v18.11.1-powerline-transparent-draft--w120.txt", top: 15, bottom: 16, suggestEnd: 17 },
+    { fixture: "omp--v18.11.1-powerline-transparent-idle--w120.txt", top: 15, bottom: 16, suggestEnd: 17 },
+    { fixture: "omp--v18.11.1-slash-idle--w120.txt", top: 13, bottom: 14, suggestEnd: 15 },
+    // omp 18.6.1 steer and queue mid-turn (M69 spec 01): the block over the box moves nothing in it.
+    { fixture: "omp--v18-6-queue-after--w120.txt", top: 38, bottom: 39, suggestEnd: 40 },
+    { fixture: "omp--v18-6-queue-after-now--w120.txt", top: 38, bottom: 39, suggestEnd: 40 },
+    { fixture: "omp--v18-6-queue-done--w120.txt", top: 38, bottom: 39, suggestEnd: 40 },
+    { fixture: "omp--v18-6-queue-typed--w120.txt", top: 38, bottom: 39, suggestEnd: 40 },
+    { fixture: "omp--v18-6-steer-after--w120.txt", top: 38, bottom: 39, suggestEnd: 40 },
+    { fixture: "omp--v18-6-steer-after-now--w120.txt", top: 38, bottom: 39, suggestEnd: 40 },
+    { fixture: "omp--v18-6-steer-over-queued--w120.txt", top: 38, bottom: 39, suggestEnd: 40 },
+    { fixture: "omp--v18-6-steer-pending-block--w120.txt", top: 38, bottom: 39, suggestEnd: 40 },
+    { fixture: "omp--v18-6-steer-done--w120.txt", top: 37, bottom: 38, suggestEnd: 39 },
+    { fixture: "omp--v18-6-steer-typed--w120.txt", top: 38, bottom: 39, suggestEnd: 40 },
   ];
 
   // These eleven indices are byte-identical to the ones the width-gated scanner produced. That is
@@ -201,6 +343,15 @@ describe("extractInputDraft", () => {
     { fixture: "omp--working.txt", draft: null },
     { fixture: "omp--menu-dismissed.txt", draft: null },
     { fixture: "omp--v18-4-composer-idle.txt", draft: null },
+    // omp 18.6.1 mid-turn (M69 spec 01): the line stands in the box until OMP takes it, at 0.1 s still.
+    { fixture: "omp--v18-6-steer-typed--w120.txt", draft: "also say hello at the end" },
+    { fixture: "omp--v18-6-steer-after-now--w120.txt", draft: "also say hello at the end" },
+    { fixture: "omp--v18-6-steer-after--w120.txt", draft: null },
+    { fixture: "omp--v18-6-steer-over-queued--w120.txt", draft: null },
+    { fixture: "omp--v18-6-steer-pending-block--w120.txt", draft: null },
+    { fixture: "omp--v18-6-queue-typed--w120.txt", draft: "also say hello at the end" },
+    { fixture: "omp--v18-6-queue-after-now--w120.txt", draft: "also say hello at the end" },
+    { fixture: "omp--v18-6-queue-after--w120.txt", draft: null },
   ];
 
   it.each(DRAFTS)("$fixture reads its draft", ({ fixture, draft }) => {
@@ -224,7 +375,10 @@ describe("extractStatusLines", () => {
   // The two omp 18.4 hint captures carry the capturing operator's own statusline template, not
   // the `π … ▶` powerline these assertions read, and neither does the 18.4.10 idle capture, whose
   // row runs on into a context meter (`▶─2%───┃─1.1M`) and names branch `main`. The three 18.10 draft
-  // captures run on into the same meter (`▶───5%───…128K─`).
+  // captures run on into the same meter (`▶───5%───…128K─`). The 18.11 captures run in a scratch folder
+  // with no branch, and the nerd preset draws no `π` and no `▶`. The 18.12 band captures run on into
+  // the meter too, and name branch `main`. The 18.11.1 band captures draw no `π` either, bar the ascii
+  // one, which writes `pi`.
   it.each(
     BOX_COMPOSER_FIXTURES.filter(
       (f) =>
@@ -233,7 +387,10 @@ describe("extractStatusLines", () => {
         f !== "omp--fresh-agents-hint.txt" &&
         f !== "omp--v18-4-composer-idle.txt" &&
         !f.startsWith("omp--v18-10-draft-") &&
-        !f.startsWith("omp--v18-6-"),
+        !f.startsWith("omp--v18-6-") &&
+        !f.startsWith("omp--v18-11-") &&
+        !f.startsWith("omp--v18-12-") &&
+        !f.startsWith("omp--v18.11.1-"),
     ),
   )(
     "%s: trims the border glyphs off both ends, keeping the whole powerline",
@@ -751,6 +908,10 @@ describe("composerPrompt — the region a destructive write is bound to", () => 
       { fixture: "omp--v18-6-slash-mod-partial--w120.txt", top: 17, bottom: 18, suggestEnd: 29 },
       { fixture: "omp--v18-6-slash-model-list--w120.txt", top: 17, bottom: 18, suggestEnd: 29 },
       { fixture: "omp--v18-6-slash-model-list--w80.txt", top: 18, bottom: 19, suggestEnd: 30 },
+      { fixture: "omp--v18-11-nerd-skill-and-command--w130.txt", top: 14, bottom: 15, suggestEnd: 26 },
+      { fixture: "omp--v18-11-nerd-slash-model--w130.txt", top: 14, bottom: 15, suggestEnd: 26 },
+      { fixture: "omp--v18-11-nerd-slash-model--w80.txt", top: 15, bottom: 16, suggestEnd: 27 },
+      { fixture: "omp--v18-12-2-goal-bare-typed--w119.txt", top: 23, bottom: 24, suggestEnd: 35 },
     ];
     expect(PINNED_TALL.map((p) => p.fixture)).toEqual(TALL_PALETTE_FIXTURES);
     for (const { fixture, top, bottom, suggestEnd } of PINNED_TALL) {

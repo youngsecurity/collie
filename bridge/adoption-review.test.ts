@@ -150,14 +150,14 @@ describe("review: opt-out launcher attribution", () => {
     const gated = rig({ deviceHeader: "x-device", deviceAllowlist: ["proxy-phone"] });
     expect((await gated.request("/api/launch", { run: "make test" })).status).toBe(403);
   });
-  test("anonymous adds work after the write gate, replay in memory, and never reach disk", async () => {
+  test("anonymous adds work after the write gate, replay, and reach disk like any other row", async () => {
     const r = rig();
     const body = { requestId: REQUEST_ID, recipe: { harness: "claude", options: [] } };
     expect((await r.request("/api/launchers/added", body)).status).toBe(200);
     expect((await r.request("/api/launchers/added", body)).status).toBe(200);
     expect(await r.added.list()).toMatchObject([{ device: null, deviceKind: "anonymous" }]);
-    expect(r.io.writes).toBe(0);
-    expect(await new AddedLauncherStore(r.io).list()).toEqual([]);
+    expect(r.io.writes).toBe(1);
+    expect(await new AddedLauncherStore(r.io).list()).toMatchObject([{ device: null, deviceKind: "anonymous" }]);
   });
 
   test("crew attribution preserves the peer's independent gate and paired-only revocation", async () => {

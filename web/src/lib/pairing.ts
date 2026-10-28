@@ -39,29 +39,20 @@ export const NOT_PAIRED_BODY = "device not paired";
  */
 export const EXPIRED_BODY = "device expired";
 
-// Page-local only. An opt-out allows live use, never anonymous offline session storage.
+// Page-local only.
 let pairingRequired = true;
-let anonymousSession = false;
 
 /** Observe the bridge's explicit policy, never infer it from a missing header. */
 export function observePairingPolicy(value: string | null): void {
   if (value !== "on" && value !== "off") return;
   const changed = pairingRequired !== (value === "on");
   pairingRequired = value === "on";
-  if (!pairingRequired) {
-    anonymousSession = true;
-    clearNotPaired();
-  }
+  if (!pairingRequired) clearNotPaired();
   if (changed) emit();
 }
 
 export function isBrowserPairingEnforced(): boolean {
   return pairingRequired;
-}
-
-/** Once this page receives anonymous content, keep it live-only until reload, including late writes. */
-export function sessionCacheAllowed(): boolean {
-  return !anonymousSession;
 }
 
 let refused = false;
@@ -229,7 +220,6 @@ export function subscribePairing(cb: () => void): () => void {
 export function __resetPairing(): void {
   const policyChanged = !pairingRequired;
   pairingRequired = true;
-  anonymousSession = false;
   pairingExpiresAt = undefined;
   clearNotPaired();
   if (policyChanged) emit();

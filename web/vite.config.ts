@@ -328,6 +328,11 @@ export default defineConfig({
         // `unicode-range` already makes them lazy (index.css), so precaching them would charge
         // every install for glyphs most herds never paint. src/sw.ts caches them on first use.
         globPatterns: ["**/*.{js,css,html,svg,png,ico,webmanifest}"],
+        // The app shell is ONE chunk, and on this fork it passed workbox's 2 MiB default at 1.24.0+ys.1
+        // (2,102,879 bytes). An asset over the cap is silently left out of the precache, and a shell
+        // that is not precached is a PWA that does not open offline, so the cap moves rather than
+        // the shell. 3 MiB is headroom, not a target: the next step is code-splitting the shell.
+        maximumFileSizeToCacheInBytes: 3 * 1024 * 1024,
         // A release build's precache must not carry the dev channel's icons, and neither build
         // may carry the playground's — see vite-icons.ts's precacheIgnoresFor. Without this, a
         // release SW precached the dev AND playground icon sets too, every byte of it competing

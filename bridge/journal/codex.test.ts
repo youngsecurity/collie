@@ -5,6 +5,7 @@ import { join } from "node:path";
 
 import {
   codexCursor,
+  codexJournal,
   codexToolOutput,
   CodexTranscriptSource,
   isCodexSessionId,
@@ -193,14 +194,14 @@ describe("parseCodexTranscript", () => {
     });
   });
 
-  test("a tool outside the nine kinds degrades to `other`, keeping its own line", () => {
+  test("a tool outside the ten kinds degrades to `other`, keeping its own line", () => {
     const entries = parseCodexTranscript(
-      item({ type: "function_call", name: "update_plan", arguments: JSON.stringify({ plan: [] }), call_id: "c" }),
+      item({ type: "function_call", name: "list_mcp_resources", arguments: JSON.stringify({ server: "x" }), call_id: "c" }),
     );
     expect(entries[0]!.parts[0]).toMatchObject({
       kind: "tool",
-      name: "update_plan",
-      call: { kind: "other", name: "update_plan" },
+      name: "list_mcp_resources",
+      call: { kind: "other", name: "list_mcp_resources" },
     });
   });
 
@@ -545,5 +546,44 @@ describe("parseCodexTranscript — a message sent while the agent works", () => 
       { kind: "text", text: "stop after this one" },
     ]);
     expect(entries.some((e) => e.parts.some((p) => p.kind === "tool" && p.result !== undefined))).toBe(true);
+  });
+});
+
+// The reasoning effort beside the model (#463): Codex writes it on every `turn_context`, beside the
+// model, so the probe reads both off the same row.
+describe("the codex probe — the reasoning effort", () => {
+  const SID = "01a13c59-3c21-7ce0-bb62-6768d54d272d";
+
+  async function probeOf(lines: readonly string[]) {
+    const created = `${tmpdir()}/collie-codex-effort-${Math.floor(performance.now() * 1000)}`;
+    const day = join(created, "2026", "10", "14");
+    await mkdir(day, { recursive: true });
+    await Bun.write(join(day, `rollout-2026-10-14T18-37-23-${SID}.jsonl`), `${lines.join("\n")}\n`);
+    const probe = await codexJournal(created).cacheProbe?.({ kind: "id", value: SID });
+    await rm(created, { recursive: true, force: true });
+    return probe;
+  }
+  const context = (effort: string | undefined) =>
+    JSON.stringify({
+      timestamp: "2026-10-14T21:37:24.000Z",
+      type: "turn_context",
+      payload: { turn_id: "t1", model: "gpt-6-luna", effort, summary: "none" },
+    });
+  const tokens = JSON.stringify({
+    timestamp: "2026-10-14T21:37:30.000Z",
+    type: "event_msg",
+    payload: { type: "token_count", info: { last_token_usage: { cached_input_tokens: 800 } } },
+  });
+
+  test("names the effort the turn ran at, from the turn_context that names its model", async () => {
+    const probe = await probeOf([context("low"), tokens]);
+    expect(probe?.model).toBe("gpt-6-luna");
+    expect(probe?.effort).toBe("low");
+  });
+
+  test("a turn_context with no effort reports none", async () => {
+    const probe = await probeOf([context(undefined), tokens]);
+    expect(probe?.model).toBe("gpt-6-luna");
+    expect(probe?.effort).toBeUndefined();
   });
 });

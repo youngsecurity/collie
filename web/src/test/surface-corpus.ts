@@ -19,7 +19,7 @@ export const PANES_DIR = join(FIXTURES_DIR, "panes");
 export const SURFACE_FIXTURES_DIR = join(FIXTURES_DIR, "surface");
 
 /**
- * Dialog fixtures the generic cues cannot reach, with the reason. The cues-alone rule (fold.test.ts,
+ * Dialog fixtures the generic cues cannot reach, with the reason. The cues-alone rule (fold.corpus.test.ts,
  * scripts/surface-corpus.ts) skips them by name; the reader of their own harness is what refuses a
  * reply there. This map is the only mechanism for a new cues-blind fixture: name it here with its
  * reason. (The older "-cut" suffix rule stays for the screens truncated on purpose; add no more.)
@@ -32,6 +32,14 @@ export const CUES_BLIND = new Map<string, string>([
   [
     "grok--trust-prompt.txt",
     "Grok's folder trust prompt ends its choices in a key letter at the right edge (`Yes, proceed   y`, `No, quit   n`), which the single-key cue does not read",
+  ],
+  [
+    "kiro--v3-approval-edit-w120.txt",
+    "Kiro's Modify request editor is a `›` feedback row between two rules with only `esc to close` below it, so the cues see an input box, not a dialog",
+  ],
+  [
+    "kiro--v3-replace-edit-w120.txt",
+    "Kiro's Modify request editor is a `›` feedback row between two rules with only `esc to close` below it, so the cues see an input box, not a dialog",
   ],
 ]);
 
@@ -69,7 +77,7 @@ let labels: SurfaceLabels | null = null;
 /** The labels file, read once. */
 export function loadLabels(): SurfaceLabels {
   if (labels !== null) return labels;
-  // SAFETY: a committed file of this repo; fold.test.ts checks every fixture has a row of this shape.
+  // SAFETY: a committed file of this repo; fold.corpus.test.ts checks every fixture has a row of this shape.
   // The one key under `incidents` that is no incident is its `$comment`, dropped by name below.
   const raw = JSON.parse(readFileSync(join(FIXTURES_DIR, "surface-labels.json"), "utf8")) as {
     fixtures: Record<string, FixtureLabel>;

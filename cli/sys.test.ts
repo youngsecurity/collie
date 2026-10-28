@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 
@@ -8,6 +8,7 @@ import { fakeExec, fakeFiles, HOME, posixKey } from "./fakes.ts";
 import {
   BUN_PROBE_TIMEOUT_MS,
   realExec,
+  realFiles,
   resolveRunnableBun,
   resolveTool,
   toolCandidates,
@@ -253,6 +254,39 @@ describe("bun lookup parity", () => {
   test("both shell sources take `command -v` only when the answer is absolute", async () => {
     expect(await shim).toContain("case \"$candidate\" in");
     expect(await remote).toContain("/*) printf '%s' \"$_p\"; return 0 ;;");
+  });
+});
+
+describe("realFiles on a real directory", () => {
+  test("createExclusive writes once with the mode asked, refuses a second write, and rethrows anything but EEXIST", () => {
+    const dir = mkdtempSync(join(tmpdir(), "collie-realfiles-"));
+    try {
+      const file = join(dir, "lock");
+      expect(realFiles.createExclusive(file, "first", 0o600)).toBe(true);
+      expect(readFileSync(file, "utf8")).toBe("first");
+      if (process.platform !== "win32") expect(statSync(file).mode & 0o777).toBe(0o600);
+      // The file exists: nothing is written, and the caller hears false rather than a throw.
+      expect(realFiles.createExclusive(file, "second", 0o600)).toBe(false);
+      expect(readFileSync(file, "utf8")).toBe("first");
+      // A missing parent is not EEXIST, so it is the caller's to see.
+      expect(() => realFiles.createExclusive(join(dir, "missing", "lock"), "x", 0o600)).toThrow();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("mtimeMs answers the file's modification time, and null for a path that is not there", () => {
+    const dir = mkdtempSync(join(tmpdir(), "collie-realfiles-"));
+    try {
+      const file = join(dir, "stamped");
+      expect(realFiles.mtimeMs(file)).toBeNull();
+      expect(realFiles.createExclusive(file, "", 0o644)).toBe(true);
+      const at = new Date("2026-01-02T03:04:05Z");
+      utimesSync(file, at, at);
+      expect(realFiles.mtimeMs(file)).toBe(at.getTime());
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

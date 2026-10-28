@@ -117,7 +117,7 @@ export interface PlacedMarker {
 export interface MarkedAttachment {
   n: number;
   path: string;
-  kind: "image" | "file";
+  kind: "image" | "file" | "paste";
 }
 
 /** Whether a picked file is drawn (and marked) as a photo or a file. The browser's own word wins;
@@ -128,9 +128,11 @@ export function attachmentKind(file: File, limits: UploadCapability): "image" | 
   return ext !== null && limits.imageTypes.includes(ext) ? "image" : "file";
 }
 
-/** The marker text for a chip: `[Image #N]` or `[File #N]`. */
+/** The marker text for a chip: `[Image #N]`, `[File #N]`, or `[Pasted #N]`. */
 export function markerFor(attachment: Pick<MarkedAttachment, "n" | "kind">): string {
-  return `[${attachment.kind === "image" ? "Image" : "File"} #${attachment.n}]`;
+  const label =
+    attachment.kind === "image" ? "Image" : attachment.kind === "file" ? "File" : "Pasted";
+  return `[${label} #${attachment.n}]`;
 }
 
 /**
@@ -141,7 +143,7 @@ export function markerFor(attachment: Pick<MarkedAttachment, "n" | "kind">): str
  */
 export function nextMarkerNumber(text: string, next: number): number {
   let highest = 0;
-  for (const m of text.matchAll(/\[(?:Image|File) #(\d+)\]/g)) highest = Math.max(highest, Number(m[1]));
+  for (const m of text.matchAll(/\[(?:Image|File|Pasted) #(\d+)\]/g)) highest = Math.max(highest, Number(m[1]));
   return Math.max(next, highest + 1);
 }
 
@@ -155,14 +157,16 @@ export function insertMarker(
   text: string,
   caret: number | null,
   marker: string,
+  endCaret: number | null = caret,
 ): PlacedMarker {
-  const at = Math.min(Math.max(caret ?? text.length, 0), text.length);
-  const before = text.slice(0, at);
-  const after = text.slice(at);
+  const start = Math.min(Math.max(caret ?? text.length, 0), text.length);
+  const end = Math.min(Math.max(endCaret ?? start, start), text.length);
+  const before = text.slice(0, start);
+  const after = text.slice(end);
   const lead = before !== "" && !/\s$/.test(before) ? " " : "";
   const trail = /^\s/.test(after) ? "" : " ";
   const inserted = `${lead}${marker}${trail}`;
-  return { text: `${before}${inserted}${after}`, caret: at + inserted.length + (trail === "" ? 1 : 0) };
+  return { text: `${before}${inserted}${after}`, caret: start + inserted.length + (trail === "" ? 1 : 0) };
 }
 
 /** Take every copy of a marker out of the draft, with one space beside it (the one after, else the
@@ -199,7 +203,7 @@ export function markerMissing(
  * is lost by accident, and the chip says so before Send ({@link markerMissing}). A marker-looking
  * string with no chip behind it is left exactly as typed.
  */
-export function composeLine(text: string, attachments: readonly MarkedAttachment[]): string {
+export function composeLine(text: string, attachments: readonly MarkedAttachment[], keepLeading = false): string {
   let line = text;
   const orphans: string[] = [];
   for (const attachment of attachments) {
@@ -209,11 +213,47 @@ export function composeLine(text: string, attachments: readonly MarkedAttachment
     }
     line = line.split(markerFor(attachment)).join(attachment.path);
   }
-  const words = line.trim();
+  // A shell line may start with a space or a tab: that is how a person keeps it out of Sent (M61), so
+  // the bridge must see it. Only when no chip path stands in front of it, and only the end is cut.
+  const words = keepLeading && orphans.length === 0 ? line.trimEnd() : line.trim();
+  if (keepLeading && orphans.length === 0 && words.trim() === "") return "";
   return [...orphans, ...(words === "" ? [] : [words])].join(" ");
 }
 
 /** A file name cut to fit a chip: at most `max` characters, the cut marked with an ellipsis. */
 export function shortName(name: string, max = 14): string {
   return name.length > max ? `${name.slice(0, max - 1)}…` : name;
+}
+
+export const PASTE_COLLAPSE_LINES = 5;
+export const PASTE_COLLAPSE_CHARS = 300;
+
+/** How many lines a pasted text spans. */
+export function pasteLineCount(text: string): number {
+  return text.split(/\r?\n/).length;
+}
+
+/** Whether a plain-text paste is long enough to collapse into a `[Pasted #N]` chip. */
+export function isCollapsiblePaste(text: string): boolean {
+  return text.length >= PASTE_COLLAPSE_CHARS || pasteLineCount(text) >= PASTE_COLLAPSE_LINES;
+}
+
+/** The first non-empty line of a paste, used as its short label on the chip. */
+export function pastePreviewName(text: string): string {
+  const first = text.split(/\r?\n/).find((line) => line.trim().length > 0) ?? text;
+  return first.trim().slice(0, 80);
+}
+
+/** Expand a collapsed paste chip back into the draft text where its marker stands, or in front
+ *  when the operator deleted its marker. */
+export function expandAttachmentInText(
+  text: string,
+  attachment: Pick<MarkedAttachment, "n" | "kind" | "path">,
+): string {
+  const marker = markerFor(attachment);
+  if (text.includes(marker)) {
+    return text.split(marker).join(attachment.path);
+  }
+  const trimmed = text.trim();
+  return trimmed === "" ? attachment.path : `${attachment.path}\n\n${text}`;
 }

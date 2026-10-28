@@ -39,10 +39,64 @@ export type CommandWhileRunning = "queues" | "runs" | "drops" | "steers";
 export interface QueuedRow {
   /** A regular expression source for the row that starts the text, with the named group `text`. */
   readonly pattern: string;
-  /** A regular expression source for the hint row under the queued texts. */
+  /** A regular expression source for the hint row by the queued texts. */
   readonly hint: string;
-  /** How many blank rows may stand between the last queued text and the hint. */
+  /** How many blank rows may stand between the queued texts and the hint. */
   readonly hintGap: number;
+  /**
+   * The hint row stands over the queued texts, not under them: the witness reads downward from it.
+   * Muse draws its queue that way (lab, Muse Code 1.4.10, 2026-10-18). Absent: under, as Claude
+   * Code and Codex draw it.
+   */
+  readonly hintAbove?: boolean;
+  /**
+   * A regular expression source for the rows of another kind of entry the harness draws in the same
+   * block, between the texts and the hint: they are passed over, with the indented rows they wrapped
+   * onto. pi 1.3.0 draws its `Follow-up: <line>` rows between its `Steering: <line>` rows and the
+   * `↳ Alt+Up` hint (live rerun 2026-10-23). Optional: without it the texts stand right by the hint.
+   * With a `header`, it names the header of another block stacked over the same hint: the texts under
+   * it are that block's. OMP 18.6.1 draws `Steering · 1` / `1. say banana` / `After yield · 1` /
+   * `1. ok` / `└ Alt+↑ to edit`, one hint under both blocks (live rerun 2026-10-23, second pass).
+   */
+  readonly between?: string;
+  /**
+   * A regular expression source for the header row over the first text, when the hint stands under
+   * the texts: the block counts only under such a row. OMP 18.6.1 draws one block shape for two
+   * things, `After yield · N` over its queued texts and `Steering · N` over a steer that waits for
+   * the turn's next step (live rerun 2026-10-23), the same `N. <line>` rows and `└ Alt+↑ to edit`
+   * hint under both. Optional; never with `hintAbove`, where the hint is the header.
+   */
+  readonly header?: string;
+}
+
+/**
+ * One way the harness shows that a steer reached the running turn (see `keys.steerWitness`, M69). Each
+ * read after the steer key asks every witness; one that holds says `steered`. Three shapes, by field:
+ *
+ * - `hint` set: a block drawn like a queued row (see {@link QueuedRow}): a hint row and, by it, the rows
+ *   that hold the texts, each starting on a row `pattern` matches (with the named group `text`).
+ * - `transcript: true`: the text itself as a row above the box, a row `pattern` matches whose group
+ *   `text` (with the rows it wrapped onto) is the whole text. It counts only when there are more such
+ *   rows than on the read the steer key was bound to, no queued row of the profile holds the text, and
+ *   the box let the text go (it reads empty or holds other text).
+ * - neither: a marker row `pattern` matches (no group `text`) above the box, more of them than on the
+ *   read the steer key was bound to, and the box let the text go.
+ */
+export interface SteerWitness {
+  /** A regular expression source for the row. */
+  readonly pattern: string;
+  /** With a hint: the hint row of the block, as in {@link QueuedRow.hint}. */
+  readonly hint?: string;
+  /** With a hint: how many blank rows may stand between the texts and the hint. */
+  readonly hintGap?: number;
+  /** With a hint: the hint stands over the texts, as in {@link QueuedRow.hintAbove}. */
+  readonly hintAbove?: boolean;
+  /** With a hint: the rows of another entry that may stand in the block, as in {@link QueuedRow.between}. */
+  readonly between?: string;
+  /** With a hint under the texts: the header row over them, as in {@link QueuedRow.header}. */
+  readonly header?: string;
+  /** The text itself as a transcript row above the box (see above). */
+  readonly transcript?: true;
 }
 
 export interface VersionRange {
@@ -89,6 +143,16 @@ export interface FrameAnchor {
 export interface NoticeHead {
   /** A regular expression source, matched on the notice's first row with its trailing spaces cut: it must not need a trailing space. */
   readonly head: string;
+  /**
+   * True for a head that may stand over a body: after its continuation rows and a blank row, rows
+   * indented by two spaces or more, down to the key block. Optional.
+   */
+  readonly body?: true;
+  /**
+   * True for a head whose key block prints single letters (`y: Yes   n: No`) instead of digits: the
+   * reader takes lettered keys under this head and no other, and digits under it no more. Optional.
+   */
+  readonly letters?: true;
 }
 
 /** A named row under the box (`idle.volatile.below.footerRows`). */
@@ -130,7 +194,10 @@ export interface CommandListRows {
    * is the command as typed.
    */
   readonly lead?: string;
-  /** The sides of the box the harness draws the list on. Optional: both, under first. */
+  /**
+   * Where the harness draws the list at the box: under its bottom edge, over its top edge, or
+   * inside it, between the prompt row and the bottom edge. Optional: under and above, under first.
+   */
   readonly sides?: readonly CommandListSide[];
   /**
    * The harness's own rows that stay on screen under a list drawn under the box (a folder row and a
@@ -139,10 +206,41 @@ export interface CommandListRows {
    * to the screen's last row.
    */
   readonly footer?: CommandListFooter;
+  /**
+   * Prefixes the harness lists some commands under, with the bare name after them: OMP lists a skill
+   * as `skill:<name>`. A pointer on `<namespace><name>` also stands for the typed `<lead><name>`, but
+   * only when no entry of the list is `<lead><name>` itself. A profile names a namespace only when the
+   * harness runs the pointed entry on Enter and lists `<namespace><name>` for a typed `<lead><name>`
+   * only when no command of that name exists, so both spellings run the same entry. Optional.
+   */
+  readonly namespaces?: readonly string[];
+  /**
+   * The highlighted entry carries no pointer glyph: it is the entry-shaped row whose command run
+   * is painted bold, and `pointer` then names the same shape as `entry`. A read with no styled
+   * rows at hand finds no pointer on such a list, never a guessed one. Optional.
+   */
+  readonly pointerBold?: boolean;
+  /**
+   * The harness paints a bracketed argument hint (` [<model-id>]`) after a complete command in
+   * the box, in the bottom rule's colour, and takes it away the moment an argument is typed: it
+   * is no draft text, so the frame leaves it out of the draft it reads. Only a trailing bracketed
+   * run in that colour after one of the inside list's own entries is left out; a bracketed run
+   * typed in the draft's own colour stays. Optional.
+   */
+  readonly argumentHint?: boolean;
+  /**
+   * Once a space follows the command word the list under the box is that command's list of
+   * arguments (OMP's `/goal` lists `pause`, `resume`, ...). A pointer on exactly the argument
+   * already typed is then the typed command's own typeahead, as a pointer on the typed command
+   * is for a bare command: Enter runs what is typed. A list that holds the command word itself
+   * is the list of commands and never reads this way. A profile names it only where a lab run
+   * showed Enter run the typed text with that list open. Optional.
+   */
+  readonly argumentList?: boolean;
 }
 
 /** A side of the box a command list stands on. */
-export type CommandListSide = "under" | "above";
+export type CommandListSide = "under" | "above" | "inside";
 
 /** The rows that stay under a command list drawn under the box ({@link CommandListRows.footer}). */
 export interface CommandListFooter {
@@ -219,7 +317,21 @@ export interface FrameLayout {
    * list and a dialog's title too, and those stand apart by a blank row or run past the bound. Optional.
    */
   readonly underPainted?: boolean;
+  /**
+   * The interior walk only, with `rows`. True when the text in front of the draft hole on the prompt
+   * row is the box's own prompt glyph, never a dialog's pointer. On a harness that draws its dialogs in
+   * the box's place (`idle.dialogsInBox`) the modal cues read the rows from the top edge down, and there
+   * this glyph reads as blank. Without it a draft that wraps reads as a pointer on a listed row (the
+   * glyph's row, and a wrapped row in the hole's column) between two rules, which is an overlay. `rows`
+   * must name every row the box may hold, so a box with any other row inside is no box. Optional.
+   */
+  readonly ownPrompt?: boolean;
+}
 
+/** The ghost text after the cursor ({@link Profile.idle.inlineHint}). */
+export interface InlineHint {
+  /** The foreground colours the ghost text is painted in, each as `rgb(r,g,b)`. */
+  readonly fg: readonly string[];
 }
 
 /** How the frame module walks to a box. `edges` is the walk up from a bottom edge to a prompt row and a top edge. */
@@ -251,6 +363,13 @@ export interface Profile {
       readonly prefixes?: readonly string[];
       /** The SGR attribute the placeholder renders with (2 is faint). */
       readonly sgr: number;
+      /**
+       * The foreground colours the placeholder renders in, each as `rgb(r,g,b)`, for a harness that
+       * paints the text of an empty box (a tip, a prompt suggestion) in a grey of its own and no
+       * faint attribute. A hole whose every visible run wears one of these colours is a placeholder
+       * too; one run in any other colour is typed text. Optional.
+       */
+      readonly fg?: readonly string[];
     };
     readonly volatile: {
       readonly above: {
@@ -299,9 +418,27 @@ export interface Profile {
     /**
      * Rows that mean a turn runs, as regular expression sources, read on the volatile band above the
      * box, the frame's bottom edge and the rows under it (cues.ts `runningSign`). Optional: the generic running signs above the box
-     * always count. For a harness that marks a turn on its own status rows.
+     * always count. For a harness that marks a turn on its own status rows. The prompt row is read
+     * too, for a harness that swaps its prompt glyph while a turn runs: a draft that happens to match
+     * only reads as a turn, which sends nothing.
      */
     readonly runningRows?: readonly string[];
+    /**
+     * Rows that mean a turn ended without the harness's stop hook, as regular expression sources, read
+     * on the volatile band above the box. Claude Code fires no Stop hook when a person interrupts a
+     * turn (Escape) or refuses a permission; it draws `⎿  Interrupted · What should Claude do instead?`
+     * over an idle box (lab 2.1.309, 2026-10-23). A read that shows one, whose screen reads the turn
+     * idle with no dialog, ends the hook's running and dialog blocks (fold.ts) once they are older than
+     * the settle time, as a stop edge would. Never a running sign. Optional: without it such a block
+     * ends only on a closing edge or the lost-Stop reads.
+     */
+    readonly stoppedRows?: readonly string[];
+    /**
+     * The prompt row of a box that answers a question the agent asked, as a regular expression source
+     * read on the frame's prompt row. A send typed there answers that question, so a person may send
+     * into it, but a held send never goes there: it waits for an ordinary box. Optional.
+     */
+    readonly answerPrompt?: string;
     /**
      * Rows that mean a dialog is drawn over the screen above a live box, as regular expression
      * sources, read on every row above the box. A harness that draws its pickers and notices over
@@ -337,6 +474,15 @@ export interface Profile {
      * The first shape that finds a box wins, so a shape that is easy to match goes last. Optional.
      */
     readonly frameAlternates?: readonly FrameLayout[];
+    /**
+     * The ghost text the harness paints after the cursor at the end of the draft (OMP's word
+     * completion: `push` typed, `ed` painted after it), named by the exact foreground colours it is
+     * painted in, each as `rgb(r,g,b)`. Every frame shape reads such a run as blank, but only when the
+     * run is letters only, has no other attribute, stands last in the draft on the draft's last row,
+     * and follows a visible draft character in another style. Any other run stays draft text, so a box
+     * that shows more than was typed stops a send. Optional.
+     */
+    readonly inlineHint?: InlineHint;
   };
   readonly keys: {
     /**
@@ -355,6 +501,12 @@ export interface Profile {
     readonly commandSubmit?: readonly string[];
     readonly newline: readonly string[];
     readonly interrupt: readonly string[];
+    /**
+     * True when the interrupt key clears a draft in the box before it stops the turn (Ctrl+C in Grok,
+     * Muse, Hermes and Cursor). A Stop on such a pane with a draft in the box is refused `draft_present`.
+     * Optional: absent means the key leaves a draft alone.
+     */
+    readonly interruptClearsDraft?: boolean;
     /** One `key` press per typed character, plus `slack` more. Never Escape. */
     readonly clear: { readonly key: string; readonly slack: number };
     readonly navigation: {
@@ -377,7 +529,8 @@ export interface Profile {
     /**
      * How the harness draws a message it queued during a turn, when that is known: a row whose
      * `pattern` holds the text in the named group `text` (later rows of a wrapped text are indented),
-     * and a `hint` row at most `hintGap` blank rows under the last of them. Optional.
+     * and a `hint` row at most `hintGap` blank rows from the texts — under the last of them, or over
+     * the first when `hintAbove` is set. Optional.
      */
     readonly queuedRow?: QueuedRow;
     /**
@@ -394,6 +547,37 @@ export interface Profile {
      * line that starts with it; a longer one names the command word. Optional.
      */
     readonly neverHeld?: readonly string[];
+    /**
+     * The command words the harness runs at once while a turn runs, as the lab measured them: the
+     * harness takes the command before its turn and acts on it, never as text that steers the turn
+     * or waits for its end (OMP's `/goal`). Such a command in a turn goes in with the command keys
+     * (`commandSubmit`, else `submit`) instead of being held, and is probed like every send into a
+     * turn. Each entry is one command word that starts with a reserved lead (`/goal`), matched alone
+     * or followed by a space (`/goal pause`, never `/goals`). Never a word in `neverHeld`. Optional:
+     * without it every command in a turn takes `commandWhileRunning` or Collie's hold.
+     */
+    readonly commandsRunInTurn?: readonly string[];
+    /** Where `commandsRunInTurn` was measured: the versions and commands the lab ran. Optional, prose only. */
+    readonly commandsRunInTurnNote?: string;
+    /**
+     * The keys that steer a running turn: the text goes into the turn the agent runs now, read after
+     * its current tool call (M69, lab 2026-10-23). Only on a harness whose Enter steers
+     * (`enterWhileRunning: "steers"`), never Escape, never the queue key, and never without
+     * `steerWitness`. Collie presses them only on a send the person marked as a steer
+     * (`when: "steer"`); a plain send keeps the queue key. Optional: without it no send steers.
+     */
+    readonly steer?: readonly string[];
+    /**
+     * How the harness shows that a steer reached the turn, one or more ways ({@link SteerWitness}).
+     * Required with `steer`, allowed only with it.
+     */
+    readonly steerWitness?: readonly SteerWitness[];
+    /**
+     * The pause between the text and the steer key, in ms (0 to 3000). Codex 0.164.0 reads a text
+     * followed at once by Enter as a paste burst and takes the Enter as a line break (lab, 2026-10-23).
+     * Allowed only with `steer`. Optional: no pause.
+     */
+    readonly steerDelayMs?: number;
   };
   readonly collapse: {
     /** The long-paste form as a regular expression source. Group `lines` is optional. */
@@ -409,6 +593,26 @@ export interface Profile {
   readonly paste?: {
     /** The harness takes a bracketed paste as text, so a send may paste where the multiplexer can. */
     readonly bracketed: boolean;
+    /**
+     * A harness that swallows a submit key sent too soon after the text (Muse, #507) names the pause,
+     * in ms, a send waits after the write before the reads that can send it. Optional.
+     */
+    readonly settleMs?: number;
+    /**
+     * The harness takes ONE bracketed paste of a whole multi-line text and folds a long one into its
+     * collapse form, whose `lines` group counts the paste's line breaks. Measured per harness in the
+     * lab: where it is true and the multiplexer frames a paste itself (`pasteBlock`), a send is one
+     * paste instead of a write per line, so a long dictation never grows the box past the screen.
+     */
+    readonly block?: boolean;
+    /**
+     * The token the harness draws for an image file it takes off a whole-text paste, as a regular
+     * expression source (Claude Code: `[Image #N]`). Optional, and only with `block`: without it, a
+     * send that names an image file is not modelled, so such a box stays unproven. With `block`, this
+     * token and the collapse pattern are read on the box with its white space taken out, so each
+     * writes a space as a literal space, never `\s` or `[ ]`.
+     */
+    readonly image?: string;
   };
   /** How the bridge keeps an ask (M56 spec 08). Optional: a profile without it uses the default lifetime. */
   readonly ask?: {
@@ -530,6 +734,104 @@ function nullableMatch(value: JsonValue | undefined, path: string, form: RegExp,
   return form.test(word) ? word : fail(path, `must be ${what} or null`);
 }
 
+/** The largest pause a profile may name between the text and the steer key. */
+const STEER_DELAY_MAX_MS = 3000;
+
+/** Whether two key names are the same key, case aside. */
+function sameKey(a: string, b: string): boolean {
+  return a.toLowerCase() === b.toLowerCase();
+}
+
+/**
+ * `keys.steer`, `keys.steerWitness` and `keys.steerDelayMs` (M69): read after `enterWhileRunning` and
+ * `queueKey`, which they are checked against. A steer key exists only where Enter steers; no key of it
+ * holds Escape (alone or in a chord), is the queue key (on any platform) or an interrupt key, and it
+ * never comes without a witness.
+ */
+function parseSteer(keysNode: JsonObject, keys: Profile["keys"]): Profile["keys"] {
+  if (keysNode.steer === undefined) {
+    if (keysNode.steerWitness !== undefined) fail("keys.steerWitness", "is only allowed with keys.steer");
+    if (keysNode.steerDelayMs !== undefined) fail("keys.steerDelayMs", "is only allowed with keys.steer");
+    return keys;
+  }
+  const steer = textList(keysNode.steer, "keys.steer", 1);
+  // A chord counts too: `alt+Escape` holds Escape.
+  if (steer.some((key) => key.toLowerCase().split("+").some((token) => token === "escape" || token === "esc"))) fail("keys.steer", "must not hold Escape");
+  if (keys.enterWhileRunning !== "steers") fail("keys.steer", "is for a harness whose Enter steers a turn (keys.enterWhileRunning: steers)");
+  const queueKeys = [keys.queueKey, ...Object.values(keys.queueKeyByPlatform ?? {})].filter((key): key is string => key !== undefined);
+  if (steer.some((key) => queueKeys.some((queue) => sameKey(key, queue)))) fail("keys.steer", "must not hold the queue key");
+  if (steer.some((key) => keys.interrupt.some((interrupt) => sameKey(key, interrupt)))) fail("keys.steer", "must not hold an interrupt key");
+  if (keysNode.steerWitness === undefined) fail("keys.steerWitness", "is required with keys.steer");
+  const witnessNode = keysNode.steerWitness;
+  const entries = Array.isArray(witnessNode) ? witnessNode : [witnessNode];
+  if (entries.length === 0) fail("keys.steerWitness", "must name at least one witness");
+  const steerWitness = entries.map((entry, i) => parseSteerWitness(entry, Array.isArray(witnessNode) ? `keys.steerWitness[${String(i)}]` : "keys.steerWitness"));
+  let out: Profile["keys"] = { ...keys, steer, steerWitness };
+  if (keysNode.steerDelayMs !== undefined) {
+    const delay = asJsonNumber(keysNode.steerDelayMs);
+    if (delay === undefined || !Number.isInteger(delay) || delay < 0 || delay > STEER_DELAY_MAX_MS) fail("keys.steerDelayMs", `must be a whole number of ms from 0 to ${String(STEER_DELAY_MAX_MS)}`);
+    out = { ...out, steerDelayMs: delay };
+  }
+  return out;
+}
+
+/** One {@link SteerWitness}: a block with a hint, a transcript row, or a marker row. */
+function parseSteerWitness(value: JsonValue, path: string): SteerWitness {
+  const node = object(value, path);
+  const rowPattern = pattern(field(node, "pattern", path), `${path}.pattern`);
+  const holdsText = rowPattern.source.includes("(?<text>");
+  if (node.transcript !== undefined && node.transcript !== true) fail(`${path}.transcript`, "must be true when set");
+  if (node.hintAbove !== undefined && node.hintAbove !== true && node.hintAbove !== false) fail(`${path}.hintAbove`, "must be true or false");
+  if (node.hint !== undefined) {
+    if (node.transcript !== undefined) fail(`${path}.transcript`, "is not allowed with a hint");
+    if (!holdsText) fail(`${path}.pattern`, "must hold the named group text");
+    const base: SteerWitness = {
+      pattern: rowPattern.source,
+      hint: pattern(node.hint, `${path}.hint`).source,
+      hintGap: whole(field(node, "hintGap", path), `${path}.hintGap`, 0),
+    };
+    const between = betweenRows(node, path);
+    const header = headerRow(node, path);
+    const withBetween: SteerWitness = between === undefined ? base : { ...base, between };
+    const withHeader: SteerWitness = header === undefined ? withBetween : { ...withBetween, header };
+    return node.hintAbove === true ? { ...withHeader, hintAbove: true } : withHeader;
+  }
+  if (node.hintGap !== undefined) fail(`${path}.hintGap`, "is only allowed with a hint");
+  if (node.hintAbove !== undefined) fail(`${path}.hintAbove`, "is only allowed with a hint");
+  if (node.between !== undefined) fail(`${path}.between`, "is only allowed with a hint");
+  if (node.header !== undefined) fail(`${path}.header`, "is only allowed with a hint");
+  if (node.transcript === true) {
+    if (!holdsText) fail(`${path}.pattern`, "must hold the named group text");
+    return { pattern: rowPattern.source, transcript: true };
+  }
+  if (holdsText) fail(`${path}.pattern`, "a marker row holds no group text; set transcript or a hint");
+  if (rowPattern.test("")) fail(`${path}.pattern`, "must not match a blank row");
+  return { pattern: rowPattern.source };
+}
+
+/**
+ * The `between` rows of a block ({@link QueuedRow.between}), or undefined. A pattern that matches a
+ * blank row is refused: it would pass over the gap the block is bounded by.
+ */
+function betweenRows(node: JsonObject, path: string): string | undefined {
+  if (node.between === undefined) return undefined;
+  const rows = pattern(node.between, `${path}.between`);
+  if (rows.test("")) fail(`${path}.between`, "must not match a blank row");
+  return rows.source;
+}
+
+/**
+ * The `header` row of a block ({@link QueuedRow.header}), or undefined. Refused with `hintAbove` (the
+ * hint is the header there) and when it matches a blank row.
+ */
+function headerRow(node: JsonObject, path: string): string | undefined {
+  if (node.header === undefined) return undefined;
+  if (node.hintAbove === true) fail(`${path}.header`, "is not allowed with hintAbove: the hint is the header");
+  const row = pattern(node.header, `${path}.header`);
+  if (row.test("")) fail(`${path}.header`, "must not match a blank row");
+  return row.source;
+}
+
 /** A regular expression source, compiled once to prove it is one. Returns the compiled form. */
 function pattern(value: JsonValue | undefined, path: string): RegExp {
   const source = text(value, path);
@@ -649,7 +951,24 @@ function commandList(value: JsonValue | undefined): CommandListRows {
   const base: CommandListRows = { pointer: one("pointer"), entry: one("entry"), wrapped: one("wrapped") };
   const withLead = node.lead === undefined ? base : { ...base, lead: commandListLead(node.lead, `${path}.lead`) };
   const withSides = node.sides === undefined ? withLead : { ...withLead, sides: commandListSides(node.sides, `${path}.sides`) };
-  return node.footer === undefined ? withSides : { ...withSides, footer: commandListFooter(node.footer, `${path}.footer`) };
+  const withFooter = node.footer === undefined ? withSides : { ...withSides, footer: commandListFooter(node.footer, `${path}.footer`) };
+  const withNamespaces = node.namespaces === undefined ? withFooter : { ...withFooter, namespaces: commandListNamespaces(node.namespaces, `${path}.namespaces`) };
+  if (node.pointerBold !== undefined && node.pointerBold !== true && node.pointerBold !== false) fail(`${path}.pointerBold`, "must be true or false");
+  if (node.argumentHint !== undefined && node.argumentHint !== true && node.argumentHint !== false) fail(`${path}.argumentHint`, "must be true or false");
+  if (node.argumentList !== undefined && node.argumentList !== true && node.argumentList !== false) fail(`${path}.argumentList`, "must be true or false");
+  const withPointerBold = node.pointerBold === true ? { ...withNamespaces, pointerBold: true } : withNamespaces;
+  const withArgumentHint = node.argumentHint === true ? { ...withPointerBold, argumentHint: true } : withPointerBold;
+  return node.argumentList === true ? { ...withArgumentHint, argumentList: true } : withArgumentHint;
+}
+
+/** `commandList.namespaces`: unique words with no space in them. */
+function commandListNamespaces(value: JsonValue, path: string): string[] {
+  const namespaces = textList(value, path, 1);
+  namespaces.forEach((namespace, i) => {
+    if (namespace.length === 0 || /\s/u.test(namespace)) fail(`${path}[${String(i)}]`, "must be a word with no space");
+    if (namespaces.indexOf(namespace) !== i) fail(`${path}[${String(i)}]`, "is named twice");
+  });
+  return namespaces;
 }
 
 function commandListLead(value: JsonValue, path: string): string {
@@ -660,12 +979,12 @@ function commandListLead(value: JsonValue, path: string): string {
 
 function commandListSides(value: JsonValue, path: string): CommandListSide[] {
   const sides = textList(value, path, 1);
-  const known: ReadonlySet<string> = new Set(["under", "above"]);
+  const known: ReadonlySet<string> = new Set(["under", "above", "inside"]);
   sides.forEach((side, i) => {
-    if (!known.has(side)) fail(`${path}[${String(i)}]`, 'must be "under" or "above"');
+    if (!known.has(side)) fail(`${path}[${String(i)}]`, 'must be "under", "above" or "inside"');
     if (sides.indexOf(side) !== i) fail(`${path}[${String(i)}]`, "is named twice");
   });
-  return sides.filter((side): side is CommandListSide => side === "under" || side === "above");
+  return sides.filter((side): side is CommandListSide => side === "under" || side === "above" || side === "inside");
 }
 
 function commandListFooter(value: JsonValue, path: string): CommandListFooter {
@@ -688,7 +1007,7 @@ function volatileBelow(node: JsonObject): Profile["idle"]["volatile"]["below"] {
   const withScreens = node.otherScreens === undefined ? withFooter : { ...withFooter, otherScreens: otherScreens(node.otherScreens) };
   return node.commandList === undefined ? withScreens : { ...withScreens, commandList: commandList(node.commandList) };
 }
-/** `idle.notices`: each an object whose head pattern compiles and cannot match a blank row. */
+/** `idle.notices`: each an object whose head pattern compiles and cannot match a blank row, and whose `body` and `letters`, when named, are true. */
 function parseNotices(value: JsonValue | undefined): NoticeHead[] {
   const path = "idle.notices";
   return list(value, path).map((item, i) => {
@@ -696,6 +1015,11 @@ function parseNotices(value: JsonValue | undefined): NoticeHead[] {
     const node = object(item, at);
     const head = pattern(field(node, "head", at), `${at}.head`);
     if (head.test("") || head.test(" ")) fail(`${at}.head`, "must not match a blank row");
+    if (node.body !== undefined && node.body !== true) fail(`${at}.body`, "must be true when named");
+    if (node.letters !== undefined && node.letters !== true) fail(`${at}.letters`, "must be true when named");
+    if (node.body === true && node.letters === true) return { head: head.source, body: true, letters: true };
+    if (node.body === true) return { head: head.source, body: true };
+    if (node.letters === true) return { head: head.source, letters: true };
     return { head: head.source };
   });
 }
@@ -711,14 +1035,34 @@ function parseNoticeGaps(value: JsonValue | undefined): string[] {
   });
 }
 
-/** `idle.placeholders`: the texts and the SGR attribute, and the prefixes only when the profile names them. */
+/** A list of foreground colours: at least one, each written `rgb(r,g,b)` as the ANSI reader gives it, none twice. */
+function colourList(value: JsonValue, path: string): string[] {
+  const fg = textList(value, path, 1);
+  fg.forEach((colour, i) => {
+    const at = `${path}[${String(i)}]`;
+    const parts = /^rgb\((\d{1,3}),(\d{1,3}),(\d{1,3})\)$/u.exec(colour);
+    if (parts === null || parts.slice(1).some((part) => Number(part) > 255)) fail(at, "must read rgb(r,g,b) with each part 0 to 255");
+    if (fg.indexOf(colour) !== i) fail(at, "is named twice");
+  });
+  return fg;
+}
+
+/** `idle.inlineHint`: the ghost text's foreground colours. */
+function parseInlineHint(value: JsonValue): InlineHint {
+  const path = "idle.inlineHint";
+  const node = object(value, path);
+  return { fg: colourList(field(node, "fg", path), `${path}.fg`) };
+}
+
+/** `idle.placeholders`: the texts and the SGR attribute, and the prefixes and colours only when the profile names them. */
 function parsePlaceholders(node: JsonObject): Profile["idle"]["placeholders"] {
   const base = {
     texts: textList(field(node, "texts", "idle.placeholders"), "idle.placeholders.texts", 0),
     sgr: whole(field(node, "sgr", "idle.placeholders"), "idle.placeholders.sgr", 0),
   };
-  if (node.prefixes === undefined) return base;
-  return { ...base, prefixes: textList(node.prefixes, "idle.placeholders.prefixes", 1) };
+  const withPrefixes = node.prefixes === undefined ? base : { ...base, prefixes: textList(node.prefixes, "idle.placeholders.prefixes", 1) };
+  if (node.fg === undefined) return withPrefixes;
+  return { ...withPrefixes, fg: colourList(node.fg, "idle.placeholders.fg") };
 }
 
 /** `idle.frame.trailer`: the last row inside the box, and the padding rows under it. */
@@ -744,7 +1088,7 @@ function parseFrame(frameNode: JsonObject): FrameLayout {
     maxTailRows: whole(field(frameNode, "maxTailRows", "idle.frame"), "idle.frame.maxTailRows", 0),
   };
   if (walk === "edges") {
-    for (const key of ["rows", "trailer", "continuation"] as const) {
+    for (const key of ["rows", "trailer", "continuation", "ownPrompt"] as const) {
       if (frameNode[key] !== undefined) fail(`idle.frame.${key}`, "belongs to the interior walk");
     }
     const edgeBottom = anchor(field(frameNode, "bottom", "idle.frame"), "idle.frame.bottom", null, true);
@@ -760,10 +1104,13 @@ function parseFrame(frameNode: JsonObject): FrameLayout {
   }
   if (frameNode.underPainted === true && frameNode.under === undefined) fail("idle.frame.underPainted", "needs an under pattern");
   const withPainted = frameNode.underPainted === true ? { ...withUnder, underPainted: true } : withUnder;
-  if (frameNode.continuation === undefined) return withPainted;
+  if (frameNode.ownPrompt !== undefined && frameNode.ownPrompt !== true && frameNode.ownPrompt !== false) fail("idle.frame.ownPrompt", "must be true or false");
+  if (frameNode.ownPrompt === true && frameNode.rows === undefined) fail("idle.frame.ownPrompt", "needs a rows pattern");
+  const withOwnPrompt = frameNode.ownPrompt === true ? { ...withPainted, ownPrompt: true } : withPainted;
+  if (frameNode.continuation === undefined) return withOwnPrompt;
   const continuation = pattern(frameNode.continuation, "idle.frame.continuation");
   if (!continuation.source.includes("(?<text>")) fail("idle.frame.continuation", "must hold the named group text");
-  return { ...withPainted, continuation: continuation.source };
+  return { ...withOwnPrompt, continuation: continuation.source };
 }
 
 export function parseProfile(raw: JsonValue): Profile {
@@ -804,7 +1151,16 @@ export function parseProfile(raw: JsonValue): Profile {
     idleNode.runningRows === undefined
       ? undefined
       : list(idleNode.runningRows, "idle.runningRows").map((item, i) => pattern(item, `idle.runningRows[${String(i)}]`).source);
-  const withRunning: Profile["idle"] = runningRows === undefined ? idle : { ...idle, runningRows };
+  const withRunningRows: Profile["idle"] = runningRows === undefined ? idle : { ...idle, runningRows };
+  const stoppedRows =
+    idleNode.stoppedRows === undefined
+      ? undefined
+      : list(idleNode.stoppedRows, "idle.stoppedRows").map((item, i) => {
+          const row = pattern(item, `idle.stoppedRows[${String(i)}]`);
+          if (row.test("")) fail(`idle.stoppedRows[${String(i)}]`, "must not match a blank row");
+          return row.source;
+        });
+  const withRunning: Profile["idle"] = stoppedRows === undefined ? withRunningRows : { ...withRunningRows, stoppedRows };
   const overlayRows =
     idleNode.overlayRows === undefined
       ? undefined
@@ -832,7 +1188,10 @@ export function parseProfile(raw: JsonValue): Profile {
   }
   const withDialogs: Profile["idle"] = idleNode.dialogsInBox === true ? { ...withOverlay, dialogsInBox: true } : withOverlay;
   const withNotices: Profile["idle"] = idleNode.notices === undefined ? withDialogs : { ...withDialogs, notices: parseNotices(idleNode.notices) };
-  const idleBlock: Profile["idle"] = idleNode.noticeGaps === undefined ? withNotices : { ...withNotices, noticeGaps: parseNoticeGaps(idleNode.noticeGaps) };
+  const withGaps: Profile["idle"] = idleNode.noticeGaps === undefined ? withNotices : { ...withNotices, noticeGaps: parseNoticeGaps(idleNode.noticeGaps) };
+  const withHint: Profile["idle"] = idleNode.inlineHint === undefined ? withGaps : { ...withGaps, inlineHint: parseInlineHint(idleNode.inlineHint) };
+  const idleBlock: Profile["idle"] =
+    idleNode.answerPrompt === undefined ? withHint : { ...withHint, answerPrompt: pattern(idleNode.answerPrompt, "idle.answerPrompt").source };
 
   const keysNode = object(field(root, "keys", ""), "keys");
   const clearNode = object(field(keysNode, "clear", "keys"), "keys.clear");
@@ -854,6 +1213,10 @@ export function parseProfile(raw: JsonValue): Profile {
     },
   };
   let keys: Profile["keys"] = Object.keys(platformSubmit.byPlatform).length === 0 ? baseKeys : { ...baseKeys, submitByPlatform: platformSubmit.byPlatform };
+  if (keysNode.interruptClearsDraft !== undefined) {
+    if (keysNode.interruptClearsDraft !== true && keysNode.interruptClearsDraft !== false) fail("keys.interruptClearsDraft", "must be true or false");
+    keys = { ...keys, interruptClearsDraft: keysNode.interruptClearsDraft };
+  }
   if (keysNode.enterWhileRunning !== undefined) {
     keys = { ...keys, enterWhileRunning: oneOf(keysNode.enterWhileRunning, "keys.enterWhileRunning", ENTER_MODES) };
   }
@@ -861,11 +1224,19 @@ export function parseProfile(raw: JsonValue): Profile {
     const queuedNode = object(keysNode.queuedRow, "keys.queuedRow");
     const rowPattern = pattern(field(queuedNode, "pattern", "keys.queuedRow"), "keys.queuedRow.pattern");
     if (!rowPattern.source.includes("(?<text>")) fail("keys.queuedRow.pattern", "must hold the named group text");
-    const queuedRow: QueuedRow = {
+    if (queuedNode.hintAbove !== undefined && queuedNode.hintAbove !== true && queuedNode.hintAbove !== false) {
+      fail("keys.queuedRow.hintAbove", "must be true or false");
+    }
+    const queuedBase: QueuedRow = {
       pattern: rowPattern.source,
       hint: pattern(field(queuedNode, "hint", "keys.queuedRow"), "keys.queuedRow.hint").source,
       hintGap: whole(field(queuedNode, "hintGap", "keys.queuedRow"), "keys.queuedRow.hintGap", 0),
     };
+    const queuedBetween = betweenRows(queuedNode, "keys.queuedRow");
+    const queuedHeader = headerRow(queuedNode, "keys.queuedRow");
+    const queuedBetweenWith: QueuedRow = queuedBetween === undefined ? queuedBase : { ...queuedBase, between: queuedBetween };
+    const queuedWith: QueuedRow = queuedHeader === undefined ? queuedBetweenWith : { ...queuedBetweenWith, header: queuedHeader };
+    const queuedRow: QueuedRow = queuedNode.hintAbove === true ? { ...queuedWith, hintAbove: true } : queuedWith;
     keys = { ...keys, queuedRow };
   }
   if (keysNode.queueKey !== undefined) {
@@ -910,6 +1281,20 @@ export function parseProfile(raw: JsonValue): Profile {
   const collapse = { pattern: pattern(field(collapseNode, "pattern", "collapse"), "collapse.pattern").source };
 
   const reservedLeads = textList(field(root, "reservedLeads", ""), "reservedLeads", 1);
+  // Read after the leads: each entry is one command word that starts with one of them.
+  if (keysNode.commandsRunInTurn !== undefined) {
+    const commandsRunInTurn = textList(keysNode.commandsRunInTurn, "keys.commandsRunInTurn", 1);
+    for (const entry of commandsRunInTurn) {
+      if (/\s/u.test(entry) || [...entry].length < 2) fail("keys.commandsRunInTurn", `${entry} must be one command word, with no space`);
+      if (!reservedLeads.some((lead) => entry.startsWith(lead))) fail("keys.commandsRunInTurn", `${entry} must start with a reserved lead`);
+      if (keys.neverHeld?.includes(entry) === true) fail("keys.commandsRunInTurn", `${entry} is in keys.neverHeld`);
+    }
+    keys = { ...keys, commandsRunInTurn };
+  }
+  if (keysNode.commandsRunInTurnNote !== undefined) {
+    keys = { ...keys, commandsRunInTurnNote: text(keysNode.commandsRunInTurnNote, "keys.commandsRunInTurnNote") };
+  }
+  keys = parseSteer(keysNode, keys);
 
   const probeNode = object(field(root, "probe", ""), "probe");
   const probe = {
@@ -924,7 +1309,19 @@ export function parseProfile(raw: JsonValue): Profile {
     const pasteNode = object(root.paste, "paste");
     const bracketed = pasteNode.bracketed;
     if (bracketed !== true && bracketed !== false) fail("paste.bracketed", "must be true or false");
-    paste = { bracketed: bracketed === true };
+    const settleMs = asJsonNumber(pasteNode.settleMs);
+    if (pasteNode.settleMs !== undefined && (settleMs === undefined || !Number.isInteger(settleMs) || settleMs < 1 || settleMs > 5000)) {
+      fail("paste.settleMs", "must be a whole number of ms from 1 to 5000");
+    }
+    const block = pasteNode.block;
+    if (block !== undefined && block !== true && block !== false) fail("paste.block", "must be true or false");
+    if (block === true && bracketed !== true) fail("paste.block", "needs paste.bracketed");
+    paste = settleMs === undefined ? { bracketed: bracketed === true } : { bracketed: bracketed === true, settleMs };
+    if (block === true) paste = { ...paste, block: true };
+    if (pasteNode.image !== undefined) {
+      if (block !== true) fail("paste.image", "needs paste.block");
+      paste = { ...paste, image: pattern(pasteNode.image, "paste.image").source };
+    }
   }
 
   let ask: Profile["ask"];

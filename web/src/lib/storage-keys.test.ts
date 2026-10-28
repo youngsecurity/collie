@@ -41,6 +41,8 @@ interface KeyFate {
 const KEYS = new Map<string, KeyFate>([
   // ── Wiped: what a pairing leaves behind ──
   ["collie:draft:", { area: "local", prefix: true, fate: "wiped", why: "unsent words typed under the pairing" }],
+  // The draft store's second version (lib/drafts.ts, PR 560); under the first one's prefix, so its wipe covers both.
+  ["collie:draft:v2:", { area: "local", prefix: true, fate: "wiped", why: "unsent words typed under the pairing" }],
   // The token and the push endpoint are named by constants, so the scan sees them through those.
   ["collie:device-token", { area: "local", prefix: false, fate: "wiped", why: "the credential itself" }],
   ["collie:push-endpoint", { area: "local", prefix: false, fate: "wiped", why: "names this phone's push endpoint" }],
@@ -58,14 +60,19 @@ const KEYS = new Map<string, KeyFate>([
   ["collie:locale:v1", { area: "local", prefix: false, fate: "kept", why: "preference" }],
   ["collie:haptics:v1", { area: "local", prefix: false, fate: "kept", why: "preference" }],
   ["collie:harness-bar:v1", { area: "local", prefix: false, fate: "kept", why: "preference" }],
+  ["collie:harness-prefs:v1", { area: "local", prefix: false, fate: "kept", why: "preference, per harness (status line shown)" }],
   ["collie:strips-collapsed:v1", { area: "local", prefix: false, fate: "kept", why: "preference" }],
   ["collie:stt-hands-free:v1", { area: "local", prefix: false, fate: "kept", why: "preference" }],
   ["collie:stt-engine:v1", { area: "local", prefix: false, fate: "kept", why: "preference, Host or This phone for speech (ADR 0096)" }],
   ["collie:zen-enabled:v1", { area: "local", prefix: false, fate: "kept", why: "preference" }],
   ["collie:auto-zen-enabled:v1", { area: "local", prefix: false, fate: "kept", why: "preference" }],
   ["collie:pins:v1", { area: "local", prefix: false, fate: "kept", why: "pinned pane ids, no content" }],
+  ["collie:wide-layout:v1", { area: "local", prefix: false, fate: "kept", why: "large-screen columns per space: pane addresses and widths, no content (ADR 0120)" }],
+  ["collie:wide-sidebar:v1", { area: "local", prefix: false, fate: "kept", why: "preference" }],
+  ["collie:wide-layout-mode:v1", { area: "local", prefix: false, fate: "kept", why: "preference: Auto or Off for the large-screen layout (ADR 0120)" }],
   ["collie:pin-hint:v1", { area: "local", prefix: false, fate: "kept", why: "a dismissed hint" }],
   ["collie:masked-hint:v1", { area: "local", prefix: false, fate: "kept", why: "a dismissed hint" }],
+  ["collie:pane-nav-hint:v1", { area: "local", prefix: false, fate: "kept", why: "the Two fingers first-arm hint was shown (ADR 0121)" }],
   ["collie:hidden-machines:v1", { area: "local", prefix: false, fate: "kept", why: "machine names hidden here" }],
   ["collie:mirror-native:", { area: "local", prefix: true, fate: "kept", why: "a per-pane colour choice" }],
   ["collie:tour:v1", { area: "local", prefix: false, fate: "kept", why: "the tour was seen" }],

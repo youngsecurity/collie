@@ -8,10 +8,13 @@ import {
   isBlobHash,
   isPiSessionId,
   parsePiTranscript,
+  piJournal,
   PiTranscriptSource,
   resolveBlobPath,
   resolveImageUrl,
 } from "./pi.ts";
+import { LiveWindows, TICK_FLOOR_MS } from "./live.ts";
+import { TranscriptStore } from "./store.ts";
 import { MAX_TEXT_CHARS } from "./text.ts";
 import type { ToolCall } from "./tool-call.ts";
 import type { TranscriptPart } from "./types.ts";
@@ -677,21 +680,6 @@ describe("parsePiTranscript — the structured call", () => {
     expect(part.call).toEqual({ kind: "execute", command: "echo hi" });
   });
 
-  test("`details.answer` joins the structured summary and leaves the part's own alone", () => {
-    const part = partOf(
-      call("call_1", "ask_user", { question: "Which color do you prefer?", options: ["Red", "Blue"] }),
-      result("call_1", "ask_user", "The user picked: Blue", {
-        details: { question: "Which color do you prefer?", options: ["Red", "Blue"], answer: "Blue", by: "phone" },
-      }),
-    );
-    expect(part.summary).toBe("Which color do you prefer?");
-    expect(part.call).toEqual({
-      kind: "other",
-      name: "ask_user",
-      summary: "Which color do you prefer? → Blue",
-    });
-  });
-
   test("OmO's `details.answers` fills the chosen label, in question order", () => {
     const q = "Pick a color for the Collie sandbox probe?";
     const part = partOf(
@@ -858,6 +846,102 @@ describe("PiTranscriptSource — path refs are confined to the root", () => {
   });
 });
 
+// pi names a new session before it writes the file (#526). Observed on pi 0.87.1 under Herdr: on
+// launch and right after `/new`, `herdr pane get` reports `agent_session: {kind: "path", value:
+// ".../--tmp-x--/2026-10-19T07-48-57-661Z_<uuid>.jsonl"}` while that folder holds no such file; pi
+// writes it whole when the first reply is saved. Until then the pane is a new, EMPTY session.
+describe("PiTranscriptSource — a session pi has not written yet", () => {
+  const SID = "01a15322-94bd-773d-b89f-b80fc1885dd6";
+  const OLD = "01a15322-2a49-773d-b89f-b80c14b8ba0c";
+
+  async function fixture() {
+    const base = await realpath(await mkdtemp(join(tmpdir(), "collie-pi-new-")));
+    const root = join(base, "sessions");
+    const project = join(root, "--tmp-x--");
+    await mkdir(project, { recursive: true });
+    const old = join(project, `2026-10-19T07-48-30-410Z_${OLD}.jsonl`);
+    await Bun.write(old, `${header()}\n${speech("a1", "user", "the old question")}\n`);
+    const next = join(project, `2026-10-19T07-48-57-661Z_${SID}.jsonl`);
+    return { base, root, project, old, next, clean: () => rm(base, { recursive: true, force: true }) };
+  }
+
+  test("resolve still answers null for it, and pending answers where the file will be", async () => {
+    const f = await fixture();
+    const src = new PiTranscriptSource(f.root);
+    expect(await src.resolve({ kind: "path", value: f.next })).toBeNull();
+    expect(await src.pending({ kind: "path", value: f.next })).toBe(f.next);
+    // A file that exists is resolve's to answer, never pending's.
+    expect(await src.pending({ kind: "path", value: f.old })).toBeNull();
+    // An id names no place, so there is nothing to confine yet.
+    expect(await src.pending({ kind: "id", value: SID })).toBeNull();
+    await f.clean();
+  });
+
+  test("pending keeps resolve's confinement: pi's own name, a folder inside the root, nothing there", async () => {
+    const f = await fixture();
+    const src = new PiTranscriptSource(f.root);
+    expect(await src.pending({ kind: "path", value: join(f.project, "notes.jsonl") })).toBeNull();
+    expect(await src.pending({ kind: "path", value: join(f.project, `x_${SID}.txt`) })).toBeNull();
+    // A folder outside every root, and one that does not exist.
+    expect(await src.pending({ kind: "path", value: join(f.base, `t_${SID}.jsonl`) })).toBeNull();
+    expect(await src.pending({ kind: "path", value: join(f.root, "--gone--", `t_${SID}.jsonl`) })).toBeNull();
+    // A folder symlinked out of the root.
+    await mkdir(join(f.base, "elsewhere"));
+    await symlink(join(f.base, "elsewhere"), join(f.root, "--sneaky--"));
+    expect(await src.pending({ kind: "path", value: join(f.root, "--sneaky--", `t_${SID}.jsonl`) })).toBeNull();
+    // A dangling symlink where the log will be: never "empty", whatever it points at later.
+    await symlink(join(f.base, "outside.jsonl"), f.next);
+    expect(await src.pending({ kind: "path", value: f.next })).toBeNull();
+    await f.clean();
+  });
+
+  test("the live window answers an empty session under a new tag, then reads the file when it appears", async () => {
+    const f = await fixture();
+    let now = 1_000_000;
+    const live = new LiveWindows(new TranscriptStore(), () => now);
+    const adapter = piJournal(f.root);
+
+    const before = await live.window(adapter, { kind: "path", value: f.old }, { limit: 40 });
+    expect(before?.upserts.map((e) => e.uuid)).toEqual(["a1"]);
+
+    // `/new`: the ref moves to a file that is not there. Not "no log" (null): an empty session.
+    const empty = await live.window(adapter, { kind: "path", value: f.next }, { limit: 40 });
+    expect(empty).not.toBeNull();
+    expect(empty?.upserts).toEqual([]);
+    expect(empty?.hasOlder).toBe(false);
+    expect(empty?.queued).toEqual([]);
+    expect(empty?.lastPrompt).toBeUndefined();
+    expect(empty?.session).toEqual(expect.any(String));
+    expect(empty?.session).not.toBe(before?.session);
+    expect(empty?.gen).not.toBe(before?.gen);
+
+    // A poll while pi still has not written it: the same empty answer, a 304 on the wire.
+    now += TICK_FLOOR_MS;
+    const quiet = await live.window(adapter, { kind: "path", value: f.next }, { limit: 40, after: { gen: empty!.gen, rev: empty!.rev } });
+    expect(quiet).toEqual(empty);
+
+    // The first reply is saved: pi writes the header, the prompt and the reply at once.
+    await Bun.write(
+      f.next,
+      `${header()}\n${speech("b1", "user", "a new question")}\n${speech("b2", "assistant", "a new answer")}\n`,
+    );
+    now += TICK_FLOOR_MS;
+    const born = await live.window(adapter, { kind: "path", value: f.next }, { limit: 40, after: { gen: empty!.gen, rev: empty!.rev } });
+    expect(born?.session).toBe(empty?.session);
+    expect(born?.upserts.map((e) => e.uuid)).toEqual(["b1", "b2"]);
+    expect(born?.hasOlder).toBe(false);
+    await f.clean();
+  });
+
+  test("a path pi may not serve is still no log, not an empty session", async () => {
+    const f = await fixture();
+    const live = new LiveWindows(new TranscriptStore(), () => 0);
+    const outside = join(f.base, `2026-10-19T07-48-57-661Z_${SID}.jsonl`);
+    expect(await live.window(piJournal(f.root), { kind: "path", value: outside }, { limit: 40 })).toBeNull();
+    await f.clean();
+  });
+});
+
 // pi with more than one sessions root (a second PI_CODING_AGENT_DIR) — the same multi-home case
 // CLAUDE_CONFIG_DIR raised for Claude (issue #92). pi is the interesting one because its ref is
 // usually a free-form PATH: no root built that name, so every configured root is asked whether the
@@ -998,5 +1082,276 @@ describe("parsePiTranscript — a message delivered while the agent works", () =
       ["u2", { kind: "text", text: "are you updating build artifacts ??" }],
     ]);
     expect(entries.map((e) => e.role)).toEqual(["user", "assistant", "user", "assistant"]);
+  });
+});
+
+// Gentle Shell (gentle-pi 4.2.0) on pi 1.3.0: the row shapes below were read off real local sessions on
+// 2026-10-16 (issue #461, ADR 0119).
+describe("parsePiTranscript — Gentle Shell's tools", () => {
+  /** A linear session: each row hangs off the one before, so nothing reads as a rewind. */
+  const session = () => {
+    const rows: string[] = [];
+    let parent: string | null = null;
+    const add = (id: string, body: Record<string, JsonValue>) => {
+      rows.push(plain(id, parent, body));
+      parent = id;
+    };
+    return {
+      call(id: string, callId: string, name: string, args: Record<string, JsonValue>) {
+        add(id, { type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: callId, name, arguments: args }] } });
+      },
+      result(id: string, callId: string, name: string, text: string, details: JsonValue, isError = false) {
+        const message = { role: "toolResult", toolCallId: callId, toolName: name, content: [{ type: "text", text }], details };
+        add(id, { type: "message", message: isError ? { ...message, isError: true } : message });
+      },
+      notice(id: string, customType: string, content: string, details: JsonValue) {
+        add(id, { type: "custom_message", customType, content, display: true, details });
+      },
+      rows,
+    };
+  };
+  const tools = (lines: string[]) =>
+    parsePiTranscript(lines.join("\n")).flatMap((e) =>
+      e.parts.flatMap((p) => (p.kind === "tool" ? [{ uuid: e.uuid, part: p }] : [])),
+    );
+  const todo = (tasks: { id: number; title: string; status: string }[]) => ({ gentleTodo: { tasks, nextId: tasks.length + 1, updatedTurn: 1 } });
+
+  test("a `todo` update folds into the card its write drew, with the list from the result", () => {
+    const s = session();
+    s.call("a1", "c1", "todo", { action: "write", tasks: [{ title: "Parse", status: "in_progress" }, { title: "Ship" }] });
+    s.result("r1", "c1", "todo", "Todo list written: 2 tasks", todo([{ id: 1, title: "Parse", status: "in_progress" }, { id: 2, title: "Ship", status: "pending" }]));
+    s.call("a2", "c2", "todo", { action: "update", id: 1, status: "done" });
+    s.result("r2", "c2", "todo", "#1 Parse → done", todo([{ id: 1, title: "Parse", status: "done" }, { id: 2, title: "Ship", status: "pending" }]));
+    const drawn = tools(s.rows);
+    expect(drawn).toHaveLength(1);
+    expect(drawn[0]?.uuid).toBe("a1");
+    expect(drawn[0]?.part.call).toEqual({
+      kind: "plan",
+      name: "todo",
+      tasks: [{ title: "Parse", status: "done" }, { title: "Ship", status: "pending" }],
+    });
+  });
+
+  test("the fold names the card's turn as changed", () => {
+    const s = session();
+    s.call("a1", "c1", "todo", { action: "write", tasks: [{ title: "Parse" }] });
+    s.result("r1", "c1", "todo", "written", todo([{ id: 1, title: "Parse", status: "pending" }]));
+    s.call("a2", "c2", "todo", { action: "update", id: 1, status: "in_progress" });
+    const reducer = createPiReducer();
+    for (const line of s.rows) reducer.push(line);
+    const folded = reducer.push(plain("r2", "a2", {
+      type: "message",
+      message: { role: "toolResult", toolCallId: "c2", toolName: "todo", content: [{ type: "text", text: "ok" }], details: todo([{ id: 1, title: "Parse", status: "in_progress" }]) },
+    }));
+    expect(folded.added).toEqual([]);
+    expect([...folded.changed]).toEqual(["a1"]);
+  });
+
+  test("a second write opens a card of its own", () => {
+    const s = session();
+    s.call("a1", "c1", "todo", { action: "write", tasks: [{ title: "Old" }] });
+    s.result("r1", "c1", "todo", "written", todo([{ id: 1, title: "Old", status: "pending" }]));
+    s.call("a2", "c2", "todo", { action: "write", tasks: [{ title: "New" }] });
+    s.result("r2", "c2", "todo", "written", todo([{ id: 1, title: "New", status: "pending" }]));
+    expect(tools(s.rows).map((t) => t.uuid)).toEqual(["a1", "a2"]);
+  });
+
+  // 14 real `clear` calls (2026-10-16): the result's list is empty, and the next `add` starts a new list.
+  test("a `clear` keeps the card's last list and lets the next `add` draw a card of its own", () => {
+    const s = session();
+    s.call("a1", "c1", "todo", { action: "write", tasks: [{ title: "Old" }] });
+    s.result("r1", "c1", "todo", "written", todo([{ id: 1, title: "Old", status: "done" }]));
+    s.call("a2", "c2", "todo", { action: "clear" });
+    s.result("r2", "c2", "todo", "cleared", todo([]));
+    s.call("a3", "c3", "todo", { action: "add", title: "New" });
+    s.result("r3", "c3", "todo", "added", todo([{ id: 1, title: "New", status: "pending" }]));
+    expect(tools(s.rows).map((t) => [t.uuid, t.part.call])).toEqual([
+      ["a1", { kind: "plan", name: "todo", tasks: [{ title: "Old", status: "done" }] }],
+      ["a3", { kind: "plan", name: "todo", tasks: [{ title: "New", status: "pending" }] }],
+    ]);
+  });
+
+  test("a rewind past the held card lets the next update draw on the new branch", () => {
+    const rows = [
+      plain("a1", null, { type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "c1", name: "todo", arguments: { action: "write", tasks: [{ title: "Old" }] } }] } }),
+      plain("r1", "a1", { type: "message", message: { role: "toolResult", toolCallId: "c1", toolName: "todo", content: [{ type: "text", text: "ok" }], details: todo([{ id: 1, title: "Old", status: "pending" }]) } }),
+      plain("u1", null, { type: "message", message: { role: "user", content: [{ type: "text", text: "start over" }] } }),
+      plain("a2", "u1", { type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "c2", name: "todo", arguments: { action: "update", id: 1, status: "done" } }] } }),
+      plain("r2", "a2", { type: "message", message: { role: "toolResult", toolCallId: "c2", toolName: "todo", content: [{ type: "text", text: "ok" }], details: todo([{ id: 1, title: "Old", status: "done" }]) } }),
+    ];
+    const drawn = parsePiTranscript(rows.join("\n")).filter((e) => e.parts.some((p) => p.kind === "tool"));
+    expect(drawn.map((e) => [e.uuid, e.abandoned === true])).toEqual([["a1", true], ["a2", false]]);
+  });
+
+  test("an update with no write before it draws its own card from the result", () => {
+    const s = session();
+    s.call("a1", "c1", "todo", { action: "update", id: 2, status: "done" });
+    s.result("r1", "c1", "todo", "ok", todo([{ id: 2, title: "Ship", status: "done" }]));
+    expect(tools(s.rows).map((t) => t.part.call)).toEqual([{ kind: "plan", name: "todo", tasks: [{ title: "Ship", status: "done" }] }]);
+  });
+
+  test("`ask_user_choice` takes its answer from `details.selection`, and a dismissal fills nothing", () => {
+    const ask = { question: "Which?", options: [{ label: "Remove", value: "remove" }, { label: "Keep", value: "keep" }] };
+    const s = session();
+    s.call("a1", "c1", "ask_user_choice", ask);
+    s.result("r1", "c1", "ask_user_choice", "Remove", { ...ask, selection: { value: "remove", label: "Remove", index: 1 } });
+    s.call("a2", "c2", "ask_user_choice", ask);
+    s.result("r2", "c2", "ask_user_choice", "User cancelled the choice", { ...ask, cancelled: true });
+    const [answered, dismissed] = tools(s.rows).map((t) => t.part.call);
+    expect(answered).toMatchObject({ kind: "question", answers: [["Remove"]] });
+    expect(dismissed?.kind === "question" && dismissed.answers).toBeUndefined();
+  });
+
+  test("collie's own `ask_user` is a question card with its `details.answer`", () => {
+    const s = session();
+    s.call("a1", "c1", "ask_user", { question: "Which color do you prefer?", options: ["Red", "Blue"] });
+    s.result("r1", "c1", "ask_user", "The user picked: Blue", { question: "Which color do you prefer?", options: ["Red", "Blue"], answer: "Blue", by: "phone" });
+    const [only] = tools(s.rows);
+    expect(only?.part.summary).toBe("Which color do you prefer?");
+    expect(only?.part.call).toMatchObject({ kind: "question", name: "ask_user", answers: [["Blue"]] });
+  });
+
+  const agents = (taskId: string, status: string, mode = "background", agent = "gentle-ai-explore") => ({ gentleAgents: { taskId, agent, status, mode, cwd: "/repo" } });
+
+  test("a background subagent is ongoing until its end notice, which a failure marks", () => {
+    const s = session();
+    s.call("a1", "c1", "subagent_run", { agent: "gentle-ai-explore", label: "Map it", task: "…", mode: "background" });
+    s.result("r1", "c1", "subagent_run", "Started gentle-ai-explore in the background as task t-1.", agents("t-1", "queued"));
+    const running = tools(s.rows)[0]?.part;
+    expect(running?.call).toEqual({ kind: "task", agent: "gentle-ai-explore", summary: "Map it", ongoing: true });
+    s.notice("n1", "gentle-agents.result", "Subagent gentle-ai-explore (task t-1, \"Map it\") failed.", agents("t-1", "failed"));
+    const entries = parsePiTranscript(s.rows.join("\n"));
+    const part = entries[0]?.parts[0];
+    expect(part?.kind === "tool" && part.call).toEqual({ kind: "task", agent: "gentle-ai-explore", summary: "Map it" });
+    expect(part?.kind === "tool" && part.result?.isError).toBe(true);
+    // The notice is still drawn where it happened.
+    expect(entries.at(-1)?.role).toBe("note");
+  });
+
+  test("a foreground subagent is finished when it returns", () => {
+    const s = session();
+    s.call("a1", "c1", "subagent_run", { agent: "gentle-ai-explore", label: "Map it", task: "…" });
+    s.result("r1", "c1", "subagent_run", "The answer.", agents("t-1", "completed", "task"));
+    expect(tools(s.rows)[0]?.part.call).toEqual({ kind: "task", agent: "gentle-ai-explore", summary: "Map it" });
+  });
+
+  test("`subagent_result` folds into its task's card and brings the answer", () => {
+    const s = session();
+    s.call("a1", "c1", "subagent_run", { agent: "gentle-ai-explore", label: "Map it", task: "…", mode: "background" });
+    s.result("r1", "c1", "subagent_run", "Started.", agents("t-1", "queued"));
+    s.call("a2", "c2", "subagent_result", { task_id: "t-1" });
+    s.result("r2", "c2", "subagent_result", "The map.", agents("t-1", "completed"));
+    const drawn = tools(s.rows);
+    expect(drawn).toHaveLength(1);
+    expect(drawn[0]?.part.call).toEqual({ kind: "task", agent: "gentle-ai-explore", summary: "Map it" });
+    expect(drawn[0]?.part.result?.text).toBe("The map.");
+  });
+
+  // Read off a real session (2026-10-15): a cancelled subagent has no end notice, only the status a
+  // later `subagent_status` or `subagent_cancel` reports.
+  test("a later status result that names the task ends its card", () => {
+    const s = session();
+    s.call("a1", "c1", "subagent_run", { agent: "gentle-ai-explore", label: "Map it", task: "…", mode: "background" });
+    s.result("r1", "c1", "subagent_run", "Started.", agents("t-1", "queued"));
+    s.call("a2", "c2", "subagent_status", { task_id: "t-1" });
+    s.result("r2", "c2", "subagent_status", "cancelled", agents("t-1", "cancelled"));
+    expect(tools(s.rows)[0]?.part.call).toEqual({ kind: "task", agent: "gentle-ai-explore", summary: "Map it" });
+  });
+
+  test("a `subagent_result` asked while the task still runs leaves it running", () => {
+    const s = session();
+    s.call("a1", "c1", "subagent_run", { agent: "gentle-ai-explore", label: "Map it", task: "…", mode: "background" });
+    s.result("r1", "c1", "subagent_run", "Started.", agents("t-1", "queued"));
+    s.call("a2", "c2", "subagent_result", { task_id: "t-1" });
+    s.result("r2", "c2", "subagent_result", "Still running.", agents("t-1", "running"));
+    expect(tools(s.rows)[0]?.part.call).toMatchObject({ ongoing: true });
+  });
+
+  test("`subagent_continue` takes its agent from the result", () => {
+    const s = session();
+    s.call("a1", "c1", "subagent_continue", { task_id: "t-1", label: "Fix it", prompt: "…" });
+    s.result("r1", "c1", "subagent_continue", "Started.", agents("t-2", "queued", "background", "gentle-ai-worker"));
+    expect(tools(s.rows)[0]?.part.call).toEqual({ kind: "task", agent: "gentle-ai-worker", summary: "Fix it", ongoing: true });
+  });
+
+  const job = (jobId: string, kind: string, status: string, exitCode: number | null, event: string | null = null) => {
+    const gentleJobs = { jobId, kind, label: "suite", status, exitCode, outputPath: "/tmp/j.log" };
+    return { gentleJobs: event === null ? gentleJobs : { ...gentleJobs, event } };
+  };
+
+  test("a background command is ongoing with no exit code until its notice gives one", () => {
+    const s = session();
+    s.call("a1", "c1", "bash_background", { command: "bun test", label: "suite" });
+    s.result("r1", "c1", "bash_background", "Started background job job-1 (\"suite\").", job("job-1", "command", "running", null));
+    expect(tools(s.rows)[0]?.part.call).toEqual({ kind: "execute", command: "bun test", description: "suite", background: true, ongoing: true });
+    s.notice("n1", "gentle-jobs.notice", "Background job job-1 (\"suite\") exited with code 137 after 3s.", job("job-1", "command", "exited", 137));
+    const part = tools(s.rows)[0]?.part;
+    expect(part?.call).toEqual({ kind: "execute", command: "bun test", description: "suite", background: true, exitCode: 137 });
+    expect(part?.result?.isError).toBe(true);
+  });
+
+  test("a monitor's events leave it running, and stopping it ends it", () => {
+    const s = session();
+    s.call("a1", "c1", "monitor", { command: "tail -f x", label: "watch", timeout_seconds: 60 });
+    s.result("r1", "c1", "monitor", "Started monitor job-1.", job("job-1", "monitor", "running", null));
+    s.notice("n1", "gentle-jobs.notice", "Monitor job-1 reported 2 new lines", job("job-1", "monitor", "running", null, "events"));
+    expect(tools(s.rows)[0]?.part.call).toMatchObject({ ongoing: true });
+    s.notice("n2", "gentle-jobs.notice", "Monitor job-1 reported 1 new line", job("job-1", "monitor", "stopped", null, "events"));
+    const call = tools(s.rows)[0]?.part.call;
+    expect(call).toEqual({ kind: "execute", command: "tail -f x", description: "watch", background: true });
+    expect(tools(s.rows)[0]?.part.result?.isError).toBeUndefined();
+  });
+});
+
+// The thinking level beside the model (#463). pi writes a `thinking_level_change` row when a session
+// opens and on every change, and pi 1.3 also stamps `thinkingLevel` on each assistant message, so the
+// newest of the two is the level the next turn runs at.
+describe("the pi probe — the thinking level", () => {
+  const SID = "019f1827-bf99-7927-9684-76318de905b5";
+  const level = (id: string, thinkingLevel: string) =>
+    JSON.stringify({ type: "thinking_level_change", id, parentId: "p0", timestamp: "2026-07-29T10:00:00.000Z", thinkingLevel });
+  const answer = (id: string, extra: Record<string, JsonValue> = {}) =>
+    row(id, {
+      role: "assistant",
+      content: [{ type: "text", text: "ok" }],
+      provider: "anthropic",
+      model: "claude-opus-5-5",
+      usage: { input: 10, output: 5, cacheRead: 900, cacheWrite: 0 },
+      ...extra,
+    });
+
+  async function probeOf(lines: readonly string[]) {
+    const created = `${tmpdir()}/collie-pi-effort-${Math.floor(performance.now() * 1000)}`;
+    const root = join(created, "sessions");
+    const project = join(root, "--repo--");
+    await mkdir(project, { recursive: true });
+    const log = join(project, `2026-07-29T10-00-00-000Z_${SID}.jsonl`);
+    await Bun.write(log, `${lines.join("\n")}\n`);
+    const probe = await piJournal(root).cacheProbe?.({ kind: "path", value: await realpath(log) });
+    await rm(created, { recursive: true, force: true });
+    return probe;
+  }
+
+  test("the level row written when the session opened names the effort", async () => {
+    const probe = await probeOf([header(), level("l1", "high"), answer("a1")]);
+    expect(probe?.model).toBe("anthropic:claude-opus-5-5");
+    expect(probe?.effort).toBe("high");
+  });
+
+  test("a level changed after the last turn is the one the next turn uses", async () => {
+    const probe = await probeOf([header(), level("l1", "high"), answer("a1", { thinkingLevel: "high" }), level("l2", "low")]);
+    expect(probe?.turnId).toBe("a1");
+    expect(probe?.effort).toBe("low");
+  });
+
+  test("the turn's own thinkingLevel answers when no level row is in the window", async () => {
+    const probe = await probeOf([answer("a1", { thinkingLevel: "xhigh" })]);
+    expect(probe?.effort).toBe("xhigh");
+  });
+
+  test("a log that names no level reports no effort", async () => {
+    const probe = await probeOf([header(), answer("a1")]);
+    expect(probe?.model).toBe("anthropic:claude-opus-5-5");
+    expect(probe?.effort).toBeUndefined();
   });
 });

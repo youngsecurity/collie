@@ -8,7 +8,7 @@ import { DEAD_DEBOUNCE_MS, isLive, resetLiveness } from "./liveness";
 import { resetBasePathForTests } from "./base-path";
 import {
   getDeviceToken, getPairingExpiry, isBrowserPairingEnforced, isNotPaired, isPairingExpired,
-  markExpired, sessionCacheAllowed, setDeviceToken,
+  markExpired, setDeviceToken,
 } from "./pairing";
 import { burstPaneId, resetPollIntent, sendCount } from "./poll-intent";
 import { __refusalSettled, WIPE_LAST_KEY } from "./wipe";
@@ -26,6 +26,7 @@ import {
   fetchFileImage,
   fetchHistory,
   fetchPane,
+  fetchPaneWalky,
   fetchSnapshot,
   filesImagePath,
   getNotifyPrefs,
@@ -37,6 +38,8 @@ import {
   removeRecentRun,
   sendKeys,
   startLaunch,
+  fetchWalkyWho,
+  postWalky,
   sendReply,
   textBeforeLastSend,
   uploadFile,
@@ -69,10 +72,8 @@ describe("api client", () => {
     expect(isNotPaired()).toBe(false);
     expect(getDeviceToken()).toBe("expired-token");
     expect(getPairingExpiry()).toBe(1);
-    expect(sessionCacheAllowed()).toBe(false);
     await expect(sendReply("w1:p1", "hello")).resolves.toEqual({ ok: true });
     // A missing policy header never undoes the known opt-out.
-    expect(sessionCacheAllowed()).toBe(false);
     server.use(http.get(/\/api\/(snapshot|devices)$/, () => new HttpResponse("device expired", {
       status: 403, headers: { "X-Collie-Pairing": "on" },
     })));
@@ -97,7 +98,6 @@ describe("api client", () => {
     await expect(postSend({ id: "adoption-send", pane: "w1:p1", text: "hello", mode: "send" })).resolves.toMatchObject({ outcome: "sent" });
     expect(authorization).toBeNull();
     expect(isBrowserPairingEnforced()).toBe(false);
-    expect(sessionCacheAllowed()).toBe(false);
     expect(serverSkewMs()).toBeGreaterThan(50_000);
   });
 
@@ -140,7 +140,6 @@ describe("api client", () => {
           expect(getDeviceToken()).toBeNull();
           expect(getPairingExpiry()).toBeNull();
           expect(localStorage.getItem(WIPE_LAST_KEY)).toBe(credential.wipe);
-          expect(sessionCacheAllowed()).toBe(false);
         });
       }
     }
@@ -215,7 +214,6 @@ describe("api client", () => {
         expect(isBrowserPairingEnforced()).toBe(true);
         expect(isNotPaired()).toBe(false);
         expect(getDeviceToken()).toBe("valid-token");
-        expect(sessionCacheAllowed()).toBe(false);
       });
     }
   });
@@ -226,7 +224,6 @@ describe("api client", () => {
       return HttpResponse.json(fixtureSnapshot, { headers: { "X-Collie-Pairing": "off" } });
     }));
     await fetchSnapshot();
-    expect(sessionCacheAllowed()).toBe(false);
     expect(isNotPaired()).toBe(false);
   });
   it("sendReply returns the bridge's ok result on success", async () => {
@@ -1518,5 +1515,44 @@ describe("cancelHeldSend (M56 spec 15)", () => {
     server.use(http.delete("/api/send/:id", ({ request }) => (urls.push(request.url), HttpResponse.json({ result: "cancelled" }))));
     await expect(cancelHeldSend("req00001", "w1:p1", { host: "badger" })).rejects.toMatchObject({ status: 400 });
     expect(urls).toEqual([]);
+  });
+});
+
+describe("the walky talky routes (M62)", () => {
+  it("reads a pane's list newest first, scoped to the machine that owns the pane", async () => {
+    const urls: string[] = [];
+    server.use(http.get(/\/api\/pane\/[^/]+\/walky/, ({ request }) => (urls.push(request.url), HttpResponse.json({ messages: [] }))));
+    await expect(fetchPaneWalky("w1:p1", { host: "badger" })).resolves.toEqual([]);
+    expect(urls).toEqual(["http://localhost:3000/api/pane/w1%3Ap1/walky?limit=50&host=badger"]);
+  });
+
+  it("posts the body as given and hands back a list for one receipt", async () => {
+    const bodies: unknown[] = [];
+    server.use(
+      http.post("/api/walky", async ({ request }) => {
+        bodies.push(await request.json());
+        return HttpResponse.json({ receipt: { id: "wt_aaaaaaaaaaaa", state: "accepted", verified: "local", at: 1, by: "solo", target: "local/w1:p1" } });
+      }),
+    );
+    const receipts = await postWalky({ id: "wt_aaaaaaaaaaaa", to: "local/w1:p1", body: "hi", replyTo: "wt_bbbbbbbbbbbb" });
+    expect(bodies).toEqual([{ id: "wt_aaaaaaaaaaaa", to: "local/w1:p1", body: "hi", replyTo: "wt_bbbbbbbbbbbb" }]);
+    expect(receipts.map((r) => r.state)).toEqual(["accepted"]);
+  });
+
+  it("hands back every receipt of a fan-out", async () => {
+    const receipts = await postWalky({ id: "wt_aaaaaaaaaaaa", to: "all", body: "hi" });
+    expect(receipts).toHaveLength(2);
+  });
+
+  it("lists the reachable targets, with no skipped panes and no refusals from a bridge that sends none", async () => {
+    server.use(http.get("/api/walky/who", () => HttpResponse.json({ targets: [] })));
+    await expect(fetchWalkyWho()).resolves.toEqual({ targets: [], skipped: [], refusals: null });
+  });
+
+  it("hands back the skipped shell panes and the refusal counts when the bridge sends them", async () => {
+    const skipped = [{ address: "bluefin/w1:p2", memberId: "bluefin", machine: "bluefin", label: "zsh" }];
+    const refusals = { counts: { "rate limit": 3 }, since: 1_700_000_000_000 };
+    server.use(http.get("/api/walky/who", () => HttpResponse.json({ targets: [], skipped, refusals })));
+    await expect(fetchWalkyWho()).resolves.toEqual({ targets: [], skipped, refusals });
   });
 });

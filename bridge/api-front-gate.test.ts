@@ -18,6 +18,7 @@ import {
   guard,
   isOpenApiRoute,
   OPEN_API_ROUTES,
+  paneGateLevel,
   type PairingGate,
   requestDevice,
 } from "./server.ts";
@@ -139,6 +140,7 @@ describe("the route table read off server.ts", () => {
       "/api/pane/id1/abort",
       "/api/stt/host",
       "/api/stt/whistle",
+      "/api/pane/id1/subagent/id1",
       "/api/workspace/id1/changes",
       // The Files existence check (ADR 0088): a POST read, refused without a token like every route.
       "/api/pane/id1/files/exist",
@@ -146,6 +148,8 @@ describe("the route table read off server.ts", () => {
       // The Files image read (ADR 0090): bytes off the disk, so a missing token is refused here too.
       "/api/pane/id1/files/image",
       "/api/workspace/id1/files/image",
+      // The Claude commands a pane would load: names and descriptions off this disk.
+      "/api/pane/id1/claude-commands",
     ]) {
       expect(paths).toContain(known);
     }
@@ -642,8 +646,32 @@ describe("the local credential: reads only, from this host through nothing", () 
     }
   });
 
-  test("the Files read, files/image and files/exist routes ask device-read, never read (by source)", () => {
-    for (const route of ["WORKSPACE_FILES_ROUTE", "PANE_FILES_EXIST_ROUTE", "PANE_FILES_IMAGE_ROUTE"]) {
+  // Counsel on the Edge 5 candidate: a Stop and a steer are a person's tap only. The local credential
+  // is the one HTTP credential a process beside the bridge can hold (an agent, its hook, the walky
+  // talky CLI, which itself speaks over the walky socket and has no route to either), so it is refused
+  // on both routes at the level server.ts asks for them, before any read of the pane.
+  test("a Stop (`POST /api/pane/:id/abort`) and a steer (`POST /api/send`, `when: steer`) with the local credential are 403", async () => {
+    expect(paneGateLevel("abort")).toBe("write");
+    // A Clear of the box (ADR 0116) is a write too, and the local credential is refused on it the same way.
+    expect(paneGateLevel("clear")).toBe("write");
+    expect(SERVER_CODE).toContain('if (pathname === "/api/send" && req.method === "POST") {\n        const denied = browserGate("write");');
+    for (const [bind, peer] of [
+      [LOOPBACK_BIND, "127.0.0.1"],
+      [CONCRETE_BIND, "100.64.0.8"],
+    ] as const) {
+      const { gate } = await gateFrom(() => peer, bind);
+      const headers = { ...bearer, origin: "http://127.0.0.1:8787", "content-type": "application/json" };
+      const stop = guard(request("POST", "/api/pane/w1%3Ap1/abort", headers), config(), paneGateLevel("abort"), gate);
+      expect({ bind, status: stop?.status }).toEqual({ bind, status: 403 });
+      const cleared = guard(request("POST", "/api/pane/w1%3Ap1/clear", headers), config(), paneGateLevel("clear"), gate);
+      expect({ bind, status: cleared?.status }).toEqual({ bind, status: 403 });
+      const steer = guard(request("POST", "/api/send", headers), config(), "write", gate);
+      expect({ bind, status: steer?.status }).toEqual({ bind, status: 403 });
+    }
+  });
+
+  test("the Files read, files/image, files/exist and Claude commands routes ask device-read, never read (by source)", () => {
+    for (const route of ["WORKSPACE_FILES_ROUTE", "PANE_FILES_EXIST_ROUTE", "PANE_FILES_IMAGE_ROUTE", "PANE_CLAUDE_COMMANDS_ROUTE"]) {
       const at = SERVER_CODE.indexOf(`pathname.match(${route})`);
       expect({ route, found: at > 0 }).toEqual({ route, found: true });
       const nextGate = SERVER_CODE.slice(at).match(/caller\.gate\("([a-z-]+)"\)/);

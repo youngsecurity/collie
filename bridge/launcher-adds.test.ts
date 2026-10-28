@@ -72,8 +72,7 @@ describe("addLauncher: a recipe", () => {
     expect((await sweepRevokedRows(f.added, new Set(), f.audit))).toEqual([]);
     expect((await f.added.list()).map((row) => row.id)).toEqual([ID2, ID3]);
     const restored = await new AddedLauncherStore(f.io).list();
-    expect(restored).toMatchObject([{ id: ID2, device: null, headerDevice: "phone", deviceKind: "header" }]);
-    expect(f.io.text).not.toContain(ID3);
+    expect(restored).toMatchObject([{ id: ID2, device: null, headerDevice: "phone", deviceKind: "header" }, { id: ID3, device: null, deviceKind: "anonymous" }]);
   });
 
   test("the sweep still removes legacy paired rows without touching a matching header identity", async () => {

@@ -17,6 +17,7 @@ const BASE: DisplayPrefs = {
   rawTerminal: false,
   tapToFocus: true,
   expandClippedReply: true,
+  stretchText: false,
 };
 
 /** A full DisplayPrefs for a test to hand to a component, with any fields it cares about set. */

@@ -1,5 +1,4 @@
 import { asJsonNumber, parseJsonObject } from "@/lib/json";
-import { sessionCacheAllowed } from "@/lib/pairing";
 
 // THE "NO PROMPTS" GUARDS, ON THIS DEVICE (M48 spec 02, ADR 0094).
 //
@@ -53,7 +52,7 @@ export function noPromptsConfirmed(
   command: string,
   storage: Pick<Storage, "getItem"> | undefined = safeStorage(),
 ): boolean {
-  return sessionCacheAllowed() && readAll(storage).has(confirmKey(machine, command));
+  return readAll(storage).has(confirmKey(machine, command));
 }
 
 /** Whether a start must ask first: the line skips prompts and this device has not confirmed it there. */
@@ -75,8 +74,6 @@ export function rememberNoPromptsConfirm(
   now: number = Date.now(),
   storage: Pick<Storage, "getItem" | "setItem"> | undefined = safeStorage(),
 ): void {
-  // These keys contain command lines, not just a device preference.
-  if (!sessionCacheAllowed()) return;
   const all = readAll(storage);
   all.set(confirmKey(machine, command), now);
   const kept = [...all]

@@ -7,9 +7,10 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { loadProfiles } from "../../web/src/lib/surface/profile.ts";
 import { loadConfig } from "../config.ts";
 import type { MuxGrid, MuxGridRequest, MuxOutcome } from "../mux/types.ts";
-import { guard, SURFACE_OFF_TEXT, surfaceRoute } from "../server.ts";
+import { guard, paneCanSteer, SURFACE_OFF_TEXT, surfaceRoute } from "../server.ts";
 import type { AgentView } from "../types.ts";
 import { askOf } from "../../web/src/lib/surface/surface.ts";
 import { SurfaceLedger } from "./counters.ts";
@@ -20,7 +21,9 @@ const screen = (name: string): string => readFileSync(join(PANES, name), "utf8")
 
 const IDLE = "claude-lab--idle-after-turn--w82.txt";
 const PERMISSION = "claude-lab--permission-bash--w82.txt";
-const SURVEY = "claude-lab--survey-rating-above-box--w82.txt";
+/** The /usage panel over a live box: a strong cue no reader lifts. (The rating survey stood here until
+ *  2026-10-19, when it became a notice, ADR 0109.) */
+const PANEL = "claude--v2301-usage-panel-over-box--w82.txt";
 /** A dialog fixture whose screen still shows a live box: the Surface sees no modal, the old reader a block. */
 const AGENTS = "claude-lab--agents-screen--w82.txt";
 /** The harness id the fixtures were captured under; the profile is picked by it. Test files are
@@ -46,7 +49,7 @@ function agent(paneId: string, harness = HARNESS): AgentView {
   return { paneId, workspaceId: "w1", workspaceLabel: "one", workspaceNumber: 1, tabId: "w1:t1", agent: harness, status: "idle", cwd: "/x", focused: false };
 }
 
-function rig() {
+function rig(binaryVersion = "2.1.296") {
   const mux = new FakeMux();
   const lines: string[] = [];
   let clock = 1_000_000;
@@ -58,7 +61,7 @@ function rig() {
     now: () => clock,
     version: async () => {
       versionReads++;
-      return "2.1.296";
+      return binaryVersion;
     },
   });
   return {
@@ -82,6 +85,33 @@ describe("surface shadow", () => {
     expect(counters).toEqual({ observed: 1, free: 1, unknown: {}, modal: {}, disagreements: 0 });
   });
 
+  test("says a Stop has a key only for a pane read under a profile with an interrupt key (M68)", async () => {
+    const r = rig();
+    r.mux.set("w1:p1", IDLE, 7);
+    r.mux.set("w1:p2", IDLE, 7);
+    expect(r.shadow.canStopOf("w1:p1")).toBe(false); // not read yet
+    await r.shadow.observe([agent("w1:p1"), agent("w1:p2", "no-such-harness")]);
+    expect(r.shadow.canStopOf("w1:p1")).toBe(true);
+    expect(r.shadow.canStopOf("w1:p2")).toBe(false); // no profile
+    expect(r.shadow.canStopOf("w1:p9")).toBe(false); // unknown pane
+  });
+
+  test("says no Stop when the range the version borrows is revoked, as StopService would refuse it (M68)", async () => {
+    const profile = loadProfiles().get(HARNESS)!;
+    const saved = profile.versions;
+    try {
+      // A version above every range borrows the nearest older one: the status reads provisional, the range revoked.
+      Object.assign(profile, { versions: saved.map((range) => ({ ...range, status: "revoked" })) });
+      const r = rig("99.0.0");
+      r.mux.set("w1:p1", IDLE, 7);
+      await r.shadow.observe([agent("w1:p1")]);
+      expect(r.shadow.report().panes[0]!.status).toBe("provisional");
+      expect(r.shadow.canStopOf("w1:p1")).toBe(false);
+    } finally {
+      Object.assign(profile, { versions: saved });
+    }
+  });
+
   test("lifts a permission dialog as an ask and counts it by kind", async () => {
     const r = rig();
     r.mux.set("w1:p1", PERMISSION, 3);
@@ -94,7 +124,7 @@ describe("surface shadow", () => {
 
   test("a strong cue no reader lifted reads unreadable and is counted", async () => {
     const r = rig();
-    r.mux.set("w1:p1", SURVEY, 3);
+    r.mux.set("w1:p1", PANEL, 3);
     await r.shadow.observe([agent("w1:p1")]);
     expect(r.shadow.surfaceOf("w1:p1")!.modal).toBe("unreadable");
     expect(r.shadow.report().counters[`${HARNESS}@2.1.296`]!.modal).toEqual({ unreadable: 1 });
@@ -372,5 +402,42 @@ describe("surface shadow: the persisted counters (M56 spec 09)", () => {
     mux.set("w1:p1", IDLE, 1);
     await shadow.observe([agent("w1:p1")]);
     expect(shadow.surfaceOf("w1:p1")).toEqual({ revision: 1, turn: "idle", modal: "none", composer: "empty" });
+  });
+});
+
+// M69: the pane view's `canSteer`, from the shadow's own read of the pane's profile and version.
+describe("canSteer (M69)", () => {
+  const PI_RUNNING = "pi--v130-steer-typed--w120.txt";
+  const steerRig = (versions: Record<string, string | null>) => {
+    const mux = new FakeMux();
+    const shadow = new SurfaceShadow({ mux, pollMs: 1000, log: () => undefined, now: () => 1_000_000, version: async (profile) => versions[profile.id] ?? null });
+    return { mux, shadow };
+  };
+
+  test("pi 1.3.0 in a running turn can be steered; Claude cannot; nothing before the first read", async () => {
+    const { mux, shadow } = steerRig({ pi: "1.3.0", claude: "2.1.296" });
+    expect(shadow.canSteer("w1:p1")).toBe(false);
+    mux.set("w1:p1", PI_RUNNING, 1);
+    mux.set("w1:p2", IDLE, 1);
+    await shadow.observe([agent("w1:p1", "pi"), agent("w1:p2", "claude")]);
+    expect(shadow.surfaceOf("w1:p1")?.turn).toBe("running");
+    expect(shadow.canSteer("w1:p1")).toBe(true);
+    expect(shadow.canSteer("w1:p2")).toBe(false);
+  });
+
+  test("a pi binary whose version could not be read is not steered", async () => {
+    const { mux, shadow } = steerRig({ pi: null });
+    mux.set("w1:p1", PI_RUNNING, 1);
+    await shadow.observe([agent("w1:p1", "pi")]);
+    expect(shadow.canSteer("w1:p1")).toBe(false);
+  });
+
+  test("the serialiser marks a screen pane with a Send Protocol only, never a program's (durable) pane", () => {
+    const yes = { canSteer: () => true };
+    expect(paneCanSteer({ send: {}, surface: yes }, "w1:p1")).toBe(true);
+    expect(paneCanSteer({ send: {}, driver: {}, surface: yes }, "w1:p1")).toBe(false);
+    expect(paneCanSteer({ surface: yes }, "w1:p1")).toBe(false);
+    expect(paneCanSteer({ send: {}, surface: { canSteer: () => false } }, "w1:p1")).toBe(false);
+    expect(paneCanSteer({ send: {} }, "w1:p1")).toBe(false);
   });
 });
