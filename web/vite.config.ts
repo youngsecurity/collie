@@ -10,6 +10,7 @@ import {
   channelFor,
   includeAssetsFor,
   manifestFor,
+  PRECACHE_MAX_FILE_BYTES,
   precacheIgnoresFor,
   transformIndexIcons,
   type Channel,
@@ -156,8 +157,11 @@ const pkgVersion = (
 ).version;
 const buildSha = gitSha();
 const buildTime = new Date().toISOString();
-// One channel decision drives the version stamp and the icons together.
+// channelFor(pkgVersion's evidence) is computed ONCE and drives both the version stamp above and
+// the icon/manifest channel below — never call it twice, the two must always agree.
 const channel: Channel = channelFor(gitEvidence(pkgVersion));
+// The fork's `+ys.N` is SemVer build metadata already, so the sha and the time extend it with dots
+// and the `-dev` marker goes before it (web/vite-build.ts, the same rule as bridge/version.ts).
 const BUILD_INFO = buildInfoFor({
   version: pkgVersion,
   sha: buildSha,
@@ -328,11 +332,10 @@ export default defineConfig({
         // `unicode-range` already makes them lazy (index.css), so precaching them would charge
         // every install for glyphs most herds never paint. src/sw.ts caches them on first use.
         globPatterns: ["**/*.{js,css,html,svg,png,ico,webmanifest}"],
-        // The app shell is ONE chunk, and on this fork it passed workbox's 2 MiB default at 1.24.0+ys.1
-        // (2,102,879 bytes). An asset over the cap is silently left out of the precache, and a shell
-        // that is not precached is a PWA that does not open offline, so the cap moves rather than
-        // the shell. 3 MiB is headroom, not a target: the next step is code-splitting the shell.
-        maximumFileSizeToCacheInBytes: 3 * 1024 * 1024,
+        // The main chunk must stay in the precache (M46 offline reading), and Workbox refuses to
+        // build past its 2 MiB default. See PRECACHE_MAX_FILE_BYTES in vite-icons.ts for the size
+        // history and for what to do before raising it again.
+        maximumFileSizeToCacheInBytes: PRECACHE_MAX_FILE_BYTES,
         // A release build's precache must not carry the dev channel's icons, and neither build
         // may carry the playground's — see vite-icons.ts's precacheIgnoresFor. Without this, a
         // release SW precached the dev AND playground icon sets too, every byte of it competing
