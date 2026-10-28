@@ -84,6 +84,9 @@ export interface CardDockProps extends RawMirrorAppearance {
   onMenuAction?: (action: MenuBlockAction, menu: MenuModel) => void | Promise<void>;
   /** Injected handler for the unread-dialog card's one declared key (.adr/0053). */
   onUnreadDialogAction?: (key: string, cancel: UnreadDialogModel) => void | Promise<void>;
+  /** Opens Report a problem from the unread-dialog card (ADR 0123, amendment 2026-10-28). Absent, the
+   *  card offers no report. */
+  onUnreadDialogReport?: (cancel: UnreadDialogModel) => void;
   /** Disable every card's controls (read-only device, gone pane). */
   promptDisabled?: boolean;
   /** The pane the card answers for, and its scope. The prompt card enables only while the bridge has
@@ -127,6 +130,7 @@ function liftedCard({
   onMultiSelectAnswer,
   onMenuAction,
   onUnreadDialogAction,
+  onUnreadDialogReport,
   promptDisabled,
   paneId,
   scope,
@@ -211,6 +215,7 @@ function liftedCard({
         disabled={promptDisabled || !onUnreadDialogAction}
         wrap={wrap}
         onAction={(key) => onUnreadDialogAction?.(key, unreadBlock.cancel)}
+        onReport={onUnreadDialogReport === undefined ? undefined : () => onUnreadDialogReport(unreadBlock.cancel)}
       />
     );
   }
