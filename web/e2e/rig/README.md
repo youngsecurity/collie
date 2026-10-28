@@ -15,7 +15,7 @@ On the Young Security fork this is an optional upstream rehearsal, not a release
 Running it requires separate authorization for model calls and scratch agent processes. Adoption
 installs no nightly runner. The scripts below remain available for an explicitly authorized run.
 
-Upstream requires all forty cases (thirty-three solo, seven on the crew leg) before tags and reader or send changes, and supplies the
+Upstream requires all forty-one cases (thirty-four solo, seven on the crew leg) before tags and reader or send changes, and supplies the
 nightly runner below. A case not reached proves nothing. Fixture tests on this fork do not claim
 to establish live-agent compatibility.
 
@@ -62,7 +62,7 @@ The rules are the harness lab's (`scripts/harness-canary/lab/lab-ledger.ts`):
   rig.
 - A run that cannot finish writes `failed`. A run in which a case failed, in either leg, writes `fail`. A
   case that was not reached, or is not applicable, in either leg proves nothing, so it makes the row
-  `failed`. The row is `pass` only when both legs passed every case (33 solo cases and 7 crew cases). A
+  `failed`. The row is `pass` only when both legs passed every case (34 solo cases and 7 crew cases). A
   `fail` outranks a `failed` between the two legs.
 
 **Cannot start.** A Claude login with under 25 minutes left, no `herdr`, `bun` or `git`, under 8 GB of
@@ -88,7 +88,7 @@ a rig in `scripts/browser-leg-nightly.test.ts`, which `bun run test` runs.
 
 ## The cases
 
-Each harness runs the same five cases. The walky talky cases (6 to 11 and 16 to 24), the stop case (25) and the steer case (26) run on the harnesses the
+Each harness runs the same five cases. The walky talky cases (6 to 11 and 16 to 24), the stop case (25), the steer case (26) and the queued case (29) run on the harnesses the
 last column names. Cases 12 to 15 and 19 to 21 run on the crew leg only (below).
 
 | # | Case | Harnesses | Spec |
@@ -96,7 +96,7 @@ last column names. Cases 12 to 15 and 19 to 21 run on the crew leg only (below).
 | 1 | Model picker: the first tap on the commit row commits | claude, pi, omp | `claude.spec.ts`, `others.spec.ts` |
 | 2 | Permission card: Yes from the phone runs the command | claude, pi, omp | same |
 | 3 | Question card: pick-many on Claude, pick-one on pi and omp | claude, pi, omp | same |
-| 4 | A send while the agent streams a long reply | claude, pi, omp | same |
+| 4 | A send while the agent streams a long reply. On Claude the first tap presses Enter into Claude's own queue: the receipt is `sent` with `queued`, the Chat draws Claude's queued row with the note (or the note has already landed after the turn, when a fast answer drained the queue first), and after the turn Claude answers it and the note is in the transcript once. A note sent after the turn already ended may go in as a plain `sent`. A held send fails the case | claude, pi, omp | same |
 | 5 | Load older with an empty phone cache: seven prompts, so the six-prompt cold page has an older page. The Load older row is attached, nothing covers its centre, a tap adds older rows, and the pin leaves the row free | claude, pi, omp | same |
 | 6 | Walky talky: hold Send, tap "Send as message". The pane gets one prompt, header and body. The receipt says `delivered`. Chat shows the "Message from" card with the operator badge | claude | `walky.spec.ts` |
 | 7 | The same operator message, to a pi pane and to an omp pane | pi, omp | `walky-harnesses.spec.ts` |
@@ -108,7 +108,7 @@ last column names. Cases 12 to 15 and 19 to 21 run on the crew leg only (below).
 | 13 | Crew leg. Claude on the lead runs `collie walky who` and sends to pi's address as `who` printed it, with its pane instance token (`#` and four characters). pi's pane gets the one-line nudge, `collie walky inbox <id>` shows the body, pi answers with `collie walky reply`, and Claude's pane shows the reply nudge. The lead's `collie walky status <id>` says `delivered` within 60 s (the member's report reached the lead), and the member's `collie walky status <reply id>` says `delivered` within 60 s (the lead pushed the outcome back to the sender's machine) | claude (lead), pi (member) | `walky-crew.spec.ts` |
 | 14 | Crew leg. The member's bridge stops: the lead's Crew page names it unreachable, the sheet counts 1 agent on 1 machine, the bridge takes the message for the lead's pane only and answers `rig-member/all` with a refused receipt ("host rig-member is unreachable"), which the sheet draws as a "not sent" row. The member then starts again and is reachable before the case ends | claude (lead) | `walky-crew.spec.ts` |
 | 15 | Crew leg. Release lines (M60 spec 01). On the lead's Updates page, the Release line control reads Stable; a tap on Edge shows the receipt, and `GET /api/update/line` on the lead says `edge` with nothing installed (no run record moves). The Crew page then says the members follow the lead's line, Edge. A tap on Stable puts it back, with its receipt. The member's own follow (an Edge build up, a rollback down) needs a published Edge tag behind a release mirror, which this rig does not serve; the unit suites in `bridge/crew/follow.test.ts` carry that half | claude (lead) | `walky-crew.spec.ts` |
-| 16 | A message during a running turn. A long numbered list streams (160 items on Claude, 180 on pi, 80 on omp). The operator holds Send and taps "Send as message" while it runs. The list runs to its last line, the agent then answers the body, the header is on the screen once, and the receipt ends at `delivered`. The phone's line under the box goes from "queued" to "typed into the pane". Claude holds the message until the turn is over. pi (Alt+Enter) and omp (Ctrl+Q) take it into their queue during the turn, so the note says when the header showed. A message must never steer the turn | claude, pi, omp | `walky.spec.ts`, `walky-harnesses.spec.ts` |
+| 16 | A message during a running turn. A long numbered list streams (160 items on Claude, 180 on pi, 80 on omp). The operator holds Send and taps "Send as message" while it runs. The list runs to its last line, the agent then answers the body, the header is on the screen once, and the receipt ends at `delivered`. The phone's line under the box goes from "queued" to "typed into the pane". Claude (Enter), pi (Alt+Enter) and omp (Ctrl+Q) may take it into their queue during the turn, so the note says when the header showed. A message must never steer the turn | claude, pi, omp | `walky.spec.ts`, `walky-harnesses.spec.ts` |
 | 17 | A message over a question card. Claude asks a pick-one question (no option has a preview). A message sent while the card shows is not typed into the dialog and its receipt stays `accepted`. The phone answers the question (Cherry), and then the message is typed once, the receipt says `delivered` and the agent answers the body. Case 9 does the same over a permission card | claude | `walky.spec.ts` |
 | 18 | An address of a pane that closed. A second Claude starts, `who` prints its address with a token, and its pane closes. After the bridge's 30 s sweep another Claude starts. A message to the old `#token` address is refused, and the new pane gets nothing. Herdr does not give a closed pane's id to the next pane, so the refusal is `no such pane` here. `pane replaced` needs a multiplexer that reuses ids (tmux, zellij), and the unit tests carry it | claude | `walky.spec.ts` |
 | 19 | Crew leg. Member to lead. pi on the member runs `collie walky who` (which lists its own machine and points to the lead), then sends to Claude's address on the lead, taken from the lead's `who` and put in the prompt. Claude's pane gets the one-line nudge with no body, reads it with `collie walky inbox <id>` and replies. The member's `collie walky status <id>` says `delivered` (the lead pushed the outcome back), and the lead's status of the reply says `delivered` (the member's report). Case 13 is the mirror image | claude (lead), pi (member) | `walky-crew.spec.ts` |
@@ -121,6 +121,7 @@ last column names. Cases 12 to 15 and 19 to 21 run on the crew leg only (below).
 | 26 | Steer while working (M69). A bash call counts to 40 over 40 s (the lab's long turn, 2026-10-23). The operator types a line, holds Send and taps the Steer row. The receipt says `steered`, the phone says "Steered: the agent takes it after its current step." within 5 s, and the turn still runs right after, because a steer is taken after the current tool call in the same turn. The note says whether the agent answered the line | pi | `steer.spec.ts` |
 | 27 | Steer while working (Codex): case 26 on Codex, with the profile's `steerDelayMs` (1000) added to the 5 s window. Not built: this rig starts claude, pi and omp only, and a Codex harness needs a binary, a login seed, an entry in `harnesses.ts`, and a column in the nightly's table. `steer.spec.ts` carries the helper and its `steerDelayMs` parameter, so the case is one test line once the harness exists | none yet | `steer.spec.ts` |
 | 28 | Clear a draft from the Keys board (ADR 0116). A word is typed into pi's box outside the phone (the keys route, as case 22 types one) and never sent, so the Surface reads `draft` and the Keys board's Clear button is enabled. One tap posts one `POST /api/pane/:id/clear`, and the bridge presses pi's clear key as a person's tap. The receipt says `cleared`, the notice "Box cleared." shows under the box, the box reads free within 5 s and the word is gone from the screen. No prompt is sent: zero model turns, nothing on OpenRouter | pi | `clear.spec.ts` |
+| 29 | A queued send on omp (ADR 0122). Two passes over a long numbered list (80 items). In each, a send from the composer while the turn runs is queued: the receipt is `sent` + `queued`, and within one poll Chat shows the "Waiting to send" card with the text and no button. Stop (arm, then Stop) ends the turn, omp puts the text back into its box, and the card turns "Back in the box" with Send and Discard; the receipt carries `late: "returned"`. Pass 1 taps Send: the submit key goes alone, omp answers the text, the log holds it once and the card goes. Pass 2 taps Discard: the box reads empty, the card goes and the text never becomes a prompt. Three model turns | omp | `queued.spec.ts` |
 
 The walky talky path is the same bridge code for every harness, so Claude carries most of the cases and
 pi and omp prove that their screens take the message. The table prints a row only for a harness a case
@@ -192,6 +193,9 @@ Collie stopped.
 - On PATH: `herdr` and `bun`. The harness binaries are named by path in `harnesses.ts`: Claude Code
   at `~/.local/bin/claude`, pi under nvm, omp at `~/.bun/bin/omp`. Override them with
   `COLLIE_RIG_CLAUDE_BIN`, `COLLIE_RIG_PI_BIN` and `COLLIE_RIG_OMP_BIN`.
+  The rig's bridge gets a `bin/` folder under its scratch HOME with a link per binary, first on its PATH, so its
+  version read runs the very binary the pane runs (a `claude` shim on the operator's PATH fails under the scratch
+  HOME, and a newer `omp` in `~/.local/bin` would be read instead of `~/.bun/bin/omp`).
 - A Claude login in `~/.claude/.credentials.json` with at least 25 minutes left on its access token.
 - 8 GB of free memory. The leg stops before a browser or a harness starts when less is free.
 
@@ -207,9 +211,74 @@ Results stay in `~/.cache/collie-lab/browser-leg-state/results/<run>/`: `ledger.
 tap with the bridge's receipt, `table.md` holds the table, and the phone screenshots and pane
 captures sit beside them.
 
-By hand: `bun e2e/rig/rig.ts up | down | status | start claude|pi|omp | snapshot | read <pane>`.
+By hand: `bun e2e/rig/rig.ts up | down | status | start claude|pi|omp | pane <cmd...> | pane ls | pane close <paneId>... | snapshot | read <pane>`.
 After a crash, `bun e2e/rig/rig.ts down` stops what the rig started. The crew leg's commands are in
 "The crew leg" below.
+
+With `COLLIE_RIG_OWNER_WATCH=1` a rig dies with the session that ran `up`. `make browser-leg` started in one
+Claude session and followed from a second one then stops when the first one ends. Start the leg from the session
+that will outlive it, from a plain shell, or leave the variable unset. It is off by default.
+
+On Linux, `up` starts the rig's daemon in a systemd scope of its own, `rig-<8 hex>-<pid>.scope`, with
+`TasksMax=700` (1400 for `up --crew`, which runs two servers and two bridges; `COLLIE_RIG_TASKS_MAX=<n>`
+overrides both), a stop timeout of 10 s, and core dumps off (`COLLIE_RIG_CORES=1` keeps them). The Herdr
+server, the bridge and every pane are children of the daemon, so they run there too, not in the Claude
+session that ran `up`. Five rigs from one session once filled that session's task limit (threads count as
+tasks), and Bun, Node and Claude aborted. Elsewhere (macOS, Windows), or without `systemd-run` and a user bus
+(`$XDG_RUNTIME_DIR/bus`), the daemon runs where `up` runs; on Linux that `WARNING` goes to `logs/daemon.log` and to stderr of `up`, and the
+rig has no task cap and no owner watch.
+
+- **Slice.** The scope goes in your default user slice, so the limit is per rig and there is no limit for all rigs
+  together. To put every rig in one slice, define the slice in a slice unit file on the host and set `COLLIE_RIG_SLICE=rig.slice`. The value must look like
+  `name.slice`; anything else is ignored with a `WARNING` line. Then the slice's own limits bound all rigs together.
+- **Check.** Once the daemon is up, `up` reads the scope's `pids.max`. When it is not the number asked for (a host
+  that does not hand the task controller to your user), `up` prints one `WARNING` line to stderr, and
+  `logs/daemon.log` gets it too, saying the task cap is not enforced. The check runs whenever the rig came up, also when
+  the daemon was slow to write `rig.json`. `status` shows `"tasks": "<pids.current>/<pids.max>"` for the scope, and leaves it out without one.
+- **Run limit.** The scope has `RuntimeMaxSec=21600` (6 hours). It is a hard stop by systemd: it kills the scope
+  with no teardown, so the Herdr home and `rig.json` stay until the next `up` or `down` clears them.
+  `COLLIE_RIG_RUNTIME_MAX_SEC=<n>` (a positive integer, in seconds) changes it.
+- **Owner watch (`COLLIE_RIG_OWNER_WATCH=1`).** `up` records the OWNER, the cgroup it ran in (a Claude session's
+  scope), in `rig.json`, but only on Linux and only if that directory exists at that moment. The daemon checks
+  every 30 s that it still exists, and tears the rig down after two misses in a row. Only "no such directory"
+  counts as a miss; any other error is ignored. Only a `claude-*.scope` cgroup is an owner (an allow list). Any other
+  cgroup is no owner: a login session, a desktop app, and also a `vte-spawn-*` or `tmux-spawn-*` scope. A rig started
+  from a plain shell or a terminal multiplexer skips the check.
+- **Start failure.** systemd-run's own messages go to `logs/systemd-run.err`. If systemd-run itself fails (it exits
+  non-zero within 1.5 s, before the daemon ran, with an error such as a bus failure), `up` starts the daemon
+  without a scope and prints a `WARNING` to stderr (also in `logs/daemon.log`) that says the rig has no task cap and
+  no owner watch. If the daemon ran and then failed, there is no second start: `up` reports the failure text taken
+  from `logs/daemon.log`, then `logs/daemon.out`, then `logs/systemd-run.err`, the first of them that has text.
+- **Stop.** `down` asks the daemon to tear down first, then stops the scope if it is still active. It finds the scope
+  in `rig.json`; when `rig.json` is gone (a kill between its removal and the scope's stop), it lists
+  `rig-<hash of the state root>-*.scope` with `systemctl --user list-units` and stops what it finds. A host may run its
+  own reaper for scopes whose daemon is gone. Every `systemctl` call has a 15 s limit.
+
+**The pane cap.** A harness pane costs 46 to 64 tasks (omp), and scripts that open one pane per case and
+close none filled the task limit at about one pane a minute. So `pane <cmd>` and `start <harness>` count the open
+panes first (the rig's view pane is left out) and refuse when there are `COLLIE_RIG_MAX_PANES` or more: a positive
+integer, 6 when unset or not one. The refusal exits with code 75, lists the open panes and names the fix.
+The cap is a soft limit, per machine and per rig. It is not atomic across callers that start at the same moment,
+so several can pass the check together. The scope's `TasksMax` is the hard guard.
+
+```sh
+bun e2e/rig/rig.ts pane ls                       # the open panes: id, label, age, command (add --on member for the member)
+bun e2e/rig/rig.ts pane close w3:p1 w4:p1        # close some; an id that is already gone is reported and skipped
+bun e2e/rig/rig.ts pane close --all              # close every pane but the view pane
+bun e2e/rig/rig.ts start omp --replace           # close the omp pane `start omp` opened last, then open the new one
+bun e2e/rig/rig.ts pane --replace sleep 600      # the same for `pane`, which keeps one slot of its own
+```
+
+`--replace`, `--crew` and `--on <machine>` count only before the first word of the command, or anywhere before a
+literal `--`. Everything after reaches the pane as typed: `pane sh -c 'echo --replace'` keeps its `--replace`, and so
+does `pane sleep 600 --replace`. The last pane per key is in `rig/last-panes.json` (written to a temp file and
+renamed; not `rig.json`, which the daemon writes whole), and `up` and `down` remove it. The cap sits in these two
+verbs only: the Playwright leg opens its panes through `rig-lib.ts` and does not meet it. `pane ls` and `pane close`
+are verbs, so run a shell command of that name as `pane sh -c ls` or `pane -- ls`; `pane ls <more words>` prints that
+hint and starts nothing.
+
+The pure helpers (owner, unit name, environment settings, argument split, cap, start fallback) are in `rig-scope.ts`.
+`scripts/browser-leg-rig-scope.test.ts` tests them, and `bun test ./scripts` (and so CI) runs it.
 
 Herdr binds its sockets under its `XDG_CONFIG_HOME`, and a Unix socket path holds at most 107 bytes on
 Linux (103 on macOS). A long state root, such as the nightly runner's, would push the path over that, and

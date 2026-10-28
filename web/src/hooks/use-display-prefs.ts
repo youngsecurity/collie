@@ -143,6 +143,12 @@ export interface DisplayPrefs {
    * (components/agent-chat.tsx), so a change shows the next time a pane opens. Per device.
    */
   paneNav?: PaneNav;
+  /**
+   * Whether a pane offers a problem report after three failed sends in a row (ADR 0123). On by default,
+   * because the offer collects nothing and sends nothing. Optional in the TYPE only, for the same reason
+   * as {@link hand}: every read goes through {@link reportOfferOf}. Per device.
+   */
+  reportOffer?: boolean;
 }
 
 /** The two hands the pane screen can be laid out for. */
@@ -168,6 +174,11 @@ export function isPaneNav(value: string | undefined): value is PaneNav {
 /** The pane navigation of a prefs value, with the default where a literal left it out. */
 export function paneNavOf(prefs: DisplayPrefs): PaneNav {
   return prefs.paneNav ?? PANE_NAV_DEFAULT;
+}
+
+/** Whether the report offer is on, with the default (on) where a literal left it out. */
+export function reportOfferOf(prefs: DisplayPrefs): boolean {
+  return prefs.reportOffer ?? true;
 }
 
 /** Whether the suggestion strip is on, with the default (on) where a literal left it out. */
@@ -552,6 +563,8 @@ function loadPrefs(): DisplayPrefs {
       sentSuggestions: asJsonBoolean(p.sentSuggestions),
       // Absent until the operator chooses, and read as Two fingers through {@link paneNavOf}.
       paneNav: readPaneNav(asJsonString(p.paneNav)),
+      // Absent until the operator chooses, and read as on through {@link reportOfferOf}.
+      reportOffer: asJsonBoolean(p.reportOffer),
     };
   } catch {
     return DEFAULTS;
@@ -600,6 +613,8 @@ export interface UseDisplayPrefsReturn {
   setSentSuggestions: (on: boolean) => void;
   /** How the pane screen takes a navigation gesture. */
   setPaneNav: (paneNav: PaneNav) => void;
+  /** Whether a pane offers a problem report after failed sends. */
+  setReportOffer: (on: boolean) => void;
 }
 
 export function useDisplayPrefs(): UseDisplayPrefsReturn {
@@ -732,6 +747,14 @@ export function useDisplayPrefs(): UseDisplayPrefsReturn {
     });
   }, []);
 
+  const setReportOffer = useCallback((reportOffer: boolean) => {
+    setPrefs((p) => {
+      const next: DisplayPrefs = { ...p, reportOffer };
+      savePrefs(next);
+      return next;
+    });
+  }, []);
+
   return {
     prefs,
     setWrap,
@@ -749,5 +772,6 @@ export function useDisplayPrefs(): UseDisplayPrefsReturn {
     setHand,
     setSentSuggestions,
     setPaneNav,
+    setReportOffer,
   };
 }

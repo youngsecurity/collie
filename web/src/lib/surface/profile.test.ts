@@ -275,7 +275,8 @@ describe("the codex profile (M56 spec 13)", () => {
     expect(stock.pointer("> ")).toBeNull();
     const omp = read("omp");
     expect(omp.list).toMatchObject({ lead: "/", sides: ["under"] });
-    expect(omp.list.footer).toBeUndefined();
+    // An extension's status row (`ctx.ui.setStatus`) is one plain row per key, flush left, under the list.
+    expect(omp.list.footer).toEqual({ pattern: "^ ?\\S", maxRows: 13 });
     // omp 18.6.1 draws an icon column, omp 18.8 too, older omp none; a scrollbar cell ends the row.
     expect(omp.pointer(`❯ ⬢  model         Model: none selected${" ".repeat(60)}█`)).toBe("model");
     expect(omp.entry(`  🏃 prewalk       Arm or restart a one-shot model handoff${" ".repeat(40)}█`)).toBe("prewalk");
@@ -333,7 +334,32 @@ describe("the codex profile (M56 spec 13)", () => {
     expect(loadProfiles().get("omp")?.keys.commandsRunInTurn).toEqual(["/goal"]);
   });
 
+  it("keys.clearAll, collapse.refuseLiteral and reservedLeadNotes parse; omp ships all three and nobody else does", () => {
+    const edited = parseProfile(
+      change(change(change(rawCodex(), ["keys", "clearAll"], { key: "ctrl+c" }), ["collapse", "refuseLiteral"], true), ["reservedLeadNotes"], { "!": "A note." }),
+    );
+    expect(edited.keys.clearAll).toEqual({ key: "ctrl+c" });
+    expect(edited.collapse.refuseLiteral).toBe(true);
+    expect(edited.reservedLeadNotes).toEqual({ "!": "A note." });
+    const omp = loadProfiles().get("omp")!;
+    expect(omp.keys.clearAll).toEqual({ key: "ctrl+c" });
+    expect(omp.collapse.refuseLiteral).toBe(true);
+    expect(omp.reservedLeads).toEqual(["/", "!", "->", "=>"]);
+    expect(Object.keys(omp.reservedLeadNotes ?? {})).toEqual(["->", "=>"]);
+    for (const [id, profile] of loadProfiles()) {
+      if (id === "omp") continue;
+      expect(profile.keys.clearAll, id).toBeUndefined();
+      expect(profile.collapse.refuseLiteral, id).toBeUndefined();
+      expect(profile.reservedLeadNotes, id).toBeUndefined();
+    }
+  });
+
   const cases: [string, (string | number)[], JsonValue | undefined, string][] = [
+    ["codex: Escape as the stroke clear key", ["keys", "clearAll"], { key: "Escape" }, "keys.clearAll.key"],
+    ["codex: refuseLiteral that is not a boolean", ["collapse", "refuseLiteral"], "yes", "collapse.refuseLiteral"],
+    ["codex: a stroke clear key with no key", ["keys", "clearAll"], {}, "keys.clearAll.key"],
+    ["codex: a lead note for a lead that is not reserved", ["reservedLeadNotes"], { "->": "A note." }, "reservedLeadNotes"],
+    ["codex: an empty lead note", ["reservedLeadNotes"], { "!": " " }, "reservedLeadNotes.!"],
     ["codex: Escape as the queue key", ["keys", "queueKey"], "Escape", "keys.queueKey"],
     ["codex: Enter as the queue key", ["keys", "queueKey"], "Enter", "keys.queueKey"],
     ["codex: Escape as a command key", ["keys", "commandSubmit"], ["Escape"], "keys.commandSubmit"],
@@ -531,7 +557,7 @@ const SPEC14_CASES: readonly Spec14Case[] = [
       { anchor: "prompt", row: "   hello there" },
     ],
     collapse: { text: "📄 #3", group: "", value: "" },
-    reservedLeads: ["/", "!"],
+    reservedLeads: ["/", "!", "->", "=>"],
     submit: ["ctrl+q"],
     commandSubmit: ["Enter"],
     probeStatus: "provisional",
@@ -731,6 +757,8 @@ describe.each(SPEC14_CASES)("the $id profile (M56 spec 14)", (c) => {
 describe("the frame schema of the interior walk (M56 spec 14)", () => {
   const rawOpencode = (): JsonObject => parseJsonObject(readFileSync(join(PROFILES_DIR, "opencode.json"), "utf8"))!;
   const cases: [string, (string | number)[], JsonValue | undefined, string][] = [
+    ["a draftIndent of no columns", ["idle", "frame", "draftIndent"], 0, "idle.frame.draftIndent"],
+    ["a draftIndent that is no number", ["idle", "frame", "draftIndent"], "three", "idle.frame.draftIndent"],
     ["an unknown walk", ["idle", "frame", "walk"], "diagonal", "idle.frame.walk"],
     ["rows that are no expression", ["idle", "frame", "rows"], "[unclosed", "idle.frame.rows"],
     ["a trailer row that is no expression", ["idle", "frame", "trailer", "row"], "[unclosed", "idle.frame.trailer.row"],
@@ -741,6 +769,7 @@ describe("the frame schema of the interior walk (M56 spec 14)", () => {
     ["an underPainted flag with no under pattern", ["idle", "frame", "underPainted"], true, "idle.frame.underPainted"],
     ["an ownPrompt flag that is no boolean", ["idle", "frame", "ownPrompt"], "yes", "idle.frame.ownPrompt"],
     ["a dialogsInBox flag that is no boolean", ["idle", "dialogsInBox"], "yes", "idle.dialogsInBox"],
+    ["a promptEchoes flag that is no boolean", ["idle", "promptEchoes"], "yes", "idle.promptEchoes"],
     ["a placeholder prefix list that is no list", ["idle", "placeholders", "prefixes"], "Ask", "idle.placeholders.prefixes"],
     ["an answer prompt that is no expression", ["idle", "answerPrompt"], "[unclosed", "idle.answerPrompt"],
   ];
@@ -755,6 +784,25 @@ describe("the frame schema of the interior walk (M56 spec 14)", () => {
     expect(failure(change(rawClaude(), ["idle", "frame", "rows"], "^x$")).path).toBe("idle.frame.rows");
     expect(failure(change(rawClaude(), ["idle", "frame", "bottom", "open"], true)).path).toBe("idle.frame.bottom.open");
     expect(failure(change(rawClaude(), ["idle", "frame", "ownPrompt"], true)).path).toBe("idle.frame.ownPrompt");
+  });
+
+  it("reads a scrolling box (`scroll`, omp gang 2026-10-25) and refuses a bad one", () => {
+    expect(parseProfile(parseJsonObject(readFileSync(join(PROFILES_DIR, "omp.json"), "utf8"))!).idle.frame.scroll).toEqual({ keeps: "tail", rows: 17 });
+    expect(parseProfile(rawClaude()).idle.frame.scroll).toBeUndefined();
+    expect(failure(change(rawClaude(), ["idle", "frame", "scroll"], { keeps: "head", rows: 17 })).path).toBe("idle.frame.scroll.keeps");
+    expect(failure(change(rawClaude(), ["idle", "frame", "scroll"], { keeps: "tail", rows: 0 })).path).toBe("idle.frame.scroll.rows");
+    expect(failure(change(rawClaude(), ["idle", "frame", "scroll"], { keeps: "tail", rows: 999 })).path).toBe("idle.frame.scroll.rows");
+    expect(failure(change(rawClaude(), ["idle", "frame", "scroll"], "tail")).path).toBe("idle.frame.scroll");
+  });
+
+  it("takes a widget bound (`maxWidgetRows`) only on an open box, and only above the tail bound", () => {
+    const omp = (): JsonObject => parseJsonObject(readFileSync(join(PROFILES_DIR, "omp.json"), "utf8"))!;
+    expect(parseProfile(omp()).idle.frame.maxWidgetRows).toBe(12);
+    expect(parseProfile(rawClaude()).idle.frame.maxWidgetRows).toBeUndefined();
+    expect(failure(change(omp(), ["idle", "frame", "maxWidgetRows"], 3)).path).toBe("idle.frame.maxWidgetRows");
+    expect(failure(change(omp(), ["idle", "frame", "maxWidgetRows"], 1.5)).path).toBe("idle.frame.maxWidgetRows");
+    expect(failure(change(omp(), ["idle", "frame", "bottom"], { pattern: "^─+$", minCells: 8, column: 0 })).path).toBe("idle.frame.maxWidgetRows");
+    expect(failure(change(rawClaude(), ["idle", "frame", "maxWidgetRows"], 12)).path).toBe("idle.frame.maxWidgetRows");
   });
 
   it("takes the box's own prompt glyph (`ownPrompt`) only beside a rows pattern (issue 544)", () => {
@@ -790,7 +838,7 @@ describe("the frame schema of the interior walk (M56 spec 14)", () => {
     const raw = parseJsonObject(readFileSync(join(PROFILES_DIR, "omp.json"), "utf8"))!;
     expect(failure(change(raw, ["idle", "frameAlternates", 1, "bottom", "pattern"], "[unclosed")).path).toBe("idle.frameAlternates[1].bottom.pattern");
     expect(failure(change(raw, ["idle", "frameAlternates"], "no list")).path).toBe("idle.frameAlternates");
-    expect(parseProfile(raw).idle.frameAlternates).toHaveLength(4);
+    expect(parseProfile(raw).idle.frameAlternates).toHaveLength(5);
   });
 
   it("omp 18.11 (issue 497): the chips of every symbol preset collapse, the Nerd Font pointer points, and a skill is listed under its namespace", () => {
@@ -804,7 +852,9 @@ describe("the frame schema of the interior walk (M56 spec 14)", () => {
     const pointer = new RegExp(list.pointer, "u");
     expect(pointer.exec("\u{F054} \u{F0EE5} model                Switch model")?.groups?.["command"]).toBe("model");
     expect(pointer.exec("❯ ✦ skill:wrap-up   Wrap up the session")?.groups?.["command"]).toBe("skill:wrap-up");
-    expect(pointer.test("> model   Switch model")).toBe(false);
+    // The ascii symbol preset draws the cursor as `>` (nav.cursor), which 1.24.1 reads (omp-gang 11-geometry, W3).
+    expect(pointer.exec("> session     Session management commands")?.groups?.["command"]).toBe("session");
+    expect(pointer.test("  session     Session management commands")).toBe(false);
     expect(list.namespaces).toEqual(["skill:"]);
     expect(list.argumentList).toBe(true);
     expect(omp.idle.inlineHint).toEqual({ fg: ["rgb(107,114,128)"] });
@@ -936,6 +986,22 @@ describe("parseProfile names the failing field", () => {
     ["a command list pointerBold that is no boolean", ["idle", "volatile", "below", "commandList", "pointerBold"], "yes", "idle.volatile.below.commandList.pointerBold"],
     ["a command list argumentHint that is no boolean", ["idle", "volatile", "below", "commandList", "argumentHint"], "yes", "idle.volatile.below.commandList.argumentHint"],
     ["a command list argumentList that is no boolean", ["idle", "volatile", "below", "commandList", "argumentList"], "yes", "idle.volatile.below.commandList.argumentList"],
+    ["a command list leadOpens that is no boolean", ["idle", "volatile", "below", "commandList", "leadOpens"], "yes", "idle.volatile.below.commandList.leadOpens"],
+    ["a command list leadOpens with no lead", ["idle", "volatile", "below", "commandList", "leadOpens"], true, "idle.volatile.below.commandList.leadOpens"],
+    ["a command list staleWhenEmpty that is no boolean", ["idle", "volatile", "below", "commandList", "staleWhenEmpty"], "yes", "idle.volatile.below.commandList.staleWhenEmpty"],
+    ["a command list notForText that is no expression", ["idle", "volatile", "below", "commandList", "notForText"], "[unclosed", "idle.volatile.below.commandList.notForText"],
+    ["a command list notForText that matches an empty text", ["idle", "volatile", "below", "commandList", "notForText"], "^\\s*", "idle.volatile.below.commandList.notForText"],
+    ["typeahead popups that are no object", ["idle", "volatile", "below", "popups"], "yes", "idle.volatile.below.popups"],
+    ["typeahead popups whose submit key does not ignore them", ["idle", "volatile", "below", "popups"], { submitIgnores: false, maxRows: 4, rules: [{ name: "x", text: "@$", rows: "^(?<pointer>❯) \\S" }] }, "idle.volatile.below.popups.submitIgnores"],
+    ["typeahead popups of no rows", ["idle", "volatile", "below", "popups"], { submitIgnores: true, maxRows: 0, rules: [{ name: "x", text: "@$", rows: "^(?<pointer>❯) \\S" }] }, "idle.volatile.below.popups.maxRows"],
+    ["typeahead popups with no rule", ["idle", "volatile", "below", "popups"], { submitIgnores: true, maxRows: 4, rules: [] }, "idle.volatile.below.popups.rules"],
+    ["a popup rule named twice", ["idle", "volatile", "below", "popups"], { submitIgnores: true, maxRows: 4, rules: [{ name: "x", text: "@$", rows: "^(?<pointer>❯) \\S" }, { name: "x", text: "@$", rows: "^(?<pointer>❯) \\S" }] }, "idle.volatile.below.popups.rules[1].name"],
+    ["a popup rule whose text matches an empty text", ["idle", "volatile", "below", "popups"], { submitIgnores: true, maxRows: 4, rules: [{ name: "x", text: "^\\s*", rows: "^(?<pointer>❯) \\S" }] }, "idle.volatile.below.popups.rules[0].text"],
+    ["a popup rule whose rows match a blank row", ["idle", "volatile", "below", "popups"], { submitIgnores: true, maxRows: 4, rules: [{ name: "x", text: "@$", rows: "^(?<pointer>❯)?\\s*" }] }, "idle.volatile.below.popups.rules[0].rows"],
+    ["a popup rule whose rows name no pointer", ["idle", "volatile", "below", "popups"], { submitIgnores: true, maxRows: 4, rules: [{ name: "x", text: "@$", rows: "^❯ \\S" }] }, "idle.volatile.below.popups.rules[0].rows"],
+    ["a popup rule closedWhenTyped that is no true", ["idle", "volatile", "below", "popups"], { submitIgnores: true, maxRows: 4, rules: [{ name: "x", text: "@$", rows: "^(?<pointer>❯) (?<entry>\\S)", closedWhenTyped: "yes" }] }, "idle.volatile.below.popups.rules[0].closedWhenTyped"],
+    ["a popup rule closedWhenTyped whose rows name no entry", ["idle", "volatile", "below", "popups"], { submitIgnores: true, maxRows: 4, rules: [{ name: "x", text: "@$", rows: "^(?<pointer>❯) \\S", closedWhenTyped: true }] }, "idle.volatile.below.popups.rules[0].closedWhenTyped"],
+    ["a popup rule staleWhenEmpty that is no true", ["idle", "volatile", "below", "popups"], { submitIgnores: true, maxRows: 4, rules: [{ name: "x", text: "@$", rows: "^(?<pointer>❯) \\S", staleWhenEmpty: "yes" }] }, "idle.volatile.below.popups.rules[0].staleWhenEmpty"],
     ["a command list footer that is no object", ["idle", "volatile", "below", "commandList", "footer"], "^\\S", "idle.volatile.below.commandList.footer"],
     ["a command list footer that matches a blank row", ["idle", "volatile", "below", "commandList", "footer"], { pattern: "^\\s*$", maxRows: 2 }, "idle.volatile.below.commandList.footer.pattern"],
     ["a command list footer of no rows", ["idle", "volatile", "below", "commandList", "footer"], { pattern: "^\\S", maxRows: 0 }, "idle.volatile.below.commandList.footer.maxRows"],

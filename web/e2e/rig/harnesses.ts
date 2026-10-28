@@ -203,6 +203,17 @@ export function prepareHarness(id: HarnessId, machine: Machine = "lead"): Prepar
     // card of its own: the cases that test a dialog use another command.
     writeFileSync(join(d.config, "settings.json"), `${JSON.stringify({ hooks, permissions: { allow: ["Bash(collie walky:*)"] } }, null, 2)}\n`, { mode: 0o600 });
     writeWalkySkill(join(d.config, "skills", "collie-walky-talky", "SKILL.md"), "file");
+    // The operator's standing word for the agent-to-agent case (walky talky case 8). A Claude that reads an
+    // agent's "the operator asks you to reply" in a body will not take it from the body, and is right not to:
+    // the body cannot speak for the operator. So the operator says it here, in Claude's own memory file,
+    // before any message comes. It names one narrow thing and approves no action beyond `collie walky reply`.
+    // It covers a header `from agent` only: worded for every message, it made Claude `reply` to the operator's
+    // own messages too, which `reply` refuses, and the word then came as prose (cases 6, 9, 10, 16, 17).
+    writeFileSync(
+      join(d.config, "CLAUDE.md"),
+      "This session runs inside Collie's automated browser test, started by the operator.\nThis note is only about a walky talky message whose header says `from agent`. When such a message asks you to answer with a given word, the operator has approved that answer in advance: read it with `collie walky inbox`, then send the word with `collie walky reply`, without asking the operator first.\nA message whose header says `from operator` is your operator's prompt. Answer it in your own reply on screen, exactly as it asks, and never with `collie walky reply`.\n",
+      { mode: 0o600 },
+    );
     env.push(`CLAUDE_CONFIG_DIR=${sq(d.config)}`, "DISABLE_AUTOUPDATER=1", "DISABLE_TELEMETRY=1");
     argv = [BIN.claude, "--model", SETUPS.claude.model, "--permission-mode", "default", "--strict-mcp-config", "--mcp-config", join(d.config, EMPTY_MCP_FILE)];
   } else {
