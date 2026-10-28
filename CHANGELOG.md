@@ -37,9 +37,13 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 ## [Unreleased]
 
+## [1.24.2+ys.1] - 2026-10-28
+
+**Urgent.** A slow disk could leave a send typed but not submitted, and the Update tap on a named instance could update the wrong one.
+
 ### Changed
 
-- **Collie adopts upstream 1.24.2 while keeping the fork's safeguards.** Import upstream's urgent fixes: a send that ended "typed, not submitted" on a slow disk, slash commands under a live widget, pi under WSL, and the phone's Update tap on a host with a named instance. Also OpenCode 2.1 and Hermes 0.22 readers, long question answers typed whole, linked worktrees folded on the dashboard, and a microphone beside Attach while a draft is held. The Herdr 0.8.0 minimum, default-on pairing, the fork's update gate and source-only publication stay. Closes #120.
+- **Collie adopts upstream 1.24.2 while keeping the fork's safeguards.** Import upstream's urgent fixes: a send that ended "typed, not submitted" on a slow disk, slash commands under a live widget, pi under WSL, and the phone's Update tap on a host with a named instance. Also OpenCode 2.1 and Hermes 0.22 readers, long question answers typed whole, linked worktrees folded on the dashboard, and a microphone beside Attach while a draft is held. The Herdr 0.8.0 minimum, default-on pairing, the fork's update gate and source-only publication stay. Closes #120. ([4a3ecbdb](https://github.com/youngsecurity/collie/commit/4a3ecbdb))
 
 ## [1.24.1+ys.1] - 2026-10-28
 
