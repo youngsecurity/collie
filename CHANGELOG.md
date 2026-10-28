@@ -37,11 +37,13 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 ## [Unreleased]
 
+## [1.24.0+ys.2] - 2026-10-27
+
 ### Changed
 
-- **An unpaired phone keeps its content like a paired one.** On a host that opted out of pairing, an unpaired phone can now queue a send behind a turn, its typed lines join Sent and the run history, and a launcher it adds is written to disk, and the phone itself caches pane text, snapshots, starts and no-prompt confirmations on the device as a paired phone does. The fork rule that kept such content out of every store is gone; the host opt-out itself is unchanged.
-- **The phone caches on the device while the host has pairing off.** Pane text, snapshots, the New page's last starts and no-prompt confirmations are kept on the phone as they are for a paired one; the page-local rule that made them live-only is gone.
-- **The Send Protocol reads the input frame off the Surface again.** 1.24.0+ys.1 kept a frame the Surface had dropped when it held the harness's own command list, so a Muse command left unsent named the list in its refusal. That rule is gone: the frame comes from the Surface read as in 1.22.5+ys.3, the refusal is the generic one, and Enter is not pressed either way.
+- **The Send Protocol reads the input frame off the Surface again.** 1.24.0+ys.1 kept a frame the Surface had dropped when it held the harness's own command list, so a Muse command left unsent named the list in its refusal. That rule is gone: the frame comes from the Surface read as in 1.22.5+ys.3, the refusal is the generic one, and Enter is not pressed either way. ([86d5e179](https://github.com/youngsecurity/collie/commit/86d5e179))
+- **An unpaired phone keeps its content like a paired one.** On a host that opted out of pairing, an unpaired phone can now queue a send behind a turn, its typed lines join Sent and the run history, and a launcher it adds is written to disk, and the phone itself caches pane text, snapshots, starts and no-prompt confirmations on the device as a paired phone does. The fork rule that kept such content out of every store is gone; the host opt-out itself is unchanged. ([b308a9dd](https://github.com/youngsecurity/collie/commit/b308a9dd))
+- **The phone caches on the device while the host has pairing off.** Pane text, snapshots, the New page's last starts and no-prompt confirmations are kept on the phone as they are for a paired one; the page-local rule that made them live-only is gone. ([5404bf55](https://github.com/youngsecurity/collie/commit/5404bf55))
 
 ## [1.24.0+ys.1] - 2026-10-25
 
