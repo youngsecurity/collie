@@ -37,9 +37,13 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 ## [Unreleased]
 
+## [1.24.1+ys.1] - 2026-10-28
+
+**Urgent.** Sends to OMP panes can be refused, held or silently lost, and a send to Claude during a turn can be held or end unconfirmed.
+
 ### Changed
 
-- **Collie adopts upstream 1.24.1 while keeping the fork's safeguards.** Import upstream's urgent send fixes: OMP panes that refused, held or lost sends since 1.22.0, and a Claude send during a turn that was held or ended "may have arrived". Also the context dot on pi, OMP, Codex and OpenCode, the cost tag, the problem report sheet, and `collie doctor`'s harness lines. The Herdr 0.8.0 minimum, default-on pairing, the fork's pi answer-editor clear and source-only publication stay. Closes #118.
+- **Collie adopts upstream 1.24.1 while keeping the fork's safeguards.** Import upstream's urgent send fixes: OMP panes that refused, held or lost sends since 1.22.0, and a Claude send during a turn that was held or ended "may have arrived". Also the context dot on pi, OMP, Codex and OpenCode, the cost tag, the problem report sheet, and `collie doctor`'s harness lines. The Herdr 0.8.0 minimum, default-on pairing, the fork's pi answer-editor clear and source-only publication stay. Closes #118. ([da294989](https://github.com/youngsecurity/collie/commit/da294989))
 
 ## [1.24.0+ys.2] - 2026-10-27
 
