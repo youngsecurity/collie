@@ -140,7 +140,7 @@
     },
     "queuedRow": {
       "pattern": "^\\s*Follow-up: (?<text>\\S.*?)\\s*$",
-      "hint": "^\\s*↳ Alt\\+Up to edit all queued messages\\s*$",
+      "hint": "^\\s*↳ Alt\\+(?:Up|Q) to edit all queued messages\\s*$",
       "hintGap": 0
     },
     "steer": [
@@ -149,7 +149,7 @@
     "steerWitness": [
       {
         "pattern": "^\\s*Steering: (?<text>\\S.*?)\\s*$",
-        "hint": "^\\s*↳ Alt\\+Up to edit all queued messages\\s*$",
+        "hint": "^\\s*↳ Alt\\+(?:Up|Q) to edit all queued messages\\s*$",
         "hintGap": 0,
         "between": "^\\s*Follow-up: \\S"
       }

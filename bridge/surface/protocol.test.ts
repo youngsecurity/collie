@@ -5,7 +5,7 @@
 // glyph, a rule, a status row), or, for a harness with no profile, a bare editor between two rules.
 
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { muxAck, muxOk, muxRefused, muxUnreachable, type MuxAck, type MuxGrid, type MuxGridRequest, type MuxOutcome } from "../mux/types.ts";
@@ -26,6 +26,8 @@ import { AuditLog } from "../audit.ts";
 import { heldCancelRoute, sendReceiptsRoute, sendRoute, type SendRouteRuntime } from "../server.ts";
 import { RETURNED_CARD_DROPPED } from "../../web/src/lib/surface/send.ts";
 import { QUEUED_SEND_MS, type BoxReading } from "./queued.ts";
+import { createBinaryReader, createVersionReader, VERSION_FAILED_CACHE_MS, VersionCache } from "./binary-version.ts";
+import { createPaneProfile } from "../pane-binary.ts";
 
 const RULE = "─".repeat(40);
 const WIDTH = 38;
@@ -376,6 +378,7 @@ function rig(
   options: {
     mode?: Mode;
     version?: string | null;
+    profile?: SendDeps["profile"];
     harness?: string;
     paste?: boolean;
     /** The multiplexer frames a whole-text paste itself (Herdr's `pasteBlock`). */
@@ -412,7 +415,7 @@ function rig(
     store,
     locks,
     ring,
-    profile: (harness: string) => {
+    profile: options.profile ?? ((harness: string) => {
       // An edited profile is matched as the bridge would match it, so an edited range moves the status.
       const { edit, status } = options;
       const loaded = harness === FRAMELESS ? framelessProfile() : loadProfiles().get(harness);
@@ -423,7 +426,7 @@ function rig(
       const match = profileFor(harness, version, lookup);
       if (match === null) return Promise.resolve(null);
       return Promise.resolve(status === undefined ? match : { ...match, status });
-    },
+    }),
     generation: options.generation ?? (() => "gen-1"),
     ledger: options.ledger,
     holds: options.holds,
@@ -6416,6 +6419,89 @@ class PiPane extends FakePane {
   }
 }
 
+describe("issue 137: a script interpreter missing from the bridge PATH", () => {
+  const RUNNING = { revision: 1, turn: "running", modal: "none", composer: "empty" } as const;
+  const FREE = { revision: 2, turn: "idle", modal: "none", composer: "empty" } as const;
+
+  // A real env shebang and a private interpreter, not the host's Pi or Node. Only --version runs.
+  const setup = () => {
+    const scripts = join(dir, "scripts");
+    const runtime = join(dir, "runtime");
+    mkdirSync(scripts);
+    mkdirSync(runtime);
+    const launcher = join(scripts, "pi");
+    writeFileSync(launcher, "#!/usr/bin/env collie-137-runtime\n", { mode: 0o700 });
+    writeFileSync(join(runtime, "collie-137-runtime"), "#!/bin/sh\nprintf '1.5.0\\n'\n", { mode: 0o700 });
+    const env = { PATH: scripts };
+    const readerDeps = { env, loginPath: async () => scripts, resolve: () => launcher };
+    const clock = { now: 1_000_000 };
+    const versions = new VersionCache(createVersionReader(readerDeps), () => clock.now);
+    const profile = createPaneProfile({ versions, binaries: () => new Map(), platform: "linux" });
+    const holds = new HoldStore(join(dir, "held-137"), () => clock.now);
+    const pane = new PiPane("alt+Enter");
+    pane.inTurn = true;
+    const r = rig({ pane, harness: "pi", profile, holds, clock });
+    return {
+      ...r, pane, versions,
+      diagnose: () => createBinaryReader(readerDeps)(loadProfiles().get("pi")!),
+      restoreInterpreter: () => { env.PATH = `${scripts}:${runtime}`; },
+    };
+  };
+  const tick = async (r: Rig, surface: Surface) => Promise.all(r.protocol.tickHolds("main", () => surface));
+
+  test.skipIf(process.platform === "win32")("reproduces the unread hold and recovers after the failed-cache window without replaying a cancellation", async () => {
+    const r = setup();
+    const diagnostic = await r.diagnose();
+    expect(diagnostic).toMatchObject({ version: null, outcome: { exitCode: 127 } });
+    expect(diagnostic.outcome?.stderr).toContain("collie-137-runtime");
+    const held = await r.send("hold this intent", { id: "issue-137-cancel" });
+    expect(held.receipt).toMatchObject({ outcome: "held", version: null, keys: [] });
+    expect(held.detail).toContain("could not read this agent's version");
+    expect(r.protocol.heldOf("main", "%1")[0]).toMatchObject({ versionUnread: true });
+    expect(r.pane.calls).toEqual([]);
+    expect(r.protocol.cancelHeld("other-session", "%1", "issue-137-cancel")).toBeNull();
+    expect(r.protocol.cancelHeld("main", "%1", "issue-137-cancel")).toMatchObject({ result: "cancelled" });
+
+    r.restoreInterpreter();
+    expect(await r.diagnose()).toMatchObject({ version: "1.5.0", outcome: { exitCode: 0 } });
+    expect(await r.versions.versionOf(loadProfiles().get("pi")!)).toBeNull();
+    r.clock.now += VERSION_FAILED_CACHE_MS + 1;
+    expect(await r.versions.versionOf(loadProfiles().get("pi")!)).toBe("1.5.0");
+    expect(await tick(r, RUNNING)).toEqual([]);
+    expect((await r.send("hold this intent", { id: "issue-137-cancel" })).receipt).toMatchObject({ outcome: "cancelled" });
+    expect(r.pane.calls).toEqual([]);
+
+    // A new ordinary Send enters Pi's queue during the turn. It is not a steering assertion.
+    const sent = await r.send("a fresh intent", { id: "issue-137-new" });
+    expect(sent.receipt).toMatchObject({ outcome: "sent", version: "1.5.0", profileStatus: "provisional" });
+    expect(r.pane.queued).toEqual(["a fresh intent"]);
+    expect(r.pane.steered).toEqual([]);
+    expect((await r.send("a fresh intent", { id: "issue-137-new" })).replayed).toBe(true);
+    expect(r.pane.queued).toEqual(["a fresh intent"]);
+  });
+
+  test.skipIf(process.platform === "win32")("recovery leaves an existing hold waiting for idle and releases it exactly once", async () => {
+    const r = setup();
+    expect((await r.send("keep this intent", { id: "issue-137-kept" })).receipt?.outcome).toBe("held");
+    expect(await tick(r, RUNNING)).toEqual([]);
+    r.restoreInterpreter();
+    r.clock.now += VERSION_FAILED_CACHE_MS + 1;
+    expect(await r.versions.versionOf(loadProfiles().get("pi")!)).toBe("1.5.0");
+    expect(await tick(r, RUNNING)).toEqual([]);
+    expect((await r.send("keep this intent", { id: "issue-137-kept" })).replayed).toBe(true);
+    expect(r.protocol.heldOf("main", "%1")[0]?.state).toBe("held");
+    expect(r.pane.calls).toEqual([]);
+    r.pane.inTurn = false;
+    expect(await tick(r, FREE)).toEqual([]);
+    const [released] = await tick(r, FREE);
+    expect(released?.receipt).toMatchObject({ requestId: "issue-137-kept", outcome: "sent", version: "1.5.0" });
+    expect(await tick(r, FREE)).toEqual([]);
+    expect((await r.send("keep this intent", { id: "issue-137-kept" })).replayed).toBe(true);
+    expect(r.pane.transcript.filter((line) => line === " > keep this intent")).toHaveLength(1);
+    expect(r.protocol.heldOf("main", "%1")).toEqual([]);
+  });
+});
+
 describe("a text that starts with `@` is a message on pi and OMP", () => {
   const AT = "@notes.md what changed in this file?";
 
@@ -8289,6 +8375,58 @@ describe("steer or queue (M69), replayed from the real captures (lab 2026-10-23)
       .map((at) => (pick(plainRow(at).trim()) ? row : at))
       .join("\n");
   const STEER = { when: "steer", fromPhone: true } as const;
+
+  // Controlled replays, not new live captures. Pi 1.5.0's own renderer produced this Alt+Q hint
+  // under WSL (2026-11-09, issue 137). Change only the hint in the existing Pi captures.
+  const piWindowsHint = (name: string): string => capture(name).replace("Alt+Up to edit all queued messages", "Alt+Q to edit all queued messages");
+
+  test("issue 137: Pi's Windows and WSL Alt+Q queue hint confirms a steering block", async () => {
+    const { answer, pane } = await steerOn("pi", "1.5.0", "pi--v130-steer-typed", [piWindowsHint("pi--v130-steer-after")]);
+    expect(answer.receipt).toMatchObject({ outcome: "steered", keys: ["probe", "Backspace", "Enter"], version: "1.5.0" });
+    expect(answer.receipt?.queued).toBeUndefined();
+    expect(pane.keysSeen).not.toContain("alt+Enter");
+  });
+
+  test("issue 137: Alt+Q with a Follow-up row reports queued, never steered", async () => {
+    const { answer } = await steerOn("pi", "1.5.0", "pi--v130-steer-typed", [piWindowsHint("pi--v130-queue-after")]);
+    expect(answer.receipt).toMatchObject({ outcome: "sent", queued: true, keys: ["probe", "Backspace", "Enter"] });
+  });
+
+  test("issue 137: Alt+Q still finds the steering text above another queued follow-up", async () => {
+    const { answer } = await steerOn("pi", "1.5.0", "pi--v130-steer-typed", [piWindowsHint("pi--v130-steer-after-queued")], STEER, undefined, "say banana");
+    expect(answer.receipt).toMatchObject({ outcome: "steered" });
+    expect(answer.receipt?.queued).toBeUndefined();
+  });
+
+  for (const [name, screen] of [
+    ["wrong message", () => piWindowsHint("pi--v130-steer-after").replace(LINE, "a different message")],
+    ["missing hint", () => without(piWindowsHint("pi--v130-steer-after"), ["to edit all queued messages"])],
+    ["unknown key", () => piWindowsHint("pi--v130-steer-after").replace("Alt+Q to edit", "Ctrl+Q to edit")],
+    ["no pending block", () => capture("pi--v130-steer-after-now")],
+  ] as const) {
+    test(`issue 137: ${name} is still no steering evidence`, async () => {
+      const { answer, pane } = await steerOn("pi", "1.5.0", "pi--v130-steer-typed", [screen()]);
+      expect(answer.receipt).toMatchObject({ outcome: "unknown", reason: "no_evidence" });
+      expect(pane.keysSeen.filter((key) => key === "Enter")).toHaveLength(1);
+    });
+  }
+
+  test("issue 137: an Alt+Q steering block already present before Enter is not new evidence", async () => {
+    const before = capture("pi--v130-steer-typed").split("\n");
+    const top = before.findIndex((row) => plainRow(row).includes("Working"));
+    expect(top).toBeGreaterThan(0);
+    before.splice(top, 0, ` Steering: ${LINE}`, " ↳ Alt+Q to edit all queued messages", "");
+    const { answer } = await steerOn("pi", "1.5.0", before.join("\n"), [piWindowsHint("pi--v130-steer-after")]);
+    expect(answer.receipt).toMatchObject({ outcome: "unknown", reason: "no_evidence" });
+  });
+
+  test.each(["1.4.0", "1.5.0"])("issue 137: readable provisional Pi %s permits explicit steering on a supported screen", async (version) => {
+    // These are the existing 1.3.0 captures, not a phone rehearsal of either newer version.
+    const { answer, pane } = await steerOn("pi", version, "pi--v130-steer-typed", [capture("pi--v130-steer-after-now"), capture("pi--v130-steer-after")]);
+    expect(answer.receipt).toMatchObject({ outcome: "steered", keys: ["probe", "Backspace", "Enter"], version, profileStatus: "provisional" });
+    expect(answer.receipt?.queued).toBeUndefined();
+    expect(pane.keysSeen).not.toContain("alt+Enter");
+  });
 
   test("pi 1.3.0: Enter after the text; no row at 0.4 s, the Steering row at 1.2 s: steered", async () => {
     const { answer, pane } = await steerOn("pi", "1.3.0", "pi--v130-steer-typed", [capture("pi--v130-steer-after-now"), capture("pi--v130-steer-after")]);

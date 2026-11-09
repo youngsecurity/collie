@@ -3165,10 +3165,29 @@ describe("doctor: the harnesses table (1.24.1)", () => {
     expect(rows.map((r) => r.harness)).toEqual([...loadProfiles().keys()]);
   });
 
+  test("issue 137: a successful shell probe does not claim serving-bridge evidence", async () => {
+    const h = harness(null);
+    await cmdDoctor({ ...h.deps, harnesses: reader({ binary: CLAUDE, version: "2.1.400", outcome: outcome(0) }) }, ["--json"]);
+    // SAFETY: cmdDoctor --json emits the finding array, as the contract tests assert.
+    const rows = JSON.parse(h.io.stdout.join("\n")) as Finding[];
+    expect(rows.find((f) => f.check === "version-probe-scope")).toMatchObject({
+      status: "ok",
+      detail: "Fresh version probes use this doctor process's environment and login PATH, not the serving bridge's environment, cached result or pane-specific program. Surface rows above are historical bridge counters, not these probe results.",
+    });
+    expect((await findings(harness(null))).byCheck.has("version-probe-scope")).toBe(false);
+  });
+
+  test("issue 137: an unread script version suggests checking its interpreter PATH", async () => {
+    const { row } = await run({ binary: CLAUDE, version: null, outcome: outcome(127, "/usr/bin/env: node: No such file or directory") });
+    expect(row.detail).toContain("exit 127: /usr/bin/env: node: No such file or directory");
+    expect(row.remedy).toContain("Check the script interpreter on this process's PATH as well as the launcher");
+  });
+
   test("the plain output prints the rows too, and without a reader the table is absent", async () => {
     const h = harness(null);
     await cmdDoctor({ ...h.deps, harnesses: reader({ binary: CLAUDE, version: "2.1.200", outcome: outcome(0) }) }, []);
     expect(h.io.stdout.join("\n")).toMatch(/✓\s+harness-claude\s+\/home\/pat\/\.local\/bin\/claude · 2\.1\.200 · verified/u);
+    expect(h.io.stdout.join("\n")).toContain("not the serving bridge's environment, cached result or pane-specific program");
     expect((await findings(harness(null))).raw.filter((f) => f.check.startsWith("harness-"))).toEqual([]);
   });
 });
