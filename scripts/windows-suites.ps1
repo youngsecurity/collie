@@ -14,10 +14,11 @@
 #              cannot hide behind a removed one in another. A test must not be skipped just to get
 #              green, so a higher count is a failure. Raise a number only with a reason.
 #              Bridge went from 2 to 0 when M43 spec 04 checked the access list instead of the mode.
-#              Today, 162 in all, each one named, with its reason:
-#              bridge 96. 5 are the POSIX-only and engine cases below, 1 the /etc link scan, 4 are the hold socket tests, 5 the walky ones, 30 are the
+#              Today, 164 in all, each one named, with its reason:
+#              bridge 98. 5 are the POSIX-only and engine cases below, 1 the /etc link scan, 4 are the hold socket tests, 5 the walky ones, 30 are the
 #                durable example apps, 10 are the durable-harness adapter test, 36 are the durable socket tests (see "Durable, bridge" below),
-#                and 5 are the pane's program reads (see "The pane's program, bridge" below).
+#                5 are the pane's program reads (see "The pane's program, bridge" below), and 2 are the
+#                real interpreter-PATH regressions (see "The script interpreter, bridge" below).
 #                Of the first 5, four are in bridge/stt/local-cli.test.ts. Windows has no executable bit
 #                and no file owner check in this provider:
 #                - "commandFileProblem: regular executable passes, symlinks are followed" (the
@@ -79,6 +80,12 @@
 #                - "procProbe sees a live process's executable and folder" (pane-binary.test.ts, off Linux: it reads /proc)
 #                - "two copies of one harness" (pane-binary.test.ts, win32: its fake omp copies are POSIX sh scripts), its one test and
 #                  the hook Bun counts with it. The Windows path of paneBinaryOf runs on Windows with a fake host ("no /proc" tests).
+#              The script interpreter, bridge (2). bridge/surface/protocol.test.ts reproduces issue 137
+#                with real #!/usr/bin/env and /bin/sh scripts. Windows does not execute POSIX shebangs:
+#                - "reproduces the unread hold and recovers after the failed-cache window without replaying a cancellation"
+#                - "recovery leaves an existing hold waiting for idle and releases it exactly once"
+#                The separate steering-witness replays still run on Windows. This allowance adds only
+#                these two POSIX reproductions; all prior skip budgets and failure checks stay intact.
 #              cli 41. 12 are every test of the "doctor durable" describe in cli/doctor.test.ts: each reads a
 #                real Unix socket. Its Windows rows are tested in cli/durable-findings.test.ts with a fake
 #                platform. The other 5:
@@ -106,7 +113,7 @@
 #                  (it needs a tmux binary, and Windows has none)
 param(
   [Parameter(Mandatory = $true)][string]$Out,
-  [int]$MaxSkipsBridge = 96,
+  [int]$MaxSkipsBridge = 98,
   [int]$MaxSkipsCli = 41,
   [int]$MaxSkipsScripts = 25
 )
