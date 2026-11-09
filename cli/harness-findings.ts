@@ -5,8 +5,8 @@ import { ok, warn, type Finding } from "./finding.ts";
 
 // ── The harnesses table (1.24.1) ─────────────────────────────────────────────
 //
-// One row per harness Collie has a profile for. Each row says which binary the bridge would run for
-// it (the file on the login shell's PATH, found by the same code the send path uses), which version
+// One row per harness Collie has a profile for. Each row says which binary this doctor process finds
+// (on its login PATH, using the send path's resolver, but not the serving bridge's environment), which version
 // that binary printed, and what the profile says about that version. The rows come from the profile
 // files, so a new harness appears here when its profile lands and this module never names one.
 //
@@ -70,7 +70,8 @@ function row(profile: Profile, read: BinaryRead): HarnessFinding {
     const detail = `${read.binary} · unread (${unreadReason(read)})`;
     const remedy =
       `${read.binary} resolves but its version did not read; ${UNREAD_HINT}. ` +
-      `Until it reads, sends to ${profile.id} run on a provisional profile with an untrusted turn`;
+      "Check the script interpreter on this process's PATH as well as the launcher. " +
+      `If the serving bridge also cannot read it, sends to ${profile.id} run on a provisional profile with an untrusted turn`;
     return { ...warn(check, detail, remedy), ...base, profileStatus: null };
   }
   const match = profileFor(profile.id, read.version, { log: () => {}, profiles: new Map([[profile.id, profile]]) });

@@ -293,7 +293,10 @@ export async function cmdDoctor(deps: DoctorDeps, args: readonly string[]): Prom
     // summary line and one line per row, read from the bridge's own day files. A read, like the rest.
     ...surfaceFindings({ ctx: deps.ctx, files: deps.files, now: deps.now }),
     // The binary and version of every harness with a profile, and what the profile says (1.24.1).
-    ...(deps.harnesses === undefined ? [] : await harnessFindings(deps.harnesses)),
+    ...(deps.harnesses === undefined ? [] : [
+      ok("version-probe-scope", "Fresh version probes use this doctor process's environment and login PATH, not the serving bridge's environment, cached result or pane-specific program. Surface rows above are historical bridge counters, not these probe results."),
+      ...await harnessFindings(deps.harnesses),
+    ]),
     restartPending(deps, install, runtimeMarker, await ownRead()),
     // STAMPED `crew` when it is a comparison at all (ADR 0050), while still PRINTING here, where it
     // always has. `clock` measures this machine against a member's `Date` header and its own remedy

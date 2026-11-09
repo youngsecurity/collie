@@ -1301,7 +1301,7 @@ describe("the steer keys (M69)", () => {
 
   it("pi: `Steering: <line>` over the edit hint after the steer, `Follow-up:` (no steer row) after the queue", () => {
     const [block] = witnesses("pi");
-    expect(block).toEqual({ pattern: "^\\s*Steering: (?<text>\\S.*?)\\s*$", hint: "^\\s*↳ Alt\\+Up to edit all queued messages\\s*$", hintGap: 0, between: "^\\s*Follow-up: \\S" });
+    expect(block).toEqual({ pattern: "^\\s*Steering: (?<text>\\S.*?)\\s*$", hint: "^\\s*↳ Alt\\+(?:Up|Q) to edit all queued messages\\s*$", hintGap: 0, between: "^\\s*Follow-up: \\S" });
     const after = rowsOf("pi--v130-steer-after");
     const [at] = hits(after, block!);
     expect(at).toBeDefined();
@@ -1309,6 +1309,18 @@ describe("the steer keys (M69)", () => {
     // At 0.1 s pi has emptied the box but not drawn the row yet: no witness, so the reads go on to 2 s.
     expect(hits(rowsOf("pi--v130-steer-after-now"), block!)).toEqual([]);
     expect(hits(rowsOf("pi--v130-queue-after"), block!)).toEqual([]);
+  });
+
+  it("pi: steering and follow-up blocks accept the default and Windows/WSL edit hints, not arbitrary keys", () => {
+    const keys = loadProfiles().get("pi")!.keys;
+    for (const source of [keys.queuedRow!.hint, keys.steerWitness![0]!.hint!]) {
+      const hint = new RegExp(source, "u");
+      expect(hint.test(" ↳ Alt+Up to edit all queued messages ")).toBe(true);
+      expect(hint.test(" ↳ Alt+Q to edit all queued messages ")).toBe(true);
+      expect(hint.test(" ↳ Ctrl+Q to edit all queued messages ")).toBe(false);
+      expect(hint.test(" ↳ Alt+Q to edit some queued messages ")).toBe(false);
+      expect(hint.test(" prose: ↳ Alt+Q to edit all queued messages ")).toBe(false);
+    }
   });
 
   it("pi: with a follow-up already queued, its `Follow-up:` row stands between the `Steering:` row and the hint (live rerun 2026-10-23)", () => {

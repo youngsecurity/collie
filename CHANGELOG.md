@@ -37,6 +37,11 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 ## [Unreleased]
 
+### Fixed
+
+- **Doctor distinguishes local version probes from serving bridge evidence.** Explain that harness rows use the doctor process's environment rather than the bridge's cached or pane-specific result, and suggest checking a script's interpreter PATH when its version is unread. This does not change version guards or the service environment. Thanks @yousecjoe (#137).
+- **Pi recognizes steering and follow-up hints on Windows and WSL.** Accept the default Alt+Q edit-queue hint alongside Alt+Up when confirming a pending message. Keep exact-text and new-evidence checks; an empty box alone still cannot confirm a steer. Thanks @yousecjoe (#137).
+
 ## [1.24.2+ys.1] - 2026-10-28
 
 **Urgent.** A slow disk could leave a send typed but not submitted, and the Update tap on a named instance could update the wrong one.
