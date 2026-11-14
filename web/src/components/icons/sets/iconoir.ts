@@ -279,7 +279,6 @@ export const ICONOIR = {
   "success": "check-circle", // success · lucide CircleCheck
   "tab-dashboard": "table-rows", // Dashboard tab · lucide Rows3
   "tab-fold": "nav-arrow-up", // fold or unfold the tab strip · lucide ChevronUp
-  "telemetry": "stats-report", // the install count ping · lucide ChartColumn
   "terminal-draft": "terminal", // terminal draft · lucide Terminal
   "text-larger": null, // make text larger · lucide AArrowUp
   "text-smaller": null, // make text smaller · lucide AArrowDown

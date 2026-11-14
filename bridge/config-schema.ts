@@ -127,12 +127,6 @@ export type ConfigSetting =
   | (ConfigSettingBase & {
       readonly kind: "bool";
       readonly default: boolean;
-      /**
-       * The file may also hold the environment's words as a string (`"off"`, `"no"`, `"yes"`). A string
-       * goes through as written, and the reader decides what it means. Only a switch whose reader fails
-       * closed sets it: a dropped key would fall back to the default, which for the install count is on.
-       */
-      readonly words?: true;
     })
   | (ConfigSettingBase & {
       readonly kind: "enum";
@@ -974,23 +968,6 @@ export const CONFIG_SETTINGS: readonly ConfigSetting[] = [
     kind: "string",
     default: "",
     doc: "The command the local-cli provider runs, an absolute path or a name on PATH.",
-  },
-  {
-    key: "telemetry",
-    env: "COLLIE_TELEMETRY",
-    section: "bridge",
-    kind: "bool",
-    default: true,
-    words: true,
-    doc: "Send one anonymous install ping a day. See docs/security.md.",
-  },
-  {
-    key: "telemetry_url",
-    env: "COLLIE_TELEMETRY_URL",
-    section: "bridge",
-    kind: "string",
-    default: "",
-    doc: "Test seam: where the ping goes.",
   },
   {
     key: "theme_registry_url",

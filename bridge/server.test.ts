@@ -96,10 +96,8 @@ import {
   withPairingPolicy,
   arrivedOverHttps,
   chatBodyForMux,
-  telemetryTroubleRoute,
   updateNotStarted,
 } from "./server.ts";
-import { createTelemetry, readTelemetryRecord, telemetryPath, type TroubleSignal } from "./telemetry.ts";
 import {
   createPairLimiter,
   pairSourceKey,
@@ -4548,134 +4546,6 @@ describe("the update write gate — POST api/update rides the pane path's own ga
     // A switch changes what is offered; it never starts the updater.
     expect(handler).not.toContain("action.start");
     expect(handler).not.toContain("updateAction");
-  });
-
-  test("api/telemetry: a read-gated GET, a write-gated POST with a request id and a replay, and the route sends no ping (M86 spec 01)", () => {
-    const src = readFileSync(join(import.meta.dir, "server.ts"), "utf8");
-    const at = src.indexOf('if (pathname === "/api/telemetry" && (req.method === "GET" || req.method === "POST"))');
-    expect(at).toBeGreaterThan(0);
-    const handler = src.slice(at, src.indexOf("\n      }\n", at));
-    // Both methods answer 503 without the seam, like the release line.
-    expect(handler).toContain('text("telemetry unavailable", 503)');
-    expect(handler).toContain('guard(req, cfg, "read", pairingGate, peerAddress)');
-    expect(handler).toContain('const denied = browserGate("write");');
-    expect(handler).toContain("parseTelemetryRequest(body)");
-    // A body with no setting is 400; a body with a setting and no request id is 400 too.
-    expect(handler).toContain("parsed.setting === null");
-    expect(handler).toContain("parsed.requestId === null");
-    expect(handler).toContain("jsonError(");
-    expect(handler).toContain("400,");
-    // Both refusals carry an api error code the phone translates, never a bare `{ error }` (M86 spec 02).
-    expect(handler).toContain('apiError("telemetry.setting_invalid")');
-    expect(handler).toContain('apiError("telemetry.request_id_required")');
-    expect(handler).not.toContain("jsonError({ error:");
-    // The replay answers the same body again and records nothing.
-    expect(handler).toContain("ping.choose({ setting: parsed.setting, requestId: parsed.requestId })");
-    expect(handler).toContain("if (!result.replay) {");
-    expect(handler).toContain("receipt.replay = true;");
-    // Only the timer sends: the route never reaches the network.
-    expect(handler).not.toContain("fetch(");
-    expect(handler).not.toContain("tick(");
-  });
-
-  test("api/telemetry/trouble: write-gated, no request id, no audit line, the body parsed by telemetryTroubleRoute (M86 spec 05)", () => {
-    const src = readFileSync(join(import.meta.dir, "server.ts"), "utf8");
-    const at = src.indexOf('if (pathname === "/api/telemetry/trouble" && req.method === "POST")');
-    expect(at).toBeGreaterThan(0);
-    const handler = src.slice(at, src.indexOf("\n      }\n", at));
-    expect(handler).toContain('const denied = browserGate("write");');
-    expect(handler).toContain("return telemetryTroubleRoute(opts.telemetry, body);");
-    // A count, not a command: no request id, nothing in the audit log, and never a ping from here.
-    expect(handler).not.toContain("requestId");
-    expect(handler).not.toContain("audit.record");
-    expect(handler).not.toContain("fetch(");
-    expect(handler).not.toContain("tick(");
-  });
-
-  describe("telemetryTroubleRoute (M86 spec 05)", () => {
-    const SIGNAL: TroubleSignal = { kind: "send", harness: "claude", version: "2.1.316", mux: "herdr" };
-    const telemetryIn = (stateDir: string, env: Record<string, string> = {}) =>
-      createTelemetry({
-        stateDir,
-        env,
-        origin: "env",
-        version: "1.27.0+fd5a796587",
-        installKind: "binary",
-        line: () => "stable",
-        crewMode: () => "solo",
-        now: () => Date.UTC(2026, 10, 6, 12),
-        fetch: async () => new Response("ok"),
-        os: "linux",
-        arch: "x64",
-        newId: () => "1".repeat(32),
-      });
-
-    test("a good body is a 204 and counts one", async () => {
-      const dir = await mkdtemp(join(tmpdir(), "collie-trouble-route-"));
-      try {
-        const ping = telemetryIn(dir);
-        expect(telemetryTroubleRoute(ping, { ...SIGNAL }).status).toBe(204);
-        expect(telemetryTroubleRoute(ping, { ...SIGNAL }).status).toBe(204);
-        expect(readTelemetryRecord(dir).trouble).toEqual([{ ...SIGNAL, count: 2 }]);
-        expect(ping.view().next?.trouble).toEqual([{ ...SIGNAL, count: 2 }]);
-      } finally {
-        await rm(dir, { recursive: true, force: true });
-      }
-    });
-
-    test("a bad body is a 400 telemetry.trouble_invalid and stores nothing", async () => {
-      const dir = await mkdtemp(join(tmpdir(), "collie-trouble-route-"));
-      try {
-        const ping = telemetryIn(dir);
-        for (const body of [undefined, "send", { ...SIGNAL, paneId: "w1:p1" }, { ...SIGNAL, kind: "crash" }, { ...SIGNAL, mux: "bad mux" }]) {
-          const res = telemetryTroubleRoute(ping, body);
-          expect(res.status).toBe(400);
-          expect(await res.text()).toBe("telemetry.trouble_invalid");
-        }
-        expect(readTelemetryRecord(dir).trouble).toEqual([]);
-      } finally {
-        await rm(dir, { recursive: true, force: true });
-      }
-    });
-
-    test("a dialog signal with a screen hash is a 204 and counts on its own row; a send with one is a 400 (1.27.4)", async () => {
-      const dir = await mkdtemp(join(tmpdir(), "collie-trouble-route-"));
-      try {
-        const ping = telemetryIn(dir);
-        const dialog = { kind: "dialog", harness: "codex", version: "0.167.0", mux: "herdr" } as const;
-        expect(telemetryTroubleRoute(ping, { ...dialog, screen: "634c6530" }).status).toBe(204);
-        expect(telemetryTroubleRoute(ping, { ...dialog }).status).toBe(204);
-        for (const body of [{ ...SIGNAL, screen: "634c6530" }, { ...dialog, screen: "ENTER" }, { ...dialog, screen: "634c6530", row: "enter select" }]) {
-          const res = telemetryTroubleRoute(ping, body);
-          expect(res.status).toBe(400);
-          expect(await res.text()).toBe("telemetry.trouble_invalid");
-        }
-        expect(readTelemetryRecord(dir).trouble).toEqual([
-          { ...dialog, screen: "634c6530", count: 1 },
-          { ...dialog, count: 1 },
-        ]);
-      } finally {
-        await rm(dir, { recursive: true, force: true });
-      }
-    });
-
-    test("telemetry off: a 204, and the signal writes nothing", async () => {
-      const dir = await mkdtemp(join(tmpdir(), "collie-trouble-route-"));
-      try {
-        const ping = telemetryIn(dir, { DO_NOT_TRACK: "1" });
-        ping.observe();
-        const before = readFileSync(telemetryPath(dir), "utf8");
-        expect(telemetryTroubleRoute(ping, { ...SIGNAL }).status).toBe(204);
-        expect(readFileSync(telemetryPath(dir), "utf8")).toBe(before);
-        expect(readTelemetryRecord(dir).trouble).toEqual([]);
-      } finally {
-        await rm(dir, { recursive: true, force: true });
-      }
-    });
-
-    test("no telemetry seam is a 503", () => {
-      expect(telemetryTroubleRoute(undefined, { ...SIGNAL }).status).toBe(503);
-    });
   });
 
   test("update check GET: an unknown latest triggers a bounded on-demand poll before answering", () => {

@@ -947,12 +947,6 @@ describe("solo zero-tax — routes", () => {
       // unless the operator set COLLIE_SURFACE_SHADOW=1. It registers no crew route.
       "/api/surface",
       "/api/tab",
-      // The anonymous install ping's state and the phone's switch (M86 spec 01) — solo, no crew
-      // sibling: each machine is one install, and a member is switched by its own env or config.
-      "/api/telemetry",
-      // The trouble tally (M86 spec 05): the phone's one count when a trouble card showed. Solo for the
-      // same reason: the bridge the phone talks to counts it under its own install.
-      "/api/telemetry/trouble",
       // The community theme registry (M59 spec 06): a SOLO route that legitimately extends this list,
       // named here rather than exempted. Lead-local like the math pack, and not forwardable. A bridge
       // whose operator never taps Refresh in the Theme card fetches nothing and writes nothing.
@@ -1350,10 +1344,6 @@ const STATE_DIR_ENTRIES = [
   // in this folder. Created by a bridge that computes a Surface (the Send Protocol, on by default, or
   // COLLIE_SURFACE_SHADOW=1) the first time it reads an agent pane or settles a send.
   "surface",
-  // The anonymous install ping's record (M86 spec 01): the random install ID, the first start, the
-  // last day sent, the phone's switch and the trouble tally (M86 spec 05). A NEW file; the ID and the
-  // tally are deleted the moment the ping is off, and an older build ignores the file.
-  "telemetry.json",
   // The community theme registry (M59 spec 06): `<stateDir>/themes/registry.json`, the copy a tap on
   // Refresh in the Theme card fetched. Written by that tap and by nothing else.
   "themes",

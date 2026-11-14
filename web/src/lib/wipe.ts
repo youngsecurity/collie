@@ -49,7 +49,6 @@ import { clearAllDrafts, clearDraft } from "@/lib/drafts";
 import { forgetAgain } from "@/lib/new-page";
 import { forgetSlots } from "@/lib/slots";
 import { forgetNoPromptsConfirms } from "@/lib/no-prompts";
-import { forgetTroubleSignals } from "@/lib/report/once";
 import {
   clearDeviceToken,
   EXPIRED_BODY,
@@ -193,13 +192,6 @@ const BUILT_IN: readonly (readonly [string, WipeCleaner])[] = [
     "no-prompts",
     (context) => {
       if (context.reason !== "password") forgetNoPromptsConfirms();
-    },
-  ],
-  [
-    // The once-a-day trouble record (lib/report/once.ts): it names this pairing's hosts and panes.
-    "trouble-signals",
-    (context) => {
-      if (context.reason !== "password") forgetTroubleSignals();
     },
   ],
   [

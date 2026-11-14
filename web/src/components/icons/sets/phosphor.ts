@@ -279,7 +279,6 @@ export const PHOSPHOR = {
   "success": "check-circle", // success · lucide CircleCheck
   "tab-dashboard": "rows", // Dashboard tab · lucide Rows3
   "tab-fold": "caret-up", // fold or unfold the tab strip · lucide ChevronUp
-  "telemetry": "chart-bar", // the install count ping · lucide ChartColumn
   "terminal-draft": "terminal", // terminal draft · lucide Terminal
   "text-larger": null, // make text larger · lucide AArrowUp
   "text-smaller": null, // make text smaller · lucide AArrowDown

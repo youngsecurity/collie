@@ -268,8 +268,7 @@ export class SurfaceShadow {
   /**
    * The binary version this shadow last read for the agent on a pane, from its cache: no read is
    * started. Null when the agent has no profile, the pane's binary was not read yet under that
-   * agent's profile, or the read found no version. Report a problem and the trouble signal name it
-   * (1.27.4).
+   * agent's profile, or the read found no version. Report a problem names it (1.27.4).
    */
   cachedVersion(paneId: string, harness: string): string | null {
     const profile = findProfile(loadProfiles(), harness);

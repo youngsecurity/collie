@@ -34,7 +34,6 @@ import { CompactionsControl } from "@/components/compactions-control";
 import { ToolCallsControl } from "@/components/tool-calls-control";
 import { TourControl } from "@/components/tour-control";
 import { TypefaceControl } from "@/components/typeface-control";
-import { TelemetrySettingsCard, TelemetrySettingsRow } from "@/components/telemetry-settings-card";
 import { MathControl } from "@/components/math-control";
 import { ZenControl } from "@/components/zen-control";
 import { useServerDiagnostics } from "@/hooks/use-server-diagnostics";
@@ -288,23 +287,9 @@ export function SettingsSystemRoute() {
         build={diagnostics.build}
         redact={diagnostics.redact}
       />
-      {/* The anonymous install count (M86 spec 02, ADR 0129): one row with its state, above the report
-          card because both are about what this machine says to Collie's host. The switch, the cause
-          and the next message are the page the row opens. */}
-      <TelemetrySettingsRow />
       {/* Report a problem (ADR 0123): the offer's switch and the sheet's third door, with the diagnostics
           because a report is the one way those leave this phone, and only by the person's taps. */}
       <ReportControl />
-    </SettingsPage>
-  );
-}
-
-/** Settings → System → Telemetry: the whole card, one level below System. */
-export function SettingsInstallCountRoute() {
-  const scope = useScope();
-  return (
-    <SettingsPage title="telemetry.card.title" parent={settingsSectionPath("system", scope)}>
-      <TelemetrySettingsCard />
     </SettingsPage>
   );
 }

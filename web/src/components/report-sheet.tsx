@@ -43,7 +43,7 @@ export function ReportSheetHost() {
   return <ReportSheet target={target} onClose={closeReport} />;
 }
 
-// The sends a report lists live beside the trouble signal (lib/report/signal.ts), which reads the same ones.
+// The sends a report lists live with the report's other facts (lib/report/signal.ts).
 export { reportedSends };
 
 /** What the phone knows about itself, for a report from the unread-dialog card. Read once per open. */

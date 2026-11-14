@@ -128,12 +128,12 @@ describe("CI runs the flake's Bun except the explicit floor job", () => {
     });
   }
 
-  test("windows-suites.ps1 gives each suite its own skip budget, 208 in all, each skip named", () => {
+  test("windows-suites.ps1 gives each suite its own skip budget, 207 in all, each skip named", () => {
     const script = readFileSync(join(ROOT, "scripts", "windows-suites.ps1"), "utf8");
     const budget = (suite: string): number => Number(new RegExp(`\\[int\\]\\$MaxSkips${suite} = (\\d+)`).exec(script)?.[1] ?? Number.NaN);
-    expect([budget("Bridge"), budget("Cli"), budget("Scripts")]).toEqual([117, 66, 25]);
+    expect([budget("Bridge"), budget("Cli"), budget("Scripts")]).toEqual([116, 66, 25]);
     // The bridge allowance is the local-cli tests that stay POSIX-only, the one real-engine Whistle
-    // case that needs the uncommitted model, the one scan of real links to /etc, the one telemetry file mode, the 5 hold socket tests, the 7
+    // case that needs the uncommitted model, the one scan of real links to /etc, the 5 hold socket tests, the 7
     // walky mode and socket tests, the 6 walky sibling registry tests, the 30 durable example tests, the 10 durable-harness adapter skips and the 36 durable socket tests; the comment
     // names them all.
     const localCli = readFileSync(join(ROOT, "bridge", "stt", "local-cli.test.ts"), "utf8");
@@ -153,10 +153,6 @@ describe("CI runs the flake's Bun except the explicit floor job", () => {
     const etcLinks = [...readFileSync(join(ROOT, "bridge", "claude-commands.test.ts"), "utf8").matchAll(/test\.skipIf\([^)]*\)\("([^"]+)"/g)].map((m) => m[1]!);
     expect(etcLinks).toHaveLength(1);
     for (const name of etcLinks) expect(script).toContain(name);
-    // The telemetry file mode: a POSIX mode, its own skipped test beside the telemetry tests that run on Windows.
-    const telemetrySkips = [...readFileSync(join(ROOT, "bridge", "telemetry.test.ts"), "utf8").matchAll(/test\.skipIf\(process\.platform === "win32"\)\("([^"]+)"/g)].map((m) => m[1]!);
-    expect(telemetrySkips).toHaveLength(1);
-    for (const name of telemetrySkips) expect(script).toContain(name);
     // The walky sibling registry: the cases that walk a live hook target registry, which needs a pid start-time probe win32 lacks.
     const siblingSkips = [...readFileSync(join(ROOT, "bridge", "walky", "siblings.test.ts"), "utf8").matchAll(/test\.skipIf\(process\.platform === "win32"\)\("([^"]+)"/g)].map((m) => m[1]!);
     expect(siblingSkips).toHaveLength(6);
@@ -189,7 +185,7 @@ describe("CI runs the flake's Bun except the explicit floor job", () => {
     const rawEnterSkips = readFileSync(join(ROOT, "bridge", "surface", "protocol.unstyled.test.ts"), "utf8").includes('test.if(harness.id === "claude" || harness.id === "omp")(') ? 1 : 0;
     expect(rawEnterSkips).toBe(1);
     expect(script).toContain("protocol.unstyled.test.ts");
-    expect(budget("Bridge")).toBe(posixOnly.length + 1 + etcLinks.length + holdSocket.length + walkySkips.length + siblingSkips.length + telemetrySkips.length + 30 + 10 + 36 + boundedRunSkips.length + 1 + 2 + rawEnterSkips + fakeGitSkips.length + offPathSkips + interpreterSkips.length);
+    expect(budget("Bridge")).toBe(posixOnly.length + 1 + etcLinks.length + holdSocket.length + walkySkips.length + siblingSkips.length + 30 + 10 + 36 + boundedRunSkips.length + 1 + 2 + rawEnterSkips + fakeGitSkips.length + offPathSkips + interpreterSkips.length);
     // The cli allowance adds the three real runs of the POSIX install leg a crew member runs, and the
     // 42 tests of cli/walky.test.ts that talk to a real walky socket (`socketTest`).
     const walkySocketTests = readFileSync(join(ROOT, "cli", "walky.test.ts"), "utf8").match(/^ {2}socketTest\(/gm) ?? [];

@@ -11,8 +11,8 @@
   [ADR 0079](./0079-the-omp-model-picker-is-lifted-as-its-visible-window.md).
 - **Related:** [ADR 0080](./0080-a-pointed-list-is-walked-verified-then-confirmed.md) carries the
   guarantee that a tap on this card is walked, verified, then confirmed.
-  [ADR 0129](./0129-an-anonymous-install-count-on-by-default.md) is the count whose trouble tally
-  found this screen.
+  Upstream's install count (its ADR 0129, which this fork does not carry) is the count whose
+  trouble tally found this screen.
 - **Trail:** `web/src/lib/harness/omp/plan-review.ts` (`detectPlanReviewRegion`, its header holds the
   corpus and the key choreography) · `web/src/lib/harness/omp/index.ts` · `web/src/lib/harness/omp/modal.ts`
   · `web/src/fixtures/panes/omp--v18-16-0-plan-review*.txt` · pi-tui `overlays/plan-review-overlay.ts`

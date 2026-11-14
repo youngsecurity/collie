@@ -648,28 +648,16 @@ error, with the fix. A folder that Collie cannot check is a warning: `cannot con
 
 ## What leaves your machine
 
-From 1.27.0 each Collie bridge sends one small anonymous ping a day to our own analytics. It carries
-the Collie version, the operating system, how Collie was installed, and whether the bridge runs
-alone or in a crew, under a random ID made on your machine. No IP address is stored with the ping.
-Nothing else is sent: no host name, no folder, nothing you type or read. We need these numbers to
-spot regressions and slow degradations after a release, and to steer what gets built next. Up to
-1.26.x Collie sent nothing ([ADR 0129](../.adr/0129-an-anonymous-install-count-on-by-default.md)).
+Nothing, by default and by policy. Collie sends no install events, no usage statistics, no crash
+reports and no analytics. There is no flag that enables them.
 
-When Collie shows one of its two trouble cards, the next ping also carries how often, in six fields:
-which card, the name and version of the agent program, the multiplexer it ran on, a count and, from
-1.27.4, a screen field on a dialog card. The screen field is a short hash of the dialog's key-hint
-row only, never a row with your text, never the screen or what you typed. It is absent unless that
-row is a short list of key hints, such as `enter select · esc back`.
+Upstream Collie 1.27.0 added an anonymous install ping that is on by default, and a count of its
+trouble cards that the ping carries. This fork removes both: the bridge has no ping, no install
+ID and no route that takes a count from the phone. A `telemetry` key in `config.toml` or
+`COLLIE_TELEMETRY` in `.env`, left over from an upstream install, changes nothing. `collie config
+check` names the key, and the bridge starts as usual.
 
-Turning it off is one switch: Settings, System, **Telemetry**. `COLLIE_TELEMETRY=0`,
-`telemetry = false` in `config.toml` or `DO_NOT_TRACK=1` do the same, and so does blocking the one
-host it goes to, `ping.colliepwa.dev`, in your firewall. The first ping waits a day after the first
-start of a build that has it. The exact message is written down in the contract in the repository,
-[`telemetry/README.md`](https://github.com/AltanS/collie/blob/main/telemetry/README.md).
-
-### What did not change
-
-Besides the daily ping, the one unprompted outbound call is the update check: an anonymous HTTPS `GET` to GitHub's public
+The one unprompted outbound call is the update check: an anonymous HTTPS `GET` to GitHub's public
 tags API (`bridge/update.ts`) that compares your version to the newest tag. It carries no data about
 you or your machine, only the static user-agent `collie-update-check`.
 
@@ -687,7 +675,9 @@ https://github.com/<repo>/releases/download/v<version>/collie-<version>.manifest
 https://github.com/<repo>/releases/download/v<version>/collie-math-<version>.tar.gz
 ```
 
-`<version>` is the version the bridge runs. `<repo>` is `AltanS/collie`, or `COLLIE_UPDATE_REPO` when you set it. The
+`<version>` is the version the bridge runs. `<repo>` is `youngsecurity/collie`, or `COLLIE_UPDATE_REPO` when you set it.
+This fork's releases carry no math pack, so the card says there is none to download. A build from
+source serves its own engines from `web/dist/math/` and makes no call. For a pack that exists, the
 bridge takes the pack's size and sha256 from that release's manifest, refuses a file over 64 MiB or
 with another hash, and unpacks it itself, with no child process. It keeps the engines in the `math`
 folder of its state folder until you remove them on the same card. The routes need a write device,

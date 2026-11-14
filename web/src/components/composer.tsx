@@ -1730,7 +1730,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       // reason (lib/report/trouble.ts); nothing is sent and nothing is retried. This machine's panes only.
       if (reportOn && reply.outcome !== null) {
         const settledAt = Date.now();
-        noteSend(reportKey, paneId, { requestId: res.requestId, outcome: reply.outcome, reason: reply.reason, cap: reply.cap !== null, at: settledAt }, settledAt, scope);
+        noteSend(reportKey, paneId, { requestId: res.requestId, outcome: reply.outcome, reason: reply.reason, cap: reply.cap !== null, at: settledAt }, settledAt);
       }
       if (reading.clear) {
         setProtocolOffer(null);

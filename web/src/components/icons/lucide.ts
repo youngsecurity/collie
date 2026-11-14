@@ -443,7 +443,6 @@ export const LUCIDE = {
   "success": CircleCheck,
   "tab-dashboard": Rows3,
   "tab-fold": ChevronUp,
-  "telemetry": ChartColumn,
   "terminal-draft": Terminal,
   "text-larger": AArrowUp,
   "text-smaller": AArrowDown,

@@ -339,20 +339,12 @@ integration is documented in [`HERDR_API.md`](./HERDR_API.md).
 
 ## Telemetry
 
-New in 1.27.0 and on by default. Up to 1.26.x Collie sent nothing about your install
-([ADR 0129](./.adr/0129-an-anonymous-install-count-on-by-default.md)). Once a day each bridge (one
-instance with its own state folder) sends one small ping to `ping.colliepwa.dev`: a random ID made
-on your machine, the day, the version, the OS, the CPU, the install kind, the release line (Stable
-or Edge) and whether the bridge runs alone, leads a crew or is a member. When a trouble card showed
-("Cannot read a dialog" or "Send not landing"), it also carries a count: which card, the agent
-program's name and version, the multiplexer and, from 1.27.4, for a dialog a short hash of its
-key-hint row. No IP address is stored. No usage, no content, nothing you type or read.
-
-Turn it off on each machine in Settings, System, **Telemetry**, with `COLLIE_TELEMETRY=0` (in the
-instance's `.env` for a service), `telemetry = false` in `config.toml` or `DO_NOT_TRACK=1`. Blocking
-the host in your firewall works too. The update check is a separate anonymous request to GitHub's
-public tags API. [Details](./docs/security.md#what-leaves-your-machine) ·
-[exact message](./telemetry/README.md)
+None. Upstream Collie 1.27.0 added an anonymous install ping that is on by default. This fork
+removes it: a bridge built from this fork has no ping, no install ID and no setting for one, and a
+test fails the build if the ping's address returns to the source. A `telemetry` key or
+`COLLIE_TELEMETRY` left over from an upstream install is ignored. The update check is a separate
+anonymous request to GitHub's public tags API.
+[Details](./docs/security.md#what-leaves-your-machine)
 
 ## See also
 

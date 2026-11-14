@@ -1,75 +1,14 @@
-// The trouble signal (M86 spec 05): when the phone shows one of its two trouble cards, "Cannot read a
-// dialog" or "Send not landing", it tells the bridge it talks to, once, and the bridge's next daily
-// ping carries the count. The signal holds four names: which card, the agent program, its version and
-// the multiplexer; a dialog signal may add a fifth, `screen`, the short hash of the dialog's key-hint
-// row (lib/report/screen.ts). Never a pane id, a host name, a path, a request id, the screen itself, a
-// row with the person's text, or what was typed.
+// The report's own facts: which agent program a report is about, its version, and which sends it
+// lists. The report sheet titles its issue with {@link harnessOf} (lib/report/body.ts) over the two
+// reads the sheet makes: the pane's send receipts and `GET /api/report/context`. With no receipt
+// that names a version, the version is the context's `harnessVersion`, the bridge's own read of the
+// binary. A harness is data here, never a branch. This file is pure.
 //
-// THE NAMES ARE THE REPORT'S OWN. The agent program and its version come from {@link harnessOf}, the
-// same rule the report sheet titles its issue with (lib/report/body.ts), over the same two reads the
-// sheet makes (the pane's send receipts and `GET /api/report/context`); with no receipt that names a
-// version, the version is the context's `harnessVersion`, the bridge's own read of the binary. The
-// multiplexer is that context's `mux`, and on a crew member's pane the member's own, from the lead's
-// `/api/config` for that host. A harness is data here, never a branch.
-//
-// FIRE AND FORGET. One request per card instance or per streak, and at most one per kind, pane and UTC
-// day on this device (once.ts), because a card that re-mounts is the same trouble. Never retried; a
-// failed read or a failed send is dropped. With the count off on the bridge, the bridge drops it too.
-// This file is pure; the one request is `signalTrouble` in store.ts.
+// Upstream also builds its trouble signal here, the count its daily install ping carries. This fork
+// has no ping, so nothing in this file leaves the phone unless the person files a report.
 
 import type { SendReceiptRow } from "../surface/send";
 import type { ReportContext } from "./context";
-import { SCREEN_HASH } from "./screen";
-
-/** Which trouble card showed. */
-export type TroubleKind = "dialog" | "send";
-
-/** The body of `POST /api/telemetry/trouble`, exactly. */
-export interface TroubleSignal {
-  readonly kind: TroubleKind;
-  readonly harness: string;
-  readonly version: string | null;
-  readonly mux: string;
-  /** A dialog signal's screen hash, 8 lower-case hex characters. Absent on a send signal and when the row did not look like key hints. */
-  readonly screen?: string;
-}
-
-const HARNESS_WORD = /^[a-z0-9-]{1,24}$/;
-/** The multiplexer is a plain word in the same shape, the bridge's own name for it. No list: the frontend reads capabilities, never a name. */
-const MUX_WORD = /^[a-z0-9-]{1,24}$/;
-const VERSION_WORD = /^v?\d+(\.\d+){1,3}([-+][0-9A-Za-z.+-]+)?$/;
-const VERSION_MAX = 40;
-
-/** The report's words for "no agent" (no pane) and "a plain shell": both count as `other`. */
-const NOT_AN_AGENT: ReadonlySet<string> = new Set(["no pane", "shell"]);
-
-/**
- * The signal, cleaned to the shape the bridge accepts. The harness word is lower case, digits and
- * dashes, at most 24 characters, else `other`; the version looks like one and is at most 40
- * characters, else null; the multiplexer word (the bridge's own, passed through) has the same shape, else `other`. The
- * screen hash rides a `dialog` signal only, and only in its shape; otherwise the key is absent. Null for a
- * kind that is neither card. Pure.
- */
-export function troubleSignal(a: {
-  readonly kind: string;
-  readonly harness: string | null | undefined;
-  readonly version: string | null | undefined;
-  readonly mux: string | null | undefined;
-  readonly screen?: string | null | undefined;
-}): TroubleSignal | null {
-  if (a.kind !== "dialog" && a.kind !== "send") return null;
-  const word = a.harness?.trim().toLowerCase() ?? "";
-  const harness = NOT_AN_AGENT.has(word) || !HARNESS_WORD.test(word) ? "other" : word;
-  const raw = a.version?.trim() ?? "";
-  const version = raw.length <= VERSION_MAX && VERSION_WORD.test(raw) ? raw : null;
-  const muxWord = a.mux?.trim().toLowerCase() ?? "";
-  const mux = MUX_WORD.test(muxWord) ? muxWord : "other";
-  const signal: TroubleSignal = { kind: a.kind, harness, version, mux };
-  if (a.kind !== "dialog" || a.screen === null || a.screen === undefined || !SCREEN_HASH.test(a.screen)) return signal;
-  return { ...signal, screen: a.screen };
-}
-
-// ── The report's own facts ───────────────────────────────────────────────────
 
 /** The report's word for a receipt's or a context's harness: `no pane` with none, `shell` for a plain one. */
 export function harnessWord(harness: string | null | undefined): string {

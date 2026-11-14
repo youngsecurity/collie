@@ -159,7 +159,6 @@ import {
   type UpdateStartResult,
 } from "./update-action.ts";
 import { type ReleaseLine, type UpdateLineRecord, withLine } from "./update-line.ts";
-import { parseTelemetryRequest, parseTroubleSignal, type Telemetry } from "./telemetry.ts";
 import { REPORT_SCREEN_ROWS, reportDoctorRows, reportScreen, type DoctorRowSource, type ReportContext, type ReportDoctorRow } from "./report.ts";
 import type { StateEngine } from "./state-engine.ts";
 import { adapterFor, buildJournalRegistry, journalAgentName } from "./journal/registry.ts";
@@ -1247,13 +1246,6 @@ export interface UpdateLineDeps {
   now: () => number;
 }
 
-/**
- * The anonymous install ping's state (M86 spec 01), read and changed by `GET`/`POST /api/telemetry`.
- * A seam like {@link UpdateLineDeps}: the clock, the disk and the `fetch` are index.ts's. Undefined
- * answers 503.
- */
-export type TelemetryDeps = Pick<Telemetry, "view" | "choose" | "trouble">;
-
 export function startServer(opts: {
   cfg: Config;
   registry: SessionRegistry;
@@ -1274,8 +1266,6 @@ export function startServer(opts: {
   updateAction?: UpdateActionDeps;
   /** The release line record (M60 spec 01). See {@link UpdateLineDeps}. */
   updateLine?: UpdateLineDeps;
-  /** The anonymous install ping (M86 spec 01). See {@link TelemetryDeps}. */
-  telemetry?: TelemetryDeps;
   /** The doctor's send rows for Report a problem (M71 spec 05). See {@link ReportMachine.sendHealth}. */
   sendHealth?: () => readonly DoctorRowSource[];
   /**
@@ -4061,67 +4051,6 @@ export function startServer(opts: {
         };
         if (replay) receipt.replay = true;
         return json(receipt, req.headers.get("accept-encoding"));
-      }
-
-      if (pathname === "/api/telemetry" && (req.method === "GET" || req.method === "POST")) {
-        // ── THE ANONYMOUS INSTALL PING (M86 spec 01) ──────────────────────────
-        // The GET says whether the ping is on, which switch decided, the phone's own switch and the
-        // exact JSON the next ping would send (null when it is off). The POST is the phone's switch,
-        // a write with a request id, answered with the same body; the same id again answers it
-        // unchanged. Neither route sends a ping: the timer in index.ts is the only sender.
-        const ping = opts.telemetry;
-        if (!ping) return text("telemetry unavailable", 503);
-        if (req.method === "GET") {
-          const denied = guard(req, cfg, "read", pairingGate, peerAddress);
-          if (denied) return denied;
-          return json(ping.view(), req.headers.get("accept-encoding"));
-        }
-        const denied = browserGate("write");
-        if (denied) return denied;
-        let body: JsonValue;
-        try {
-          // SAFETY: `Request.json()` output IS a JsonValue by construction, and `parseTelemetryRequest`
-          // re-checks every field of it before any of it is believed.
-          body = (await req.json()) as JsonValue;
-        } catch {
-          return jsonError(apiError("telemetry.setting_invalid"), 400, req.headers.get("accept-encoding"));
-        }
-        const parsed = parseTelemetryRequest(body);
-        if (parsed === null || parsed.setting === null) {
-          return jsonError(apiError("telemetry.setting_invalid"), 400, req.headers.get("accept-encoding"));
-        }
-        if (parsed.requestId === null) {
-          return jsonError(apiError("telemetry.request_id_required"), 400, req.headers.get("accept-encoding"));
-        }
-        const result = ping.choose({ setting: parsed.setting, requestId: parsed.requestId });
-        if (!result.replay) {
-          audit.record({
-            action: "telemetry.setting",
-            device: whois(req).device,
-            detail: { setting: parsed.setting, requestId: parsed.requestId },
-          });
-        }
-        const receipt: JsonObject = { ok: true, ...result.view, requestId: parsed.requestId };
-        if (result.replay) receipt.replay = true;
-        return json(receipt, req.headers.get("accept-encoding"));
-      }
-
-      if (pathname === "/api/telemetry/trouble" && req.method === "POST") {
-        // ── THE TROUBLE TALLY (M86 spec 05) ───────────────────────────────────
-        // The phone showed one of its two trouble cards. A count, not a command: no request id, no
-        // audit line, and the phone never retries it. The bridge the phone talks to counts it under
-        // its own install, a crew member's pane included.
-        const denied = browserGate("write");
-        if (denied) return denied;
-        let body: JsonValue | undefined;
-        try {
-          // SAFETY: `Request.json()` output IS a JsonValue by construction, and `parseTroubleSignal`
-          // re-checks every field of it before any of it is believed.
-          body = (await req.json()) as JsonValue;
-        } catch {
-          body = undefined;
-        }
-        return telemetryTroubleRoute(opts.telemetry, body);
       }
 
       // ── Speech-to-text (bridge/stt/) ─────────────────────────────────────
@@ -9224,20 +9153,6 @@ export async function reportContextRoute(
   const read = await rt.herdr.readGrid(pane, { scope: "recent", lines: REPORT_SCREEN_ROWS, styling: "preserve" });
   if (!read.ok) return text(`${rt.herdr.mux} read failed: ${read.detail}`, 502);
   return json({ ...context, screen: reportScreen(stripSgr(read.value.text)) } satisfies ReportContext, acceptEncoding);
-}
-
-/**
- * `POST /api/telemetry/trouble` once the write gate passed (M86 spec 05): one trouble signal from the
- * phone. A body that is not exactly `{ kind, harness, version, mux }` in their shapes, plus an optional
- * `screen` hash on a dialog signal, is a 400, plain text, because the phone never shows it. A good body is a 204 whether or not it was counted: with the
- * ping off for any reason, nothing is stored. Undefined telemetry answers 503, like the setting route.
- */
-export function telemetryTroubleRoute(ping: Pick<Telemetry, "trouble"> | undefined, body: JsonValue | undefined): Response {
-  if (!ping) return text("telemetry unavailable", 503);
-  const signal = parseTroubleSignal(body);
-  if (signal === null) return text("telemetry.trouble_invalid", 400);
-  ping.trouble(signal);
-  return secure(new Response(null, { status: 204 }));
 }
 
 /**

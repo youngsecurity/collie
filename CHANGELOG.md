@@ -37,6 +37,10 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 ## [Unreleased]
 
+### Changed
+
+- **This fork sends no install ping.** Upstream 1.27.0 added an anonymous daily ping that is on by default, and a count of trouble cards that travels with it. Both are removed here: the bridge has no ping, no install ID and no route that takes a count from the phone, Settings has no Telemetry card and `collie doctor` has no telemetry row. A `telemetry` key in `config.toml` or `COLLIE_TELEMETRY` in `.env`, left over from an upstream install, does not stop the bridge; `collie config check` names the key. Report a problem still opens a draft you send yourself. A test fails the build if the ping's address returns to the source. (#147)
+
 ## [1.24.2+ys.2] - 2026-11-09
 
 ### Fixed

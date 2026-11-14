@@ -318,7 +318,6 @@ export const ICON_KEYS = {
   "success": { meaning: "success", area: "updates", lucide: "CircleCheck" },
   "tab-dashboard": { meaning: "Dashboard tab", area: "navigation", lucide: "Rows3" },
   "tab-fold": { meaning: "fold or unfold the tab strip", area: "chat", lucide: "ChevronUp" },
-  "telemetry": { meaning: "the install count ping", area: "settings", lucide: "ChartColumn" },
   "terminal-draft": { meaning: "terminal draft", area: "composer", lucide: "Terminal" },
   "text-larger": { meaning: "make text larger", area: "settings", lucide: "AArrowUp" },
   "text-smaller": { meaning: "make text smaller", area: "settings", lucide: "AArrowDown" },

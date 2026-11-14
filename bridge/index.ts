@@ -244,12 +244,6 @@ import {
   writeUpdateLine,
 } from "./update-line.ts";
 import {
-  createTelemetry,
-  telemetryOrigin,
-  TELEMETRY_FIRST_DELAY_MS,
-  TELEMETRY_INTERVAL_MS,
-} from "./telemetry.ts";
-import {
   FreshPreflightGate,
   launchUpdateRunner,
   openRunnerLog,
@@ -1413,32 +1407,6 @@ updateFirstCheck.unref();
 const updateTimer = setInterval(updateTick, UPDATE_INTERVAL_MS);
 updateTimer.unref();
 
-// The anonymous install ping (M86 spec 01, bridge/telemetry.ts): one tiny POST a day at most, to
-// Collie's own endpoint, and nothing at all when any off switch says so. The state file is settled
-// here at boot (an off ping keeps no ID), the first check comes ten minutes in and then every hour,
-// and each tick only asks `shouldSend`. Both timers are unref()ed and cleared on shutdown.
-const telemetry = createTelemetry({
-  stateDir: cfg.stateDir,
-  env: process.env,
-  origin: telemetryOrigin(process.env, configLayer),
-  version: crewVersion,
-  installKind: installKind,
-  line: () => readUpdateLineSync(cfg.stateDir).line,
-  // Read at ping time. A peer (a member, or a deputy that is not the lead) is a member in the ping.
-  crewMode: () => crew.mode,
-  now: Date.now,
-  fetch: (url, init) => fetch(url, init),
-  os: HOST.platform,
-  arch: process.arch,
-  warn: (line) => console.warn(`[telemetry] ${line}`),
-  log: (line) => console.log(`[telemetry] ${line}`),
-});
-telemetry.observe();
-const telemetryFirstTick = setTimeout(() => void telemetry.tick(), TELEMETRY_FIRST_DELAY_MS);
-telemetryFirstTick.unref();
-const telemetryTimer = setInterval(() => void telemetry.tick(), TELEMETRY_INTERVAL_MS);
-telemetryTimer.unref();
-
 /**
  * What this collie publishes beside its snapshot body when its lead polls it (§19).
  *
@@ -1727,7 +1695,7 @@ const SURFACE_PLATFORM = surfacePlatform({
  * The pane's agent version, one reader for the send path and the Surface shadow over one cache: of the
  * pane's own program when the pane's foreground read shows it, else of the PATH binary
  * (bridge/pane-binary.ts, ADR 0124). A binary the login PATH misses still names its version in the
- * send, the shadow, the report and the trouble count, and both keep one last answer per pane.
+ * send, the shadow and the report, and both keep one last answer per pane.
  * `sendProfile` is the send path's profile at that version.
  */
 const paneVersion = createPaneVersion({ versions: sendVersions, binaries: harnessBinaries, probe: procProbe() });
@@ -3320,8 +3288,6 @@ const server = listenOrExit("front door", cfg.host, cfg.port, () => startServer(
     write: (record) => writeUpdateLine(diskWriter, cfg.stateDir, record),
     now: Date.now,
   },
-  // The anonymous install ping's state and the phone's switch (M86 spec 01).
-  telemetry,
   // The bare `<semver>+<sha>` this process answers `/api/health` and `/crew/v1/hello` with — one
   // string, resolved once, so the detached updater's health gate and a peer can never be told two
   // different things about this machine (M15/04).
@@ -3508,8 +3474,6 @@ const shutdown = async () => {
   clearInterval(sweepTimer);
   clearTimeout(updateFirstCheck);
   clearInterval(updateTimer);
-  clearTimeout(telemetryFirstTick);
-  clearInterval(telemetryTimer);
   process.exit(0);
 };
 process.on("SIGINT", shutdown);
