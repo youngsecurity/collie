@@ -855,6 +855,7 @@ export const ja: Dictionary = {
   "prompt.feedback.answer.textAria": "回答テキスト",
   "prompt.feedback.answer.placeholder": "回答を入力…",
   "prompt.feedback.answer.help": "質問の回答欄に入力され、回答として送信されます。",
+  "prompt.feedback.customAnswer.help": "質問自体の回答エディターに入力され、回答として送信されます。1 行のみです。",
   "prompt.feedback.answer.helpWizard": "この質問の回答欄に入力されます。送信すると回答され、次の質問に進みます。",
   "prompt.feedback.answer.helpMulti":
     "回答を選択済みの項目として追加します。完了したら‘送信’（または‘次へ’）をタップしてください。",
@@ -1632,6 +1633,10 @@ export const ja: Dictionary = {
   "promptAction.feedback.empty": "送信するデータがありません",
   "promptAction.feedback.boxNotOpened": "フィードバック欄が開きませんでした。ペインの状態を確認してください。",
   "promptAction.feedback.notArrived": "フィードバックが届きませんでした。送信は実行されていません。",
+  "promptAction.customAnswer.multiline": "この質問には 1 行の回答しか入力できません。1 行にまとめてもう一度送信してください。何も入力されませんでした",
+  "promptAction.customAnswer.tooLong": "この回答は、現在のターミナル幅では質問の回答エディターに収まりません。短くするか、ターミナルを広げてください。何も入力されませんでした",
+  "promptAction.customAnswer.editorBusy": "質問の回答エディターにすでにテキストがあるため、何も入力されませんでした。ターミナルで消去するか、戻ってからもう一度お試しください",
+  "promptAction.customAnswer.notOpened": "質問の回答エディターが開きませんでした。何も入力されませんでした",
   "promptAction.answer.fieldNotReached": "回答欄にアクセスできませんでした。何も送信されませんでした",
   "promptAction.answer.notCleared": "回答欄をクリアできませんでした。何も送信されませんでした",
   "promptAction.answer.notArrived": "回答が回答欄に表示されませんでした。何も送信されていません。",

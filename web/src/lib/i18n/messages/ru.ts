@@ -820,6 +820,7 @@ export const ru: Dictionary = {
   "prompt.feedback.answer.textAria": "Текст ответа",
   "prompt.feedback.answer.placeholder": "Напишите свой ответ…",
   "prompt.feedback.answer.help": "Вводится в поле ответа на вопрос и отправляется как ваш ответ.",
+  "prompt.feedback.customAnswer.help": "Вводится в собственный редактор ответа вопроса и отправляется как ваш ответ. Только одна строка.",
   "prompt.feedback.answer.helpWizard":
     "Вводится в поле ответа на этот вопрос. Отправка подтверждает ответ и переходит к следующему вопросу.",
   "prompt.feedback.answer.helpMulti":
@@ -1577,6 +1578,10 @@ export const ru: Dictionary = {
   "promptAction.feedback.empty": "Нечего отправлять",
   "promptAction.feedback.boxNotOpened": "Окно отзыва не открылось: проверьте панель",
   "promptAction.feedback.notArrived": "Отзыв не дошел: ничего не отправлено",
+  "promptAction.customAnswer.multiline": "Этот вопрос принимает ответ в одну строку. Запишите его одной строкой и отправьте снова. Ничего не введено",
+  "promptAction.customAnswer.tooLong": "Ответ слишком длинный для редактора ответа вопроса при этой ширине терминала. Сократите его или расширьте терминал. Ничего не введено",
+  "promptAction.customAnswer.editorBusy": "В редакторе ответа вопроса уже есть текст, поэтому ничего не введено. Очистите его в терминале или вернитесь назад и повторите попытку",
+  "promptAction.customAnswer.notOpened": "Редактор ответа вопроса не открылся. Ничего не введено",
   "promptAction.answer.fieldNotReached": "Не удалось получить доступ к полю ответа. Ничего не отправлено",
   "promptAction.answer.notCleared": "Не удалось очистить поле ответа. Ничего не отправлено",
   "promptAction.answer.notArrived": "Ваш ответ не поступил в поле. Ничего не отправлено",

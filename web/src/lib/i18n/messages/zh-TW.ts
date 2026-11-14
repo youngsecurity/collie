@@ -844,6 +844,7 @@ export const zhTW: Dictionary = {
   "prompt.feedback.answer.textAria": "回答文字",
   "prompt.feedback.answer.placeholder": "寫下您的回答…",
   "prompt.feedback.answer.help": "輸入到問題的回答欄中，並作為你的回答傳送。",
+  "prompt.feedback.customAnswer.help": "輸入到問題本身的回答編輯器中，並作為你的回答傳送。僅限一行。",
   "prompt.feedback.answer.helpWizard": "輸入到此問題的回答欄中。傳送後即作答並前往下一個問題。",
   "prompt.feedback.answer.helpMulti":
     "將你的回答新增為已勾選的選項；完成後點按提交（或下一步）。",
@@ -1617,6 +1618,10 @@ export const zhTW: Dictionary = {
   "promptAction.feedback.empty": "內容為空",
   "promptAction.feedback.boxNotOpened": "回饋輸入框未能開啟，請檢查對應窗格",
   "promptAction.feedback.notArrived": "回饋未能送達，未提交任何變更",
+  "promptAction.customAnswer.multiline": "此問題只接受單行回答。請寫成一行後再傳送。未輸入任何內容",
+  "promptAction.customAnswer.tooLong": "在目前的終端寬度下，此回答對問題的回答編輯器來說太長。請縮短回答或加寬終端。未輸入任何內容",
+  "promptAction.customAnswer.editorBusy": "問題的回答編輯器中已有文字，因此未輸入任何內容。請在終端中清空，或返回後再試一次",
+  "promptAction.customAnswer.notOpened": "問題的回答編輯器未開啟。未輸入任何內容",
   "promptAction.answer.fieldNotReached": "無法移到回答欄，未傳送任何內容",
   "promptAction.answer.notCleared": "無法清空回答欄，未傳送任何內容",
   "promptAction.answer.notArrived": "回答未出現在回答欄中，未提交任何內容",

@@ -856,6 +856,7 @@ export const ko: Dictionary = {
   "prompt.feedback.answer.textAria": "답변 텍스트",
   "prompt.feedback.answer.placeholder": "답변 작성…",
   "prompt.feedback.answer.help": "질문의 답변 칸에 입력되어 답변으로 전송됩니다.",
+  "prompt.feedback.customAnswer.help": "질문 자체의 답변 편집기에 입력되어 답변으로 전송됩니다. 한 줄만 가능합니다.",
   "prompt.feedback.answer.helpWizard": "이 질문의 답변 필드에 입력됩니다. 전송하면 답변이 입력되고 다음 질문으로 넘어갑니다.",
   "prompt.feedback.answer.helpMulti":
     "답변을 선택된 항목으로 추가합니다. 완료되면 ‘제출’(또는 ‘다음’)을 탭하십시오.",
@@ -1630,6 +1631,10 @@ export const ko: Dictionary = {
   "promptAction.feedback.empty": "전송할 내용이 없습니다.",
   "promptAction.feedback.boxNotOpened": "피드백 입력창이 열리지 않았습니다. 창 상태를 확인하세요.",
   "promptAction.feedback.notArrived": "피드백이 전달되지 않았습니다. 아무것도 제출되지 않았습니다.",
+  "promptAction.customAnswer.multiline": "이 질문은 한 줄 답변만 받습니다. 한 줄로 작성한 뒤 다시 보내십시오. 아무것도 입력되지 않았습니다",
+  "promptAction.customAnswer.tooLong": "이 답변은 현재 터미널 너비에서 질문의 답변 편집기에 비해 너무 깁니다. 답변을 줄이거나 터미널을 넓히십시오. 아무것도 입력되지 않았습니다",
+  "promptAction.customAnswer.editorBusy": "질문의 답변 편집기에 이미 텍스트가 있어 아무것도 입력되지 않았습니다. 터미널에서 지우거나, 뒤로 돌아가 다시 시도하십시오",
+  "promptAction.customAnswer.notOpened": "질문의 답변 편집기가 열리지 않았습니다. 아무것도 입력되지 않았습니다",
   "promptAction.answer.fieldNotReached": "답변 필드에 접근할 수 없습니다. 아무것도 전송되지 않았습니다",
   "promptAction.answer.notCleared": "답변 필드를 지울 수 없습니다. 아무것도 전송되지 않았습니다",
   "promptAction.answer.notArrived": "답변이 필드에 도달하지 않았습니다. 아무것도 제출되지 않았습니다",

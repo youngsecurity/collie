@@ -861,6 +861,7 @@ export const es: Dictionary = {
   "prompt.feedback.answer.placeholder": "Escriba su respuesta…",
   "prompt.feedback.answer.help":
     "Se escribe en el campo de respuesta de la pregunta y se envía como su respuesta.",
+  "prompt.feedback.customAnswer.help": "Se escribe en el editor de respuesta de la propia pregunta y se envía como su respuesta. Solo una línea.",
   "prompt.feedback.answer.helpWizard":
     "Se escribe en el campo de respuesta de esta pregunta. El envío responde a la pregunta y pasa a la siguiente.",
   "prompt.feedback.answer.helpMulti":
@@ -1643,6 +1644,10 @@ export const es: Dictionary = {
   "promptAction.feedback.empty": "No hay nada para enviar.",
   "promptAction.feedback.boxNotOpened": "El cuadro de comentarios no se abrió. Revisa el panel.",
   "promptAction.feedback.notArrived": "El comentario no llegó. No se envió nada.",
+  "promptAction.customAnswer.multiline": "Esta pregunta admite una respuesta de una sola línea. Escríbala en una línea y envíela de nuevo. No se escribió nada",
+  "promptAction.customAnswer.tooLong": "Esta respuesta es demasiado larga para el editor de respuesta de la pregunta con este ancho de terminal. Acórtela o amplíe el terminal. No se escribió nada",
+  "promptAction.customAnswer.editorBusy": "El editor de respuesta de la pregunta ya contiene texto, así que no se escribió nada. Vacíelo en el terminal, o vuelva atrás e inténtelo de nuevo",
+  "promptAction.customAnswer.notOpened": "El editor de respuesta de la pregunta no se abrió. No se escribió nada",
   "promptAction.answer.fieldNotReached": "No se pudo acceder al campo de respuesta. No se envió nada",
   "promptAction.answer.notCleared": "No se pudo vaciar el campo de respuesta. No se envió nada",
   "promptAction.answer.notArrived": "Su respuesta no llegó al campo. No se envió nada",

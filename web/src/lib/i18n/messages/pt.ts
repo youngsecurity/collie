@@ -784,6 +784,7 @@ export const pt: Dictionary = {
   "prompt.feedback.answer.textAria": "Texto da resposta",
   "prompt.feedback.answer.placeholder": "Escreva sua resposta…",
   "prompt.feedback.answer.help": "Digitado no campo de resposta da pergunta e enviado como sua resposta.",
+  "prompt.feedback.customAnswer.help": "Digitado no editor de resposta da própria pergunta e enviado como sua resposta. Apenas uma linha.",
   "prompt.feedback.answer.helpWizard":
     "Digitado no campo de resposta desta pergunta. Enviar responde à pergunta e avança para a próxima.",
   "prompt.feedback.answer.helpMulti":
@@ -1507,6 +1508,10 @@ export const pt: Dictionary = {
   "promptAction.feedback.empty": "Nada para enviar",
   "promptAction.feedback.boxNotOpened": "A caixa de feedback não abriu: verifique o painel",
   "promptAction.feedback.notArrived": "O feedback não chegou: nada foi enviado",
+  "promptAction.customAnswer.multiline": "Esta pergunta aceita uma resposta de uma única linha. Escreva-a em uma linha e envie novamente. Nada foi digitado",
+  "promptAction.customAnswer.tooLong": "Esta resposta é longa demais para o editor de resposta da pergunta nesta largura do terminal. Encurte-a ou alargue o terminal. Nada foi digitado",
+  "promptAction.customAnswer.editorBusy": "O editor de resposta da pergunta já contém texto, então nada foi digitado. Limpe-o no terminal, ou volte e tente novamente",
+  "promptAction.customAnswer.notOpened": "O editor de resposta da pergunta não abriu. Nada foi digitado",
   "promptAction.answer.fieldNotReached": "Não foi possível acessar o campo de resposta. Nada foi enviado",
   "promptAction.answer.notCleared": "Não foi possível limpar o campo de resposta. Nada foi enviado",
   "promptAction.answer.notArrived": "Sua resposta não chegou ao campo. Nada foi enviado",
