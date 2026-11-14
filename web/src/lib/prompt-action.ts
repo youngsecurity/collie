@@ -86,7 +86,8 @@ function target(args: GuardArgs): DialogTarget<"prompt-select"> & { sleep?: Slee
  *
  * Refuses outright while the dialog's own input row has FOCUS: the terminal then swallows every digit
  * as a character, so the keystroke would silently type into someone's half-written sentence instead
- * of answering (issue #95).
+ * of answering (issue #95). The one exception is a pi `custom-answer` with its editor open, whose
+ * only option is Escape (.adr/0126).
  *
  * This is NOT a duplicate of the renderer's lock, and not belt-and-braces — it is the only thing at
  * the write layer that refuses the STATE. The race guard below verifies SAMENESS: a model captured

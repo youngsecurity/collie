@@ -75,3 +75,11 @@ This addendum answers the two questions from the pull request thread. Nothing ab
    modules: `ctrl+u ctrl+k`, the digit behaviour, and `Enter` toggling the tick. A second harness
    that emits `field` must first measure its own keys. Those keys must then move into profile data
    before the feature is switched on for that harness.
+
+## Addendum (2026-11-14, this fork)
+
+A second harness now types an answer: the free-text row of a stock pi question, by its own recipe
+and not this one ([ADR 0126](./0126-a-pi-question-answer-is-typed-into-its-inline-editor.md)). Its keys are profile data (`pi.json`, `keys.navigation`).
+It types only into an empty editor, since no clearing key was measured on pi, so rule 3 above has
+no counterpart there. Decision 1's "every other harness" now reads "every other harness and every
+other pi screen". Nothing above is rewritten.

@@ -23,8 +23,8 @@ and the live probes.
 | pi's own selector with a title of several rows: the stock `permission-gate` example, the command quoted further in | the same | (a) walk | `pi--v0871-permission-gate*`; live taps below |
 
 Raw, with the Escape card: every multi-select (`[ ]` rows, or a footer that gives Space a tick or a
-toggle), a pointer on the free-text row, every inline answer editor (`Enter to submit • Esc to go
-back`), an incomplete Submit or Review page (`Unanswered: …`, `Enter goes to the first unanswered`),
+toggle), a pointer on a free-text row and an inline answer editor outside the stock question (below),
+an incomplete Submit or Review page (`Unanswered: …`, `Enter goes to the first unanswered`),
 every picker (below), and a Submit page beside OmO's side panel (below). A question beside the
 panel lifts, bound to the columns left of it (below).
 
@@ -170,8 +170,44 @@ Registering an adapter for `pi` moves every pi pane off the one-step send onto t
 (`lib/reply-action.ts`), so `composer.ts` reads both editors: stock pi (0.85.1, 0.87.1, 1.1.0: a
 rule, the draft at column zero, a rule, status rows) and OmO (a `❯` row and two-space continuations).
 The slash palette, a labelled top rule and a pasted shorter rule come from the PR 397 captures and
-the canary's `15-rule` message. `composerReady` is false whenever `piModalOnScreen` holds, so the
-phone never types into a question's answer editor.
+the canary's `15-rule` message. `composerReady` is false whenever `piModalOnScreen` holds, so a
+reply never goes into a question's answer editor. The one thing typed there is a custom answer, by
+its own recipe (next section).
+
+## The custom answer (ADR 0126)
+
+On a stock question (`question`, `questionnaire`, and the PR 397 single-select, which draws the
+same shape) the free-text row is a `custom-answer` field and the reader lifts three states of one
+card:
+
+| State | Screen | Card |
+| --- | --- | --- |
+| List | pointer on a choice, footer `↑↓ navigate • Enter to select` | choices, the way out, `pointer: "above"` |
+| On the row | `> 4. Type something.`, same footer | choices by the walk back up, `pointer: "on"` |
+| Editor open | `> 4. Type something. ✎`, a label, an inset rule, text rows, the inset rule, footer `Enter to submit • Esc to go back` (or `to cancel`) | only the way out, `focused: true`, `text` = the rows |
+
+The editor is read by shape: one to three label rows one column in (the label's words are not
+matched), a rule one column in, up to eight text rows one column in, the same rule. The caret is a
+reverse-video cell and trailing padding is trimmed. A wrapped answer reads as rows joined by a
+newline, which never equals a one-line answer, so it is never committed.
+
+All three states share a core signature cut at the free-text row, with the pointer and the `✎`
+blanked. `lib/pi-answer.ts` follows the question by that, the question text and the tab caption,
+because the editor state has no choices for the shared identity to compare.
+
+The recipe: `Down` one verified read at a time to the row, `Enter` bound to that read, the text
+through the reply path bound to the read of the EMPTY editor, a wait for the exact text, then
+`Enter` bound to that read. The keys are `keys.navigation` in `pi.json`. An editor that already
+holds text is refused: no clearing key was measured.
+
+Not typed: OmO (`Enter` in its editor is "save and next" and its plan is a digit), gentle-pi's
+`Other…`, every multi-select, and a stock question beside OmO's side panel, where the list keeps a
+`free-text` row and the other two states stay raw.
+
+NOT measured live as of 2026-11-14. The source walk above and the captures give the keys; the
+recipe has run only against scripted panes. Owed on a real pi: that the bridge's text path lands in
+the inline editor as plain text, that `Enter` submits it on the pi version in use (captures stop at
+1.1.0), and the `questionnaire` editor with text in it.
 
 The status rows are styled, except the last, which may be plain under a styled row. pi's footer
 (`components/footer.js` in pi-coding-agent 1.1.0) joins every extension's `ctx.ui.setStatus` text
