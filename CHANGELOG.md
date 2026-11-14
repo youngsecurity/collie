@@ -39,7 +39,7 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 ### Added
 
-- **A pi question can be answered in your own words from its card.** A stock pi question that ends in a "Type something." row now shows "Type your own answer" under its choices. Write one line and tap Send: Collie walks to the row, opens pi's answer editor, types the text, checks the editor reads exactly that, and only then submits. If the question changes or goes away first, nothing is sent and your draft stays. Text already in pi's editor is shown and left alone. OmO, gentle-pi and multi-select questions are unchanged. Not yet confirmed on a live pi ([ADR 0126](./.adr/0126-a-pi-question-answer-is-typed-into-its-inline-editor.md)). (#133)
+- **A pi question can be answered in your own words from its card.** A stock pi question that ends in a "Type something." row now shows "Type your own answer" under its choices. Write one line and tap Send: Collie walks to the row, opens pi's answer editor, types the text, checks the editor reads exactly that, and only then submits. If the question changes or goes away first, nothing is sent and your draft stays. Text already in pi's editor is shown and left alone. OmO, gentle-pi and multi-select questions are unchanged. Not yet confirmed on a live pi ([ADR 0126](./.adr/0126-a-pi-question-answer-is-typed-into-its-inline-editor.md)). Thanks @yousecjoe (#133)
 
 ## [1.24.2+ys.2] - 2026-11-09
 
