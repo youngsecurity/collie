@@ -37,8 +37,13 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 ## [Unreleased]
 
+## [1.28.3+ys.1] - 2026-11-14
+
+**Urgent.** Claude Code's Remote Control can make Collie hold phone messages, and its session rating blocks every send from the phone.
+
 ### Changed
 
+- **Collie adopts upstream 1.28.3 while keeping the fork's safeguards.** Import fourteen upstream releases, 1.24.3 through 1.28.3. The urgent fixes: Claude Code's Remote Control row no longer makes Collie hold a message sent from the phone, its session rating no longer blocks every send, and `collie pair` refuses to run inside an agent pane and the audit log records where a pairing came from. Also the `herdr-core` multiplexer, the crew drawn by machine, launcher rows owned by the lead, WalkyTalky with a per-session switch, pinned messages, pane status on the dashboard, folder-tab themes and community themes, and math rendering. The Herdr 0.8.0 minimum, default-on pairing, the fork's update gate, the loopback-peer rule on gated routes and source-only publication stay. This fork's releases carry no math pack: a build from source serves its own engines. Decisions: [`docs/adoption/v1.28.3.md`](./docs/adoption/v1.28.3.md). Closes #147. ([433aacfd](https://github.com/youngsecurity/collie/commit/433aacfd))
 - **This fork sends no install ping.** Upstream 1.27.0 added an anonymous daily ping that is on by default, and a count of trouble cards that travels with it. Both are removed here: the bridge has no ping, no install ID and no route that takes a count from the phone, Settings has no Telemetry card and `collie doctor` has no telemetry row. A `telemetry` key in `config.toml` or `COLLIE_TELEMETRY` in `.env`, left over from an upstream install, does not stop the bridge; `collie config check` names the key. Report a problem still opens a draft you send yourself. A test fails the build if the ping's address returns to the source. (#147)
 
 ## [1.24.2+ys.2] - 2026-11-09
