@@ -7595,7 +7595,6 @@ describe("a slash command over pi's and omp's own command list (field case, 2026
   const PI130 = { list: "pi--v130-slash-model-list--w120.txt", opened: "pi--v130-model-selector-empty--w120.txt", version: "1.3.0" };
   const PI087 = { list: "pi--v0871-slash-model-list--w120.txt", opened: "pi--v0871-model-selector-empty--w120.txt", version: "0.87.1" };
   const OMP = { list: "omp--v18-6-slash-model-list--w120.txt", opened: "omp--v18-6-model-selector-empty--w120.txt", version: "18.6.1" };
-  const OPENED = "Something opened at the box after the text was typed, so Enter was not pressed.";
   const LIST_NOTICE = "The command list at the box pointed at another command, so Enter was not pressed.";
 
   /**
@@ -7604,7 +7603,7 @@ describe("a slash command over pi's and omp's own command list (field case, 2026
    * footer rows under that. Once Enter took the command the screen is `opened`, the capture of the
    * screen the command opens. `list` rewrites the list rows, read as plain text.
    */
-  const captured = (pane: FakePane, name: string, opened: string, options: { list?: (rows: string[]) => string[] } = {}): void => {
+  const captured = (pane: FakePane, name: string, opened: string, options: { list?: (rows: string[]) => string[]; shows?: (box: string) => boolean } = {}): void => {
     const rows = capture(name);
     const open = rows.findIndex((row) => plain(row).startsWith("╰─ "));
     const boxRow = open >= 0 ? open : rows.findIndex((row, i) => i > 0 && /^─{20,}$/u.test(plain(rows[i - 1]!).trimEnd()) && plain(row).startsWith("/"));
@@ -7624,7 +7623,8 @@ describe("a slash command over pi's and omp's own command list (field case, 2026
       }
       const head = rows.slice(0, listFrom);
       head[boxRow] = box(p.box);
-      p.fixed = [...head, ...(p.box.startsWith("/") ? under : []), ...rows.slice(footer)].join("\r\n");
+      const shows = options.shows ?? ((text: string) => text.startsWith("/"));
+      p.fixed = [...head, ...(shows(p.box) ? under : []), ...rows.slice(footer)].join("\r\n");
     };
   };
 
@@ -7708,12 +7708,79 @@ describe("a slash command over pi's and omp's own command list (field case, 2026
       expect(answer.receipt).toMatchObject({ outcome: "typed_not_submitted", reason: "modal_cue" });
       expect(pane.keysSeen).not.toContain("Enter");
       expect(pane.box).toBe("/model");
-      // pi finds a box past a list only when the list is the box's own, so a list that points elsewhere
-      // reads as something opened at the box, the detail of any other cue. omp names `leadOpens`: its
-      // fuzzy list is the typed text's own popup, the box is found, and the detail is the list notice.
-      expect(deps.store.get(id)?.receipt?.detail).toBe(c === OMP ? LIST_NOTICE : OPENED);
+      // pi (since issue 638) and omp name `leadOpens`: the fuzzy list is the typed text's own popup, the
+      // box is found past it, and the detail is the list notice, not the "something opened" of any other cue.
+      expect(deps.store.get(id)?.receipt?.detail).toBe(LIST_NOTICE);
     });
   }
+
+  // Issue 638 (pi 1.4.0 on Herdr): a command left typed under a list that points elsewhere must leave a box
+  // the phone can still clear. pi's fuzzy list matches nothing once the probe character stands after the
+  // text, so it closes while the probe is in and opens again after its Backspace. The rows of the box's own
+  // list are no rows under the box (countBelow), so the next send reads the draft and Discard clears it.
+  for (const c of [PI130, OMP] as const) {
+    test(`${c.list}: after /model was left typed under a list pointed elsewhere, a later send finds the draft and Discard clears the box`, async () => {
+      const pane = paneOf(c);
+      const { send } = rig({ pane, harness: harnessOf(c), version: c.version });
+      const probe = "⌁";
+      captured(pane, c.list, c.opened, { list: pointAt(c === OMP ? "modelpreset" : "scoped-models"), shows: (text) => text.startsWith("/") && !text.includes(probe) });
+      expect((await send("/model", { mode: "command" })).receipt).toMatchObject({ outcome: "typed_not_submitted", reason: "modal_cue" });
+      expect(pane.box).toBe("/model");
+      const later = await send("/session", { mode: "command" });
+      expect(later.receipt).toMatchObject({ outcome: "refused", reason: "draft_present" });
+      const discarded = await send("/model", { mode: "discard", rowsHash: later.rowsHash! });
+      expect(discarded.receipt?.outcome).toBe("discarded");
+      expect(pane.box).toBe("");
+      expect(pane.keysSeen).not.toContain("Enter");
+    });
+  }
+
+  // Issue 135 (pi 1.4.0 on Herdr 0.9.3): a steer from the phone was refused `unconfirmed` with "Collie cannot
+  // read this screen". A steer passes the plain send's S0 rule first, so a command left typed under pi's fuzzy
+  // list, which read as an unreadable screen with no box, refused every later steer the same way. With the
+  // list read as the typed text's own (issue 638) the steer finds the draft, and Discard clears the box.
+  const UNREAD = "Collie cannot read this screen. Check the pane, then tap Type here.";
+  const STEER_TEXT = "also say hello at the end";
+  const LEFT_TYPED = [
+    ["pi--v130-slash-mod-partial--w120.txt", "/mod"],
+    ["pi--v140-slash-s-fuzzy--w120.txt", "/s"],
+    ["pi--v140-slash-model-arg-list--w120.txt", "/model haiku"],
+  ] as const;
+  for (const [name, typed] of LEFT_TYPED) {
+    for (const version of ["1.4.0", "1.5.0"]) {
+      test(`${name} on pi ${version}: a steer over ${typed} left under pi's list is refused draft_present, not unconfirmed, and Discard clears the box (issue 135)`, async () => {
+        const pane = new FakePane("claude");
+        const { send } = rig({ pane, harness: "pi", version });
+        const probe = "⌁";
+        captured(pane, name, PI130.opened, { shows: (text) => text.startsWith("/") && !text.includes(probe) });
+        pane.box = typed;
+        const steer = await send(STEER_TEXT, { when: "steer", fromPhone: true });
+        expect(steer.receipt).toMatchObject({ outcome: "refused", reason: "draft_present", keys: ["probe", "Backspace"] });
+        expect(steer.receipt?.detail).not.toBe(UNREAD);
+        expect(steer.surface).toMatchObject({ turn: "idle", modal: "none", composer: "draft" });
+        expect(steer.offers).toEqual(["append", "replace", "cancel"]);
+        // The probe went in and came out: the command is still in the box, and nothing was submitted.
+        expect(pane.box).toBe(typed);
+        expect(pane.keysSeen).toEqual(["Backspace"]);
+        const discarded = await send(typed, { mode: "discard", rowsHash: steer.rowsHash! });
+        expect(discarded.receipt?.outcome).toBe("discarded");
+        expect(pane.box).toBe("");
+        expect(pane.keysSeen).not.toContain("Enter");
+      });
+    }
+  }
+
+  // The manual Send is kept where it belongs: a screen pi drew over its box is still not read as a draft.
+  test.each(["1.4.0", "1.5.0"])("pi's model selector on pi %s: a steer is still refused unconfirmed, nothing typed (issue 135)", async (version) => {
+    const pane = new FakePane("claude");
+    pane.fixed = capture(PI130.opened).join("\r\n");
+    const { send } = rig({ pane, harness: "pi", version });
+    const steer = await send(STEER_TEXT, { when: "steer", fromPhone: true });
+    expect(steer.receipt).toMatchObject({ outcome: "refused", reason: "unconfirmed", detail: UNREAD, keys: [] });
+    expect(steer.surface).toMatchObject({ turn: "unknown", modal: "unreadable" });
+    expect(steer.offers).toEqual(["commit", "keys"]);
+    expect(pane.calls).toEqual([]);
+  });
 });
 
 // Issue 497 (omp 18.11.3, the box composer, captured 2026-10-18 in a scratch tmux session): sends that

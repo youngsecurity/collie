@@ -37,6 +37,10 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 ## [Unreleased]
 
+### Fixed
+
+- **A Pi command under its match list no longer blocks sends.** A half-typed command (`/s`) or one with an argument (`/model haiku`) opens Pi's list under the box. Collie read that as a screen it could not read, so each later send or steer was refused with "Collie cannot read this screen" until someone pressed Escape in the terminal. The pane now reads as a draft: the send reports the text in the box, and Discard or Replace clears it from the phone. Screens Pi draws over the box, such as the model selector, still take the two-tap manual Send. Backports upstream [b6f018b](https://github.com/AltanS/collie/commit/b6f018b) (AltanS/collie#638). Thanks @AltanS (#135).
+
 ## [1.24.2+ys.2] - 2026-11-09
 
 ### Fixed

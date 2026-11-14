@@ -1045,15 +1045,17 @@ function rowsBelow(snap: Snap, frame: Frame): number {
  * The non-blank rows under a frame's bottom edge, the profile's hint rows left out
  * (`idle.volatile.below.hints`): a harness may hide or swap a hint there once the box holds text
  * (Codex 0.163.0 drops "← for agents · ? for shortcuts" at the first character), which is not a
- * moved screen. The rows of a stale list under an empty box (`stale`, `commandList.staleWhenEmpty`) are
- * left out the same way: the harness drops them at the next key.
+ * moved screen. The rows of a list under the box are left out the same way (`list`): a stale list under
+ * an empty box (`commandList.staleWhenEmpty`), which the harness drops at the next key, and the list the
+ * box's own text opened ({@link ownCommandList}), which comes and goes with that text. A probe typed
+ * after `/s` in pi's box closes pi's fuzzy list, and that is no moved screen (issue 638).
  */
-function countBelow(texts: readonly string[], frame: Frame | null, hints: readonly RegExp[], stale: CommandListRead | null = null, popup: PopupRead | null = null): number {
+function countBelow(texts: readonly string[], frame: Frame | null, hints: readonly RegExp[], list: CommandListRead | null = null, popup: PopupRead | null = null): number {
   if (frame === null) return 0;
   let n = 0;
   for (let i = frame.bottom + 1; i < texts.length; i++) {
-    // The rows of a list the harness left under an empty box (`commandList.staleWhenEmpty`) go with the next key.
-    if (stale !== null && i >= stale.first && i <= stale.last) continue;
+    // The rows of a stale list or of the box's own list under it go with the text that opened them.
+    if (list !== null && i >= list.first && i <= list.last) continue;
     // A typeahead popup (`volatile.below.popups`) comes and goes with the text: its rows are not a screen that moved.
     if (popup !== null && i >= popup.first && i <= popup.last) continue;
     const text = texts[i]!.trimEnd();
@@ -4407,7 +4409,7 @@ export class SendProtocol {
         texts,
         frame,
         (idle?.volatile.below.hints ?? []).map((source) => new RegExp(source, "u")),
-        frame === null ? null : staleListUnder(texts, frame.bottom, frame.interior.text, idle?.volatile.below.commandList),
+        frame === null ? null : (staleListUnder(texts, frame.bottom, frame.interior.text, idle?.volatile.below.commandList) ?? (ownList?.side === "under" ? ownList : null)),
         popup,
       ),
       otherScreen: otherScreenOf(texts, frame, idle?.volatile.below.otherScreens ?? []),
