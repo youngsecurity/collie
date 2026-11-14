@@ -1,6 +1,4 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
-import { Bot, Layers, ListTree, Undo2, X } from "lucide-react";
-import type { LucideIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Collapse } from "@/components/ui/collapse";
@@ -23,6 +21,8 @@ import { hasResizeObserver } from "@/lib/env";
 import { t as translate } from "@/lib/i18n";
 import type { OperatorCommand } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { Icon } from "@/components/icons/icon";
+import type { IconKey } from "@/components/icons/keys";
 
 // ONE ROW OF ACTIONS, DIRECTLY ABOVE THE INPUT. Stop stands at the belt's start (in view at rest, no
 // scroll needed; dimmed while no turn runs, so the belt never reflows); then Collie's own controls —
@@ -190,7 +190,9 @@ const OFF = "text-muted-foreground";
  * left of the mark, 6px apart (the belt's one pill gap): 117 + 32 + 6 = 155, see
  * {@link SWITCH_PILL_INSET_WITH_CHANGES}. WITH THE COMPOSER'S X (M40 spec 04) a third pill stands
  * left of both while the phone's box holds a draft: 155 + 32 + 6 = 193, see
- * {@link SWITCH_PILL_INSET_WITH_CLEAR}.
+ * {@link SWITCH_PILL_INSET_WITH_CLEAR}; the agents mark makes four, 231 ({@link SWITCH_PILL_INSET_WITH_AGENTS}),
+ * the Zoom pill five, 269 ({@link SWITCH_PILL_INSET_FIVE}), and the jobs mark six, 307
+ * ({@link SWITCH_PILL_INSET_SIX}), and the pins mark seven, 345 ({@link SWITCH_PILL_INSET_SEVEN}).
  *
  * THIS NUMBER IS NO LONGER THE ANSWER — IT IS THE GUESS BEFORE ONE EXISTS. A constant here drifts
  * the moment the Switch block's own box changes (a locale with a wider glyph, a future word back on
@@ -216,20 +218,36 @@ const SWITCH_PILL_INSET_WITH_CLEAR = 193;
  *  the Changes pill and the mark. 193 + 32 (the agents mark) + 6 (its gap) = 231. */
 const SWITCH_PILL_INSET_WITH_AGENTS = 231;
 
-/** The four constants above, indexed by how many pills the block holds, less one. */
+/** The first-frame fallback with all FIVE pinned pills: the X, the agents mark, Changes, Zoom and the
+ *  mark. 231 + 32 (the Zoom pill) + 6 (its gap) = 269. */
+const SWITCH_PILL_INSET_FIVE = 269;
+
+/** The first-frame fallback with all SIX pinned pills: the five above and the jobs mark (see `jobs`
+ *  below). 269 + 32 (the jobs mark) + 6 (its gap) = 307. */
+const SWITCH_PILL_INSET_SIX = 307;
+
+/** The first-frame fallback with all SEVEN pinned pills: the six above and the pins mark (see `pins`
+ *  below). 307 + 32 (the pins mark) + 6 (its gap) = 345. */
+const SWITCH_PILL_INSET_SEVEN = 345;
+
+/** The seven constants above, indexed by how many pills the block holds, less one. */
 const SWITCH_PILL_INSETS = [
   SWITCH_PILL_INSET,
   SWITCH_PILL_INSET_WITH_CHANGES,
   SWITCH_PILL_INSET_WITH_CLEAR,
   SWITCH_PILL_INSET_WITH_AGENTS,
+  SWITCH_PILL_INSET_FIVE,
+  SWITCH_PILL_INSET_SIX,
+  SWITCH_PILL_INSET_SEVEN,
 ] as const;
 
 /**
- * The first-frame fallback AT A BELT SCALE, for a block holding `pills` pinned pills (1 to 4). The
+ * The first-frame fallback AT A BELT SCALE, for a block holding `pills` pinned pills (1 to 7). The
  * constants above are the scale-1 arithmetic; only the icon-only pills grow with `--belt-scale`
  * (the hairline, the gaps, `pr-3` and the 64px fade do not), so each 32 in them becomes
  * `--belt-pill`, the same `round(2rem * scale)` index.css uses. Default scale 1.15: 85 + 37 = 122
- * for one pill, 85 + 37 + 6 + 37 = 165 for two, 85 + 3 × 37 + 2 × 6 = 208 for three.
+ * for one pill, 85 + 37 + 6 + 37 = 165 for two, 85 + 3 × 37 + 2 × 6 = 208 for three, 85 + 4 × 37 +
+ * 3 × 6 = 251 for four, 85 + 5 × 37 + 4 × 6 = 294 for five, 85 + 6 × 37 + 5 × 6 = 337 for six, 85 + 7 × 37 + 6 × 6 = 380 for seven.
  */
 export function switchPillInset(scale: number, pills: number): number {
   const count = Math.min(Math.max(Math.round(pills), 1), SWITCH_PILL_INSETS.length);
@@ -240,8 +258,9 @@ export function switchPillInset(scale: number, pills: number): number {
 /** Each pinned pill's answered box, by where it stands in the block. On the block's outer side it
  *  reaches 7px: on the left into the 8px beside the hairline, on the right into `pr-3`. Toward a
  *  neighbour it reaches 3px, half the 6px gap, so two reaches never meet. At the default scale that
- *  is 37 + 7 + 3 = 47px across for an end pill and 43px for the middle one, over the 44px floor
- *  either way. Literal class names, so Tailwind's scan finds all four. */
+ *  is 37 + 7 + 3 = 47px across for an end pill and 43px for the middle one. The end pill clears the
+ *  44px floor. The middle one stays one pixel under it, accepted because the 6px gap between pinned
+ *  pills cannot grow without moving the block. Literal class names, so Tailwind's scan finds all four. */
 function pinnedReach(first: boolean, last: boolean, hand: Hand = "right"): string {
   // The left-hand block runs mirrored (`flex-row-reverse`), so the DOM-first pill stands on the
   // block's INNER side, the right, and the DOM-last on its outer side, the left.
@@ -365,7 +384,7 @@ function useSwitchBlockWidth(active: boolean): SwitchBlockWidth {
 export interface GeneralAction {
   /** Stable, for React's key. Never shown. */
   id: string;
-  icon: LucideIcon;
+  icon: IconKey;
   /** ALREADY TRANSLATED. The button's accessible name — what a reader announces and what a test
    *  addresses. It is never shortened for the paint. */
   label: string;
@@ -466,6 +485,18 @@ export interface ActionsRowProps {
     label: string;
   };
   /**
+   * THE OUTPUT, ZOOMED (components/output-zoom.tsx): an icon-only pill DIRECTLY LEFT of the Switch
+   * mark, so the two controls that LEAVE the composer for another view of the pane stand together at
+   * the pinned end. It navigates (`/pane/:id/zoom`), so no `aria-haspopup`. Absent on a pane with no
+   * screen, where there is nothing to zoom.
+   */
+  zoom?: {
+    /** Opens the zoomed output for this pane. */
+    onClick: () => void;
+    /** ALREADY TRANSLATED. The button's accessible name, `zoom.open` ("Zoom output"). */
+    label: string;
+  };
+  /**
    * THE COMPOSER'S CLEAR SLOT (M40 spec 04, issue #291; Altan, 2026-09-26/27). An icon-only X on
    * the pinned block, directly LEFT of the Changes pill, left of the Switch mark when there is no
    * Changes pill, alone when neither shows. The scrolling pills are for acts inside the terminal;
@@ -520,16 +551,48 @@ export interface ActionsRowProps {
     /** The Agents sheet is open: `aria-expanded`, as on the other controls that open a surface. */
     expanded: boolean;
   };
+  /**
+   * THE JOBS MARK (issue 670, ADR 0128): the pane's background jobs, the commands an agent started that
+   * run on after its turn. Built like the agents mark and standing right of it, left of Files: the
+   * Timer glyph, the count of RUNNING jobs as the same corner badge, the same `Collapse` on its x axis.
+   * The composer passes it while the pane has a job running or one that ended in the last minutes, so
+   * the count can be zero, and then the mark wears no badge. A tap opens the Jobs sheet.
+   */
+  jobs?: {
+    /** How many jobs are running. Zero while only ended ones are listed: no badge then. */
+    count: number;
+    onClick: () => void;
+    /** ALREADY TRANSLATED. "Jobs 1": the accessible name, the running count in words a reader hears. */
+    label: string;
+    /** The Jobs sheet is open: `aria-expanded`. */
+    expanded: boolean;
+  };
+  /**
+   * THE PINS MARK (M90): the pinned messages of the pane's session. Built like the agents mark and standing right
+   * of the jobs mark, left of Changes: the Pin glyph, the count of pins as the same corner badge, the same `Collapse`
+   * on its x axis. The pane view passes it only while the session has at least one pin, so it is never drawn at zero.
+   * A tap opens the Pins sheet.
+   */
+  pins?: {
+    /** How many pins the session holds. Above zero whenever the prop is passed. */
+    count: number;
+    onClick: () => void;
+    /** ALREADY TRANSLATED. "3 pinned": the accessible name, the count in words a reader hears. */
+    label: string;
+    /** The Pins sheet is open: `aria-expanded`. */
+    expanded: boolean;
+  };
 }
 
-export function ActionsRow({ general, agent, mine, onRun, disabled, durable, stop, hand = "right", handle, changes, clear, agents }: ActionsRowProps) {
+export function ActionsRow({ general, agent, mine, onRun, disabled, durable, stop, hand = "right", handle, changes, zoom, clear, agents, jobs, pins }: ActionsRowProps) {
   useLocale();
 
   const harnessItems = useHarnessBarItems(agent, mine);
   const { beltScale } = useDashPrefs().prefs;
-  // Anything pinned at the pinned end (right, or left under `hand="left"`): the composer's X, the Changes pill, the Switch mark, in any
-  // mix. The drag surface (`handle.ref`, `touch-pan-x`) stays tied to `handle` alone.
-  const pinnedCount = (agents ? 1 : 0) + (clear ? 1 : 0) + (changes ? 1 : 0) + (handle ? 1 : 0);
+  // Anything pinned at the pinned end (right, or left under `hand="left"`): the composer's X, the agents mark, the jobs
+  // mark, the pins mark, the Changes pill, the Zoom pill, the Switch mark, in any mix. The drag surface (`handle.ref`, `touch-pan-x`) stays
+  // tied to `handle` alone.
+  const pinnedCount = (agents ? 1 : 0) + (jobs ? 1 : 0) + (pins ? 1 : 0) + (clear ? 1 : 0) + (changes ? 1 : 0) + (zoom ? 1 : 0) + (handle ? 1 : 0);
   const pinned = pinnedCount > 0;
   const switchBlock = useSwitchBlockWidth(pinned);
   const switchInset = switchBlock.width ?? switchPillInset(beltScale, pinnedCount);
@@ -689,7 +752,7 @@ export function ActionsRow({ general, agent, mine, onRun, disabled, durable, sto
                     onClick={action.onSelect}
                     className={cn(`${STRIP_ROW_PILL} gap-1.5`, action.on === true ? ON : OFF, left && "[direction:ltr]")}
                   >
-                    <action.icon className={BELT_ICON} />
+                    <Icon name={action.icon} className={BELT_ICON} />
                     {action.word ?? action.label}
                   </Button>
                 ))}
@@ -817,14 +880,14 @@ export function ActionsRow({ general, agent, mine, onRun, disabled, durable, sto
                     }}
                     className={cn(
                       `${STRIP_ROW_PILL} ${PINNED_PILL}`,
-                      pinnedReach(true, !agents && !changes && !handle, hand),
+                      pinnedReach(true, !agents && !jobs && !pins && !changes && !zoom && !handle, hand),
                       clear.inert === true && "opacity-50",
                     )}
                   >
                     {clear.mode === "undo" ? (
-                      <Undo2 className={cn(BELT_ICON, "text-primary")} />
+                      <Icon name="undo" className={cn(BELT_ICON, "text-primary")} />
                     ) : (
-                      <X className={cn(BELT_ICON, "text-primary")} />
+                      <Icon name="clear" className={cn(BELT_ICON, "text-primary")} />
                     )}
                   </Button>
                 </span>
@@ -852,9 +915,9 @@ export function ActionsRow({ general, agent, mine, onRun, disabled, durable, sto
                     aria-label={agents.label}
                     aria-expanded={agents.expanded}
                     onClick={agents.onClick}
-                    className={cn(`${STRIP_ROW_PILL} ${PINNED_PILL}`, pinnedReach(!clear, !changes && !handle, hand))}
+                    className={cn(`${STRIP_ROW_PILL} ${PINNED_PILL}`, pinnedReach(!clear, !jobs && !pins && !changes && !zoom && !handle, hand))}
                   >
-                    <Bot className={cn(BELT_ICON, "text-primary")} />
+                    <Icon name="subagent" className={cn(BELT_ICON, "text-primary")} />
                     <span
                       aria-hidden
                       data-slot="belt-agents-count"
@@ -864,6 +927,70 @@ export function ActionsRow({ general, agent, mine, onRun, disabled, durable, sto
                       )}
                     >
                       {agents.count}
+                    </span>
+                  </Button>
+                </span>
+              )}
+            </Collapse>
+            {/* THE JOBS MARK (the `jobs` prop): right of the agents mark, left of Files, built as that
+                mark is, for the reasons given there. The badge counts the RUNNING jobs and is not drawn
+                at zero, when the mark stays only for the jobs that ended in the last minutes. */}
+            <Collapse axis="x" appear open={jobs !== undefined} className="-mr-1.5">
+              {jobs && (
+                <span className="flex items-center pr-1.5">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    data-slot="belt-jobs"
+                    aria-label={jobs.label}
+                    aria-expanded={jobs.expanded}
+                    onClick={jobs.onClick}
+                    className={cn(`${STRIP_ROW_PILL} ${PINNED_PILL}`, pinnedReach(!clear && !agents, !pins && !changes && !zoom && !handle, hand))}
+                  >
+                    <Icon name="jobs" className={cn(BELT_ICON, "text-primary")} />
+                    {jobs.count > 0 && (
+                      <span
+                        aria-hidden
+                        data-slot="belt-jobs-count"
+                        className={cn(
+                          PINNED_MARK_BADGE,
+                          "flex h-2.5 min-w-2.5 items-center justify-center text-[9px] leading-none font-semibold tabular-nums text-primary",
+                        )}
+                      >
+                        {jobs.count}
+                      </span>
+                    )}
+                  </Button>
+                </span>
+              )}
+            </Collapse>
+            {/* THE PINS MARK (the `pins` prop): right of the jobs mark, left of Changes, built as those marks are,
+                for the reasons given at the agents mark. The badge counts the pinned messages; the mark is passed
+                only while there is at least one, so it is never drawn at zero. */}
+            <Collapse axis="x" appear open={pins !== undefined} className="-mr-1.5">
+              {pins && (
+                <span className="flex items-center pr-1.5">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    data-slot="belt-pins"
+                    aria-label={pins.label}
+                    aria-expanded={pins.expanded}
+                    onClick={pins.onClick}
+                    className={cn(`${STRIP_ROW_PILL} ${PINNED_PILL}`, pinnedReach(!clear && !agents && !jobs, !changes && !zoom && !handle, hand))}
+                  >
+                    <Icon name="pins-list" className={cn(BELT_ICON, "text-primary")} />
+                    <span
+                      aria-hidden
+                      data-slot="belt-pins-count"
+                      className={cn(
+                        PINNED_MARK_BADGE,
+                        "flex h-2.5 min-w-2.5 items-center justify-center text-[9px] leading-none font-semibold tabular-nums text-primary",
+                      )}
+                    >
+                      {pins.count}
                     </span>
                   </Button>
                 </span>
@@ -881,9 +1008,23 @@ export function ActionsRow({ general, agent, mine, onRun, disabled, durable, sto
                 onClick={changes.onClick}
                 // `PINNED_PILL` below, and a hit box set by where the pill stands (`pinnedReach`):
                 // 7px out on an end of the block, 3px toward a neighbour, so two reaches never meet.
-                className={cn(`${STRIP_ROW_PILL} ${PINNED_PILL}`, pinnedReach(!clear && !agents, !handle, hand))}
+                className={cn(`${STRIP_ROW_PILL} ${PINNED_PILL}`, pinnedReach(!clear && !agents && !jobs && !pins, !zoom && !handle, hand))}
               >
-                <ListTree className={cn(BELT_ICON, "text-primary")} />
+                <Icon name="files" className={cn(BELT_ICON, "text-primary")} />
+              </Button>
+            )}
+            {/* THE OUTPUT, ZOOMED: the `zoom` prop above. Same box and tap feedback as the pills
+                beside it; it stands directly left of the Switch mark. */}
+            {zoom && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                aria-label={zoom.label}
+                onClick={zoom.onClick}
+                className={cn(`${STRIP_ROW_PILL} ${PINNED_PILL}`, pinnedReach(!clear && !agents && !jobs && !pins && !changes, !handle, hand))}
+              >
+                <Icon name="zoom" className={cn(BELT_ICON, "text-primary")} />
               </Button>
             )}
             {handle && (
@@ -905,9 +1046,9 @@ export function ActionsRow({ general, agent, mine, onRun, disabled, durable, sto
                 // square with the pill's own scaled height, 37px at the default scale. Its hit box
                 // reaches 3px left (half the 6px gap to a pill beside it, 7px when it stands alone)
                 // and 7px right (into `pr-3`), 47px across.
-                className={cn(`${STRIP_ROW_PILL} ${PINNED_PILL}`, pinnedReach(!agents && !clear && !changes, true, hand))}
+                className={cn(`${STRIP_ROW_PILL} ${PINNED_PILL}`, pinnedReach(!agents && !jobs && !pins && !clear && !changes && !zoom, true, hand))}
               >
-                <Layers className={cn(BELT_ICON, "text-primary")} />
+                <Icon name="pane-switcher" className={cn(BELT_ICON, "text-primary")} />
                 {/* The needs-you mark (the triangle), on the mark's top-right corner, absolutely placed
                     so it never moves the belt. The chrome-coloured disc and ring cut it out of the
                     glyph it overlaps. 10px since 2026-10-14: at 12px the triangle read as heavy as the

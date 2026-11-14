@@ -10,6 +10,7 @@ import {
   cmdHooksStatus,
   cmdHooksUninstall,
   HOLD_FLAG,
+  hookBinaryOf,
   hooksAreBehind,
   HOOK_MARKER,
   HOOK_MARKER_PREFIX,
@@ -31,7 +32,8 @@ import { asJsonObject } from "../web/src/lib/json.ts";
 import { HOLD_CONNECT_MS, HOLD_GRACE_MS } from "../web/src/lib/surface/hold.ts";
 import { loadProfiles } from "../web/src/lib/surface/profile.ts";
 import { hookTargetFileName } from "../bridge/beacon/hook-targets.ts";
-import { cmdBeaconHold, holdSocketPath, holdSocketPaths, type HoldDeps, type HoldSocket } from "./hold.ts";
+import { cmdBeaconHold, holdRequestOf, holdSocketPath, holdSocketPaths, type HoldDeps, type HoldSocket } from "./hold.ts";
+import { parseLstart, type StartTimeCommand } from "../bridge/beacon/liveness.ts";
 import { HOLD_MARKER_PREFIX, holdCommandIn, settingsHold } from "./hold-entry.ts";
 
 // `collie hooks install|uninstall|status`. Every decision is a pure function of the document on disk,
@@ -53,6 +55,9 @@ const COMMAND = `${OWN} beacon emit ${HOOK_MARKER}`;
 /** A second Claude profile, named by `COLLIE_TRANSCRIPT_ROOT`, and the settings file beside its journal. */
 const OPS_PROFILE = join("/srv", "ops");
 const OPS_SETTINGS = join(OPS_PROFILE, "settings.json");
+/** A profile named by `CLAUDE_CONFIG_DIR` alone, the way Claude Code is pointed at it. */
+const WORK_PROFILE = join("/srv", "work-profile");
+const WORK_SETTINGS = join(WORK_PROFILE, "settings.json");
 /** Where a stow/chezmoi-style `~/.claude` link points. */
 const DOTFILES = join("/dotfiles", "claude");
 /** A path segment that only a version directory has — the hook command must never contain it. */
@@ -89,10 +94,36 @@ describe("the targets", () => {
     ]);
   });
 
+  test("are the CLAUDE_CONFIG_DIR profile alone when the variable is set, because Claude reads only that one", () => {
+    expect(claudeSettingsTargets(context({ CLAUDE_CONFIG_DIR: WORK_PROFILE }))).toEqual([{ dir: WORK_PROFILE, path: WORK_SETTINGS }]);
+  });
+
+  test("ignore a CLAUDE_CONFIG_DIR that is relative or empty, and keep ~/.claude", () => {
+    for (const value of ["", "  ", "profiles/work"]) {
+      expect(claudeSettingsTargets(context({ CLAUDE_CONFIG_DIR: value }))).toEqual([{ dir: CLAUDE_DIR, path: SETTINGS }]);
+    }
+  });
+
   test("never name a project settings file, and never repeat one", () => {
     const targets = claudeSettingsTargets(context({ COLLIE_TRANSCRIPT_ROOT: join(CLAUDE_DIR, "projects") }));
     expect(targets).toEqual([{ dir: CLAUDE_DIR, path: SETTINGS }]);
     for (const target of targets) expect(target.path).not.toContain("settings.local.json");
+  });
+});
+
+describe("hookBinaryOf", () => {
+  test("reads the binary before the verb", () => {
+    expect(hookBinaryOf(`/opt/collie/bin/collie beacon emit ${HOOK_MARKER}`)).toBe("/opt/collie/bin/collie");
+  });
+
+  test("ignores a leading exec, the workaround for dash as /bin/sh (#689)", () => {
+    expect(hookBinaryOf(`exec /opt/collie/bin/collie beacon emit ${HOOK_MARKER}`)).toBe("/opt/collie/bin/collie");
+    expect(hookBinaryOf(`exec /opt/collie/bin/collie beacon emit --hold-permissions ${HOOK_MARKER}`)).toBe("/opt/collie/bin/collie");
+  });
+
+  test("a command with nothing after exec, or no verb, has no binary", () => {
+    expect(hookBinaryOf("exec  beacon emit # x")).toBeNull();
+    expect(hookBinaryOf("/opt/collie/bin/collie other # x")).toBeNull();
   });
 });
 
@@ -357,6 +388,17 @@ describe("install", () => {
     expect(cmdHooksInstall(d, ["claude"])).toBe(EXIT.OK);
     expect(d.files.entries.has(SETTINGS)).toBe(true);
     expect(d.files.entries.has(OPS_SETTINGS)).toBe(true);
+  });
+
+  test("with CLAUDE_CONFIG_DIR set, writes that profile and touches nothing under ~/.claude", () => {
+    const mine = serializeSettings({ model: "opus" });
+    const d = deps({ env: { CLAUDE_CONFIG_DIR: WORK_PROFILE }, files: { [SETTINGS]: mine } });
+    expect(cmdHooksInstall(d, ["claude"])).toBe(EXIT.OK);
+    expect(d.files.entries.has(WORK_SETTINGS)).toBe(true);
+    expect(d.files.entries.get(SETTINGS)!.text).toBe(mine);
+    // No backup, no temp file, no new file beside the seeded one, and no operation names the folder.
+    expect([...d.files.entries.keys()].filter((key) => key.includes(".claude"))).toEqual([posixKey(SETTINGS)]);
+    expect(d.files.ops.filter((op) => op.includes(".claude"))).toEqual([]);
   });
 
   test("refuses a symlinked settings file, untouched, with a remedy", () => {
@@ -654,6 +696,16 @@ describe("uninstall", () => {
     expect(settingsOf(d)).toEqual({ model: "opus", hooks: { Stop: [THEIRS] } });
   });
 
+  test("with CLAUDE_CONFIG_DIR set, removes from that profile and touches nothing under ~/.claude", () => {
+    const mine = serializeSettings({ model: "opus" });
+    const d = deps({ env: { CLAUDE_CONFIG_DIR: WORK_PROFILE }, files: { [SETTINGS]: mine } });
+    cmdHooksInstall(d, ["claude"]);
+    expect(cmdHooksUninstall(d, ["claude"])).toBe(EXIT.OK);
+    expect(settingsOf(d, WORK_SETTINGS)).toEqual({});
+    expect(d.files.entries.get(SETTINGS)!.text).toBe(mine);
+    expect(d.files.ops.filter((op) => op.includes(".claude"))).toEqual([]);
+  });
+
   test("says so when there is nothing of ours anywhere", () => {
     const d = deps({ files: { [SETTINGS]: serializeSettings({ hooks: { Stop: [THEIRS] } }) } });
     expect(cmdHooksUninstall(d, ["claude"])).toBe(EXIT.OK);
@@ -860,6 +912,8 @@ function holdDeps(over: {
     files: fakeFiles(over.proc === null ? {} : { [`/proc/${HOLD_PID}/stat`]: over.proc ?? HOLD_STAT }),
     readStdin: () => (over.stdinFails === true ? Promise.reject(new Error("EPIPE")) : Promise.resolve(stdin)),
     agentPid: HOLD_PID,
+    // Linux's probe, so no run of this file forks `ps`, on a Mac either.
+    pidProbe: { platform: "linux" },
     connect: (path, ms) => {
       connects.push({ path, ms });
       const socket = sockets[path];
@@ -895,6 +949,25 @@ function holdDeps(over: {
   // The registry walk runs when no fixed list is given, as in production.
   return over.registry === true ? built : { ...built, sockets: () => Object.keys(sockets) };
 }
+
+describe("hold: the agent's start time on macOS (M80 spec 11, #647)", () => {
+  const LSTART = "Mon Nov  2 10:15:33 2026\n";
+  const payload: JsonObject = asJsonObject(JSON.parse(permissionPayload())) ?? {};
+
+  test("with no stat file, the injected ps run builds the request; on Windows there is none", () => {
+    const runs: number[] = [];
+    const run = (_command: StartTimeCommand, pid: number): string => {
+      runs.push(pid);
+      return LSTART;
+    };
+    const mac = { ...holdDeps({ proc: null }), pidProbe: { platform: "darwin" as const, run } };
+    expect(holdRequestOf(mac, payload, HOLD_PROFILE)?.pidStartTime).toBe(parseLstart(LSTART)!);
+    expect(runs).toEqual([HOLD_PID]);
+    const windows = { ...holdDeps({ proc: null }), pidProbe: { platform: "win32" as const, run } };
+    expect(holdRequestOf(windows, payload, HOLD_PROFILE)).toBeNull();
+    expect(runs).toEqual([HOLD_PID]);
+  });
+});
 
 describe("hold: the install", () => {
   test("--hold-permissions adds the hold on PermissionRequest with the profile's timeout, and the tool edge", () => {

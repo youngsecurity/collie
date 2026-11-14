@@ -109,8 +109,22 @@ describe("readSend", () => {
     expect(readSend(readSendReply(plain)!)).toMatchObject({ clear: false, note: "staleScreen", detail: null });
     const probe: JsonObject = { ...plain, detail: `${STALE_SCREEN} A probe character (⌁) may remain in the box. Check the pane before you type.` };
     expect(readSend(readSendReply(probe)!)).toMatchObject({ clear: false, note: "staleScreenProbe", detail: null });
+  });
+
+  it("an unconfirmed refusal with the short-pane cause keeps the bridge's line: it names the rows and what to resize", () => {
+    const detail = "The read holds 2 rows, and the claude input box takes at least 3. The pane may be too short to draw it: zoom or resize it on the desktop, or close the panes beside it in its tab, then send again.";
+    const body: JsonObject = { receipt: { outcome: "refused", reason: "unconfirmed" }, offers: ["commit", "keys"], rowsHash: "0f00ba", cause: "short_pane", detail };
+    expect(readSend(readSendReply(body)!)).toMatchObject({ clear: false, note: "unconfirmed", offers: ["commit"], detail });
     // Without the cause a probe_failed keeps its old sentence.
     expect(readSend(reply("refused", "probe_failed", ["keys"])).note).toBe("probeFailed");
+  });
+
+  it("a probe_failed with the late-keys cause keeps its sentence and the bridge's line: wait, not redraw (#623)", () => {
+    const detail =
+      "The box holds only Collie's earlier probe characters: the agent took those keys but showed them late, so it may be busy. Wait a moment, then send again. Collie takes them out first. A probe character (⌁) may remain in the box. Check the pane before you type.";
+    const body: JsonObject = { receipt: { outcome: "refused", reason: "probe_failed" }, offers: ["keys"], cause: "late_keys", detail };
+    expect(readSendReply(body)!.cause).toBe("late_keys");
+    expect(readSend(readSendReply(body)!)).toMatchObject({ clear: false, note: "probeFailed", offers: [], detail });
   });
 
   it("a Surface carries staleFrame only as true", () => {
@@ -419,6 +433,35 @@ describe("offerMode and isCommand", () => {
     expect(isCommand(" /model")).toBe(true);
     expect(isCommand("@src/app.ts look here")).toBe(true);
     expect(isCommand("look at @src/app.ts")).toBe(false);
+  });
+
+  describe("an attached image first (issue 713)", () => {
+    const upload = "/home/me/.local/state/collie-next/uploads/w7C_pF-mvtrpn7j-e4f81595.png";
+
+    it("a line that is only an upload path is a message", () => {
+      expect(isCommand(upload)).toBe(false);
+      expect(isCommand(`  ${upload}`)).toBe(false);
+      expect(offerMode("commit", upload)).toBe("send");
+    });
+
+    it("an upload path followed by text is a message", () => {
+      expect(isCommand(`${upload} what is wrong here?`)).toBe(false);
+      expect(isCommand(`${upload}\nsecond line`)).toBe(false);
+      expect(offerMode("commit", `${upload} what is wrong here?`)).toBe("send");
+    });
+
+    it("a slash command is still a command", () => {
+      expect(isCommand("/help")).toBe(true);
+      expect(isCommand("/model opus")).toBe(true);
+      expect(isCommand(`/compact ${upload}`)).toBe(true);
+      expect(isCommand(`!${upload}`)).toBe(true);
+    });
+
+    it("a path-like word that is not an upload path keeps its reading", () => {
+      expect(isCommand("/home/me/uploads/photo.png")).toBe(true);
+      expect(isCommand("/home/me/other/w7C_pF-mvtrpn7j-e4f81595.png")).toBe(true);
+      expect(isCommand("/usr/uploads")).toBe(true);
+    });
   });
 });
 

@@ -8,6 +8,7 @@ import { agentOf, fixtureRows, idleFor, PANES_DIR, readScreen, rowsOf, SURFACE_F
 import { pointsAt } from "./command-list";
 import { commandListAt, ownCommandList, runningSign } from "./cues";
 import { findInputFrame, rowText } from "./frame";
+import { stripSgr } from "./plain";
 import { askOf, isFree } from "./surface";
 import { CORPUS_WALK, FIXTURES, labelOf, own } from "../../test/surface-fold";
 
@@ -38,6 +39,7 @@ describe("the typed command's own list under pi's and omp's box (field case 2026
   const OWN: readonly [string, string][] = [
     ["pi--v130-slash-model-list--w120.txt", "/model"],
     ["pi--v130-slash-model-list--w80.txt", "/model"],
+    ["pi--v140-slash-model-list--w120.txt", "/model"],
     ["pi--v130-slash-settings-list--w120.txt", "/settings"],
     ["pi--v130-slash-settings-list--w80.txt", "/settings"],
     ["pi--v0871-slash-model-list--w120.txt", "/model"],
@@ -69,18 +71,15 @@ describe("the typed command's own list under pi's and omp's box (field case 2026
     });
   }
 
-  // On pi a list that points at another command (`/mod` typed, `model` pointed), the selector `/model`
-  // opens and the settings screen `/settings` opens all stay dialogs. omp names `leadOpens`: its fuzzy
-  // list under a box that starts with `/` is that text's own popup whatever it points at (below).
+  // The selector `/model` opens and the settings screen `/settings` opens stay dialogs. pi and omp name
+  // `leadOpens`: their fuzzy list under a box that starts with `/` is that text's own popup whatever it
+  // points at (below; pi since issue 638).
   for (const name of [
-    "pi--v130-slash-mod-partial--w120.txt",
     "pi--v130-model-selector-empty--w120.txt",
     "pi--v0871-model-selector-empty--w120.txt",
     "omp--v18-6-model-selector-empty--w120.txt",
     "pi--v130-settings-screen--w120.txt",
     "omp--v18-6-settings-screen--w120.txt",
-    "pi--v110-slash-palette.txt",
-    "pi--v120-slash-palette-padded.txt",
   ]) {
     it(`${name}: still reads as a dialog`, () => {
       const read = own(name);
@@ -90,14 +89,15 @@ describe("the typed command's own list under pi's and omp's box (field case 2026
     });
   }
 
-  it("on pi a list that points at another command finds no own list", () => {
+  it("on pi a list that points at another command is the typed text's own list (leadOpens, issue 638)", () => {
     const name = "pi--v130-slash-mod-partial--w120.txt";
     const rows = fixtureRows(name);
     const idle = idleFor("pi")!;
     const frame = findInputFrame(rows, idle);
     const texts = rows.map(rowText);
-    expect(frame === null ? null : ownCommandList(texts, frame, idle), name).toBeNull();
-    if (frame !== null) expect(commandListAt(texts, frame, idle.volatile.below.commandList)?.pointed, name).toBe("/model");
+    expect(frame?.interior.text, name).toBe("/mod");
+    expect(ownCommandList(texts, frame, idle)?.pointed, name).toBe("/model");
+    expect(pointsAt(commandListAt(texts, frame!, idle.volatile.below.commandList)!, "/mod", idle.volatile.below.commandList), name).toBe(false);
   });
 
   // omp's list is a fuzzy one: `/mod` lists ten commands that match it in part, the pointer on `model`
@@ -357,7 +357,8 @@ describe("a soft-wrapped draft in pi's box is no menu (issue 553)", () => {
   });
 
   // The controls stay dialogs: a choice between the rules is no soft wrap. An explicit-newline draft of
-  // short rows reads the same as such a list, so it stays a dialog too, the conservative side.
+  // short rows reads the same as such a list, so with no caret cell it stays a dialog too, the conservative
+  // side; the editor's own caret cell is what reads it as a draft (issue 722, below).
   const MENUS: readonly [string, string[]][] = [
     ["a yes/no choice", ["Yes", "No"]],
     ["a three-option menu", ["Option one", "Option two", "Option three"]],
@@ -390,6 +391,96 @@ describe("a soft-wrapped draft in pi's box is no menu (issue 553)", () => {
     expect(got.cues?.strength).toBe("strong");
     expect(isFree(got.surface)).toBe(false);
     expect(got.surface.modal).not.toBe("none");
+  });
+});
+
+// Issue 722: an extension keeps pi's own editor and rules and puts `❯ ` in column 0 on the first input row,
+// in the border colour; the rows under it keep two columns of lead. A draft typed with newlines (`a`, then
+// `Olá`) lines up like a pointed list between two rules, and the send stopped at "Enter was not pressed".
+// pi's editor draws its own cursor as one reverse-video cell (pi-tui `renderFakeCursor`), and the profile
+// says so (`frame.draftCaret`): rows under the glyph that hold that cell, and no option row, key hint or
+// command list, are the draft's own lines. A read with no styling has no cell, so it stays a list.
+describe("a newline draft under pi's column-0 prompt glyph (issue 722)", () => {
+  const pi = (rows: StyledLine[]) => readScreen(rows, agentOf("pi"), idleFor("pi"));
+  const row = (text: string): StyledLine => ({ segments: [{ text, style: {}, muted: false }] });
+  /** The rows with every reverse-video run made plain: the same screen as a read with no cursor cell. */
+  const uncursored = (rows: readonly StyledLine[]): StyledLine[] =>
+    rows.map((line) => ({ segments: line.segments.map((run) => (run.inverse === true ? { text: run.text, style: {}, muted: false } : run)) }));
+
+  // Real captures of the shape (pi 1.3.0, a repro of the reporter's editor, 140 x 40, tmux), cursor at the
+  // end of the last row, and once moved up onto the prompt row.
+  const DRAFTS: readonly [string, string][] = [
+    ["pi--v130-quiet-prompt-two-line-draft--w140.txt", "a Olá"],
+    ["pi--v130-quiet-prompt-three-line-draft--w140.txt", "a Olá tudo bem"],
+    ["pi--v130-quiet-prompt-three-line-cursor-up--w140.txt", "a Olá tudo bem"],
+  ];
+  for (const [name, text] of DRAFTS) {
+    it(`${name} reads as a draft with no modal`, () => {
+      const got = pi(fixtureRows(name));
+      expect(got.surface).toMatchObject({ turn: "idle", modal: "none", composer: "draft" });
+      expect(got.cues?.strength).not.toBe("strong");
+      expect(got.frame?.interior.text).toBe(text);
+    });
+
+    it(`${name} with no cursor cell still reads as a list, never as free`, () => {
+      const got = pi(uncursored(fixtureRows(name)));
+      expect(got.cues?.strength).toBe("strong");
+      expect(got.surface.modal).not.toBe("none");
+      expect(isFree(got.surface)).toBe(false);
+    });
+  }
+
+  // The field screen from the issue is plain text: no cell proves the editor, so it stays on the safe side.
+  it("the issue's plain-text screen finds the box and stays unreadable, never free", () => {
+    const rows = fixtureRows("pi--v150-gentle-quiet-two-line-draft.txt");
+    expect(findInputFrame(rows, idleFor("pi")!)?.interior.text).toBe("a Olá");
+    const got = pi(rows);
+    expect(got.surface.modal).not.toBe("none");
+    expect(isFree(got.surface)).toBe(false);
+  });
+
+  // The cell proves a focused editor only beside rows a dialog would not draw.
+  const at = (name: string, needle: string): number => fixtureRows(name).findIndex((line) => rowText(line).startsWith(needle));
+  const TWO = "pi--v130-quiet-prompt-two-line-draft--w140.txt";
+  const LISTS: readonly [string, string][] = [
+    ["a numbered row", "  2. Olá"],
+    ["a checkbox row", "  [ ] Olá"],
+    ["a key hint row", "  Enter to select"],
+  ];
+  for (const [what, text] of LISTS) {
+    it(`a cursored box with ${what} under the glyph stays a list, never a draft`, () => {
+      const rows = fixtureRows(TWO).map((line, i) => (i === at(TWO, "  Olá") ? { segments: [...row(text).segments, { text: " ", style: {}, muted: false, inverse: true }] } : line));
+      const got = pi(rows);
+      expect(got.surface.composer).not.toBe("draft");
+      expect(got.surface.modal).not.toBe("none");
+      expect(isFree(got.surface)).toBe(false);
+    });
+  }
+
+  it("a highlighted row (a reverse-video run wider than one cell) is no cursor", () => {
+    const rows = uncursored(fixtureRows(TWO)).map((line, i) =>
+      i === at(TWO, "  Olá") ? { segments: [{ text: "  ", style: {}, muted: false }, { text: "Olá", style: {}, muted: false, inverse: true }] } : line,
+    );
+    const got = pi(rows);
+    expect(got.cues?.strength).toBe("strong");
+    expect(isFree(got.surface)).toBe(false);
+  });
+
+  it("two reverse-video cells are no one cursor", () => {
+    const rows = fixtureRows(TWO).map((line, i) =>
+      i === at(TWO, "❯ a") ? { segments: [...line.segments, { text: " ", style: {}, muted: false, inverse: true }] } : line,
+    );
+    const got = pi(rows);
+    expect(got.cues?.strength).toBe("strong");
+    expect(isFree(got.surface)).toBe(false);
+  });
+
+  // pi's own dialogs draw a search field with that same cell (the settings list): its pointer row and key
+  // hint keep it a dialog.
+  it("pi's settings list, with its search field's cursor cell, stays a dialog", () => {
+    const got = pi(fixtureRows("pi--v130-quiet-prompt-settings--w140.txt"));
+    expect(got.surface.modal).not.toBe("none");
+    expect(isFree(got.surface)).toBe(false);
   });
 });
 
@@ -542,6 +633,46 @@ describe("the reporter's idle captures under pi-powerline-footer (issue 544)", (
 // `/mo` and `/nothere` ended `typed_not_submitted (modal_cue)` with the generic detail. The profile's
 // `leadOpens` makes the list the typed text's own popup: the Surface reads a draft and no modal, and
 // the Send Protocol alone decides, from the pointer, whether Enter runs what is typed.
+// Issue 638 (pi 1.4.0 on Herdr, mode=command): pi draws a fuzzy list under the box for a text that starts
+// with `/`, on 1.3.0 and 1.4.0 alike: `/s` lists five rows and a `(1/8)` count, the pointer on `settings`;
+// `/model haiku` lists the models that match the argument, the pointer on the first. Until the pi profile
+// named `leadOpens`, these screens read `unreadable`, the send ended `typed_not_submitted (modal_cue)` with
+// the generic detail, and every later send on the pane was refused `unconfirmed` until a person pressed
+// Escape in the terminal. Now the Surface reads a draft and no modal; Enter still waits, because the
+// pointer is not on the typed text, and the next send finds the person's draft.
+describe("pi's fuzzy command list under the box (issue 638, pi 1.3.0 and 1.4.0)", () => {
+  const FUZZY: readonly [string, string, string][] = [
+    ["pi--v130-slash-mod-partial--w120.txt", "/mod", "/model"],
+    ["pi--v140-slash-s-fuzzy--w120.txt", "/s", "/settings"],
+    ["pi--v140-slash-model-arg-list--w120.txt", "/model haiku", "/anthropic/claude-haiku-4.5"],
+  ];
+
+  for (const [name, typed, pointed] of FUZZY) {
+    it(`${name}: a draft with no modal and the list read, pointed at ${pointed}`, () => {
+      const read = own(name);
+      expect(read.frame?.interior.text).toBe(typed);
+      expect(read.surface).toEqual({ revision: 1, turn: "idle", modal: "none", composer: "draft" });
+      expect(read.cues?.strength).toBe("none");
+      expect(labelOf(name).state).toBe("popup");
+      const idle = idleFor("pi")!;
+      const texts = fixtureRows(name).map(rowText);
+      const list = commandListAt(texts, read.frame!, idle.volatile.below.commandList);
+      expect(list?.pointed, name).toBe(pointed);
+      expect(pointsAt(list!, typed, idle.volatile.below.commandList), name).toBe(false);
+    });
+  }
+
+  // A `/` alone with pi's whole palette under it is the person's draft too, not a dialog.
+  for (const name of ["pi--v110-slash-palette.txt", "pi--v120-slash-palette-padded.txt"]) {
+    it(`${name}: \`/\` with the palette open reads a draft with no modal`, () => {
+      const read = own(name);
+      expect(read.frame?.interior.text).toBe("/");
+      expect(read.surface).toMatchObject({ turn: "idle", modal: "none", composer: "draft" });
+      expect(labelOf(name).state).toBe("popup");
+    });
+  }
+});
+
 describe("omp's fuzzy command list under the box (18.6.1 and 18.12.6)", () => {
   const FUZZY: readonly [string, string, string][] = [
     ["omp--v18-6-1-slash-open-tall--w120.txt", "/", "/skill:"],
@@ -579,12 +710,7 @@ describe("omp's fuzzy command list under the box (18.6.1 and 18.12.6)", () => {
     expect(commandListAt(texts, read.frame!, idleFor("omp")!.volatile.below.commandList)?.pointed).toBe("/loop");
   });
 
-  // A list the profile does not call fuzzy stays what it was: a dialog until the pointer rests on the text.
-  it("pi's list that points at another command is still a dialog", () => {
-    const read = own("pi--v130-slash-mod-partial--w120.txt");
-    expect(read.surface.modal).toBe("unreadable");
-    expect(isFree(read.surface)).toBe(false);
-  });
+  // A box past a list the profile does not call fuzzy (`leadOpens`) is found only when the pointer rests on its text.
 });
 
 // omp 18.6.1 and 18.12.6 (omp-gang testers 05 and 12, 2026-10-25). A file path at the start of the box makes
@@ -998,5 +1124,92 @@ describe("omp's queue-prefix draft (Queueing ➤) reads as a draft (18.6.1 and 1
 
   it("the empty box with its ghost hint beside it is still empty", () => {
     expect(readScreen(fixtureRows("omp--box-empty--v18.12.6.txt", SURFACE_FIXTURES_DIR), "omp", idleFor("omp")).surface.composer).toBe("empty");
+  });
+});
+
+// Issue 747: pi-zentui 0.34.0 on pi 1.5.0 draws its Opencode editor as rail rows between pi's two rules
+// (a pad row, the editor rows, a pad row, then the model row), and the profile's wide column-zero prompt
+// took the rails and the model row for a draft, so every send was refused draft_present. Live captures
+// (fixtures/panes/README.md); the rail layout is the profile's last `frameAlternates` entry.
+describe("pi-zentui's rail editor (issue 747)", () => {
+  const pi = idleFor("pi")!;
+  const STARSHIP = [
+    "pi--v150-zentui-idle--w120.txt",
+    "pi--v150-zentui-idle--w80.txt",
+    "pi--v150-zentui-nerd-idle--w120.txt",
+    "pi--v150-zentui-echo-idle--w120.txt",
+  ];
+  const IDLE = [...STARSHIP, "pi--v150-zentui-native-footer-idle--w120.txt"];
+  const DRAFTS: readonly [string, string][] = [
+    ["pi--v150-zentui-draft--w120.txt", "hello from the probe"],
+    ["pi--v150-zentui-draft--w80.txt", "hello from the probe"],
+    ["pi--v150-zentui-nerd-draft--w120.txt", "hello from the probe"],
+    ["pi--v150-zentui-native-footer-draft--w120.txt", "hello from the probe"],
+    ["pi--v150-zentui-multiline-draft--w120.txt", "hello from the probe second line of the draft"],
+    ["pi--v150-zentui-multiline-draft--w80.txt", "hello from the probe second line of the draft"],
+    ["pi--v150-zentui-wrapped-draft--w120.txt", "this draft is long enough to wrap inside the rail editor so the reader has to join two rows of typed text into one line of draft"],
+    // A typed `|` behind the rail is the person's text, never a rail.
+    ["pi--v150-zentui-pipe-draft--w80.txt", "|"],
+  ];
+  const plain = (name: string) => readScreen(rowsOf(stripSgr(readFileSync(join(PANES_DIR, name), "utf8"))), "pi", pi);
+
+  it.each(IDLE)("%s: the empty rail box is free", (name) => {
+    const found = own(name);
+    expect(found.surface).toMatchObject({ turn: "idle", modal: "none", composer: "empty" });
+    expect(found.frame!.interior.text).toBe("");
+    expect(isFree(found.surface)).toBe(true);
+  });
+
+  it.each(DRAFTS)("%s: the typed text is the draft, the rails and the model row are not", (name, text) => {
+    const found = own(name);
+    expect(found.surface).toMatchObject({ turn: "idle", modal: "none", composer: "draft" });
+    expect(found.frame!.interior.text).toBe(text);
+  });
+
+  it("pi's /model selector over the rail setup stays a dialog", () => {
+    for (const name of ["pi--v150-zentui-model-selector--w120.txt", "pi--v150-zentui-model-selector--w80.txt"]) {
+      expect(own(name).surface).toMatchObject({ modal: "unreadable", composer: "unknown" });
+    }
+  });
+
+  it("the framed echo of a sent prompt is no box: the screen cut above the live box never reads free", () => {
+    const rows = fixtureRows("pi--v150-zentui-echo-idle--w120.txt");
+    const live = own("pi--v150-zentui-echo-idle--w120.txt").frame!;
+    expect(rows.slice(0, live.top).map(rowText).some((text) => text === "| say hi")).toBe(true);
+    const cut = readScreen(rows.slice(0, live.top), "pi", pi);
+    expect(cut.frame).toBeNull();
+    expect(isFree(cut.surface)).toBe(false);
+  });
+
+  it("a plain read takes the box under pi's native footer, and never frees it under the Starship footer", () => {
+    expect(plain("pi--v150-zentui-native-footer-idle--w120.txt").surface).toMatchObject({ turn: "idle", modal: "none", composer: "empty" });
+    expect(plain("pi--v150-zentui-native-footer-draft--w120.txt").frame!.interior.text).toBe("hello from the probe");
+    for (const name of [...STARSHIP, ...DRAFTS.map(([n]) => n)].filter((n) => !n.includes("native-footer"))) {
+      expect(plain(name).surface).toMatchObject({ composer: "unknown", reason: "no-match" });
+    }
+  });
+
+  // The column-zero box must not lose a draft to the rail rule: stock pi with rail-led rows typed in it.
+  describe("stock pi with rail-led rows in its draft", () => {
+    const stock = (draft: readonly string[]) => {
+      const rows = readFileSync(join(PANES_DIR, "pi--v110-stock-draft.txt"), "utf8").split("\n");
+      const at = rows.findIndex((row) => row.startsWith("collie stock pi draft probe"));
+      rows.splice(at, 1, ...draft);
+      return readScreen(rowsOf(rows.join("\n")), "pi", pi);
+    };
+
+    it("a rail-led first row under a plain row keeps every row in the draft", () => {
+      const read = stock(["| a | b |", "plain text"]);
+      expect(read.surface).toMatchObject({ composer: "draft" });
+      expect(read.frame!.interior.text).toBe("| a | b | plain text");
+    });
+
+    it("rows that are all rail-led never read free", () => {
+      for (const draft of [["| a | b |"], ["| a | b |", "| c | d |"], ["│ x", "│ y", "│ z"]]) {
+        const read = stock(draft);
+        expect(isFree(read.surface)).toBe(false);
+        expect(read.surface.composer).not.toBe("empty");
+      }
+    });
   });
 });

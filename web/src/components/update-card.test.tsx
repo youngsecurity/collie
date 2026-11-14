@@ -804,6 +804,27 @@ describe("single action button", () => {
   });
 });
 
+describe("a lead on a development build (2026-11-09)", () => {
+  const crew: UpdateCrewMember[] = [
+    { name: "minibuch", version: "1.27.0", verdict: "green", reasons: [], asOf: 1_700_000_000_000 },
+  ];
+
+  it("offers no crew run: it can hand nobody a turn", async () => {
+    const current = info({ current: "1.28.0", latest: "1.28.0", releaseAvailable: false, newerVersions: [], build: "1.28.0-dev+047ee5bbd0" });
+    serveCheck(current, GREEN, crew);
+    renderCard(current, LEAD_ROSTER);
+    expect(await screen.findByText("minibuch")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: RETRY })).not.toBeInTheDocument();
+  });
+
+  it("a release build of the same version still offers the retry", async () => {
+    const current = info({ current: "1.28.0", latest: "1.28.0", releaseAvailable: false, newerVersions: [], build: "1.28.0+b178eb63f2" });
+    serveCheck(current, GREEN, crew);
+    renderCard(current, LEAD_ROSTER);
+    expect(await screen.findByRole("button", { name: RETRY })).toBeInTheDocument();
+  });
+});
+
 /** What `startUpdate` puts on the wire. Named so the assertions below read against a contract
  *  rather than an anonymous bag. */
 interface StartBody {
@@ -1140,6 +1161,15 @@ describe("the action row while an update is being asked for and driven", () => {
 
   it("keeps the button on screen — disabled — for the whole run, instead of unmounting it", async () => {
     renderCard(info({ run: runAt("restarting") }));
+    // WAIT FOR THE RUN TO LAND BEFORE ASKING ABOUT THE BUTTON. The card hands the loader's run to the
+    // store from an effect (`noteSnapshotRun`), and the store's own read of `/api/update/check`
+    // carries no run. When that read answers first, `checked` is true and `run` is still undefined,
+    // so the button is on screen with its real label and ENABLED for one render, and `findByRole`
+    // resolves on exactly that render. The restarting sentence is the first thing only the run can
+    // put on screen, so once it is there `moving` is true and the button cannot be anything but
+    // disabled. Found on a pinned single core under load (about one run in ten); passes alone.
+    expect(await screen.findByText("Restarting. This is not an outage.")).toBeInTheDocument();
+    // Still mounted, and disabled: a button that unmounted for the run would fail the lookup here.
     const button = await screen.findByRole("button", { name: "Update to 1.4.0" });
     // The button's label can arrive before the snapshot effect publishes the run to the store.
     // Wait for the run itself, then check that the original button stayed mounted and is inert.

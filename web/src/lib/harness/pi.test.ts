@@ -33,6 +33,9 @@ describeAdapterConformance(piAdapter, {
     "pi--v130-powerline-editor-two-row-draft-footer--w254.txt",
     "pi--v110-slash-palette.txt",
     "pi--v120-slash-palette-padded.txt",
+    // Issue 638: a half-typed `/s` and `/model haiku` draw the same tall list under the box.
+    "pi--v140-slash-s-fuzzy--w120.txt",
+    "pi--v140-slash-model-arg-list--w120.txt",
     "pi--omo-v5130-panel-draft.txt",
     "pi--omo-v5130-panel-phantom.txt",
     "pi--omo-v5130-panel-running.txt",
@@ -60,7 +63,8 @@ describe("pi adapter routing", () => {
   });
 
   it("lifts every question screen the corpus proves, and no fewer", () => {
-    expect(lifted).toHaveLength(53);
+    // The system-theme permission fixture joins the upstream corpus.
+    expect(lifted).toHaveLength(66);
   });
 
   it.each([

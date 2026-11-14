@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { muxAck, muxOk, type MuxAck, type MuxGrid, type MuxGridRequest, type MuxOutcome } from "../mux/types.ts";
+import { muxAck, muxOk, muxUnconfirmed, type MuxAck, type MuxGrid, type MuxGridRequest, type MuxOutcome } from "../mux/types.ts";
 import { parseAnsi } from "../../web/src/lib/ansi.ts";
 import { splitLines } from "../../web/src/lib/blocks.ts";
 import type { Answer, AskReply } from "../../web/src/lib/surface/ask.ts";
@@ -17,7 +17,7 @@ import { liftDialog, readerBlocks } from "../../web/src/lib/surface/lift.ts";
 import { loadProfiles, profileFor, resetProfileLog } from "../../web/src/lib/surface/profile.ts";
 import { askOf, type Ask } from "../../web/src/lib/surface/surface.ts";
 import type { AgentView } from "../types.ts";
-import { ASK_LIFETIME_MS, AskAnswerer, AskBook, askBinding, NO_EDGE_DETAIL, planFor, planKeysFor } from "./ask.ts";
+import { ASK_LIFETIME_MS, AskAnswerer, AskBook, askBinding, NO_EDGE_DETAIL, planFor, planKeysFor, sameDialog, UNCONFIRMED_COMMIT_DETAIL, UNCONFIRMED_WALK_DETAIL } from "./ask.ts";
 import { KeyGate, type TokenOrigin, type KeyToken } from "./key-gate.ts";
 import { RowRing, SessionLocks } from "./protocol.ts";
 import { RequestStore } from "./requests.ts";
@@ -38,6 +38,7 @@ const BG_RM = fx("claude--v2303-permission-bash-bg-agent-rm--w160.txt");
 const BG_RM_W80 = fx("claude--v2303-permission-bash-bg-agent-rm--w80.txt");
 const RESUME_FIRST = fx("claude--v2303-menu-resume-picker--w160-first.txt");
 const RESUME_SECOND = fx("claude--v2303-menu-resume-picker--w160-second.txt");
+const CORE_PERMISSION = fx("claude--v21314-core-permission--w120.txt");
 
 const HARNESS = "claude";
 const PANE = "%1";
@@ -52,6 +53,8 @@ class ScriptPane {
   onKeys: (keys: readonly string[], pane: ScriptPane) => void = () => undefined;
   /** Runs before every read; may change the screen. */
   beforeRead: ((pane: ScriptPane, n: number) => void) | null = null;
+  /** What the multiplexer answers to a key batch. The default confirms it. */
+  keysAnswer: (keys: readonly string[]) => MuxAck = () => muxAck();
 
   constructor(screen: string) {
     this.screen = screen;
@@ -68,7 +71,7 @@ class ScriptPane {
     void paneId;
     this.keysSeen.push(...keys);
     this.onKeys(keys, this);
-    return Promise.resolve(muxAck());
+    return Promise.resolve(this.keysAnswer(keys));
   };
 }
 
@@ -107,6 +110,8 @@ interface Rig {
   /** One poll: lift the screen as the shadow does and publish it, the ask the phone would see. */
   poll: () => Ask | null;
   answer: (ask: Ask, optionId: string, over?: Partial<Answer>) => Promise<AskReply>;
+  /** The answerer's log lines. */
+  logs: string[];
 }
 
 function rig(screen: string, harness: string = HARNESS, version = "2.1.200"): Rig {
@@ -117,7 +122,9 @@ function rig(screen: string, harness: string = HARNESS, version = "2.1.200"): Ri
   const store = new RequestStore(join(dir, "sends"), now);
   const book = new AskBook(now, "test-salt");
   const generation: Generation = { value: GEN };
+  const logs: string[] = [];
   const answerer = new AskAnswerer({
+    log: (line) => logs.push(line),
     mux: pane,
     gate,
     store,
@@ -138,7 +145,7 @@ function rig(screen: string, harness: string = HARNESS, version = "2.1.200"): Ri
   };
   const answer = (ask: Ask, optionId: string, over: Partial<Answer> = {}): Promise<AskReply> =>
     answerer.handle({ askId: ask.id, hash: ask.hash, optionId, origin: "person_tap", ...over }, { session: "main", paneId: PANE, harness });
-  return { pane, gate, store, book, answerer, clock, generation, poll, answer };
+  return { pane, gate, store, book, answerer, clock, generation, poll, answer, logs };
 }
 
 function idOf(ask: Ask, label: string): string {
@@ -214,6 +221,95 @@ function liftOf(screen: string) {
   return liftDialog(readerBlocks(splitLines(parseAnsi(screen)), HARNESS))!;
 }
 
+// A permission that answers itself on a timer (Claude Code 2.1.306, a built-in safety check on an
+// unattended session) prints the time left inside the dialog and redraws it every second: "1:20"
+// (minutes:seconds), or "about 2 minutes" / "about 45 seconds" in its other rendering (both read from
+// the 2.1.306 binary). Written into the real rm capture under its explanation row, as the owner's
+// phone showed it on 2026-10-29. `breakAfter` wraps the sentence after that many words, as a narrow
+// box does; `sentence` replaces the harness wording.
+const DENY_SENTENCE = (clock: string) => `⚠ Claude Code will automatically deny this request in ${clock}, to avoid blocking progress on an unattended session`;
+function countdown(screen: string, clock: string, breakAfter?: number, sentence = DENY_SENTENCE): string {
+  const rows = screen.split("\n");
+  const at = rows.findIndex((row) => row.includes("Dangerous rm operation"));
+  if (at < 0) throw new Error("no explanation row");
+  const lead = " \u001b[0m\u001b[2m│\u001b[0m \u001b[38;2;255;193;7m";
+  const words = sentence(clock).split(" ");
+  const lines = breakAfter === undefined ? [words.join(" ")] : [words.slice(0, breakAfter).join(" "), words.slice(breakAfter).join(" ")];
+  rows.splice(at + 1, 0, ...lines.map((line) => `${lead}${line}\u001b[0m\r`));
+  return rows.join("\n");
+}
+
+describe("a dialog's self-answer countdown is not part of the ask", () => {
+  test("the clock ticking leaves the binding and the hash unchanged, in both renderings, however the sentence wraps", () => {
+    // Words of the sentence: "⚠ Claude Code will automatically deny this request in" is 9, so 9 breaks
+    // before the clock, 10 inside "about 45 seconds" or after "1:20,", 3 inside the harness words,
+    // 14 in the tail. A clock of another width rewraps the sentence, so every break meets every clock.
+    const reference = liftOf(countdown(BG_RM, "1:20"));
+    // The grammar read the clock (the race guard's signature is literal); the binding reads it still.
+    expect(reference.signature).toContain("automatically deny this request in 1:20");
+    expect(reference.region).toContain("automatically deny this request in 0:00, to avoid blocking progress");
+    for (const breakAfter of [undefined, 3, 9, 10, 14]) {
+      for (const clock of ["1:20", "1:19", "0:59", "0:05", "about 2 minutes", "about 1 minute", "about 45 seconds", "about 1 second"]) {
+        const after = liftOf(countdown(BG_RM, clock, breakAfter));
+        expect(after.signature).toContain(clock.split(" ").at(-1)!);
+        expect(after.hash).toBe(reference.hash);
+        expect(askBinding(GEN, after)).toBe(askBinding(GEN, reference));
+      }
+    }
+  });
+
+  // The identity those reads compare is the question and the options (the command is the binding's
+  // job, at the tap's entry); this pins that the clock row never enters it.
+  test("the clock ticking is the same dialog to the check and read-back reads", () => {
+    const reference = liftOf(countdown(BG_RM, "1:20"));
+    for (const [clock, breakAfter] of [["1:19", undefined], ["0:05", 9], ["about 45 seconds", 10]] as const) {
+      expect(sameDialog(reference, liftOf(countdown(BG_RM, clock, breakAfter)))).toBe(true);
+    }
+  });
+
+  test("a clock in a sentence that is not the harness countdown still changes the ask", () => {
+    const sentences = [
+      (clock: string) => `⚠ Claude Code will automatically allow this request in ${clock}, to avoid blocking progress on an unattended session`,
+      (clock: string) => `Agent will automatically deny this request in ${clock}, to avoid blocking progress on an unattended session`,
+      (clock: string) => `⚠ Claude Code will automatically deny this request in ${clock} unless you stop it`,
+    ];
+    for (const sentence of sentences) {
+      const at = (clock: string) => liftOf(countdown(BG_RM, clock, undefined, sentence));
+      expect(at("1:19").hash).not.toBe(at("1:20").hash);
+      expect(askBinding(GEN, at("1:19"))).not.toBe(askBinding(GEN, at("1:20")));
+    }
+  });
+
+  test("another command under the same countdown is another ask", () => {
+    const before = liftOf(countdown(BG_RM, "1:20"));
+    const other = liftOf(countdown(BG_RM.replace("rm -f $D/*.wav", "rm -f $X/*.wav"), "1:20"));
+    expect(askBinding(GEN, other)).not.toBe(askBinding(GEN, before));
+  });
+
+  test("a time elsewhere in the dialog still changes the ask", () => {
+    const at = (time: string) => liftOf(countdown(BG_RM.replace("rm -f $D/*.wav", `rm -f $D/${time}/*.wav`), "1:20"));
+    expect(askBinding(GEN, at("12:31"))).not.toBe(askBinding(GEN, at("12:30")));
+    expect(at("12:31").hash).not.toBe(at("12:30").hash);
+  });
+
+  test("the ask keeps its id while the clock runs, and a tap read on a later second is sent", async () => {
+    const { pane, poll, answer } = rig(countdown(BG_RM, "1:20"));
+    const ask = poll()!;
+    pane.screen = countdown(BG_RM, "1:19");
+    expect(poll()!.id).toBe(ask.id);
+    let second = 18;
+    pane.beforeRead = (p) => {
+      p.screen = countdown(BG_RM, `1:${second--}`);
+    };
+    pane.onKeys = (_keys, p) => {
+      p.beforeRead = null;
+      p.screen = IDLE;
+    };
+    const reply = await answer(ask, idOf(ask, "Yes"));
+    expect(reply.receipt).toMatchObject({ outcome: "sent", keys: ["1"] });
+  });
+});
+
 describe("the ask binding covers the dialog block only", () => {
   test("a blink of the tool row's bullet above the dialog leaves the binding and the hash unchanged", () => {
     const before = liftOf(W82);
@@ -270,6 +366,52 @@ describe("the ask binding covers the dialog block only", () => {
     expect(reply.receipt).toMatchObject({ outcome: "refused", reason: "no_plan", keys: [] });
     expect(reply.detail).toBe(NO_EDGE_DETAIL);
     expect(pane.keysSeen).toEqual([]);
+  });
+
+  test("a refused tap leaves one log line with the ask id, the pane and the reason; a sent one leaves none", async () => {
+    const rows = W82.split("\n");
+    const edge = rows.findIndex((row) => row.includes("─".repeat(20)));
+    const edgeless = [...rows.slice(0, edge), ...rows.slice(edge + 1)].join("\n");
+    const refused = rig(edgeless);
+    const ask = refused.poll()!;
+    await refused.answer(ask, idOf(ask, "Yes"));
+    expect(refused.logs).toEqual([`[ask] ${ask.id} on pane ${PANE} refused (no_plan): ${NO_EDGE_DETAIL}`]);
+    expect(refused.logs[0]).not.toMatch(/claude/iu);
+
+    const sent = rig(W82);
+    sent.pane.onKeys = (_keys, p) => {
+      p.screen = IDLE;
+    };
+    const live = sent.poll()!;
+    expect((await sent.answer(live, idOf(live, "Yes"))).receipt?.outcome).toBe("sent");
+    expect(sent.logs).toEqual([]);
+  });
+
+  test("an unknown id is refused with a log line too", async () => {
+    const { poll, answer, logs } = rig(BASH);
+    const ask = poll()!;
+    await answer({ ...ask, id: "ask-00000000000000" }, idOf(ask, "Yes"));
+    expect(logs).toEqual([`[ask] ask-00000000000000 on pane ${PANE} refused (ask_unknown): Collie does not know this dialog any more. Check the screen and tap again.`]);
+  });
+});
+
+// M78 spec 09: herdr-core hands out the screen with no styling. The captured card had options and
+// every tap on it was refused no_plan, because its edge was found by a bold title.
+describe("a permission card read through herdr-core, with no styling", () => {
+  test("the lift has a region, and a tap on Yes sends its digit", async () => {
+    const dialog = liftOf(CORE_PERMISSION);
+    expect(dialog.kind).toBe("permission");
+    expect(dialog.region).not.toBeNull();
+    expect(dialog.region!.split("\n")[1]).toBe(" Bash command");
+    const { pane, poll, answer, logs } = rig(CORE_PERMISSION, HARNESS, "2.1.314");
+    pane.onKeys = (keys, p) => {
+      if (keys.join(",") === "1") p.screen = IDLE;
+    };
+    const ask = poll()!;
+    const reply = await answer(ask, idOf(ask, "Yes"));
+    expect(reply.receipt).toMatchObject({ outcome: "sent", keys: ["1"] });
+    expect(pane.keysSeen).toEqual(["1"]);
+    expect(logs).toEqual([]);
   });
 });
 
@@ -418,6 +560,61 @@ describe("answers that go through", () => {
     expect(ask.kind).toBe("menu");
     const reply = await answer(ask, idOf(ask, "Cancel"));
     expect(reply.receipt).toMatchObject({ outcome: "sent", keys: ["Escape"] });
+  });
+});
+
+describe("keys the multiplexer did not confirm in time (herdr-core, M78 report 10 case 2)", () => {
+  // The core held a terminal's keys behind its slow history reads and delivered them later, after the
+  // client had timed out. Such keys may still land: the answer never sends them again, and the next
+  // read decides. Fixed: before the change the receipt said refused(write_failed) for a key that landed.
+  const unconfirmed = (key: string) => (keys: readonly string[]) => (keys.includes(key) ? muxUnconfirmed("herdr-core did not confirm the keys in time") : muxAck());
+
+  test("an unconfirmed commit that lands is sent: the dialog closed after it, and the key went once", async () => {
+    const { pane, poll, answer, gate } = rig(BASH);
+    pane.keysAnswer = unconfirmed("1");
+    pane.onKeys = (keys, p) => {
+      if (keys.join(",") === "1") p.screen = IDLE;
+    };
+    const ask = poll()!;
+    const reply = await answer(ask, idOf(ask, "Yes"));
+    expect(reply.receipt).toMatchObject({ outcome: "sent", keys: ["1"] });
+    expect(pane.keysSeen).toEqual(["1"]);
+    expect(gate.sentBy().person_tap).toBe(1);
+  });
+
+  test("an unconfirmed commit whose dialog still shows is unknown, not refused, and the key is not sent twice", async () => {
+    const { pane, poll, answer, gate } = rig(BASH);
+    pane.keysAnswer = unconfirmed("1");
+    const ask = poll()!;
+    const reply = await answer(ask, idOf(ask, "Yes"));
+    expect(reply.receipt).toMatchObject({ outcome: "unknown", reason: "no_evidence", keys: ["1"] });
+    expect(reply.detail).toBe(UNCONFIRMED_COMMIT_DETAIL);
+    expect(pane.keysSeen).toEqual(["1"]);
+    expect(gate.sentBy().person_tap).toBe(1);
+  });
+
+  test("an unconfirmed walk still reads back: the pointer on the choice lets Enter go, once each", async () => {
+    const { pane, poll, answer } = rig(SWITCH_YES);
+    pane.keysAnswer = unconfirmed("Down");
+    pane.onKeys = (keys, p) => {
+      if (keys.join(",") === "Down" && p.screen === SWITCH_YES) p.screen = SWITCH_NO;
+      else if (keys.join(",") === "Enter") p.screen = PICKER;
+    };
+    const ask = poll()!;
+    const reply = await answer(ask, idOf(ask, "No, go back"));
+    expect(reply.receipt).toMatchObject({ outcome: "sent", keys: ["Down", "Enter"] });
+    expect(pane.keysSeen).toEqual(["Down", "Enter"]);
+  });
+
+  test("an unconfirmed walk whose pointer did not move is refused ask_mismatch with no Enter, and says the arrows may still arrive", async () => {
+    const { pane, poll, answer } = rig(SWITCH_YES);
+    pane.keysAnswer = unconfirmed("Down");
+    const ask = poll()!;
+    const reply = await answer(ask, idOf(ask, "No, go back"));
+    expect(reply.receipt).toMatchObject({ outcome: "refused", reason: "ask_mismatch", keys: ["Down"] });
+    expect(reply.detail).toBe(UNCONFIRMED_WALK_DETAIL);
+    expect(pane.keysSeen).toEqual(["Down"]);
+    neverEnter(pane);
   });
 });
 

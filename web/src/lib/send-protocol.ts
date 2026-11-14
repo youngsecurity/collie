@@ -18,6 +18,7 @@ import {
   SEND_LATES,
   readSendCap,
   readSurfaceWords,
+  reservedLead,
   RECEIPT_DETAIL_MAX,
   type SendCap,
   type SendCause,
@@ -133,7 +134,7 @@ export function readSendReply(body: JsonValue | undefined): SendReply | null {
 /** A row of the list being built, field by field. */
 type RowDraft = { -readonly [K in keyof SendReceiptRow]: SendReceiptRow[K] };
 
-const STEPS: readonly SendStep[] = ["profile", "settle", "s0", "proof", "clear", "probe", "write", "s1", "commandSettle", "commit", "s2"];
+const STEPS: readonly SendStep[] = ["profile", "settle", "s0", "proof", "clear", "probe", "probeWrite", "write", "s1", "commandSettle", "commit", "s2"];
 
 /**
  * The session page's list of recent sends, row by row. A row that is not whole is left out. The wire
@@ -478,7 +479,10 @@ export function readSend(reply: SendReply): SendReading {
  * the reasons whose bridge line repeats the phone's sentence: `unconfirmed`, `stale_surface`, `busy`,
  * `pane_gone`, `draft_present`, and `not_free` when the line is the plain one. Every other reason,
  * and every outcome that is no refusal, keeps the line: it says what the phone's sentence does not
- * (a `not_free` that names what is open, a dialog that Enter may have answered).
+ * (a `not_free` that names what is open, a dialog that Enter may have answered). An `unconfirmed`
+ * with the `short_pane` cause keeps it too: the line names the rows read and what to resize. A
+ * `probe_failed` with the `late_keys` cause keeps it as every `probe_failed` does: the line says the
+ * agent showed Collie's keys late and to wait, which the phone's sentence does not (#623).
  */
 const REPEATS_THE_NOTE: ReadonlySet<SendReason> = new Set(["unconfirmed", "stale_surface", "busy", "pane_gone", "draft_present"]);
 const PLAIN_NOT_FREE = "The input box is not free.";
@@ -486,6 +490,7 @@ const PLAIN_NOT_FREE = "The input box is not free.";
 function ownSentence(reply: SendReply): boolean {
   if (reply.outcome !== "refused" || reply.reason === null) return false;
   if (reply.cause === "stale_screen") return true;
+  if (reply.cause === "short_pane") return false;
   if (REPEATS_THE_NOTE.has(reply.reason)) return true;
   return reply.reason === "not_free" && reply.detail === PLAIN_NOT_FREE;
 }
@@ -509,8 +514,11 @@ export function offerMode(offer: SendOffer, text = ""): SendMode | null {
 /** The leads a text is a command by: a slash command, a shell line, a file mention at the start. */
 export const COMMAND_LEADS = ["/", "!", "@"] as const;
 
-/** Whether a text is sent as a `command` (it starts with a reserved lead), not as a plain `send`. */
+/**
+ * Whether a text is sent as a `command` (it starts with a reserved lead), not as a plain `send`. It
+ * reads the lead with the bridge's own rule (`reservedLead`), so a text whose first word is the path
+ * of a saved upload (an image attached first) is a message, never a slash command.
+ */
 export function isCommand(text: string): boolean {
-  const head = text.trimStart();
-  return COMMAND_LEADS.some((lead) => head.startsWith(lead));
+  return reservedLead(text, COMMAND_LEADS) !== null;
 }

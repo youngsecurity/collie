@@ -1,8 +1,8 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, symlink, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 import {
   createPiReducer,
@@ -11,9 +11,15 @@ import {
   parsePiTranscript,
   piJournal,
   PiTranscriptSource,
+  piSessionFolderNames,
   resolveBlobPath,
+  imageTooLargeNote,
+  MAX_INLINE_IMAGE_CHARS,
+  resolveImage,
   resolveImageUrl,
 } from "./pi.ts";
+import { ongoingSubagents } from "../subagents-journal.ts";
+import { latestPlanTodos } from "../todos.ts";
 import { LiveWindows, TICK_FLOOR_MS } from "./live.ts";
 import { TranscriptStore } from "./store.ts";
 import { MAX_TEXT_CHARS } from "./text.ts";
@@ -146,6 +152,41 @@ describe("parsePiTranscript", () => {
       result: { imageUrl: "data:image/webp;base64,base64data" },
     });
   });
+  test("a picture just under the cap is kept and one just over becomes a visible line, in a tool card and in a turn", () => {
+    const fits = "A".repeat(MAX_INLINE_IMAGE_CHARS);
+    const big = "A".repeat(MAX_INLINE_IMAGE_CHARS + 4);
+    const note = "Picture too large to show here (3.0 MB)";
+    const result = (data: string) =>
+      parsePiTranscript(
+        [
+          row("a", { role: "assistant", content: [{ type: "toolCall", id: "call_big", name: "screenshot", arguments: {} }] }),
+          row("b", {
+            role: "toolResult",
+            toolCallId: "call_big",
+            toolName: "screenshot",
+            content: [{ type: "text", text: "taken" }, { type: "image", data, mimeType: "image/png" }],
+          }),
+        ].join("\n"),
+      )[0]!.parts[0];
+    expect(result(fits)).toMatchObject({ result: { text: "taken", imageUrl: `data:image/png;base64,${fits}` } });
+    const over = result(big);
+    expect(over).toMatchObject({ result: { text: `taken\n${note}` } });
+    expect(over).not.toHaveProperty("result.imageUrl");
+    const turn = parsePiTranscript(row("c", { role: "assistant", content: [{ type: "image", data: big, mimeType: "image/png" }] }));
+    expect(turn[0]!.parts).toEqual([{ kind: "text", text: note }]);
+  });
+
+  test("the too-large line carries the decoded size, and a huge value that is no picture says nothing", () => {
+    expect(imageTooLargeNote(MAX_INLINE_IMAGE_CHARS * 2)).toBe("Picture too large to show here (6.0 MB)");
+    const big = "A".repeat(MAX_INLINE_IMAGE_CHARS + 4);
+    expect(resolveImage(big, "image/png")).toEqual({ note: "Picture too large to show here (3.0 MB)" });
+    expect(resolveImage(`data:image/png;base64,${big}`)).toEqual({ note: expect.stringContaining("Picture too large") });
+    expect(resolveImage(big, "text/plain")).toBeNull();
+    expect(resolveImage(big)).toBeNull();
+    expect(resolveImage(`data:text/html;base64,${big}`)).toBeNull();
+    expect(resolveImage("https://evil.example/".padEnd(MAX_INLINE_IMAGE_CHARS + 4, "x"), "image/png")).toBeNull();
+  });
+
   test("a toolResult with blob:sha256: content maps to /api/blobs/<hash>", () => {
     const hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
     const entries = parsePiTranscript(
@@ -998,6 +1039,341 @@ describe("PiTranscriptSource — several sessions roots", () => {
   });
 });
 
+describe("PiTranscriptSource — a pane that names no session finds it by its folder (M79 spec 02)", () => {
+  // A multiplexer without pi's Herdr integration (herdr-core, tmux, zellij) gives the pane's folder only.
+  const ONE = "019f4665-7df0-7540-a64f-7068335f2101";
+  const TWO = "019f4665-7df0-7540-a64f-7068335f2102";
+  const OLD = "019f4665-7df0-7540-a64f-7068335f2103";
+
+  /** pi's session row, as the first row (pi) or after Oh My Pi's 256-byte title row. */
+  const sessionRow = (id: string, cwd: string) => JSON.stringify({ type: "session", version: 3, id, timestamp: "2026-10-30T10:00:00.000Z", cwd });
+  const ompTitle = JSON.stringify({ type: "title", v: 1, title: "", updatedAt: "2026-10-30T10:00:00.000Z", pad: " ".repeat(180) });
+
+  async function fixture() {
+    const created = `${tmpdir()}/collie-pi-discover-${Math.floor(performance.now() * 1000)}`;
+    await mkdir(created, { recursive: true });
+    const base = await realpath(created);
+    const places = { home: join(base, "home"), tmp: join(base, "tmp") };
+    const piRoot = join(base, "pi-sessions");
+    const ompRoot = join(base, "omp-sessions");
+    /** Write one log into `root/folder`, its mtime `age` seconds ago. */
+    const log = async (root: string, folder: string, id: string, head: string, age: number) => {
+      const path = join(root, folder, `2026-10-30T10-00-00-000Z_${id}.jsonl`);
+      await mkdir(join(root, folder), { recursive: true });
+      await Bun.write(path, `${head}\n${speech("m1", "user", "hello")}\n`);
+      const when = new Date(Date.now() - age * 1000);
+      await utimes(path, when, when);
+      return path;
+    };
+    return { base, places, piRoot, ompRoot, log };
+  }
+
+  test("pi: the one log filed for the pane's folder is the pane's session", async () => {
+    const f = await fixture();
+    const cwd = "/srv/lab/proj";
+    const path = await f.log(f.piRoot, "--srv-lab-proj--", ONE, sessionRow(ONE, cwd), 5);
+    const src = new PiTranscriptSource([f.ompRoot, f.piRoot], f.places);
+    const ref = await src.discoverSession(cwd);
+    expect(ref).toEqual({ kind: "id", value: ONE });
+    expect(await src.resolve(ref ?? { kind: "id", value: "" })).toBe(path);
+    await rm(f.base, { recursive: true, force: true });
+  });
+
+  test("omp: a home folder's log (`-<relative>`, title row first) and a temp folder's (`-tmp-<relative>`) both resolve", async () => {
+    const f = await fixture();
+    const inHome = join(f.places.home, ".cache", "lab");
+    const inTmp = join(f.places.tmp, "lab");
+    await f.log(f.ompRoot, "-.cache-lab", ONE, `${ompTitle}\n${sessionRow(ONE, inHome)}`, 5);
+    await f.log(f.ompRoot, "-tmp-lab", TWO, `${ompTitle}\n${sessionRow(TWO, inTmp)}`, 5);
+    const src = new PiTranscriptSource([f.ompRoot, f.piRoot], f.places);
+    expect(await src.discoverSession(inHome)).toEqual({ kind: "id", value: ONE });
+    expect(await src.discoverSession(inTmp)).toEqual({ kind: "id", value: TWO });
+    await rm(f.base, { recursive: true, force: true });
+  });
+
+  test("a log whose session row names another cwd is skipped, even when it is newer", async () => {
+    // `/srv/lab-proj` and `/srv/lab/proj` share the folder name `--srv-lab-proj--`.
+    const f = await fixture();
+    await f.log(f.piRoot, "--srv-lab-proj--", TWO, sessionRow(TWO, "/srv/lab-proj"), 1);
+    await f.log(f.piRoot, "--srv-lab-proj--", ONE, sessionRow(ONE, "/srv/lab/proj"), 60);
+    const src = new PiTranscriptSource(f.piRoot, f.places);
+    expect(await src.discoverSession("/srv/lab/proj")).toEqual({ kind: "id", value: ONE });
+    expect(await src.discoverSession("/srv/lab-proj")).toEqual({ kind: "id", value: TWO });
+    expect(await src.discoverSession("/srv/elsewhere")).toBeNull();
+    await rm(f.base, { recursive: true, force: true });
+  });
+
+  test("of two logs for one folder the newest written wins (a resumed session is being written)", async () => {
+    const f = await fixture();
+    const cwd = "/srv/proj";
+    await f.log(f.piRoot, "--srv-proj--", OLD, sessionRow(OLD, cwd), 2);
+    await f.log(f.piRoot, "--srv-proj--", ONE, sessionRow(ONE, cwd), 300);
+    expect(await new PiTranscriptSource(f.piRoot, f.places).discoverSession(cwd)).toEqual({ kind: "id", value: OLD });
+    await rm(f.base, { recursive: true, force: true });
+  });
+
+  test("a pi or omp neighbour in the folder, an unknown cwd or a relative one: no session", async () => {
+    const f = await fixture();
+    const cwd = "/srv/proj";
+    await f.log(f.piRoot, "--srv-proj--", ONE, sessionRow(ONE, cwd), 5);
+    const adapter = piJournal(f.piRoot);
+    const src = new PiTranscriptSource(f.piRoot, f.places);
+    expect(adapter.sharedFolderBlind).toBe(true);
+    expect(await adapter.discover?.(cwd, { shared: true })).toBeNull();
+    expect(await src.discoverSession(cwd, { shared: true })).toBeNull();
+    expect(await src.discoverSession("")).toBeNull();
+    expect(await src.discoverSession("srv/proj")).toBeNull();
+    await rm(f.base, { recursive: true, force: true });
+  });
+
+  describe("the pane's own command line names the session (#675)", () => {
+    const cwd = "/srv/proj";
+    const folder = "--srv-proj--";
+    const omp = (...args: string[]) => ({ processes: [{ pid: 4242, argv: ["/home/dev/.bun/bin/omp", ...args] }] });
+    const shared = (processes: ReturnType<typeof omp>) => ({ ...processes, shared: true as const });
+
+    /** Two logs for one folder, the neighbour's the newest: what a folder walk would wrongly answer. */
+    async function twoLogs() {
+      const f = await fixture();
+      const mine = await f.log(f.ompRoot, folder, OLD, sessionRow(OLD, cwd), 86_400);
+      await f.log(f.ompRoot, folder, ONE, sessionRow(ONE, cwd), 5);
+      return { f, mine, src: new PiTranscriptSource([f.ompRoot, f.piRoot], f.places) };
+    }
+
+    test("a path in a shared folder names that session, whatever its age", async () => {
+      const { f, mine, src } = await twoLogs();
+      const ref = await src.discoverSession(cwd, shared(omp("--resume", mine)));
+      expect(ref).toEqual({ kind: "id", value: OLD });
+      expect(await src.resolve(ref!)).toBe(mine);
+      // `-r`, `--resume=<path>` and a wrapper that runs the script all say the same.
+      expect(await src.discoverSession(cwd, shared(omp("-r", mine)))).toEqual({ kind: "id", value: OLD });
+      expect(await src.discoverSession(cwd, shared(omp(`--resume=${mine}`)))).toEqual({ kind: "id", value: OLD });
+      const wrapped = { processes: [{ argv: ["bun", "/x/node_modules/.bin/omp", "--resume", mine] }], shared: true as const };
+      expect(await src.discoverSession(cwd, wrapped)).toEqual({ kind: "id", value: OLD });
+      // The same through the adapter, which is what the route calls.
+      expect(await piJournal([f.ompRoot, f.piRoot]).discover?.(cwd, shared(omp("--resume", mine)))).toEqual({ kind: "id", value: OLD });
+      await rm(f.base, { recursive: true, force: true });
+    });
+
+    test("pi names its session with --session, and --resume there is only its picker", async () => {
+      const { f, mine, src } = await twoLogs();
+      const pi = (...args: string[]) => ({ processes: [{ argv: ["pi", ...args] }], shared: true as const });
+      expect(await src.discoverSession(cwd, pi("--session", mine))).toEqual({ kind: "id", value: OLD });
+      expect(await src.discoverSession(cwd, pi(`--session=${OLD}`))).toEqual({ kind: "id", value: OLD });
+      expect(await src.discoverSession(cwd, pi("--resume", mine))).toBeNull();
+      await rm(f.base, { recursive: true, force: true });
+    });
+
+    test("a path outside the sessions roots, or in another folder's place, is refused", async () => {
+      const { f, mine, src } = await twoLogs();
+      const outside = join(f.base, "elsewhere", `2026-10-30T10-00-00-000Z_${TWO}.jsonl`);
+      await mkdir(join(f.base, "elsewhere"), { recursive: true });
+      await Bun.write(outside, `${sessionRow(TWO, cwd)}\n`);
+      expect(await src.discoverSession(cwd, shared(omp("--resume", outside)))).toBeNull();
+      expect(await src.discoverSession(cwd, shared(omp("--resume", `${mine}/../../../../etc/hosts`)))).toBeNull();
+      // Inside a root, but filed for another folder.
+      const other = await f.log(f.ompRoot, "--srv-other--", TWO, sessionRow(TWO, "/srv/other"), 5);
+      expect(await src.discoverSession(cwd, shared(omp("--resume", other)))).toBeNull();
+      // A symlink in the right folder that points out of the root.
+      const link = join(f.ompRoot, folder, `2026-10-30T11-00-00-000Z_${TWO}.jsonl`);
+      await symlink(outside, link);
+      expect(await src.discoverSession(cwd, shared(omp("--resume", link)))).toBeNull();
+      expect(await src.discoverSession(cwd, shared(omp("--resume", "/etc/hosts")))).toBeNull();
+      await rm(f.base, { recursive: true, force: true });
+    });
+
+    test("an id names the session only when a log filed for the folder has exactly that id", async () => {
+      const { f, mine, src } = await twoLogs();
+      const ref = await src.discoverSession(cwd, shared(omp("--resume", OLD)));
+      expect(ref).toEqual({ kind: "id", value: OLD });
+      expect(await src.resolve(ref!)).toBe(mine);
+      expect(await src.discoverSession(cwd, shared(omp("--resume", TWO)))).toBeNull();
+      expect(await src.discoverSession(cwd, shared(omp("--resume", OLD.slice(0, 13))))).toBeNull();
+      expect(await src.discoverSession(cwd, shared(omp("--resume", "../../etc")))).toBeNull();
+      // A log of another folder is not found by its id from this one.
+      await f.log(f.ompRoot, "--srv-other--", TWO, sessionRow(TWO, "/srv/other"), 5);
+      expect(await src.discoverSession(cwd, shared(omp("--resume", TWO)))).toBeNull();
+      await rm(f.base, { recursive: true, force: true });
+    });
+
+    test("the flag with no value, or no command line, names nothing: a shared folder gives no session", async () => {
+      const { f, src } = await twoLogs();
+      expect(await src.discoverSession(cwd, shared(omp("--resume")))).toBeNull();
+      expect(await src.discoverSession(cwd, shared(omp("--resume=")))).toBeNull();
+      expect(await src.discoverSession(cwd, shared(omp("--resume", "--model", "x")))).toBeNull();
+      expect(await src.discoverSession(cwd, shared(omp()))).toBeNull();
+      expect(await src.discoverSession(cwd, { shared: true })).toBeNull();
+      // Not a pi or omp process: the flag means nothing.
+      expect(await src.discoverSession(cwd, { shared: true, processes: [{ argv: ["less", "--resume", OLD] }] })).toBeNull();
+      await rm(f.base, { recursive: true, force: true });
+    });
+
+    test("with no neighbour a bad value changes nothing: the folder walk answers as before", async () => {
+      const { f, src } = await twoLogs();
+      expect(await src.discoverSession(cwd, omp("--resume", "/etc/hosts"))).toEqual({ kind: "id", value: ONE });
+      expect(await src.discoverSession(cwd, omp("--resume"))).toEqual({ kind: "id", value: ONE });
+      await rm(f.base, { recursive: true, force: true });
+    });
+  });
+
+  describe("the pane's terminal label names the session (#675)", () => {
+    const cwd = "/srv/proj";
+    const folder = "--srv-proj--";
+    const withLabels = (labels: Record<string, string>, ...args: string[]) => ({
+      processes: [{ pid: 4242, argv: ["/home/dev/.bun/bin/omp", ...args] }],
+      labels,
+      shared: true as const,
+    });
+
+    /** Two logs for one folder, the neighbour's the newest: what a folder walk would wrongly answer. */
+    async function twoLogs() {
+      const f = await fixture();
+      const mine = await f.log(f.ompRoot, folder, OLD, sessionRow(OLD, cwd), 86_400);
+      const theirs = await f.log(f.ompRoot, folder, ONE, sessionRow(ONE, cwd), 5);
+      return { f, mine, theirs, src: new PiTranscriptSource([f.ompRoot, f.piRoot], f.places) };
+    }
+
+    test("the omp label names its own session in a shared folder, and resolves to that file", async () => {
+      const { f, mine, theirs, src } = await twoLogs();
+      const ref = await src.discoverSession(cwd, withLabels({ "omp.session_file": mine }));
+      expect(ref).toEqual({ kind: "id", value: OLD });
+      expect(await src.resolve(ref!)).toBe(mine);
+      expect(await src.discoverSession(cwd, withLabels({ "omp.session_file": theirs }))).toEqual({ kind: "id", value: ONE });
+      // The same through the adapter, which is what the route calls.
+      expect(await piJournal([f.ompRoot, f.piRoot]).discover?.(cwd, withLabels({ "omp.session_file": mine }))).toEqual({ kind: "id", value: OLD });
+      await rm(f.base, { recursive: true, force: true });
+    });
+
+    test("the label wins over the command line's path", async () => {
+      const { f, mine, theirs, src } = await twoLogs();
+      expect(await src.discoverSession(cwd, withLabels({ "omp.session_file": mine }, "--resume", theirs))).toEqual({ kind: "id", value: OLD });
+      // A label that fails the checks falls through to the command line.
+      expect(await src.discoverSession(cwd, withLabels({ "omp.session_file": "/etc/hosts" }, "--resume", theirs))).toEqual({ kind: "id", value: ONE });
+      await rm(f.base, { recursive: true, force: true });
+    });
+
+    test("the other harness's key, an unrelated key and a non-harness process read nothing", async () => {
+      const { f, mine, src } = await twoLogs();
+      expect(await src.discoverSession(cwd, withLabels({ "pi.session_file": mine }))).toBeNull();
+      expect(await src.discoverSession(cwd, withLabels({ session_file: mine, "herdr.space": mine }))).toBeNull();
+      expect(await src.discoverSession(cwd, { shared: true, labels: { "omp.session_file": mine } })).toBeNull();
+      const less = { shared: true as const, processes: [{ argv: ["less", "x"] }], labels: { "omp.session_file": mine } };
+      expect(await src.discoverSession(cwd, less)).toBeNull();
+      await rm(f.base, { recursive: true, force: true });
+    });
+
+    test("a pi pane reads pi.session_file, and not omp.session_file", async () => {
+      const { f, mine, src } = await twoLogs();
+      const pi = (labels: Record<string, string>) => ({ processes: [{ argv: ["pi"] }], labels, shared: true as const });
+      expect(await src.discoverSession(cwd, pi({ "pi.session_file": mine }))).toEqual({ kind: "id", value: OLD });
+      expect(await src.discoverSession(cwd, pi({ "omp.session_file": mine }))).toBeNull();
+      await rm(f.base, { recursive: true, force: true });
+    });
+
+    test("a path outside the roots, in another folder, through a symlink, or not a session id is ignored", async () => {
+      const { f, mine, src } = await twoLogs();
+      const ask = (value: string) => src.discoverSession(cwd, withLabels({ "omp.session_file": value }));
+      const outside = join(f.base, "elsewhere", `2026-10-30T10-00-00-000Z_${TWO}.jsonl`);
+      await mkdir(join(f.base, "elsewhere"), { recursive: true });
+      await Bun.write(outside, `${sessionRow(TWO, cwd)}\n`);
+      expect(await ask(outside)).toBeNull();
+      expect(await ask(`${mine}/../../../../etc/hosts`)).toBeNull();
+      // Inside a root, but filed for another folder.
+      expect(await ask(await f.log(f.ompRoot, "--srv-other--", TWO, sessionRow(TWO, "/srv/other"), 5))).toBeNull();
+      // A symlink in the right folder that points out of the root.
+      const link = join(f.ompRoot, folder, `2026-10-30T11-00-00-000Z_${TWO}.jsonl`);
+      await symlink(outside, link);
+      expect(await ask(link)).toBeNull();
+      // Not a session id: a file name of any other shape, an id alone, a directory.
+      expect(await ask(join(f.ompRoot, folder, "notes.jsonl"))).toBeNull();
+      expect(await ask(OLD)).toBeNull();
+      expect(await ask(join(f.ompRoot, folder))).toBeNull();
+      expect(await ask("")).toBeNull();
+      await rm(f.base, { recursive: true, force: true });
+    });
+
+    test("a relative path is ignored, even one that would resolve against the cwd", async () => {
+      const { f, mine, src } = await twoLogs();
+      expect(await src.discoverSession(cwd, withLabels({ "omp.session_file": basename(mine) }))).toBeNull();
+      expect(await src.discoverSession(cwd, withLabels({ "omp.session_file": `./${basename(mine)}` }))).toBeNull();
+      await rm(f.base, { recursive: true, force: true });
+    });
+
+    test("a label that names a file that does not exist falls through to the command line's path", async () => {
+      const { f, theirs, src } = await twoLogs();
+      const gone = join(f.ompRoot, folder, `2026-10-30T12-00-00-000Z_${TWO}.jsonl`);
+      expect(await src.discoverSession(cwd, withLabels({ "omp.session_file": gone }, "--resume", theirs))).toEqual({ kind: "id", value: ONE });
+      await rm(f.base, { recursive: true, force: true });
+    });
+
+    test("with no neighbour a bad label changes nothing: the folder walk answers as before", async () => {
+      const { f, src } = await twoLogs();
+      const alone = { processes: [{ argv: ["omp"] }], labels: { "omp.session_file": "/etc/hosts" } };
+      expect(await src.discoverSession(cwd, alone)).toEqual({ kind: "id", value: ONE });
+      await rm(f.base, { recursive: true, force: true });
+    });
+  });
+
+  test("realpath aliases add canonical folders while collisions and escaped logs stay refused", async () => {
+    const f = await fixture();
+    try {
+      const physicalHome = join(f.base, "physical-home");
+      const project = join(physicalHome, "lab", "proj");
+      const collision = join(physicalHome, "lab-proj");
+      await mkdir(project, { recursive: true });
+      await mkdir(collision, { recursive: true });
+      const homeAlias = join(f.base, "home-alias");
+      await symlink(physicalHome, homeAlias);
+      const aliasCwd = join(homeAlias, "lab", "proj");
+      const folder = "-lab-proj";
+      const decoy = await f.log(f.ompRoot, folder, TWO, sessionRow(TWO, collision), 1);
+      const expected = await f.log(f.ompRoot, folder, ONE, sessionRow(ONE, project), 60);
+      const outside = join(f.base, "outside.jsonl");
+      const escapedId = "019f4665-7df0-7540-a64f-7068335f2104";
+      await Bun.write(outside, `${sessionRow(escapedId, project)}\n`);
+      const escaped = join(f.ompRoot, folder, `2026-10-30T10-00-00-000Z_${escapedId}.jsonl`);
+      await symlink(outside, escaped);
+
+      // The configured home spelling and the pane cwd spelling each differ from the on-disk path.
+      const byHomeAlias = new PiTranscriptSource(f.ompRoot, { home: homeAlias, tmp: f.places.tmp });
+      const homeRef = await byHomeAlias.discoverSession(project);
+      expect(homeRef).toEqual({ kind: "id", value: ONE });
+      expect(await byHomeAlias.resolve(homeRef!)).toBe(expected);
+      expect(await byHomeAlias.discoverSession(project, {
+        shared: true,
+        processes: [{ argv: ["omp"] }],
+        labels: { "omp.session_file": expected },
+      })).toEqual({ kind: "id", value: ONE });
+
+      const byCwdAlias = new PiTranscriptSource(f.ompRoot, { home: physicalHome, tmp: f.places.tmp });
+      const cwdRef = await byCwdAlias.discoverSession(aliasCwd);
+      expect(cwdRef).toEqual({ kind: "id", value: ONE });
+      expect(await byCwdAlias.resolve(cwdRef!)).toBe(expected);
+      expect(decoy).not.toBe(expected);
+    } finally {
+      await rm(f.base, { recursive: true, force: true });
+    }
+  });
+
+  test("an exact session cwd still matches when that cwd no longer exists", async () => {
+    const f = await fixture();
+    const cwd = join(f.base, "removed-project");
+    const folder = piSessionFolderNames(cwd, f.places)[0]!;
+    await f.log(f.piRoot, folder, ONE, sessionRow(ONE, cwd), 5);
+    expect(await new PiTranscriptSource(f.piRoot, f.places).discoverSession(cwd)).toEqual({ kind: "id", value: ONE });
+    await rm(f.base, { recursive: true, force: true });
+  });
+
+  test("the folder names pi and Oh My Pi file a cwd under", () => {
+    const places = { home: "/home/dev", tmp: "/tmp" };
+    expect(piSessionFolderNames("/srv/a", places)).toEqual(["--srv-a--"]);
+    expect(piSessionFolderNames("/home/dev/projects/x", places)).toEqual(["--home-dev-projects-x--", "-projects-x"]);
+    expect(piSessionFolderNames("/home/dev", places)).toEqual(["--home-dev--", "-"]);
+    expect(piSessionFolderNames("/tmp/lab", places)).toEqual(["--tmp-lab--", "-tmp-lab"]);
+    expect(piSessionFolderNames("/tmp", places)).toEqual(["--tmp--", "-tmp"]);
+  });
+});
+
 describe("resolveImageUrl — only this collie's own blobs and inline images", () => {
   const hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
@@ -1027,6 +1403,10 @@ describe("resolveImageUrl — only this collie's own blobs and inline images", (
     expect(resolveImageUrl("AAAA")).toBeNull();
     expect(resolveImageUrl("AAAA", "text/plain")).toBeNull();
     expect(resolveImageUrl("AAAA", "image/gif")).toBe("data:image/gif;base64,AAAA");
+    // The cap: one inline picture over MAX_INLINE_IMAGE_CHARS is dropped, a blob reference never counts.
+    expect(resolveImageUrl("A".repeat(MAX_INLINE_IMAGE_CHARS + 4), "image/png")).toBeNull();
+    expect(resolveImageUrl(`data:image/png;base64,${"A".repeat(MAX_INLINE_IMAGE_CHARS)}`)).toBeNull();
+    expect(resolveImageUrl("A".repeat(MAX_INLINE_IMAGE_CHARS), "image/png")).not.toBeNull();
   });
 });
 
@@ -1101,12 +1481,15 @@ describe("parsePiTranscript — Gentle Shell's tools", () => {
       call(id: string, callId: string, name: string, args: Record<string, JsonValue>) {
         add(id, { type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: callId, name, arguments: args }] } });
       },
-      result(id: string, callId: string, name: string, text: string, details: JsonValue, isError = false) {
+      result(id: string, callId: string, name: string, text: string, details: JsonValue, isError = false, at?: string) {
         const message = { role: "toolResult", toolCallId: callId, toolName: name, content: [{ type: "text", text }], details };
-        add(id, { type: "message", message: isError ? { ...message, isError: true } : message });
+        const body = { type: "message", message: isError ? { ...message, isError: true } : message };
+        add(id, at === undefined ? body : { ...body, timestamp: at });
       },
-      notice(id: string, customType: string, content: string, details: JsonValue) {
-        add(id, { type: "custom_message", customType, content, display: true, details });
+      /** `at` stamps the row with its own time, over the session's one. */
+      notice(id: string, customType: string, content: string, details: JsonValue, at?: string) {
+        const body = { type: "custom_message", customType, content, display: true, details };
+        add(id, at === undefined ? body : { ...body, timestamp: at });
       },
       rows,
     };
@@ -1158,7 +1541,8 @@ describe("parsePiTranscript — Gentle Shell's tools", () => {
   });
 
   // 14 real `clear` calls (2026-10-16): the result's list is empty, and the next `add` starts a new list.
-  test("a `clear` keeps the card's last list and lets the next `add` draw a card of its own", () => {
+  // The empty list empties the card too (#715); it used to keep the last list on screen.
+  test("a `clear` empties the card's list and lets the next `add` draw a card of its own", () => {
     const s = session();
     s.call("a1", "c1", "todo", { action: "write", tasks: [{ title: "Old" }] });
     s.result("r1", "c1", "todo", "written", todo([{ id: 1, title: "Old", status: "done" }]));
@@ -1167,9 +1551,25 @@ describe("parsePiTranscript — Gentle Shell's tools", () => {
     s.call("a3", "c3", "todo", { action: "add", title: "New" });
     s.result("r3", "c3", "todo", "added", todo([{ id: 1, title: "New", status: "pending" }]));
     expect(tools(s.rows).map((t) => [t.uuid, t.part.call])).toEqual([
-      ["a1", { kind: "plan", name: "todo", tasks: [{ title: "Old", status: "done" }] }],
+      ["a1", { kind: "plan", name: "todo", tasks: [] }],
       ["a3", { kind: "plan", name: "todo", tasks: [{ title: "New", status: "pending" }] }],
     ]);
+  });
+
+  test("a `clear` empties the Tasks mark, and a result with no list leaves the input's", () => {
+    const s = session();
+    s.call("a1", "c1", "todo", { action: "write", tasks: [{ title: "Parse" }, { title: "Ship" }] });
+    s.result("r1", "c1", "todo", "written", todo([{ id: 1, title: "Parse", status: "pending" }, { id: 2, title: "Ship", status: "pending" }]));
+    expect(latestPlanTodos(parsePiTranscript(s.rows.join("\n")))).toHaveLength(2);
+    s.call("a2", "c2", "todo", { action: "clear" });
+    s.result("r2", "c2", "todo", "cleared", todo([]));
+    const entries = parsePiTranscript(s.rows.join("\n"));
+    expect(latestPlanTodos(entries)).toBeUndefined();
+    // A result with no `gentleTodo` at all is not a clear: the write's own list stays.
+    const bare = session();
+    bare.call("a1", "c1", "todo", { action: "write", tasks: [{ title: "Parse" }] });
+    bare.result("r1", "c1", "todo", "written", {});
+    expect(tools(bare.rows)[0]?.part.call).toEqual({ kind: "plan", name: "todo", tasks: [{ title: "Parse", status: "pending" }] });
   });
 
   test("a rewind past the held card lets the next update draw on the new branch", () => {
@@ -1203,6 +1603,41 @@ describe("parsePiTranscript — Gentle Shell's tools", () => {
     expect(dismissed?.kind === "question" && dismissed.answers).toBeUndefined();
   });
 
+  // gentle-pi 4.6.0, from the issue #714 report (synthetic rows in its shape).
+  test("`ask_user_question` reads `details.answers` as a list of objects, by question index", () => {
+    const questions = [
+      { question: "Which binary?", options: [{ label: "Swap it" }, { label: "Keep" }] },
+      { question: "Which port?", options: [{ label: "8787" }, { label: "8788" }] },
+    ];
+    const s = session();
+    s.call("a1", "c1", "ask_user_question", { questions });
+    s.result("r1", "c1", "ask_user_question", "answered", {
+      answers: [
+        { questionIndex: 1, question: "Which port?", kind: "option", answer: "8788" },
+        { questionIndex: 0, question: "Which binary?", kind: "option", answer: "Swap it" },
+      ],
+    });
+    s.call("a2", "c2", "ask_user_question", { questions: questions.slice(0, 1) });
+    s.result("r2", "c2", "ask_user_question", "answered", {
+      answers: [{ questionIndex: 0, question: "Which binary?", kind: "other", answer: "something else" }],
+    });
+    const [two, one] = tools(s.rows).map((t) => t.part.call);
+    expect(two).toMatchObject({ kind: "question", answers: [["Swap it"], ["8788"]] });
+    expect(one).toMatchObject({ kind: "question", answers: [["something else"]] });
+  });
+
+  test("`ask_user_choice` takes a free-text \"Other\" answer from `details.customResponse`", () => {
+    const ask = { question: "Which?", options: [{ label: "A" }, { label: "B" }] };
+    const s = session();
+    s.call("a1", "c1", "ask_user_choice", ask);
+    s.result("r1", "c1", "ask_user_choice", "Other", { ...ask, customResponse: "something different" });
+    s.call("a2", "c2", "ask_user_choice", ask);
+    s.result("r2", "c2", "ask_user_choice", "A", { ...ask, selection: { value: "a", label: "A", index: 0 } });
+    const [custom, picked] = tools(s.rows).map((t) => t.part.call);
+    expect(custom).toMatchObject({ kind: "question", answers: [["something different"]] });
+    expect(picked).toMatchObject({ kind: "question", answers: [["A"]] });
+  });
+
   test("collie's own `ask_user` is a question card with its `details.answer`", () => {
     const s = session();
     s.call("a1", "c1", "ask_user", { question: "Which color do you prefer?", options: ["Red", "Blue"] });
@@ -1234,6 +1669,53 @@ describe("parsePiTranscript — Gentle Shell's tools", () => {
     s.call("a1", "c1", "subagent_run", { agent: "gentle-ai-explore", label: "Map it", task: "…" });
     s.result("r1", "c1", "subagent_run", "The answer.", agents("t-1", "completed", "task"));
     expect(tools(s.rows)[0]?.part.call).toEqual({ kind: "task", agent: "gentle-ai-explore", summary: "Map it" });
+  });
+
+  test("a foreground subagent is ongoing from its call until its result (#711)", () => {
+    const s = session();
+    s.call("a1", "c1", "subagent_run", { agent: "gentle-ai-explore", label: "Map it", task: "…", mode: "task" });
+    expect(tools(s.rows)[0]?.part.call).toEqual({ kind: "task", agent: "gentle-ai-explore", summary: "Map it", ongoing: true });
+    expect(ongoingSubagents(parsePiTranscript(s.rows.join("\n"))).map((r) => r.description)).toEqual(["Map it"]);
+    // A call with no `mode` is foreground too; a background call waits for its start result.
+    const bare = session();
+    bare.call("a1", "c1", "subagent_run", { agent: "gentle-ai-explore", label: "Bare", task: "…" });
+    expect(tools(bare.rows)[0]?.part.call).toMatchObject({ ongoing: true });
+    const background = session();
+    background.call("a1", "c1", "subagent_run", { agent: "gentle-ai-explore", label: "Bg", task: "…", mode: "background" });
+    expect(tools(background.rows)[0]?.part.call).not.toHaveProperty("ongoing");
+    s.result("r1", "c1", "subagent_run", "The answer.", agents("t-1", "completed", "task"));
+    expect(tools(s.rows)[0]?.part.call).toEqual({ kind: "task", agent: "gentle-ai-explore", summary: "Map it" });
+    expect(ongoingSubagents(parsePiTranscript(s.rows.join("\n")))).toEqual([]);
+  });
+
+  test("an interrupted foreground subagent (error result, no details) stops being ongoing", () => {
+    const s = session();
+    s.call("a1", "c1", "subagent_run", { agent: "gentle-ai-explore", label: "Map it", task: "…" });
+    s.result("r1", "c1", "subagent_run", "Aborted", {}, true);
+    expect(tools(s.rows)[0]?.part.call).toEqual({ kind: "task", agent: "gentle-ai-explore", summary: "Map it" });
+  });
+
+  test("a foreground subagent whose result says failed is marked failed (#716)", () => {
+    const s = session();
+    s.call("a1", "c1", "subagent_run", { agent: "gentle-ai-explore", label: "Map it", task: "…", mode: "task" });
+    s.result("r1", "c1", "subagent_run", "It broke.", agents("t-1", "failed", "task"));
+    const part = tools(s.rows)[0]?.part;
+    expect(part?.call).toEqual({ kind: "task", agent: "gentle-ai-explore", summary: "Map it" });
+    expect(part?.result?.isError).toBe(true);
+  });
+
+  test("a stale notice or stale result ends a background subagent without marking it failed (#716)", () => {
+    for (const type of ["gentle-agents.stale-notice", "gentle-agents.stale-result"]) {
+      const s = session();
+      s.call("a1", "c1", "subagent_run", { agent: "gentle-ai-explore", label: "Map it", task: "…", mode: "background" });
+      s.result("r1", "c1", "subagent_run", "Started.", agents("t-1", "queued"));
+      expect(ongoingSubagents(parsePiTranscript(s.rows.join("\n")))).toHaveLength(1);
+      s.notice("n1", type, "Subagent task t-1 went stale.", agents("t-1", "running"));
+      const part = tools(s.rows)[0]?.part;
+      expect(part?.call).toEqual({ kind: "task", agent: "gentle-ai-explore", summary: "Map it" });
+      expect(part?.result?.isError).not.toBe(true);
+      expect(ongoingSubagents(parsePiTranscript(s.rows.join("\n")))).toEqual([]);
+    }
   });
 
   test("`subagent_result` folds into its task's card and brings the answer", () => {
@@ -1280,14 +1762,34 @@ describe("parsePiTranscript — Gentle Shell's tools", () => {
     return { gentleJobs: event === null ? gentleJobs : { ...gentleJobs, event } };
   };
 
+  const STARTED = Date.parse("2026-09-30T12:00:00.000Z");
+  const ENDED_AT = "2026-09-30T12:00:03.000Z";
+
   test("a background command is ongoing with no exit code until its notice gives one", () => {
     const s = session();
     s.call("a1", "c1", "bash_background", { command: "bun test", label: "suite" });
     s.result("r1", "c1", "bash_background", "Started background job job-1 (\"suite\").", job("job-1", "command", "running", null));
-    expect(tools(s.rows)[0]?.part.call).toEqual({ kind: "execute", command: "bun test", description: "suite", background: true, ongoing: true });
-    s.notice("n1", "gentle-jobs.notice", "Background job job-1 (\"suite\") exited with code 137 after 3s.", job("job-1", "command", "exited", 137));
+    expect(tools(s.rows)[0]?.part.call).toEqual({
+      kind: "execute",
+      command: "bun test",
+      description: "suite",
+      background: true,
+      ongoing: true,
+      jobId: "job-1",
+      startedAt: STARTED,
+    });
+    s.notice("n1", "gentle-jobs.notice", "Background job job-1 (\"suite\") exited with code 137 after 3s.", job("job-1", "command", "exited", 137), ENDED_AT);
     const part = tools(s.rows)[0]?.part;
-    expect(part?.call).toEqual({ kind: "execute", command: "bun test", description: "suite", background: true, exitCode: 137 });
+    expect(part?.call).toEqual({
+      kind: "execute",
+      command: "bun test",
+      description: "suite",
+      background: true,
+      exitCode: 137,
+      jobId: "job-1",
+      startedAt: STARTED,
+      endedAt: Date.parse(ENDED_AT),
+    });
     expect(part?.result?.isError).toBe(true);
   });
 
@@ -1297,10 +1799,87 @@ describe("parsePiTranscript — Gentle Shell's tools", () => {
     s.result("r1", "c1", "monitor", "Started monitor job-1.", job("job-1", "monitor", "running", null));
     s.notice("n1", "gentle-jobs.notice", "Monitor job-1 reported 2 new lines", job("job-1", "monitor", "running", null, "events"));
     expect(tools(s.rows)[0]?.part.call).toMatchObject({ ongoing: true });
-    s.notice("n2", "gentle-jobs.notice", "Monitor job-1 reported 1 new line", job("job-1", "monitor", "stopped", null, "events"));
+    s.notice("n2", "gentle-jobs.notice", "Monitor job-1 reported 1 new line", job("job-1", "monitor", "stopped", null, "events"), ENDED_AT);
     const call = tools(s.rows)[0]?.part.call;
-    expect(call).toEqual({ kind: "execute", command: "tail -f x", description: "watch", background: true });
+    expect(call).toEqual({
+      kind: "execute",
+      command: "tail -f x",
+      description: "watch",
+      background: true,
+      jobId: "job-1",
+      startedAt: STARTED,
+      endedAt: Date.parse(ENDED_AT),
+    });
     expect(tools(s.rows)[0]?.part.result?.isError).toBeUndefined();
+  });
+
+  // Issue 697: gentle-pi sends no notice for a job the agent stopped, so the `job_stop` result ends it.
+  const started = (s: ReturnType<typeof session>, jobId = "job-1") => {
+    s.call("a1", "c1", "bash_background", { command: "bun test", label: "suite" });
+    s.result("r1", "c1", "bash_background", `Started background job ${jobId} ("suite").`, job(jobId, "command", "running", null));
+  };
+  const stopCall = (s: ReturnType<typeof session>, text: string, details: JsonValue, at = ENDED_AT) => {
+    s.call("a2", "c2", "job_stop", { job_id: "job-1" });
+    s.result("r2", "c2", "job_stop", text, details, false, at);
+  };
+
+  test("a `job_stop` result ends the job it names, with no exit code and no error", () => {
+    const s = session();
+    started(s);
+    stopCall(s, 'Stopped job-1 ("suite").', job("job-1", "job", "stopped", null));
+    const card = tools(s.rows)[0]?.part;
+    expect(card?.call).toEqual({
+      kind: "execute",
+      command: "bun test",
+      description: "suite",
+      background: true,
+      jobId: "job-1",
+      startedAt: STARTED,
+      endedAt: Date.parse(ENDED_AT),
+    });
+    expect(card?.result?.isError).toBeUndefined();
+  });
+
+  test("a `job_stop` after the exit notice keeps the notice's end time", () => {
+    const s = session();
+    started(s);
+    s.notice("n1", "gentle-jobs.notice", 'Background job job-1 ("suite") exited with code 0 after 3s.', job("job-1", "command", "exited", 0), ENDED_AT);
+    stopCall(s, 'job-1 ("suite") was already exited with code 0.', job("job-1", "job", "exited", 0), "2026-09-30T12:09:00.000Z");
+    expect(tools(s.rows)[0]?.part.call).toMatchObject({ endedAt: Date.parse(ENDED_AT), exitCode: 0 });
+  });
+
+  test("a `job_stop` result for another job, or one that still says running, leaves the card running", () => {
+    const s = session();
+    started(s);
+    stopCall(s, 'Stopped job-2 ("other").', job("job-2", "job", "stopped", null));
+    expect(tools(s.rows)[0]?.part.call).toMatchObject({ ongoing: true });
+    s.call("a3", "c3", "job_stop", { job_id: "job-1" });
+    s.result("r3", "c3", "job_stop", "Still running.", job("job-1", "job", "running", null), false, ENDED_AT);
+    expect(tools(s.rows)[0]?.part.call).toMatchObject({ ongoing: true });
+  });
+
+  test("a `job_list` result settles the jobs it lists as ended and leaves a running one", () => {
+    const s = session();
+    started(s);
+    s.call("a1b", "c1b", "bash_background", { command: "bun dev", label: "dev" });
+    s.result("r1b", "c1b", "bash_background", 'Started background job job-2 ("dev").', job("job-2", "command", "running", null));
+    s.call("a2", "c2", "job_list", {});
+    s.result("r2", "c2", "job_list", "job-1 · stopped · suite · 1m 24s · /tmp/j.log\njob-2 · running · dev · 2m · /tmp/d.log", { gentleJobs: { count: 2 } }, false, ENDED_AT);
+    const [one, two] = tools(s.rows).filter((t) => t.part.call?.kind === "execute").map((t) => t.part);
+    expect(one?.call).toMatchObject({ jobId: "job-1", endedAt: Date.parse(ENDED_AT) });
+    expect(one?.call).not.toHaveProperty("ongoing");
+    expect(two?.call).toMatchObject({ jobId: "job-2", ongoing: true });
+  });
+
+  test("a `job_list` line `exited 1` gives the exit code and the error flag", () => {
+    const s = session();
+    started(s);
+    s.call("a2", "c2", "job_list", {});
+    s.result("r2", "c2", "job_list", "job-1 · exited 1 · suite · 3s · /tmp/j.log", { gentleJobs: { count: 1 } }, false, ENDED_AT);
+    const card = tools(s.rows)[0]?.part;
+    expect(card?.call).toMatchObject({ exitCode: 1, endedAt: Date.parse(ENDED_AT) });
+    expect(card?.call).not.toHaveProperty("ongoing");
+    expect(card?.result?.isError).toBe(true);
   });
 });
 
@@ -1721,5 +2300,100 @@ describe("the pi probe — the session cost", () => {
       await Bun.write(log, `${[header(), ...rows].join("\n")}\n`);
       expect(await probe()).toBeCloseTo(20, 6);
     });
+  });
+});
+
+describe("PiTranscriptSource: a log older than the harness process is not the pane's (M79 spec 06)", () => {
+  const OLD = "019f4665-7df0-7540-a64f-7068335f2111";
+  const NEW = "019f4665-7df0-7540-a64f-7068335f2112";
+  const cwd = "/srv/stale";
+  /** The old log started at 10:00:00 and was last written at 10:30:00. */
+  const OLD_START = Date.parse("2026-10-30T10:00:00.000Z");
+  const OLD_WRITTEN = Date.parse("2026-10-30T10:30:00.000Z");
+
+  const sessionRow = (id: string) =>
+    JSON.stringify({ type: "session", version: 3, id, timestamp: "2026-10-30T10:00:00.000Z", cwd });
+
+  async function fixture() {
+    const created = `${tmpdir()}/collie-pi-stale-${Math.floor(performance.now() * 1000)}`;
+    await mkdir(created, { recursive: true });
+    const base = await realpath(created);
+    const places = { home: join(base, "home"), tmp: join(base, "tmp") };
+    const root = join(base, "pi-sessions");
+    /** One log named from its start time, last written at `writtenMs`. */
+    const log = async (id: string, startMs: number, writtenMs: number) => {
+      const stamp = new Date(startMs).toISOString().replaceAll(":", "-").replace(".", "-");
+      const path = join(root, "--srv-stale--", `${stamp}_${id}.jsonl`);
+      await mkdir(join(root, "--srv-stale--"), { recursive: true });
+      await Bun.write(path, `${sessionRow(id)}\n`);
+      await utimes(path, new Date(writtenMs), new Date(writtenMs));
+    };
+    /** A source whose pid 4242 started at `startMs`; any other pid is unreadable. */
+    const source = (startMs: number | null) =>
+      new PiTranscriptSource(root, places, { processStartMs: async (pid) => (pid === 4242 ? startMs : null) });
+    return { base, log, source };
+  }
+
+  const withPid = { processes: [{ argv: ["pi"], pid: 4242 }] };
+
+  test("an older log and a pid that started after it: no session", async () => {
+    const f = await fixture();
+    await f.log(OLD, OLD_START, OLD_WRITTEN);
+    expect(await f.source(Date.parse("2026-10-30T12:00:00.000Z")).discoverSession(cwd, withPid)).toBeNull();
+    await rm(f.base, { recursive: true, force: true });
+  });
+
+  test("the same log and a pid that started before it: the log", async () => {
+    const f = await fixture();
+    await f.log(OLD, OLD_START, OLD_WRITTEN);
+    expect(await f.source(OLD_START - 60_000).discoverSession(cwd, withPid)).toEqual({ kind: "id", value: OLD });
+    await rm(f.base, { recursive: true, force: true });
+  });
+
+  test("no pid, or a start that cannot be read: the newest log as before", async () => {
+    const f = await fixture();
+    await f.log(OLD, OLD_START, OLD_WRITTEN);
+    const late = f.source(Date.parse("2026-10-30T12:00:00.000Z"));
+    expect(await late.discoverSession(cwd)).toEqual({ kind: "id", value: OLD });
+    expect(await late.discoverSession(cwd, { processes: [{ argv: ["pi"] }] })).toEqual({ kind: "id", value: OLD });
+    expect(await f.source(null).discoverSession(cwd, withPid)).toEqual({ kind: "id", value: OLD });
+    await rm(f.base, { recursive: true, force: true });
+  });
+
+  test("the slack admits a log that started one second after the process", async () => {
+    const f = await fixture();
+    const processStart = Date.parse("2026-10-30T12:00:00.000Z");
+    await f.log(NEW, processStart + 1000, processStart + 1000);
+    expect(await f.source(processStart).discoverSession(cwd, withPid)).toEqual({ kind: "id", value: NEW });
+    await rm(f.base, { recursive: true, force: true });
+  });
+
+  test("the slack admits a log that started 4 s before the process and refuses one 6 s before", async () => {
+    const f = await fixture();
+    const processStart = Date.parse("2026-10-30T12:00:00.000Z");
+    await f.log(NEW, processStart - 4000, processStart - 4000);
+    expect(await f.source(processStart).discoverSession(cwd, withPid)).toEqual({ kind: "id", value: NEW });
+    await rm(f.base, { recursive: true, force: true });
+    const g = await fixture();
+    await g.log(NEW, processStart - 6000, processStart - 6000);
+    expect(await g.source(processStart).discoverSession(cwd, withPid)).toBeNull();
+    await rm(g.base, { recursive: true, force: true });
+  });
+
+  test("an older log the harness is writing now (a resumed session) is still the pane's", async () => {
+    const f = await fixture();
+    const processStart = Date.parse("2026-10-30T12:00:00.000Z");
+    await f.log(OLD, OLD_START, processStart + 20_000);
+    expect(await f.source(processStart).discoverSession(cwd, withPid)).toEqual({ kind: "id", value: OLD });
+    await rm(f.base, { recursive: true, force: true });
+  });
+
+  test("of an older and a newer log, the newer one is taken once the process has started between them", async () => {
+    const f = await fixture();
+    const processStart = Date.parse("2026-10-30T12:00:00.000Z");
+    await f.log(OLD, OLD_START, OLD_WRITTEN);
+    await f.log(NEW, processStart + 2000, processStart + 9000);
+    expect(await f.source(processStart).discoverSession(cwd, withPid)).toEqual({ kind: "id", value: NEW });
+    await rm(f.base, { recursive: true, force: true });
   });
 });

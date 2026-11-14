@@ -2,10 +2,14 @@ import { describe, expect, it } from "vitest";
 
 import type { SendReceiptRow } from "../surface/send";
 import { readReportContext } from "./context";
-import { FIELD_IDS, fitLink, hasTyped, ISSUE_URL_MAX, issueLink, reportFields, reportText, searchLink, sendLine, signature, type ClientFacts, type ReportContext, type ReportInput } from "./body";
+import { asJsonObject, asJsonString, parseJson, type JsonObject } from "../json";
+import type { ReportDoctorRow } from "./context";
+import { CLIPBOARD_LINE, doctorLine, rowsCutLine, FIELD_IDS, fitLink, hasTyped, ISSUE_URL_MAX, issueLink, reportFields, reportText, searchLink, sendLine, signature, type ClientFacts, type ReportContext, type ReportInput } from "./body";
 import type { DialogTrouble } from "./store";
 
-const CONTEXT: ReportContext = { collie: "1.24.1+abc1234", line: "edge", os: "linux", arch: "x64", mux: "herdr", harness: "claude", screenable: true };
+// The bridge's answer as JSON, for the reader.
+const WIRE: JsonObject = { collie: "1.24.1+abc1234", line: "edge", os: "linux", arch: "x64", mux: "herdr", harness: "claude", harnessVersion: null, screenable: true };
+const CONTEXT: ReportContext = { collie: "1.24.1+abc1234", line: "edge", os: "linux", arch: "x64", mux: "herdr", harness: "claude", harnessVersion: null, screenable: true };
 const AT = Date.parse("2026-10-25T18:00:00Z");
 
 function row(n: number, extra: Partial<SendReceiptRow> = {}): SendReceiptRow {
@@ -127,7 +131,7 @@ describe("the link", () => {
   it("a short report fits whole: nothing cut, the preview is the whole text", () => {
     const fields = reportFields(BASE);
     const link = fitLink(fields);
-    expect(link.cut).toEqual({ screen: "none", sends: 0, note: false });
+    expect(link.cut).toEqual({ screen: "none", doctor: 0, sends: 0, note: false });
     expect(link.fields).toEqual(fields);
     expect(link.url.length).toBeLessThanOrEqual(ISSUE_URL_MAX);
   });
@@ -163,10 +167,11 @@ describe("the link", () => {
     expect(link.cut.sends).toBe(3);
   });
 
-  it("ends even when nothing can make the link fit", () => {
+  it("ends even when nothing can make the link fit: the link falls back to the clipboard line", () => {
     const link = fitLink(reportFields({ ...BASE, note: "w".repeat(50) }), 10);
     expect(link.cut.note).toBe(true);
-    expect([...link.fields.what].length).toBeLessThanOrEqual(2);
+    expect(link.clipboard).toBe(true);
+    expect(link.fields.what).toBe(CLIPBOARD_LINE);
   });
 
   it("the duplicate search looks for the signature line", () => {
@@ -174,10 +179,70 @@ describe("the link", () => {
   });
 });
 
+describe("the link budget (M80 spec 02): a long screen never costs the body", () => {
+  // A pi screen: rows padded to 280 columns, the input box and its rules at the bottom.
+  const pad = (text: string): string => text.padEnd(280, " ");
+  const long = (rows: number): string =>
+    [...Array.from({ length: rows }, (_, i) => pad(`transcript ${String(i).padStart(4, "0")} ${"é".repeat(30)}`)), pad("─".repeat(80)), pad("❯ the box that matters"), pad("─".repeat(80))].join("\n");
+  const DOCTOR: readonly ReportDoctorRow[] = [{ check: "sends-pi", status: "warn", detail: "3 refused (probe_failed 3)", harness: "pi" }];
+  const INPUT: ReportInput = { ...BASE, context: { ...CONTEXT, doctor: DOCTOR } };
+
+  it("a long 20 KB screen gives a URL under the budget whose body keeps the collie-sig line and the setup block", () => {
+    const screen = long(60);
+    expect(screen.length).toBeGreaterThan(16_000);
+    const link = fitLink(reportFields({ ...INPUT, screen }));
+    expect(link.clipboard).toBe(false);
+    expect(link.url.length).toBeLessThanOrEqual(ISSUE_URL_MAX);
+    const params = query(link.url);
+    expect(params.get(FIELD_IDS.sends)?.split("\n").at(-1)).toBe("collie-sig: send/probe_failed/claude@2.1.291/herdr");
+    expect(params.get(FIELD_IDS.setup)).toBe(reportFields(INPUT).setup);
+    expect(params.get(FIELD_IDS.what)).toBe("Sending kept failing on one pane.");
+    expect(reportText(link.fields)).toContain("### Setup");
+  });
+
+  it("the budget leaves room for GitHub's sign-in redirect, which carries the link encoded again", () => {
+    const link = fitLink(reportFields({ ...INPUT, screen: long(60) }));
+    expect(encodeURIComponent(link.url).length).toBeLessThan(8192);
+  });
+
+  it("cuts the screen from the top, says how many rows with a '... N rows cut' line, and keeps the box at the bottom", () => {
+    const link = fitLink(reportFields({ ...INPUT, screen: long(60) }));
+    const rows = link.fields.screen.split("\n");
+    const cut = Number(/^\.\.\. (\d+) rows cut$/u.exec(rows[0] ?? "")?.[1]);
+    expect(cut).toBeGreaterThan(0);
+    expect(cut + rows.length - 1).toBe(63);
+    expect(rows.at(-2)).toBe("❯ the box that matters");
+    expect(rowsCutLine(1)).toBe("... 1 row cut");
+  });
+
+  it("trims trailing spaces per row before the budget, so padded rows do not spend it", () => {
+    const fields = reportFields({ ...INPUT, screen: `${pad("a")}\n${pad("")}\n${pad("b")}\n${pad("")}\n` });
+    expect(fields.screen).toBe("a\n\nb");
+    // 30 padded rows are 30 short rows once trimmed: they fit whole.
+    const link = fitLink(reportFields({ ...INPUT, screen: Array.from({ length: 30 }, (_, i) => pad(`row ${String(i)}`)).join("\n") }));
+    expect(link.cut.screen).toBe("none");
+  });
+
+  it("a report that cannot fit even without its screen goes to the clipboard: the link carries one line, no empty body", () => {
+    // The setup block is never cut, so a setup that alone passes the budget cannot be sent by link.
+    const huge = Array.from({ length: 12 }, (_, i) => row(i + 1, { detail: "d".repeat(900) })).toReversed();
+    const input: ReportInput = { ...INPUT, sends: huge, screen: long(20), app: "a".repeat(6000) };
+    const link = fitLink(reportFields(input));
+    expect(link.clipboard).toBe(true);
+    expect(link.url.length).toBeLessThanOrEqual(ISSUE_URL_MAX);
+    const params = query(link.url);
+    expect(params.get(FIELD_IDS.what)).toBe(CLIPBOARD_LINE);
+    expect(params.get("title")).toBe(reportFields(input).title);
+    // The whole report, collie-sig line and setup included, is what Copy report holds.
+    expect(reportText(reportFields(input))).toContain("collie-sig: send/probe_failed/claude@2.1.291/herdr");
+    expect(reportText(reportFields(input))).toContain("### Setup");
+  });
+});
+
 describe("readReportContext", () => {
   it("reads the bridge's answer field by field and refuses a body that is not one", () => {
-    expect(readReportContext({ ...CONTEXT, screen: "x" })).toEqual({ ...CONTEXT, screen: "x" });
-    expect(readReportContext({ ...CONTEXT, line: "nightly", harness: null })).toEqual({ ...CONTEXT, line: null, harness: null });
+    expect(readReportContext({ ...WIRE, screen: "x" })).toEqual({ ...CONTEXT, screen: "x" });
+    expect(readReportContext({ ...WIRE, line: "nightly", harness: null })).toEqual({ ...CONTEXT, line: null, harness: null });
     expect(readReportContext({ collie: "1.0.0" })).toBeNull();
     expect(readReportContext("<html>")).toBeNull();
   });
@@ -249,5 +314,92 @@ describe("reportFields: from the unread-dialog card (amendment 2026-10-28, #554)
     expect(link.cut.screen).not.toBe("none");
     expect(link.cut.sends).toBe(0);
     expect(link.fields.sends).toBe(reportFields(INPUT).sends);
+  });
+});
+
+describe("the doctor rows in the setup block (M71 spec 05)", () => {
+  const DOCTOR: readonly ReportDoctorRow[] = [
+    { check: "sends-claude", status: "warn", detail: `3 refused (probe_failed 3) · last 7 days ${"s".repeat(200)}`, harness: "claude" },
+    { check: "sends-codex", status: "ok", detail: `2 sent · last 7 days ${"t".repeat(200)}`, harness: "codex" },
+    { check: "holds-claude", status: "warn", detail: `held 12 min for a running turn (req-h000-abcdef) ${"h".repeat(200)}`, harness: "claude" },
+    { check: "screen-claude", status: "warn", detail: `stale screen 0 · probe failed 3 · longest run 3 ${"c".repeat(200)}`, harness: "claude" },
+    { check: "screen-codex", status: "ok", detail: `stale screen 1 · probe failed 0 · longest run 1 ${"x".repeat(200)}`, harness: "codex" },
+  ];
+  const WITH_DOCTOR: ReportInput = { ...BASE, context: { ...CONTEXT, doctor: DOCTOR } };
+  const setupOf = (fields: { readonly setup: string }): JsonObject => asJsonObject(parseJson(fields.setup)) ?? {};
+  const kept = (fields: { readonly setup: string }): string[] => {
+    const doctor = setupOf(fields).doctor;
+    return Array.isArray(doctor) ? doctor.flatMap((line) => asJsonString(line) ?? []) : [];
+  };
+
+  it("lists one line per row, `<status> <check>: <detail>`, in the bridge's order", () => {
+    const setup = setupOf(reportFields(WITH_DOCTOR));
+    expect(setup.doctor).toEqual(DOCTOR.map(doctorLine));
+    expect(doctorLine(DOCTOR[0]!)).toBe(`warn sends-claude: ${DOCTOR[0]!.detail}`);
+    // The rows sit with the rest of the setup, which keeps every key it had.
+    expect(setup).toMatchObject({ collie: "1.24.1+abc1234", mux: "herdr", harness: "claude" });
+    expect(reportText(reportFields(WITH_DOCTOR))).toContain("warn sends-claude: 3 refused (probe_failed 3)");
+  });
+
+  it("has no doctor key when there are no rows, or the bridge sent none", () => {
+    expect(setupOf(reportFields(BASE))).not.toHaveProperty("doctor");
+    expect(setupOf(reportFields({ ...BASE, context: { ...CONTEXT, doctor: [] } }))).not.toHaveProperty("doctor");
+    expect(setupOf(reportFields({ ...BASE, context: null }))).not.toHaveProperty("doctor");
+  });
+
+  it("the rows follow the phone's own facts from the unread-dialog card", () => {
+    const client: ClientFacts = { appBuild: "a1", serverBuild: "b2", userAgent: "UA", viewport: "390x844", standalone: true };
+    const keys = Object.keys(setupOf(reportFields({ ...WITH_DOCTOR, client })));
+    expect(keys.at(-1)).toBe("doctor");
+    expect(keys).toContain("appBuild");
+  });
+
+  it("cuts after the screen: the screen goes whole before one doctor row leaves", () => {
+    const full = reportFields({ ...WITH_DOCTOR, screen: "z".repeat(600) });
+    const withoutScreen = issueLink({ ...full, screen: "" }).length;
+    const link = fitLink(full, withoutScreen - 1);
+    expect(link.cut.screen).toBe("all");
+    expect(link.cut.doctor).toBe(1);
+    expect(link.cut.sends).toBe(0);
+    expect(kept(link.fields)).toEqual(DOCTOR.slice(0, 4).map(doctorLine));
+  });
+
+  it("cuts screen-* rows first, then holds-*, then sends-*, and every doctor row before any send", () => {
+    const full = reportFields(WITH_DOCTOR);
+    const order: string[] = [];
+    let sawSendCut = false;
+    for (let max = issueLink(full).length; max > 400; max -= 40) {
+      const link = fitLink(full, max);
+      // Below the setup block's own size nothing fits and the clipboard line takes over.
+      if (link.clipboard) break;
+      expect(link.url.length <= max || link.cut.note).toBe(true);
+      const left = kept(link.fields).map((line) => line.split(" ")[1]!.replace(/:$/u, ""));
+      expect(link.cut.doctor).toBe(DOCTOR.length - left.length);
+      // A send leaves only once no doctor row is left, and then the doctor key is gone from the setup.
+      if (link.cut.sends > 0) {
+        sawSendCut = true;
+        expect(left).toEqual([]);
+        expect(setupOf(link.fields)).not.toHaveProperty("doctor");
+      }
+      // What is left is always a prefix in kind order: a screen row stays only with every holds and sends row.
+      const kinds = left.map((check) => check.split("-")[0]!);
+      if (kinds.includes("screen")) expect(kinds.filter((kind) => kind !== "screen")).toEqual(["sends", "sends", "holds"]);
+      if (kinds.includes("holds")) expect(kinds.filter((kind) => kind === "sends")).toHaveLength(2);
+      for (const check of DOCTOR.map((doctorRow) => doctorRow.check)) if (!left.includes(check) && !order.includes(check)) order.push(check);
+      // The signature line is never cut.
+      expect(link.fields.sends.split("\n").at(-1)).toBe(signature(WITH_DOCTOR));
+    }
+    expect(sawSendCut).toBe(true);
+    expect(order).toEqual(["screen-codex", "screen-claude", "holds-claude", "sends-codex", "sends-claude"]);
+  });
+
+  it("the rest of the setup survives the cut byte for byte, and Copy report keeps every row", () => {
+    const full = reportFields(WITH_DOCTOR);
+    const link = fitLink(full, issueLink(full).length - 1);
+    expect(link.cut.doctor).toBe(1);
+    const { doctor: _cut, ...rest } = setupOf(link.fields);
+    const { doctor: _all, ...whole } = setupOf(full);
+    expect(rest).toEqual(whole);
+    expect(kept(full)).toHaveLength(DOCTOR.length);
   });
 });

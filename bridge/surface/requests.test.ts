@@ -7,7 +7,7 @@ import { AskAnswerer } from "./ask.ts";
 import { HOST } from "../host.ts";
 import { isOwnerOnly } from "../owner-only.ts";
 import { SendProtocol } from "./protocol.ts";
-import { RequestStore, type AcceptInput, type SendRecord } from "./requests.ts";
+import { parseSendRecord, RequestStore, type AcceptInput, type SendRecord } from "./requests.ts";
 
 let dir: string;
 beforeEach(() => {
@@ -40,6 +40,19 @@ describe("accept", () => {
     expect(stored.textHash).toMatch(/^[0-9a-f]{64}$/);
     expect(stored.line).toBeUndefined();
     expect(result.record.line).toBeUndefined();
+  });
+
+  test("a written record carries the Collie version the store was built with, and one built without it carries none", () => {
+    const store = new RequestStore(join(dir, "sends"), () => 5000, "1.25.2");
+    store.accept(input());
+    expect(JSON.parse(readFileSync(join(dir, "sends", `${ID}.json`), "utf8")).collie).toBe("1.25.2");
+    expect(store.get(ID)?.collie).toBe("1.25.2");
+    // The field survives a later write of the same record.
+    store.markSubmitSent(ID);
+    expect(store.get(ID)?.collie).toBe("1.25.2");
+    const bare = new RequestStore(join(dir, "other"), () => 5000);
+    bare.accept(input());
+    expect(JSON.parse(readFileSync(join(dir, "other", `${ID}.json`), "utf8")).collie).toBeUndefined();
   });
 
   test("keeps the text as the line Sent would keep, and nothing of a text that rule refuses (2026-10-21)", () => {
@@ -376,5 +389,19 @@ describe("ask answers in the same store", () => {
     now += 8 * 24 * 60 * 60 * 1000;
     expect(store.prune()).toBe(1);
     expect(store.listAsks()).toEqual([]);
+  });
+});
+
+describe("parseSendRecord", () => {
+  // M71 spec 01: `collie doctor` parses the same files without a store, whose constructor writes.
+  test("reads back what the store wrote, and refuses what it did not write", () => {
+    const store = new RequestStore(join(dir, "sends"), () => 5000);
+    const { record } = store.accept(input());
+    const settled = store.settle(ID, receiptFor(record, "refused"))!;
+    const raw = JSON.parse(readFileSync(join(dir, "sends", `${ID}.json`), "utf8"));
+    expect(parseSendRecord(raw)).toEqual(settled);
+    expect(parseSendRecord({ ...raw, phase: "lost" })).toBeNull();
+    expect(parseSendRecord({ ...raw, receipt: { ...raw.receipt, outcome: "maybe" } })).toBeNull();
+    expect(parseSendRecord(undefined)).toBeNull();
   });
 });

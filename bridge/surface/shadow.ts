@@ -26,7 +26,7 @@ import { parseAnsi } from "../../web/src/lib/ansi.ts";
 import { splitLines } from "../../web/src/lib/blocks.ts";
 import { DEFAULT_EDGE_PROFILE, type EdgeKind } from "../../web/src/lib/surface/edges.ts";
 import { emptyFoldState, readFold, stepFold, type FoldContext, type FoldState, type SurfaceInput, type SurfaceRead } from "../../web/src/lib/surface/fold.ts";
-import { rowText, type IdleProfile } from "../../web/src/lib/surface/frame.ts";
+import { readIsUnstyled, rowText, type IdleProfile } from "../../web/src/lib/surface/frame.ts";
 import { legacyFree, liftAsk, liftDialog, readerBlocks } from "../../web/src/lib/surface/lift.ts";
 import { findProfile, loadProfiles, profileFor, type Profile } from "../../web/src/lib/surface/profile.ts";
 import { askOf, frameImageKey, isFree, modalWord, shortHash, type Ask, type Surface, type SurfaceTurn } from "../../web/src/lib/surface/surface.ts";
@@ -73,8 +73,20 @@ export interface ShadowReport {
   readonly counters: Readonly<Record<string, ShadowCounters>>;
 }
 
-/** Reads a binary's version for a profile, or null. Injected so tests run no process. */
-export type VersionReader = (profile: Profile) => Promise<string | null>;
+/**
+ * Reads a binary's version for a profile, or null. Injected so tests run no process. `paneId` is the
+ * pane the read is for, so the reader can read the program that pane runs (bridge/pane-binary.ts
+ * `createPaneVersion`, as the send path does): the PATH binary alone misses a harness the login shell
+ * does not put on the PATH.
+ */
+export type VersionReader = (profile: Profile, paneId?: string) => Promise<string | null>;
+
+/**
+ * The reader a shadow built with no `version` uses: the PATH binary on the login shell's PATH
+ * ({@link spawnBinaryVersion}). It takes no pane: a pane id is not a program, and index.ts gives the
+ * shadow the pane-aware reader.
+ */
+export const pathVersionReader: VersionReader = (profile) => spawnBinaryVersion(profile);
 
 export interface ShadowOptions {
   readonly mux: Pick<MuxAdapter, "readGrid">;
@@ -169,7 +181,8 @@ export function freeOnOldAxis(surface: Surface): boolean {
 export class SurfaceShadow {
   private readonly panes = new Map<string, PaneState>();
   private readonly counters = new Map<string, ShadowCounters>();
-  private readonly versions = new Map<string, { version: string | null; at: number; pending: boolean }>();
+  /** Each pane's agent version, keyed by pane: two panes of one agent may run two installs. */
+  private readonly versions = new Map<string, { profileId: string; version: string | null; at: number; pending: boolean }>();
   private observing = false;
   /** The read in flight per pane: a poll and a fresh read an edge asked for never read one pane at once. */
   private readonly reading = new Map<string, Promise<void>>();
@@ -180,12 +193,19 @@ export class SurfaceShadow {
   constructor(private readonly options: ShadowOptions) {
     this.log = options.log ?? ((line) => console.log(line));
     this.now = options.now ?? (() => Date.now());
-    this.readVersion = options.version ?? spawnBinaryVersion;
+    this.readVersion = options.version ?? pathVersionReader;
   }
 
   /** The newest Surface of a pane, or undefined before its first read. */
   surfaceOf(paneId: string): Surface | undefined {
     return this.panes.get(paneId)?.read?.surface;
+  }
+
+  /** Whether the pane's newest read shows an ask (a card the phone can answer). The poll lifts such a
+   *  pane to `blocked` (state-engine.ts `liftScreenAsks`, M78 spec 07). A box proven stale is no ask. */
+  askOnScreen(paneId: string): boolean {
+    const surface = this.surfaceOf(paneId);
+    return surface !== undefined && surface.staleFrame !== true && askOf(surface.modal) !== null;
   }
 
   /**
@@ -195,13 +215,15 @@ export class SurfaceShadow {
    * screen). Null before the pane's first read. The Send Protocol reads it for queued sends that came
    * back to the box; the box text never leaves the bridge from here.
    */
-  boxOf(paneId: string): { readonly box: string | null; readonly at: number; readonly turn: SurfaceTurn } | null {
+  boxOf(paneId: string): { readonly box: string | null; readonly at: number; readonly turn: SurfaceTurn; readonly plain: boolean } | null {
     const state = this.panes.get(paneId);
     const fold = state?.fold;
     if (fold?.screen == null) return null;
     const frame = fold.screenRead?.frame ?? null;
     const turn = state?.read?.surface.turn ?? "unknown";
-    return { box: frame === null ? null : frame.placeholder ? "" : frame.interior.text, at: fold.screen.at, turn };
+    // A read with no styling at all (herdr-core): a draft there may be the placeholder (M78 spec 06).
+    const plain = fold.screen.rows !== null && readIsUnstyled(fold.screen.rows);
+    return { box: frame === null ? null : frame.placeholder ? "" : frame.interior.text, at: fold.screen.at, turn, plain };
   }
 
   /**
@@ -243,6 +265,19 @@ export class SurfaceShadow {
     return state === undefined ? undefined : { harness: state.harness, version: state.version, profileId: state.profileId, status: state.status ?? "-" };
   }
 
+  /**
+   * The binary version this shadow last read for the agent on a pane, from its cache: no read is
+   * started. Null when the agent has no profile, the pane's binary was not read yet under that
+   * agent's profile, or the read found no version. Report a problem and the trouble signal name it
+   * (1.27.4).
+   */
+  cachedVersion(paneId: string, harness: string): string | null {
+    const profile = findProfile(loadProfiles(), harness);
+    if (profile === undefined) return null;
+    const known = this.versions.get(paneId);
+    return known?.profileId === profile.id ? known.version : null;
+  }
+
   /** The counter key of a pane: `harness@version`. */
   keyOf(paneId: string): string | undefined {
     const state = this.panes.get(paneId);
@@ -272,6 +307,7 @@ export class SurfaceShadow {
         if (live.has(id)) continue;
         state.reread?.();
         this.panes.delete(id);
+        this.versions.delete(id);
       }
       for (const agent of agents) {
         try {
@@ -286,25 +322,29 @@ export class SurfaceShadow {
   }
 
   /**
-   * A harness's profile and its binary's version. The first read of a profile waits for the version
-   * (the shadow runs beside the poll, never in it); later reads use the cached one and refresh it in
-   * the background once it is older than VERSION_TTL_MS.
+   * A harness's profile and the version of the binary the pane runs for it. The first read on a pane
+   * (or after the pane's agent changed) waits for the version (the shadow runs beside the poll, never
+   * in it); later reads use the pane's cached one and refresh it in the background once it is older
+   * than VERSION_TTL_MS. One entry per live pane: two panes of one agent from two installs each keep
+   * their own version, and the reader's cache (bridge/surface/binary-version.ts `VersionCache`) keys
+   * each read by the program file, so the version is a function of the file.
    */
-  private async profileOf(harness: string): Promise<{ profile: Profile | null; version: string }> {
+  private async profileOf(harness: string, paneId: string): Promise<{ profile: Profile | null; version: string }> {
     const profile = findProfile(loadProfiles(), harness) ?? null;
     if (profile === null) return { profile: null, version: "-" };
-    const known = this.versions.get(profile.id);
-    if (known === undefined) {
-      const version = await this.readVersion(profile);
-      this.versions.set(profile.id, { version, at: this.now(), pending: false });
+    const known = this.versions.get(paneId);
+    if (known?.profileId !== profile.id) {
+      const version = await this.readVersion(profile, paneId);
+      this.versions.set(paneId, { profileId: profile.id, version, at: this.now(), pending: false });
       return { profile, version: version ?? "unread" };
     }
     if (this.now() - known.at > VERSION_TTL_MS && !known.pending) {
       known.pending = true;
-      this.readVersion(profile).then(
-        (version) => this.versions.set(profile.id, { version, at: this.now(), pending: false }),
-        () => this.versions.set(profile.id, { ...known, at: this.now(), pending: false }),
-      );
+      // A pane that closed, or changed agent, while the read ran keeps no answer from it.
+      const settle = (version: string | null): void => {
+        if (this.versions.get(paneId) === known) this.versions.set(paneId, { profileId: profile.id, version, at: this.now(), pending: false });
+      };
+      this.readVersion(profile, paneId).then(settle, () => settle(known.version));
     }
     return { profile, version: known.version ?? "unread" };
   }
@@ -328,7 +368,7 @@ export class SurfaceShadow {
 
   private async observePane(agent: AgentView): Promise<void> {
     const harness = agent.agent;
-    const { profile, version } = await this.profileOf(harness);
+    const { profile, version } = await this.profileOf(harness, agent.paneId);
     // The status is looked up once the binary was read, so its once-per-version note in the journal
     // names a real version. The anchors are the profile's whatever the status: the status gates the
     // send path (spec 05), not the reading.

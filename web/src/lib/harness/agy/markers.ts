@@ -48,6 +48,8 @@ export type { PromptFamily };
 // a generic menu.
 export function classifyFooter(text: string): PromptFamily | null {
   const t = text.toLowerCase();
+  // Codex's plan picker uses pointer + Enter, not this adapter's digit-only trust action.
+  if (t.trim() === "press enter to confirm or esc to go back") return null;
   if (/\b(?:enter\s+confirm|enter\s+to\s+confirm)\b/.test(t)) return "trust";
   if (/\b(?:tab\s+amend|tab\s+to\s+amend)\b/.test(t)) return "permission";
   if (/\bctrl\+r\s+review\b/.test(t) && !/\btab\s+amend\b/.test(t)) return "plan";
@@ -100,7 +102,8 @@ export function isAlienBuffer(texts: string[]): boolean {
       const full = texts.join(" ");
       if (!/Antigravity CLI|\.antigravity|agy/i.test(full)) return true;
     }
+    // Agent names in prose or a command are not terminal ownership markers.
+    if (/╭─ Ask ─╮|oh-my-pi|OpenAI Codex|tell Codex what to do differently|Grok (?:Build|CLI)/i.test(text)) return true;
   }
   return false;
 }
-

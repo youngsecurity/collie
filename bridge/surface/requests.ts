@@ -52,6 +52,12 @@ export interface SendRecord {
   /** The text as the line Sent would keep (see the header), or absent when that rule refused it. */
   readonly line?: string;
   readonly acceptedAt: number;
+  /**
+   * The version of the Collie that accepted the request (the bridge's own bare version string), so
+   * `collie doctor` can tell receipts written before an update from those after it. Absent on records
+   * an older Collie wrote, and on a store built without one.
+   */
+  readonly collie?: string;
   readonly phase: RequestPhase;
   readonly submitSentAt?: number;
   /** When a held request's release started (M56 spec 15): its run is bounded from here, not from accept. */
@@ -112,7 +118,7 @@ const PHASES = ["accepted", "submit-sent", "settled", "held"] as const;
 const PROFILE_STATUSES = ["verified", "provisional", "revoked"] as const;
 /** The longest `binary` path a stored receipt keeps; a longer one is dropped. */
 const RECEIPT_BINARY_MAX = 4_096;
-const STEPS = ["profile", "settle", "s0", "proof", "clear", "probe", "write", "s1", "commandSettle", "commit", "s2"] as const;
+const STEPS = ["profile", "settle", "s0", "proof", "clear", "probe", "probeWrite", "write", "s1", "commandSettle", "commit", "s2"] as const;
 
 function pick<const T extends string>(value: JsonValue | undefined, allowed: readonly T[]): T | undefined {
   return allowed.find((word) => word === value);
@@ -210,8 +216,12 @@ function parseReceipt(value: JsonValue | undefined): SendReceipt | undefined {
   return whole;
 }
 
-/** A record read back from its file, every field checked; null when it is not one this module wrote. */
-function parseRecord(raw: JsonValue | undefined): SendRecord | null {
+/**
+ * A record read back from its file, every field checked; null when it is not one this module wrote.
+ * Pure, so a reader that must not write (`cli/send-findings.ts`, `collie doctor`) parses the same
+ * files without a store: the store's constructor creates the folder and its salt.
+ */
+export function parseSendRecord(raw: JsonValue | undefined): SendRecord | null {
   const node = asJsonObject(raw);
   if (node === undefined) return null;
   const id = asJsonString(node.id);
@@ -231,6 +241,8 @@ function parseRecord(raw: JsonValue | undefined): SendRecord | null {
   // Lenient like `detail`: a line that is not what it should be is dropped, and the record stays.
   const line = asJsonString(node.line);
   if (line !== undefined && line !== "" && line.length <= SENT_MAX_LINE) record = { ...record, line };
+  const collie = asJsonString(node.collie);
+  if (collie !== undefined && collie !== "") record = { ...record, collie };
   const submitSentAt = asJsonNumber(node.submitSentAt);
   if (submitSentAt !== undefined) record = { ...record, submitSentAt };
   const runAt = asJsonNumber(node.runAt);
@@ -317,6 +329,8 @@ export class RequestStore {
   constructor(
     private readonly dir: string,
     private readonly now: () => number = () => Date.now(),
+    /** The bridge's own version string, written into every record this store accepts. */
+    private readonly collie?: string,
   ) {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     const saltPath = join(dir, ".salt");
@@ -351,8 +365,8 @@ export class RequestStore {
     const target = this.path(id);
     if (!existsSync(target)) return null;
     try {
-      // SAFETY: `JSON.parse` output IS a JsonValue; `parseRecord` checks every field.
-      return parseRecord(JSON.parse(readFileSync(target, "utf8")) as JsonValue);
+      // SAFETY: `JSON.parse` output IS a JsonValue; `parseSendRecord` checks every field.
+      return parseSendRecord(JSON.parse(readFileSync(target, "utf8")) as JsonValue);
     } catch {
       return null;
     }
@@ -380,6 +394,7 @@ export class RequestStore {
     };
     const line = sentLineOf(input.text);
     if (line !== null) record = { ...record, line };
+    if (this.collie !== undefined) record = { ...record, collie: this.collie };
     this.write(record);
     return { kind: "new", record };
   }

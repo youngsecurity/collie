@@ -29,6 +29,14 @@ const PANES_DIR = join(import.meta.dirname, "..", "..", "fixtures", "panes");
 // `claude--working.txt` left this set on 2026-10-19: the rating survey over its box is a notice now
 // (ADR 0109), and lifts its card.
 const NEUTRAL = new Set([
+  // herdr-core captures (M78 spec 04), plain text: an empty box, a draft, two paragraphs and a running
+  // turn, each under a live box. Composer chrome, never a dialog.
+  "claude--v21314-core-idle--w120.txt",
+  "claude--v21314-core-idle--w60.txt",
+  "claude--v21314-core-draft--w120.txt",
+  "claude--v21314-core-draft--w60.txt",
+  "claude--v21314-core-draft-two-paragraphs--w120.txt",
+  "claude--v21314-core-working--w120.txt",
   // The default footer's own hints ("esc to interrupt", "↓ to manage") sit under a live box.
   "claude--working-esc-to-interrupt.txt",
   "claude--idle-background-shell.txt",
@@ -52,6 +60,18 @@ const NEUTRAL = new Set([
   // The same footer with Claude Code 2.1.293's active-agent pointer (`❯ ◯ …`) on its last row — still
   // composer chrome below a live box, never a dialog.
   "claude--footer-pointed-agent.txt",
+  // Claude Code 2.1.319 with Remote Control on: a lone `/rc` row under the statusline, the mode row and
+  // the update notice. A status row under a live box, never a slash-command list or a dialog.
+  "claude--v2319-rc-footer-idle--w100.txt",
+  // Claude Code 2.1.323 with Remote Control on, as the lab captured it: the pill `/rc active` right-aligned under
+  // the box, on the mode row or on a row of its own. An idle box, a draft and a running turn, and the idle box
+  // with Remote Control off: composer chrome, never a dialog.
+  "claude--v2323-rc-off-idle--w100.txt",
+  "claude--v2323-rc-on-draft--w100.txt",
+  "claude--v2323-rc-on-idle-joined--w100.txt",
+  "claude--v2323-rc-on-idle-notice--w100.txt",
+  "claude--v2323-rc-on-idle-usage--w100.txt",
+  "claude--v2323-rc-on-running--w100.txt",
   // The /model picker DISMISSED: the input box is back, so this is an ordinary idle screen. It is the
   // negative control for the generic menu grammar — its statusline is `·`-separated like a key-hint
   // footer, and the input-box gate is the only thing that keeps it raw.
@@ -123,6 +143,14 @@ const NEUTRAL = new Set([
   "claude--v2301-usage-panel-over-box--w82.txt",
   "claude--v2301-working-draft--w100.txt",
   "claude--v2301-working-queued-message--w100.txt",
+  // Claude Code 2.1.312: a two-paragraph draft with an upload path kept as text (2026-10-30 lab). A draft, no dialog.
+  "claude--v2312-draft-upload-path--w100.txt",
+  // Claude Code 2.1.312: a fresh empty box with the usage row under its footer (live check 2026-10-30). No dialog.
+  "claude--v2312-weekly-limit-row--w120.txt",
+  // Claude Code 2.1.317 with the next-steps plugin (discussion 659, 2026-11-03): `next:` rows over a box holding a ghost suggestion or a draft. No dialog.
+  "claude--v2317-next-steps-suggestions-dismissed--w100.txt",
+  "claude--v2317-next-steps-suggestions-empty-box--w100.txt",
+  "claude--v2317-next-steps-suggestions-one-line-draft--w100.txt",
   // Claude Code 2.1.309 after Escape and after a refused permission (live rerun 2026-10-23):
   // `Interrupted · What should Claude do instead?` over an empty box. An ordinary box, no dialog.
   "claude--v2-1-309-interrupted--w120.txt",

@@ -13,7 +13,7 @@ afterEach(() => {
 });
 
 it.each(["token", "unpair", "revoked", "expired", "password"] as const)(
-  "removes both the mounted image and its link on %s, without fetching wiped content again",
+  "removes both the mounted image and its tap target on %s, without fetching wiped content again",
   async (reason) => {
     setDeviceToken("old-token");
     const fetch = vi.spyOn(api, "fetchAuthedBytes").mockResolvedValue(new Blob(["picture"], { type: "image/png" }));
@@ -23,7 +23,9 @@ it.each(["token", "unpair", "revoked", "expired", "password"] as const)(
     const { rerender, unmount } = render(card);
     const image = await screen.findByRole("img", { name: "Journal picture" });
     const url = image.getAttribute("src");
-    expect(screen.getByRole("link")).toHaveAttribute("href", url);
+    // The picture opens in a sheet since upstream 1.27.0, so the card holds a button and no link.
+    expect(screen.getByRole("button", { name: "Journal picture" })).toBeInTheDocument();
+    expect(screen.queryByRole("link")).not.toBeInTheDocument();
     await act(async () => {
       if (reason === "token") setDeviceToken("new-token");
       else if (reason === "password") await wipeDevice(reason, { scope: { host: "peer" }, paneId: "pane" });
@@ -31,7 +33,7 @@ it.each(["token", "unpair", "revoked", "expired", "password"] as const)(
     });
     expect(revoke).toHaveBeenCalledWith(url);
     expect(screen.queryByRole("img")).not.toBeInTheDocument();
-    expect(screen.queryByRole("link")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
     rerender(card);
     expect(screen.queryByRole("img")).not.toBeInTheDocument();
     expect(fetch).toHaveBeenCalledTimes(1);

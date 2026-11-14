@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { Bug, Copy, GitBranchPlus, Maximize2, MessagesSquare, Monitor, Pencil, Pin, PinOff, ScrollText, Search, SlidersHorizontal, SquareTerminal, XCircle } from "lucide-react";
+import { Icon } from "@/components/icons/icon";
 
 import { BottomSheet } from "@/components/ui/sheet";
-import { WalkyIcon } from "@/components/walky-icon";
+import { WalkyIcon, WalkyOffIcon } from "@/components/walky-icon";
 import { ActionRow, DestructiveActionRow, RenameView } from "@/components/action-sheet-rows";
 import { HostChip } from "@/components/host-chip";
 import { useHostWriteBlock, useCrew } from "@/components/crew-provider";
@@ -140,9 +140,9 @@ interface PaneActionsSheetProps {
    * on this pane's repo.
    *
    * Absence is the first gate, as it is for the read rows: the caller passes it only for a pane whose
-   * space sits in a Git repo. The sheet adds the other two itself, because they are the same on
-   * every door: the multiplexer declares `createWorktree`, and the scope is the lead (no `?h=`), since
-   * the route is lead-local and a crew does not forward it. A write, so read-only hides it too.
+   * space sits in a Git repo. The sheet adds the other itself, because it is the same on every door:
+   * the pane's own machine declares `createWorktree` (ADR 0126: the worktree is made where the pane's
+   * folder is, and a crew forwards the route there). A write, so read-only hides it too.
    */
   onBranchOff?: () => void;
   /**
@@ -168,6 +168,9 @@ type Mode = "actions" | "rename";
 // two stay identical. The label is user text rendered only into an <input> value / text node — never
 // markup — so it stays within the pane-output XSS boundary. Both actions are writes, so under
 // read-only they're replaced by a note.
+/** The icon of a row of this sheet. */
+const ROW_ICON = "size-4 shrink-0 text-muted-foreground";
+
 export function PaneActionsSheet({
   open,
   onClose,
@@ -201,6 +204,8 @@ export function PaneActionsSheet({
   const { lead, servers, sessions } = useCrew();
   const pinContext = { scope: herdScope, servers, sessions };
   const pinned = pane !== null && pinMatcher(pins, pinContext)(pane);
+  // A session that turned its walky talky off (M89): the Messages row says so.
+  const walkyOff = pane?.walkyOff === true;
   const [mode, setMode] = useState<Mode>("actions");
   const [label, setLabel] = useState("");
   const [saving, setSaving] = useState(false);
@@ -229,11 +234,11 @@ export function PaneActionsSheet({
   const canRename = useMuxCapability("renamePane", paneHost);
   const canClose = useMuxCapability("closePane", paneHost);
   const canFocus = useMuxCapability("setFocus", paneHost);
-  // Asked of the LEAD, with no host: the branch-off route never leaves the lead, so the lead's own
-  // multiplexer is the one that must be able to do it. In the session the sheet acts in (M55): a
-  // program session on the lead makes no worktree, whatever its terminal neighbour can do.
-  const canWorktree = useMuxCapability("createWorktree", { session: scope?.session });
-  const showBranchOff = onBranchOff !== undefined && branchOffOffered(canWorktree.capable, scope);
+  // Asked of the PANE's own machine, like the rows above: the worktree is made where the pane's folder
+  // is (ADR 0126), and a crew forwards the create there. In the session the sheet acts in (M55): a
+  // program session makes no worktree, whatever its terminal neighbour can do.
+  const canWorktree = useMuxCapability("createWorktree", paneHost);
+  const showBranchOff = onBranchOff !== undefined && branchOffOffered(canWorktree.capable);
   const [focusing, setFocusing] = useState(false);
   // The mux name for the "Focus in <mux>" row and its toast — see `focusMux` below for why this
   // is gated to panes on the LOCAL machine before it's trusted.
@@ -409,7 +414,7 @@ export function PaneActionsSheet({
         <div className="mb-1 flex flex-col gap-1">
           {onFind && (
             <ActionRow
-              icon={<Search className="size-4 shrink-0 text-muted-foreground" />}
+              icon={<Icon name="find-in-pane" className="size-4 shrink-0 text-muted-foreground" />}
               label={t("chat.find.label")}
               onClick={() => {
                 // Close FIRST, then act. Both land in one React event, so the sheet unmounts in the
@@ -421,7 +426,7 @@ export function PaneActionsSheet({
           )}
           {onHistory && (
             <ActionRow
-              icon={<ScrollText className="size-4 shrink-0 text-muted-foreground" />}
+              icon={<Icon name="history-screen" className="size-4 shrink-0 text-muted-foreground" />}
               label={t("chat.history.label")}
               onClick={() => {
                 onClose();
@@ -435,7 +440,7 @@ export function PaneActionsSheet({
               the sheet unmounts. */}
           {onCopyOutput && (
             <ActionRow
-              icon={<Copy className="size-4 shrink-0 text-muted-foreground" />}
+              icon={<Icon name="copy" className="size-4 shrink-0 text-muted-foreground" />}
               label={t("chat.copyOutput.label")}
               onClick={() => {
                 onClose();
@@ -447,8 +452,9 @@ export function PaneActionsSheet({
               the looking rows. Close-then-act, for the reason the find row states. */}
           {onMessages && (
             <ActionRow
-              icon={<WalkyIcon className="size-4 shrink-0 text-muted-foreground" />}
-              label={t("walky.sheet.row")}
+              // A session that turned its walky talky off (M89) wears the struck radio, and the row says so.
+              icon={walkyOff ? <WalkyOffIcon className={ROW_ICON} /> : <WalkyIcon className={ROW_ICON} />}
+              label={t(walkyOff ? "walky.off.row" : "walky.sheet.row")}
               onClick={() => {
                 onClose();
                 onMessages();
@@ -464,9 +470,9 @@ export function PaneActionsSheet({
             <ActionRow
               icon={
                 paneView === "chat" ? (
-                  <SquareTerminal className="size-4 shrink-0 text-muted-foreground" />
+                  <Icon name="view-terminal" className="size-4 shrink-0 text-muted-foreground" />
                 ) : (
-                  <MessagesSquare className="size-4 shrink-0 text-muted-foreground" />
+                  <Icon name="view-chat" className="size-4 shrink-0 text-muted-foreground" />
                 )
               }
               label={t(paneView === "chat" ? "chat.mode.terminal" : "chat.mode.chat")}
@@ -483,7 +489,7 @@ export function PaneActionsSheet({
               row states. */}
           {onSettings && (
             <ActionRow
-              icon={<SlidersHorizontal className="size-4 shrink-0 text-muted-foreground" />}
+              icon={<Icon name="pane-settings" className="size-4 shrink-0 text-muted-foreground" />}
               label={t("paneActions.settings.label")}
               onClick={() => {
                 onClose();
@@ -498,7 +504,7 @@ export function PaneActionsSheet({
               event, so the sheet unmounts in the same commit the chrome starts leaving. */}
           {onZen && (
             <ActionRow
-              icon={<Maximize2 className="size-4 shrink-0 text-muted-foreground" />}
+              icon={<Icon name="zen-enter" className="size-4 shrink-0 text-muted-foreground" />}
               label={t("chat.zen.label")}
               onClick={() => {
                 onClose();
@@ -510,9 +516,9 @@ export function PaneActionsSheet({
           <ActionRow
             icon={
               pinned ? (
-                <PinOff className="size-4 shrink-0 text-muted-foreground" />
+                <Icon name="unpin" className="size-4 shrink-0 text-muted-foreground" />
               ) : (
-                <Pin className="size-4 shrink-0 text-muted-foreground" />
+                <Icon name="pin" className="size-4 shrink-0 text-muted-foreground" />
               )
             }
             label={pinned ? t("paneActions.unpin.label") : t("paneActions.pin.label")}
@@ -523,7 +529,7 @@ export function PaneActionsSheet({
               Close-then-act, for the reason the find row states. */}
           {onReport && (
             <ActionRow
-              icon={<Bug className="size-4 shrink-0 text-muted-foreground" />}
+              icon={<Icon name="report-problem" className="size-4 shrink-0 text-muted-foreground" />}
               label={t("paneActions.report.label")}
               onClick={() => {
                 onClose();
@@ -558,14 +564,14 @@ export function PaneActionsSheet({
               rows are present on every adapter shipped today. */}
           {canRename.capable && (
             <ActionRow
-              icon={<Pencil className="size-4 shrink-0 text-muted-foreground" />}
+              icon={<Icon name="edit" className="size-4 shrink-0 text-muted-foreground" />}
               label={t("paneActions.rename.label")}
               onClick={() => setMode("rename")}
             />
           )}
           {canFocus.capable && (
             <ActionRow
-              icon={<Monitor className="size-4 shrink-0 text-muted-foreground" />}
+              icon={<Icon name="focus-on-machine" className="size-4 shrink-0 text-muted-foreground" />}
               label={
                 focusMux
                   ? t("paneActions.focus.labelWithMux", { mux: focusMux })
@@ -578,7 +584,7 @@ export function PaneActionsSheet({
               destructive row stays last; close-then-act, so the sheet is gone before the page opens. */}
           {showBranchOff && (
             <ActionRow
-              icon={<GitBranchPlus className="size-4 shrink-0 text-muted-foreground" />}
+              icon={<Icon name="branch-off" className="size-4 shrink-0 text-muted-foreground" />}
               label={t("paneActions.branchOff.label")}
               onClick={() => {
                 onClose();
@@ -588,7 +594,7 @@ export function PaneActionsSheet({
           )}
           {canClose.capable && (
             <DestructiveActionRow
-              icon={<XCircle className="size-4 shrink-0" />}
+              icon={<Icon name="close-pane" className="size-4 shrink-0" />}
               label={conversation ? t("paneActions.close.conversation") : t("paneActions.close.label")}
               confirmLabel={t("paneActions.close.confirm")}
               closingLabel={t("paneActions.close.closing")}

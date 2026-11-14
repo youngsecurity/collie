@@ -12,7 +12,9 @@ import { readTail, TAIL_BYTES, windowFromModel } from "./context-reading.ts";
 import { beaconFileName, beaconKey, EDGE_FILE, EDGE_MAX_AGE_MS, EDGE_SPOOL_MAX } from "../bridge/beacon/paths.ts";
 import { hookTargetFileName } from "../bridge/beacon/hook-targets.ts";
 import { BEACON_SCHEMA_VERSION, type EdgeRecord } from "../bridge/beacon/types.ts";
-import { BEACON_HARNESS, BEACON_HOOKS, type BeaconEmitDeps, cmdBeaconEmit, readEnvMarkers, runBeaconEmit, unwrapPrompt } from "./beacon.ts";
+import { parseLstart, PS_LSTART, type StartTimeCommand } from "../bridge/beacon/liveness.ts";
+import { HERDR_CORE_MUX } from "../bridge/mux/herdr-core/adapter.ts";
+import { agentPidOf, BEACON_HARNESS, BEACON_HOOKS, HERDR_CORE_NAMESPACE, type BeaconEmitDeps, cmdBeaconEmit, liveHookTargets, type PidProbeDeps, parsePsProcess, parseProcStatProcess, type ProcessInfo, readEnvMarkers, runBeaconEmit, unwrapPrompt } from "./beacon.ts";
 import { context, fakeFiles, HOME, STATE } from "./fakes.ts";
 import { EXIT } from "./io.ts";
 import type { Environment } from "./context.ts";
@@ -46,7 +48,7 @@ function payload(over: JsonObject = {}): string {
 }
 
 function deps(
-  over: { env?: Environment; stdin?: string; proc?: string | null; pid?: number } = {},
+  over: { env?: Environment; stdin?: string; proc?: string | null; pid?: number; pidProbe?: PidProbeDeps } = {},
 ): BeaconEmitDeps & { files: ReturnType<typeof fakeFiles> } {
   const files = fakeFiles(over.proc === null ? {} : { [PROC]: over.proc ?? STAT });
   return {
@@ -56,6 +58,8 @@ function deps(
     agentPid: over.pid ?? AGENT_PID,
     now: () => 1_700_000_000_000,
     uid: 1000,
+    // Linux's probe unless a test names another, so no run of this file forks `ps`, on a Mac either.
+    pidProbe: over.pidProbe ?? { platform: "linux" },
   };
 }
 
@@ -94,6 +98,112 @@ describe("the environment gate", () => {
 
   test("a plain terminal has nothing at all", () => {
     expect(readEnvMarkers({ HOME: "/home/pat" })).toEqual([]);
+  });
+});
+
+// herdr-core (M74 spec 04): the core exports the terminal's address and its own socket into every
+// terminal it runs. Probed 2026-10-29 on hc 0.1.14: HC_TERMINAL_ID=t1 and HC_TERMINAL_SOCKET, which
+// stays the core's own path when HC_SOCKET names another one.
+describe("a herdr-core terminal", () => {
+  const CORE: Environment = { HC_TERMINAL_ID: "t3", HC_TERMINAL_SOCKET: "/run/user/1000/herdr-core/default.sock" };
+
+  test("the namespace is the adapter's registry key", () => {
+    expect(HERDR_CORE_NAMESPACE).toBe(HERDR_CORE_MUX);
+  });
+
+  test("the address is the pane and the core's socket is the scope, raw", () => {
+    expect(readEnvMarkers(CORE)).toEqual([{ namespace: "herdr-core", scope: "/run/user/1000/herdr-core/default.sock", pane: "t3" }]);
+  });
+
+  test("a terminal without the socket variable, or with only HC_SESSION, carries no marker", () => {
+    expect(readEnvMarkers({ HC_TERMINAL_ID: "t3" })).toEqual([]);
+    expect(readEnvMarkers({ HC_SESSION: "work", HC_SOCKET: "/x.sock" })).toEqual([]);
+  });
+
+  test("a core terminal started inside the Herdr TUI carries both markers, each naming its own", () => {
+    const both = readEnvMarkers({ ...CORE, HERDR_PANE_ID: "w6Y:pG", HERDR_SOCKET_PATH: "/home/pat/.config/herdr/herdr.sock" });
+    expect(both.map((m) => m.namespace)).toEqual(["herdr", "herdr-core"]);
+  });
+
+  test("the emitter writes a beacon keyed by the core terminal, with the session id", async () => {
+    const d = deps({ env: CORE });
+    expect(await cmdBeaconEmit(d)).toBe(EXIT.OK);
+    const [text] = [...beacons(d.files).values()];
+    const record = parseBeacon(text ?? "");
+    expect(record?.markers).toEqual([{ namespace: "herdr-core", scope: "/run/user/1000/herdr-core/default.sock", pane: "t3" }]);
+    expect(record?.session).toEqual({ kind: "id", value: SESSION });
+  });
+});
+
+// macOS has no `/proc` (M80 spec 11, issue 647): the start time comes from one `ps -o lstart=` run,
+// injected here, so no test forks a process.
+describe("on macOS, the probe is ps lstart", () => {
+  const CORE: Environment = { HC_TERMINAL_ID: "t3", HC_TERMINAL_SOCKET: "/Users/pat/.local/state/herdr-core/default.sock" };
+  const LSTART = "Mon Nov  2 10:15:33 2026\n";
+
+  /** A `ps` that knows the agent alone; every call is recorded as its argv and its environment. */
+  function fakePs(answers: Record<number, string | null> = { [AGENT_PID]: LSTART }) {
+    const calls: { argv: string[]; env: Readonly<Record<string, string>> }[] = [];
+    const run = (command: StartTimeCommand, pid: number): string | null => {
+      calls.push({ argv: [command.file, ...command.args(pid)], env: command.env });
+      return answers[pid] ?? null;
+    };
+    return { calls, run };
+  }
+
+  test("a herdr-core pane gets its edge and its beacon, carrying the lstart time", async () => {
+    const ps = fakePs();
+    const d = deps({ env: CORE, proc: null, pidProbe: { platform: "darwin", run: ps.run } });
+    expect(await cmdBeaconEmit(d)).toBe(EXIT.OK);
+    const [text, ...more] = [...beacons(d.files).values()];
+    expect(more).toEqual([]);
+    const record = parseBeacon(text ?? "");
+    expect(record?.session).toEqual({ kind: "id", value: SESSION });
+    expect(record?.pid).toBe(AGENT_PID);
+    expect(record?.pidStartTime).toBe(parseLstart(LSTART)!);
+    const edges = [...d.files.entries].filter(([path]) => path.startsWith(`${STATE}/edges/`) && EDGE_FILE.test(path.slice(`${STATE}/edges/`.length)));
+    expect(edges.map(([, entry]) => parseEdge(entry.text)?.pidStartTime)).toEqual([parseLstart(LSTART)!]);
+    expect(ps.calls).toEqual([{ argv: ["/bin/ps", "-o", "lstart=", "-p", String(AGENT_PID)], env: PS_LSTART.env }]);
+    expect(ps.calls[0]?.env.LC_ALL).toBe("C");
+  });
+
+  test("a ps that answers nothing (the agent is gone, or ps failed) writes nothing, and exits 0", async () => {
+    for (const answer of [null, "", "not a date"]) {
+      const d = deps({ env: CORE, proc: null, pidProbe: { platform: "darwin", run: fakePs({ [AGENT_PID]: answer }).run } });
+      expect(await cmdBeaconEmit(d)).toBe(EXIT.OK);
+      expect(d.files.entries.size).toBe(0);
+    }
+  });
+
+  test("a registered bridge is a live target while ps returns its stored start, and dead once it differs", () => {
+    const REGISTRY = `${HOME}/.local/state/collie/hook-targets`;
+    const BRIDGE = 5001;
+    const d = deps({ env: CORE, proc: null, pidProbe: { platform: "darwin", run: fakePs({ [BRIDGE]: LSTART }).run } });
+    const file = `${REGISTRY}/${hookTargetFileName("/srv/a")}`;
+    const register = (start: number) =>
+      d.files.write(file, JSON.stringify({ schemaVersion: 1, stateDir: "/srv/a", pid: BRIDGE, pidStartTime: start, bootedAt: 1 }), 0o600);
+    d.files.mkdirp(REGISTRY, 0o700);
+    register(parseLstart(LSTART)!);
+    expect(liveHookTargets(d).map((t) => t.stateDir)).toEqual(["/srv/a"]);
+    register(parseLstart(LSTART)! - 1);
+    expect(liveHookTargets(d)).toEqual([]);
+    expect(d.files.read(file)).toBeNull();
+  });
+
+  test("Windows has no probe: nothing is written and nothing is run", async () => {
+    const ps = fakePs();
+    const d = deps({ env: CORE, proc: null, pidProbe: { platform: "win32", run: ps.run } });
+    expect(await cmdBeaconEmit(d)).toBe(EXIT.OK);
+    expect(d.files.entries.size).toBe(0);
+    expect(ps.calls).toEqual([]);
+  });
+
+  test("Linux never runs ps: a pid with no stat file has no start time", async () => {
+    const ps = fakePs();
+    const d = deps({ env: CORE, proc: null, pidProbe: { platform: "linux", run: ps.run } });
+    expect(await cmdBeaconEmit(d)).toBe(EXIT.OK);
+    expect(beacons(d.files).size).toBe(0);
+    expect(ps.calls).toEqual([]);
   });
 });
 
@@ -540,6 +650,23 @@ describe("the hook target registry (M56 spec 11)", () => {
     expect(edgesIn(reused.files, STATE)).toHaveLength(1);
   });
 
+  test("records that carry mux, instance and port are read as before: the emitter ignores all three", async () => {
+    const d = withTargets([A, B]);
+    for (const [t, extra] of [[A, { mux: "herdr", instance: "next", port: 8788 }], [B, { mux: "x".repeat(300), instance: 5, port: "no" }]] as const) {
+      d.files.write(`${REGISTRY}/${hookTargetFileName(t.dir)}`, JSON.stringify({ schemaVersion: 1, stateDir: t.dir, pid: t.pid, pidStartTime: t.start, bootedAt: 1, ...extra }), 0o600);
+    }
+    await cmdBeaconEmit(d);
+    expect(edgesIn(d.files, A.dir).map((edge) => edge.promptHash)).toEqual([hash(A.salt)]);
+    expect(edgesIn(d.files, B.dir).map((edge) => edge.promptHash)).toEqual([hash(B.salt)]);
+  });
+
+  test("liveHookTargets returns the live records with their identity, and deletes the dead one's file", () => {
+    const d = withTargets([A, { ...B, alive: false }]);
+    d.files.write(`${REGISTRY}/${hookTargetFileName(A.dir)}`, JSON.stringify({ schemaVersion: 1, stateDir: A.dir, pid: A.pid, pidStartTime: A.start, bootedAt: 1, mux: "tmux", instance: "tmux", port: 8789 }), 0o600);
+    expect(liveHookTargets(d).map((t) => [t.stateDir, t.mux, t.instance, t.port])).toEqual([[A.dir, "tmux", "tmux", 8789]]);
+    expect(d.files.read(`${REGISTRY}/${hookTargetFileName(B.dir)}`)).toBeNull();
+  });
+
   test("no registry: the edge goes to the emitter's own state dir, as before", async () => {
     const d = deps({ stdin: payload({ hook_event_name: "Stop" }) });
     await cmdBeaconEmit(d);
@@ -551,6 +678,48 @@ describe("the hook target registry (M56 spec 11)", () => {
     await cmdBeaconEmit(d);
     expect(edgesIn(d.files, A.dir)).toHaveLength(1);
     expect(edgesIn(d.files, STATE)).toHaveLength(1);
+  });
+
+  describe("the beacon follows the edge", () => {
+    const beaconsIn = (files: ReturnType<typeof fakeFiles>, dir: string): [string, string][] =>
+      [...files.entries.entries()]
+        .filter(([path]) => path.startsWith(`${dir}/beacons/`) && path.endsWith(".json"))
+        .map(([path, entry]) => [path.slice(`${dir}/beacons/`.length), entry.text]);
+    const sessionOf = (text: string): string | undefined => parseBeacon(text)?.session.value;
+
+    test("two live targets: the beacon lands in both, under one name, carrying the session id", async () => {
+      const d = withTargets([A, B]);
+      await cmdBeaconEmit(d);
+      const inA = beaconsIn(d.files, A.dir);
+      const inB = beaconsIn(d.files, B.dir);
+      expect(inA).toHaveLength(1);
+      expect(inB.map(([name]) => name)).toEqual(inA.map(([name]) => name));
+      expect(inA.map(([, text]) => sessionOf(text))).toEqual([SESSION]);
+      expect(inB.map(([, text]) => sessionOf(text))).toEqual([SESSION]);
+      expect(beaconsIn(d.files, STATE)).toEqual([]);
+    });
+
+    test("no target: the beacon goes to the emitter's own state dir only, as before", async () => {
+      const d = deps();
+      await cmdBeaconEmit(d);
+      expect(beaconsIn(d.files, STATE)).toHaveLength(1);
+      expect(beaconsIn(d.files, A.dir)).toEqual([]);
+    });
+
+    test("one target that cannot be written costs the others neither their beacon nor their edge", async () => {
+      const d = withTargets([A, B]);
+      const mkdirp = d.files.mkdirp.bind(d.files);
+      d.files.mkdirp = (path, mode) => {
+        // The code under test joins with the host separator, so Windows hands this a backslash path.
+        if (path.replaceAll("\\", "/").startsWith(`${A.dir}/beacons`)) throw new Error("EACCES");
+        mkdirp(path, mode);
+      };
+      expect(await cmdBeaconEmit(d)).toBe(EXIT.OK);
+      expect(beaconsIn(d.files, A.dir)).toEqual([]);
+      expect(beaconsIn(d.files, B.dir)).toHaveLength(1);
+      expect(edgesIn(d.files, A.dir)).toHaveLength(1);
+      expect(edgesIn(d.files, B.dir)).toHaveLength(1);
+    });
   });
 
   test("XDG_STATE_HOME moves the registry", async () => {
@@ -830,5 +999,77 @@ describe("the context reading (.adr/0115, amended 2026-10-24)", () => {
       expect(await cmdBeaconEmit(d)).toBe(EXIT.OK);
       expect(record(d)?.context).toBeUndefined();
     });
+  });
+});
+
+describe("agentPidOf: the first non-shell ancestor (#689)", () => {
+  /** A fake process table, pid to {comm, ppid}; a pid not in it reads as null. */
+  function table(rows: Record<number, ProcessInfo>): (pid: number) => ProcessInfo | null {
+    return (pid) => rows[pid] ?? null;
+  }
+
+  test("dash as the parent: the grandparent claude is the agent", () => {
+    const read = table({ 100: { comm: "dash", ppid: 50 }, 50: { comm: "claude", ppid: 10 } });
+    expect(agentPidOf(100, read)).toBe(50);
+  });
+
+  test("a parent that already is claude stays as it is (bash, macOS sh)", () => {
+    const read = table({ 50: { comm: "claude", ppid: 10 } });
+    expect(agentPidOf(50, read)).toBe(50);
+  });
+
+  test("sh under sh under claude climbs two hops", () => {
+    const read = table({ 100: { comm: "sh", ppid: 90 }, 90: { comm: "sh", ppid: 50 }, 50: { comm: "claude", ppid: 10 } });
+    expect(agentPidOf(100, read)).toBe(50);
+  });
+
+  test("four shells deep stops after three hops", () => {
+    const read = table({
+      100: { comm: "sh", ppid: 90 },
+      90: { comm: "bash", ppid: 80 },
+      80: { comm: "zsh", ppid: 70 },
+      70: { comm: "sh", ppid: 60 },
+      60: { comm: "claude", ppid: 10 },
+    });
+    expect(agentPidOf(100, read)).toBe(70);
+  });
+
+  test("a shell whose parent is pid 1 or 0 keeps its own pid", () => {
+    expect(agentPidOf(100, table({ 100: { comm: "sh", ppid: 1 } }))).toBe(100);
+    expect(agentPidOf(100, table({ 100: { comm: "sh", ppid: 0 } }))).toBe(100);
+  });
+
+  test("a read that fails keeps the pid reached so far", () => {
+    expect(agentPidOf(100, () => null)).toBe(100);
+    expect(agentPidOf(100, table({ 100: { comm: "dash", ppid: 50 } }))).toBe(50);
+  });
+
+  test("every shell name in the set is climbed, and a name that merely contains one is not", () => {
+    for (const comm of ["sh", "dash", "bash", "zsh", "ksh", "ash", "busybox"]) {
+      expect(agentPidOf(100, table({ 100: { comm, ppid: 50 }, 50: { comm: "claude", ppid: 10 } }))).toBe(50);
+    }
+    expect(agentPidOf(100, table({ 100: { comm: "bash-wrapper", ppid: 50 } }))).toBe(100);
+  });
+});
+
+describe("the process readers behind agentPidOf (#689)", () => {
+  test("a /proc stat line whose comm has spaces and parentheses is split on the last bracket", () => {
+    expect(parseProcStatProcess("12 (my (odd) sh) S 7 12 12 0 -1 4194560")).toEqual({ comm: "my (odd) sh", ppid: 7 });
+    expect(parseProcStatProcess("2688865 (dash) S 2679878 2688865 0 0")).toEqual({ comm: "dash", ppid: 2_679_878 });
+  });
+
+  test("text that is not a stat line is null", () => {
+    expect(parseProcStatProcess("")).toBeNull();
+    expect(parseProcStatProcess("12 dash S 7")).toBeNull();
+    expect(parseProcStatProcess("12 (dash) S x")).toBeNull();
+    expect(parseProcStatProcess("12 (dash)")).toBeNull();
+  });
+
+  test("a ps line gives the parent and the basename of the command", () => {
+    expect(parsePsProcess("  4321 /bin/sh\n")).toEqual({ comm: "sh", ppid: 4321 });
+    expect(parsePsProcess("1 /Applications/Claude Code/claude")).toEqual({ comm: "claude", ppid: 1 });
+    expect(parsePsProcess("77 -zsh")).toEqual({ comm: "-zsh", ppid: 77 });
+    expect(parsePsProcess("")).toBeNull();
+    expect(parsePsProcess("garbage")).toBeNull();
   });
 });

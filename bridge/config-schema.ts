@@ -21,6 +21,7 @@
 import { ACCOUNT_WINDOW_HARNESSES } from "./account-windows-setting.ts";
 import { DEFAULT_MUX } from "./mux/registry.ts";
 import { DEFAULT_MAX_UPLOAD_MB } from "./uploads.ts";
+import { PAIR_LIMIT } from "./walky/rate.ts";
 
 /**
  * A `[section]` in the config file. Derived from what `bridge/config.ts`, `bridge/crew/`,
@@ -123,7 +124,16 @@ export type ConfigSetting =
       readonly min?: number;
       readonly max?: number;
     })
-  | (ConfigSettingBase & { readonly kind: "bool"; readonly default: boolean })
+  | (ConfigSettingBase & {
+      readonly kind: "bool";
+      readonly default: boolean;
+      /**
+       * The file may also hold the environment's words as a string (`"off"`, `"no"`, `"yes"`). A string
+       * goes through as written, and the reader decides what it means. Only a switch whose reader fails
+       * closed sets it: a dropped key would fall back to the default, which for the install count is on.
+       */
+      readonly words?: true;
+    })
   | (ConfigSettingBase & {
       readonly kind: "enum";
       /** One of {@link values}, or `""` when the feature is absent until something configures it. */
@@ -240,8 +250,19 @@ export const CONFIG_SETTINGS: readonly ConfigSetting[] = [
     section: "bridge",
     kind: "bool",
     default: true,
-    doc: "Take walky talky messages for this machine's agent panes. Off refuses each one; the CLI here still sends.",
+    doc: "Take WalkyTalky messages for this machine's agent panes. Off refuses each one; the CLI here still sends.",
     configField: "walky",
+  },
+  {
+    key: "walky_pair_limit",
+    env: "COLLIE_WALKY_PAIR_LIMIT",
+    section: "bridge",
+    kind: "int",
+    default: PAIR_LIMIT,
+    min: 1,
+    max: 100,
+    doc: "Messages allowed in ten minutes between the same two panes, either direction, on this machine. Refused as pair limit above it.",
+    configField: "walkyPairLimit",
   },
   {
     key: "account_windows",
@@ -472,6 +493,15 @@ export const CONFIG_SETTINGS: readonly ConfigSetting[] = [
     doc: "The tuios daemon socket to drive. Empty takes the socket tuios itself uses.",
     configField: "muxEndpoint",
   },
+  {
+    key: "mux_endpoint_herdr_core",
+    env: "COLLIE_MUX_ENDPOINT_HERDR_CORE",
+    section: "mux",
+    kind: "string",
+    default: "",
+    doc: "The herdr-core socket to drive. Empty takes the socket hc itself dials: HC_SOCKET, else the HC_SESSION socket under XDG_RUNTIME_DIR or an existing /run/user/<uid>, else in the session's state directory (XDG_STATE_HOME or ~/.local/state, as on macOS).",
+    configField: "muxEndpoint",
+  },
 
   // ── access ─────────────────────────────────────────────────────────────────
   {
@@ -631,6 +661,15 @@ export const CONFIG_SETTINGS: readonly ConfigSetting[] = [
 
   // ── journal ────────────────────────────────────────────────────────────────
   {
+    key: "agy_root",
+    env: "COLLIE_AGY_ROOT",
+    section: "journal",
+    kind: "roots",
+    default: [],
+    doc: "Where Antigravity CLI keeps conversations and presence locks. Empty takes ~/.gemini/antigravity-cli.",
+    configField: "journalRoots",
+  },
+  {
     key: "transcript_root",
     env: "COLLIE_TRANSCRIPT_ROOT",
     section: "journal",
@@ -694,6 +733,15 @@ export const CONFIG_SETTINGS: readonly ConfigSetting[] = [
     configField: "journalRoots",
   },
   {
+    key: "dsh_root",
+    env: "COLLIE_DSH_ROOT",
+    section: "journal",
+    kind: "roots",
+    default: [],
+    doc: "Where DeepSeek Harness keeps the sessions dsh-tui writes. Empty follows DSH_HOME, else ~/.dsh/sessions.",
+    configField: "journalRoots",
+  },
+  {
     key: "muse_root",
     env: "COLLIE_MUSE_ROOT",
     section: "journal",
@@ -713,6 +761,14 @@ export const CONFIG_SETTINGS: readonly ConfigSetting[] = [
   },
 
   // ── crew ───────────────────────────────────────────────────────────────────
+  {
+    key: "crews_on_windows",
+    env: "COLLIE_CREWS_ON_WINDOWS",
+    section: "crew",
+    kind: "bool",
+    default: false,
+    doc: "Consent to the crew-forming verbs on Windows, where crews stay experimental.",
+  },
   {
     key: "crew_timeout_ms",
     env: "COLLIE_CREW_TIMEOUT_MS",
@@ -810,7 +866,7 @@ export const CONFIG_SETTINGS: readonly ConfigSetting[] = [
     section: "update",
     kind: "bool",
     default: true,
-    doc: "After each update, install the walky talky skill into every harness on this machine and keep it current. Off only prints a note when it is behind.",
+    doc: "After each update, install the WalkyTalky skill into every harness on this machine and keep it current. Off only prints a note when it is behind.",
   },
 
   // ── serve ──────────────────────────────────────────────────────────────────
@@ -918,6 +974,31 @@ export const CONFIG_SETTINGS: readonly ConfigSetting[] = [
     kind: "string",
     default: "",
     doc: "The command the local-cli provider runs, an absolute path or a name on PATH.",
+  },
+  {
+    key: "telemetry",
+    env: "COLLIE_TELEMETRY",
+    section: "bridge",
+    kind: "bool",
+    default: true,
+    words: true,
+    doc: "Send one anonymous install ping a day. See docs/security.md.",
+  },
+  {
+    key: "telemetry_url",
+    env: "COLLIE_TELEMETRY_URL",
+    section: "bridge",
+    kind: "string",
+    default: "",
+    doc: "Test seam: where the ping goes.",
+  },
+  {
+    key: "theme_registry_url",
+    env: "COLLIE_THEME_REGISTRY_URL",
+    section: "bridge",
+    kind: "string",
+    default: "",
+    doc: "Where Refresh fetches the community theme list, for a test against a staged copy of the site. Empty takes colliepwa.dev.",
   },
 ];
 

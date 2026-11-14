@@ -15,8 +15,8 @@
 // preview shows the masked rows before anything leaves, so the person still reads them and can switch
 // them off. That door also adds the phone's own facts (`readClientFacts`) to the setup block.
 
-import { ExternalLink, Search } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Icon } from "@/components/icons/icon";
+import { useEffect, useState, type MouseEvent } from "react";
 
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Notice } from "@/components/ui/notice";
@@ -30,6 +30,7 @@ import { canCopyText, copyText } from "@/lib/clipboard";
 import { t, tn } from "@/lib/i18n";
 import { probeStandalone } from "@/lib/nav-entry";
 import { fitLink, hasTyped, reportFields, reportText, searchLink, type ClientFacts, type ReportContext, type ReportInput } from "@/lib/report/body";
+import { reportedSends } from "@/lib/report/signal";
 import { closeReport, readEpisodes, useReportTarget, type DialogTrouble, type Episode, type ReportTarget } from "@/lib/report/store";
 import { getServerBuild } from "@/lib/server-build";
 import { setStatus } from "@/lib/status";
@@ -42,12 +43,8 @@ export function ReportSheetHost() {
   return <ReportSheet target={target} onClose={closeReport} />;
 }
 
-/** The sends a report lists: the streak's own when the card named them and the bridge still has them, else the pane's recent ones. */
-export function reportedSends(rows: readonly SendReceiptRow[], requestIds: readonly string[] | undefined): SendReceiptRow[] {
-  if (requestIds === undefined || requestIds.length === 0) return [...rows];
-  const named = rows.filter((row) => requestIds.includes(row.requestId));
-  return named.length > 0 ? named : [...rows];
-}
+// The sends a report lists live beside the trouble signal (lib/report/signal.ts), which reads the same ones.
+export { reportedSends };
 
 /** What the phone knows about itself, for a report from the unread-dialog card. Read once per open. */
 export function readClientFacts(): ClientFacts {
@@ -169,7 +166,9 @@ export function ReportSheetView({ context, contextError, rows, episodes, fromSet
   // Cheap enough per render: ten sends and forty rows at most.
   const full = reportFields(input);
   const link = fitLink(full);
-  const preview = reportText(link.fields);
+  // When the link could not hold the report, the issue opens with one line and the whole report goes to the clipboard.
+  const preview = reportText(link.clipboard ? full : link.fields);
+  const canOpen = !link.clipboard || canCopyText();
 
   async function turnScreen(on: boolean): Promise<void> {
     setIncludeScreen(on);
@@ -201,6 +200,19 @@ export function ReportSheetView({ context, contextError, rows, episodes, fromSet
     } catch {
       setStatus(t("copyable.failed"), "error");
     }
+  }
+
+  // The report goes to the clipboard first, then the issue opens. A copy that fails opens nothing.
+  async function openWithClipboard(event: MouseEvent<HTMLAnchorElement>): Promise<void> {
+    event.preventDefault();
+    try {
+      await copyText(reportText(full));
+    } catch {
+      setStatus(t("copyable.failed"), "error");
+      return;
+    }
+    setStatus(t("report.sheet.copied"), "success");
+    window.open(link.url, "_blank", "noopener,noreferrer");
   }
 
   return (
@@ -254,9 +266,15 @@ export function ReportSheetView({ context, contextError, rows, episodes, fromSet
         >
           {preview}
         </pre>
-        {link.cut.screen !== "none" && <p data-slot="report-cut" className="text-xs text-muted-foreground">{t("report.sheet.cutScreen")}</p>}
-        {link.cut.sends > 0 && <p data-slot="report-cut" className="text-xs text-muted-foreground">{tn("report.sheet.cutSends", link.cut.sends)}</p>}
-        {link.cut.note && <p data-slot="report-cut" className="text-xs text-muted-foreground">{t("report.sheet.cutNote")}</p>}
+        {link.clipboard && (
+          <p data-slot="report-clipboard" className="text-xs text-muted-foreground">
+            {canOpen ? t("report.sheet.tooLong") : t("report.sheet.tooLongNoCopy")}
+          </p>
+        )}
+        {!link.clipboard && link.cut.screen !== "none" && <p data-slot="report-cut" className="text-xs text-muted-foreground">{t("report.sheet.cutScreen")}</p>}
+        {!link.clipboard && link.cut.doctor > 0 && <p data-slot="report-cut" className="text-xs text-muted-foreground">{tn("report.sheet.cutDoctor", link.cut.doctor)}</p>}
+        {!link.clipboard && link.cut.sends > 0 && <p data-slot="report-cut" className="text-xs text-muted-foreground">{tn("report.sheet.cutSends", link.cut.sends)}</p>}
+        {!link.clipboard && link.cut.note && <p data-slot="report-cut" className="text-xs text-muted-foreground">{t("report.sheet.cutNote")}</p>}
       </section>
 
       <Notice tone="caution" variant="box">
@@ -264,16 +282,24 @@ export function ReportSheetView({ context, contextError, rows, episodes, fromSet
       </Notice>
 
       <div className="flex flex-col gap-2">
-        <a
-          data-slot="report-open"
-          href={link.url}
-          target="_blank"
-          rel="noopener noreferrer"
-          className={cn(buttonVariants({ variant: "default" }), "h-11")}
-        >
-          <ExternalLink className="size-4" />
-          {t("report.sheet.open")}
-        </a>
+        {canOpen ? (
+          <a
+            data-slot="report-open"
+            href={link.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={link.clipboard ? (event) => void openWithClipboard(event) : undefined}
+            className={cn(buttonVariants({ variant: "default" }), "h-11")}
+          >
+            <Icon name="open-external" className="size-4" />
+            {t("report.sheet.open")}
+          </a>
+        ) : (
+          <Button type="button" className="h-11" data-slot="report-open" disabled>
+            <Icon name="open-external" className="size-4" />
+            {t("report.sheet.open")}
+          </Button>
+        )}
         {canCopyText() && (
           <Button type="button" variant="outline" className="h-11" data-slot="report-copy" onClick={() => void copyReport()}>
             {t("report.sheet.copy")}
@@ -286,7 +312,7 @@ export function ReportSheetView({ context, contextError, rows, episodes, fromSet
           rel="noopener noreferrer"
           className="inline-flex min-h-11 items-center justify-center gap-1.5 text-xs text-muted-foreground underline underline-offset-2"
         >
-          <Search className="size-3.5" />
+          <Icon name="search" className="size-3.5" />
           {t("report.sheet.search")}
         </a>
       </div>

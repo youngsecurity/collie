@@ -1,10 +1,11 @@
-import { ArrowLeftToLine, ClipboardPaste, FileText, Image, X } from "lucide-react";
 
 import { useLocale } from "@/hooks/use-locale";
 import { pasteLineCount, shortName } from "@/lib/attachments";
 import type { DraftAttachment } from "@/lib/drafts";
 import { t, tn } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
+import { Icon } from "@/components/icons/icon";
+import type { IconKey } from "@/components/icons/keys";
 
 /** A chip as the composer holds it: the stored draft attachment plus, for a photo picked in this
  *  page session, the blob URL its thumbnail draws from. */
@@ -33,11 +34,21 @@ const CHIP_PASTE_TAP_TARGET =
   "relative min-w-11 before:absolute before:inset-x-0 before:-top-[4px] before:-bottom-[2px] before:content-['']";
 
 /**
+ * The 44px floor for a photo thumbnail that opens the image editor (DESIGN.md §6). The face is the
+ * 40px thumbnail itself. The reach is the paste chip's recipe (see `CHIP_PASTE_TAP_TARGET`): it
+ * stays inside the strip's padding box, 2px out on each side and 3px above, 1px below. The x on the
+ * corner is a later sibling, so it keeps its own taps where the two overlap.
+ */
+const CHIP_EDIT_TAP_TARGET =
+  "relative block before:absolute before:-inset-x-0.5 before:-top-[4px] before:-bottom-[2px] before:content-['']";
+
+/**
  * One attachment waiting in the composer (ADR 0060). A photo with a preview is a 40x40 thumbnail;
  * anything else, a restored photo included (its blob URL died with the page), is a small tile with
  * an icon and the file name cut to fit. Its number sits in a badge on the top-left corner, the same
  * `#N` its marker in the draft carries, and the x on the top-right corner removes the chip and that
- * marker together.
+ * marker together. A photo that still has its bytes in memory (`onEdit`) is a button: a tap on the
+ * thumbnail opens the image editor on it, and a small pencil on its bottom-right corner says so.
  *
  * One uniform 1px border and no shadow: it is a token inside the composer's box, not a card.
  *
@@ -50,18 +61,20 @@ export function AttachmentChip({
   attachment,
   onRemove,
   onSelect,
+  onEdit,
   disabled,
   inFront = false,
 }: {
   attachment: ComposerAttachment;
   onRemove: () => void;
   onSelect?: () => void;
+  onEdit?: () => void;
   disabled?: boolean;
   inFront?: boolean;
 }) {
   useLocale();
   const isPaste = attachment.kind === "paste";
-  const Icon = attachment.kind === "image" ? Image : isPaste ? ClipboardPaste : FileText;
+  const kindIcon: IconKey = attachment.kind === "image" ? "image" : isPaste ? "paste" : "file-text";
   const inFrontNote = inFront ? t("composer.attach.inFront", { name: attachment.name }) : null;
   const edge = inFront ? "border-dashed border-foreground/60" : "border-border";
   const pasteStats = isPaste
@@ -75,7 +88,27 @@ export function AttachmentChip({
       title={inFrontNote ?? attachment.name}
       data-in-front={inFront ? "" : undefined}
     >
-      {attachment.previewUrl !== undefined ? (
+      {attachment.previewUrl !== undefined && onEdit !== undefined ? (
+        <button
+          type="button"
+          onClick={onEdit}
+          disabled={disabled}
+          aria-label={t("composer.imageEdit.edit")}
+          className={cn(CHIP_EDIT_TAP_TARGET, "disabled:opacity-50")}
+        >
+          <img
+            src={attachment.previewUrl}
+            alt={attachment.name}
+            className={cn("size-10 rounded-md border object-cover", edge)}
+          />
+          <span
+            aria-hidden="true"
+            className="pointer-events-none absolute right-0.5 bottom-0.5 grid size-4 place-items-center rounded-sm border border-border bg-background text-foreground"
+          >
+            <Icon name="edit" className="size-2.5" />
+          </span>
+        </button>
+      ) : attachment.previewUrl !== undefined ? (
         <img
           src={attachment.previewUrl}
           alt={attachment.name}
@@ -94,7 +127,7 @@ export function AttachmentChip({
           )}
         >
           <span className="flex items-center gap-1 font-medium leading-none">
-            <Icon aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />
+            <Icon name={kindIcon} aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />
             <span className="truncate">{pasteStats}</span>
           </span>
           <span className="truncate font-mono text-[10px] leading-tight text-muted-foreground">
@@ -108,12 +141,12 @@ export function AttachmentChip({
             edge,
           )}
         >
-          <Icon aria-hidden="true" className="size-4 shrink-0" />
+          <Icon name={kindIcon} aria-hidden="true" className="size-4 shrink-0" />
           <span className="truncate">{shortName(attachment.name)}</span>
         </div>
       )}
       <span className="pointer-events-none absolute -top-1 -left-1 flex items-center gap-0.5 rounded border border-border bg-background px-1 font-mono text-[10px] leading-3.5 text-foreground">
-        {inFront && <ArrowLeftToLine aria-hidden="true" className="size-2.5" />}#{attachment.n}
+        {inFront && <Icon name="attachment-in-front" aria-hidden="true" className="size-2.5" />}#{attachment.n}
       </span>
       {inFrontNote !== null && <span className="sr-only">{inFrontNote}</span>}
       <button
@@ -126,7 +159,7 @@ export function AttachmentChip({
           "absolute -top-1 -right-1 grid size-5 place-items-center rounded-full border border-border bg-background text-muted-foreground disabled:opacity-50",
         )}
       >
-        <X className="size-3" />
+        <Icon name="remove" className="size-3" />
       </button>
     </li>
   );

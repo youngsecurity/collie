@@ -1,15 +1,16 @@
 # Install Collie
 
+> **Note.** New to upstream Collie? [Install in five minutes](five-minute-install.md) has one path per
+> system with every command in order: [macOS](five-minute-install.md#macos),
+> [Linux](five-minute-install.md#linux) and [Windows](five-minute-install.md#windows). This page is
+> the reference: the install routes, what each one does, and the details around them.
+
 Install Collie on your system, start it, and put it on your phone. Read
 [Security](security.md) first: Collie exposes remote shell access to your machine by design.
 
 > **Note.** This is the source-only `youngsecurity/collie` fork. Start with
 > [This fork](#this-fork). Binary installers, packages and Windows zip instructions on this page
 > describe upstream `AltanS/collie`; none downloads a fork binary.
-
-> **Note.** New to upstream Collie? [Install in five minutes](five-minute-install.md) covers the usual
-> Linux and macOS setup in five steps. On Windows, follow
-> [Zero to phone](windows.md#zero-to-phone). This page is the full reference.
 
 ## Before you start
 
@@ -21,15 +22,14 @@ network. The rest of this page assumes Tailscale. For an identity-aware proxy, a
 Cloudflare Tunnel or NetBird instead, see
 [Front doors, one product at a time](deployment.md#front-doors-one-product-at-a-time).
 
-With Tailscale, prepare three things:
+With Tailscale, prepare three things. The commands are in the guide for your system.
 
-1. Put the host on your tailnet by installing Tailscale there and running `tailscale up`. On
-   Linux, run `sudo tailscale up --operator=$USER`, so that your user can run `tailscale serve`.
-   On a host that is already up, `sudo tailscale set --operator=$USER` changes only that setting.
-2. Enable HTTPS certificates for the tailnet by opening the
-   [admin console](https://login.tailscale.com/admin/dns) and selecting **Enable HTTPS**.
-3. Put the phone on the same tailnet by installing the Tailscale app and signing in to the same
-   account.
+- **The host is on your tailnet.** Install Tailscale there and sign in. On Linux, bring it up with
+  `--operator=$USER`, so that your user can run `tailscale serve`. On a host that is already up,
+  `sudo tailscale set --operator=$USER` changes only that setting.
+- **HTTPS certificates are on.** Open the [admin console](https://login.tailscale.com/admin/dns)
+  and select **Enable HTTPS**.
+- **The phone is on the same tailnet.** Install the Tailscale app and sign in to the same account.
 
 `collie start` exits with an error if HTTPS is off. The phone also requires HTTPS to install
 Collie to the home screen and receive Web Push.
@@ -57,8 +57,7 @@ A Herdr plugin is still the same `collie` binary; the actions forward to it
 the verbs that have no action (`pair`, `qr`, `logs`, `link`, `devices`, `stt`, `config`) run from
 the plugin's directory as `bin/collie <verb>`.
 
-Herdr is also one of the five multiplexers Collie can mirror (Herdr, tmux, zellij, tuios and tern).
-Which one you mirror is a separate
+Herdr is also one of the multiplexers Collie can mirror (Herdr, the Herdr core, tmux, zellij, tuios and tern). Which one you mirror is a separate
 choice ([Name your multiplexer](#name-your-multiplexer)): a standalone Collie can mirror Herdr, and
 a Herdr plugin can mirror tmux.
 
@@ -131,6 +130,7 @@ system, run its commands, then go on to [Start it](#start-it).
 | macOS, Apple Silicon or Intel | [The install script](#macos) |
 | Windows 11 (x64, with Herdr) | [`install.ps1`, experimental](#windows-support-experimental) |
 | Any of these, inside Herdr | [Herdr plugin](#herdr-plugin) |
+| A machine that runs herdr-app and the Herdr core, with no Herdr TUI | [The binary and `hc`](#herdr-app-and-the-herdr-core) |
 
 ### Linux
 
@@ -229,10 +229,8 @@ notepad install.ps1
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-Then open a new terminal and start Herdr. Herdr takes over that terminal, so open a second terminal
-or a Herdr pane and run `collie start` there.
-[Zero to phone](windows.md#zero-to-phone) has every step, including how to open Collie on your
-phone.
+[The Windows path in the guide](five-minute-install.md#windows) has every step, from Tailscale to
+a running Collie.
 
 What to know before you start:
 
@@ -240,12 +238,13 @@ What to know before you start:
   covered.
 - **The binary is unsigned.** SmartScreen can ask before it runs, and Smart App Control can block it.
   [Windows page](windows.md#unsigned-binary-smartscreen-and-smart-app-control).
-- **You publish the address yourself.** On Linux and macOS `collie start` runs `tailscale serve`
-  for you. On Windows it does not, so you run it by hand: [Reaching it from your phone](windows.md#reaching-it-from-your-phone) has the
-  steps with Tailscale, and
+- **`collie start` publishes the address for you.** It runs `tailscale serve`, as on Linux and
+  macOS. If it cannot, [Reaching it from your phone](windows.md#reaching-it-from-your-phone) has
+  the steps by hand, and
   [Variant C](deployment.md#variant-c--reverse-proxy-as-the-only-front-door-no-tailscale) covers a
   reverse proxy.
-- **A Windows machine cannot join a crew in this release.**
+- **A Windows machine joins or leads a crew only behind a consent flag.** Crews on Windows are
+  [experimental](windows.md#crews), behind `COLLIE_CREWS_ON_WINDOWS=1`.
 - **A build from source needs Git for Windows' `bash`.** The zip needs no toolchain.
 - **A source checkout never updates itself on Windows.** To switch to upstream's zip install,
   run `collie uninstall`, then upstream's `install.ps1`. This leaves the fork. Stay on the fork
@@ -320,6 +319,37 @@ bin/collie link
 A source build requires Bun and git. Start it with `bin/collie start`, or `collie start` after
 linking.
 
+### herdr-app and the Herdr core
+
+herdr-app and the Herdr core (`hc`) need no Herdr plugin and no `herdr` command. Install Collie as a
+binary, with the [install script](#standalone) or a package, and make sure the core runs:
+
+```bash
+curl -fsSL https://colliepwa.dev/install.sh | sh
+hc server status      # or open herdr-app, which starts the core
+collie start
+```
+
+When you name no multiplexer, the Herdr TUI is not installed on this machine and the core's socket
+is there, Collie picks the core on its own. A machine with the Herdr TUI installed keeps `herdr`
+even while the TUI is not running, so name the core there with `COLLIE_MUX=herdr-core collie start`.
+When it picks the core, `collie start` says so and writes `COLLIE_MUX=herdr-core` to
+`~/.config/collie/.env`, which is Collie's own config folder on this install. The service unit
+carries the same choice. `collie update` then runs no `herdr plugin` command. To drive one named
+core session, export `HC_SESSION` or `HC_SOCKET` before `collie start`; the unit keeps them. Install
+the Claude hooks with `collie hooks install claude` for History. What the core can and cannot do is
+in [herdr-core notes](multiplexers.md#herdr-core-notes).
+
+Machines you add with `hc machine add` show up in `collie crew add` on this machine. A member with
+only the core installed joins the crew like any other. Run `hc machine add --install <host>`, then
+`collie crew add`. [Two machines, one crew](crew.md#two-machines-one-crew) has the steps.
+
+A Collie that already drives the Herdr TUI keeps it, because its `.env` names `herdr` and wins over
+the shell. To mirror the core on that machine too, run a second instance beside it:
+[Two Collies on one machine](multiplexers.md#two-collies-on-one-machine). herdr-app can also show a
+Collie panel that pairs a phone. It is experimental and you copy it in by hand:
+[The Collie panel for herdr-app](multiplexers.md#the-collie-panel-for-herdr-app).
+
 ### Herdr plugin
 
 ```bash
@@ -358,10 +388,10 @@ your package manager manages this tree.
 
 ## Name your multiplexer
 
-Collie mirrors one backend: `COLLIE_MUX=herdr` (default), `tmux`, or `zellij`.
+Collie mirrors one backend: `COLLIE_MUX=herdr` (default), `herdr-core`, `tmux`, or `zellij`.
 
-You do not need to set it before the first start. `start` looks for a live Herdr socket, a running
-tmux server and zellij sessions, prints what it found, and writes your choice to the config `.env`,
+You do not need to set it before the first start. `start` looks for a live Herdr socket, a Herdr
+core socket without a Herdr socket, a running tmux server and zellij sessions, prints what it found, and writes your choice to the config `.env`,
 creating the file if needed.
 
 Without a terminal prompt, `start` picks the single backend it found and reports it. If it finds
@@ -400,7 +430,8 @@ collie start                                             # standalone
 `start` will:
 1. Build `web/dist` if missing.
 2. Launch the bridge under `systemd --user` (or launchd/`nohup`).
-3. Run `tailscale serve --bg 8787` (HTTPS :443 → 127.0.0.1:8787).
+3. Publish Collie on your tailnet with `tailscale serve`, on Linux, macOS and Windows alike
+   (HTTPS :443 → 127.0.0.1:8787).
 4. Print the connection banner.
 
 ### First run: what you'll see
@@ -424,6 +455,14 @@ tailscale serve (https) → tailnet :443 -> 127.0.0.1:8787
 If the health check fails (`⚠ Collie isn't answering on :8787 yet`), see
 [Troubleshooting](troubleshooting.md#troubleshooting).
 
+Before it launches the bridge, `collie start` checks your setup. For each missing piece it prints a
+line that begins with `setup:` and says what is missing, then a line that begins with `fix:`. The
+pieces are: no `tailscale` command on PATH or not signed in, MagicDNS or HTTPS off, the operator
+setting on Linux, no multiplexer or several without `COLLIE_MUX`, and no `collie` on your PATH. The
+check never stops `start`. When any line printed, `start` ends with a sentence that says the bridge
+is running but your phone cannot reach it yet. Fix what the lines name, then run `collie start`
+again. `collie doctor` repeats the same check.
+
 The bridge runs as a `systemd --user` service or macOS launchd agent. It starts at login and
 restarts on failure ([`ARCHITECTURE.md`](../ARCHITECTURE.md) §3). On Linux,
 `loginctl enable-linger $USER` keeps it running across reboots
@@ -444,10 +483,13 @@ $ collie status
     local     http://127.0.0.1:8787
     tailnet   https://myhost.tail1234.ts.net
 
-  serve config:
-    https://myhost.tail1234.ts.net (tailnet only)
-    |-- / proxy http://127.0.0.1:8787
+  crew      no crew, this install is solo
+  devices   1 paired (Pixel)
+  sessions  3 agents  working 1  blocked 0  idle 2  done 0  unknown 0  (3 report a session id)
 ```
+
+`collie status --verbose` adds what `tailscale serve` publishes, and `collie serve status` prints
+that alone.
 
 ```console
 $ collie logs        # journal timestamps trimmed here
@@ -462,35 +504,25 @@ To restrict access, set `COLLIE_TRUSTED_USER=you@example.com` in `.env` and run 
 
 ## Put it on your phone
 
-Open Collie on the phone, add it to the home screen, then pair it.
-
-1. Confirm that the phone's Tailscale app shares a tailnet with the host.
-2. Run `collie qr` on the host and scan its code, or open the URL that `collie url` prints.
-3. Add Collie to the home screen ([iPhone and iPad](#iphone-and-ipad), [Android](#android)), then
-   open it from the new icon.
-4. Run `collie pair` on the host.
-5. In Collie, open **Settings → System → Paired devices**, enter the code and a name, and tap
-   **Pair this device**.
-
-Pair inside the home screen app, not in a browser tab. On an iPhone, the home screen app keeps its
-own storage, separate from Safari, so a pairing made in Safari does not carry over. For the same
-reason, type the code on a phone. The QR code that `collie pair` prints opens the code in a
-browser tab, so use it to pair a desktop browser.
-
-Collie answers no device until it is paired, so the dashboard shows **Pair this device** until
-then ([Pair a device](security.md#pair-a-device--the-write-credential)).
+The steps live in the guide, in
+[Put Collie on your phone and pair it](five-minute-install.md#put-collie-on-your-phone-and-pair-it).
+This section holds the details per device.
 
 Collie is a web app. The browser adds it to your home screen without an app store, giving it a
-standalone icon and full-screen view.
+standalone icon and full-screen view. Collie answers no device until it is paired, so the dashboard
+shows **Pair this device** until then ([Pair a device](security.md#pair-a-device--the-write-credential)).
+
+![Put Collie on the home screen: iPhone and Android steps.](images/install/pwa-install.svg)
 
 ### iPhone and iPad
 
 1. Open the Collie URL in Safari.
-2. Tap **Share**, then tap **Add to Home Screen**.
-3. Tap **Add**.
+2. Tap **Share**. In the default iOS 26 layout the Share button sits under **⋯** at the bottom right; with the Top or Bottom tab bar layout it is on the bar.
+3. Scroll down and tap **Add to Home Screen**.
+4. Leave **Open as Web App** on, and tap **Add**.
 
-On iOS 16.4 and newer, Chrome, Edge and Firefox also offer **Add to Home Screen** in their share
-menus. If you see **Open as Web App**, keep it selected.
+Before iOS 26, **Share** is on the toolbar. On iOS 16.4 and newer, Chrome, Edge and Firefox
+also offer **Add to Home Screen** in their share menus.
 
 ![The Install card on iOS or iPadOS: installing goes through the share sheet.](images/updates/settings-install-ios-hint.png)
 
@@ -518,6 +550,11 @@ full-screen mode.
 
 Chrome and Edge show an install icon in the address bar, plus the **Install** card in Settings.
 On macOS, Safari 17 and newer uses **File → Add to Dock**.
+
+A browser tab you keep on one pane can open `/slot/<n>` instead, `n` from 1 to 99. The tab then
+reopens on the pane it last showed, after a browser restart too. A pane id another workspace took in
+the meantime sends the tab to that workspace's home. Slots live on the device, and unpairing forgets
+them. Thanks @eseninik.
 
 ### Notes for every device
 

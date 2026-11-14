@@ -7,7 +7,7 @@ import { type OpsRecord, parseCrewOps } from "../bridge/crew/ops-store.ts";
 import { serializeTrustStore, TrustStore, type TrustStoreData, type TrustStoreIo } from "../bridge/crew/trust-store.ts";
 import { UPDATE_RUN_SCHEMA, type UpdateRun } from "../bridge/update-run.ts";
 import { capture, context, fakeExec, fakeFiles, fakeOps, ROOT, type SeededFiles, type SeededOps, probeDefaults, probeOutput, type ProbeField } from "./fakes.ts";
-import type { InstallKind } from "./install-kind.ts";
+import { DEFAULT_UPDATE_REPO, type InstallKind } from "./install-kind.ts";
 import { EXIT } from "./io.ts";
 import type { CrewUpdateRow } from "../bridge/update-action.ts";
 import {
@@ -1365,5 +1365,15 @@ describe("a member that takes releases, on a lead that pushes a commit", () => {
     expect(rendered).not.toContain("no Collie");
     expect(legs(h)).toEqual(["nas.example:probe"]);
     expect(h.bundles).toBe(0);
+  });
+
+  test("the bundle push sets origin to the configured update repo (this fork's own by default)", async () => {
+    const h = harness();
+    expect(await cmdCrewUpdate(h.deps, ["nas"])).toBe(EXIT.OK);
+    const installCall = h.calls.find((c) => c.leg === "install");
+    expect(installCall?.script).toContain(`ORIGIN='https://github.com/${DEFAULT_UPDATE_REPO}.git'`);
+    const named = harness({ env: { COLLIE_UPDATE_REPO: "AltanS/collie" } });
+    expect(await cmdCrewUpdate(named.deps, ["nas"])).toBe(EXIT.OK);
+    expect(named.calls.find((c) => c.leg === "install")?.script).toContain("ORIGIN='https://github.com/AltanS/collie.git'");
   });
 });

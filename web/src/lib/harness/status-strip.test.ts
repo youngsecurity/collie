@@ -16,10 +16,14 @@ const PREFIX_AGENT = new Map([
   ["claude-lab", "claude"],
   ["oc", "opencode"],
 ]);
+// Hermes classic CLI draws its clarify and approval panels above the status bar and input row, so its
+// lifted region reaches the tail and includes the status bar; its adapter is outside this unit's scope.
+const EXEMPT_AGENTS = new Set(["hermes"]);
 
 /** The registered agent a fixture was captured under, from its file-name prefix, or undefined for none. */
 function agentOf(name: string): string | undefined {
   const prefix = name.split("--")[0]!;
+  if (EXEMPT_AGENTS.has(prefix)) return undefined;
   return PREFIX_AGENT.get(prefix) ?? (registeredAgents().includes(prefix) ? prefix : undefined);
 }
 

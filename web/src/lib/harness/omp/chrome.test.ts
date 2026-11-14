@@ -180,6 +180,10 @@ const BOX_COMPOSER_FIXTURES = [
   "omp--v18-12-6-path-popup-partial--w120.txt",
   "omp--v18-6-1-at-popup-stale--w120.txt",
   "omp--v18-12-6-at-popup-two-files--w120.txt",
+  // omp 18.6.1 on herdr-core (M78 spec 04, 2026-10-30): a plain-text read, no SGR at all.
+  "omp--v1861-core-draft--w120.txt",
+  "omp--v1861-core-idle--w120.txt",
+  "omp--v1861-core-working--w120.txt",
 ];
 
 // omp 18.6.1 with `/model` or `/mod` typed (lab, 2026-10-17): a ten-row palette under the open box. The
@@ -365,6 +369,10 @@ describe("locateComposer — the real corpus, pinned so any change to the walk s
     { fixture: "omp--v18-12-6-path-popup-partial--w120.txt", top: 9, bottom: 10, suggestEnd: 12 },
     { fixture: "omp--v18-6-1-at-popup-stale--w120.txt", top: 10, bottom: 11, suggestEnd: 14 },
     { fixture: "omp--v18-12-6-at-popup-two-files--w120.txt", top: 8, bottom: 9, suggestEnd: 12 },
+    // omp 18.6.1 on herdr-core (M78 spec 04): the box sits at the tail of a plain-text read.
+    { fixture: "omp--v1861-core-draft--w120.txt", top: 14, bottom: 15, suggestEnd: 16 },
+    { fixture: "omp--v1861-core-idle--w120.txt", top: 14, bottom: 15, suggestEnd: 16 },
+    { fixture: "omp--v1861-core-working--w120.txt", top: 19, bottom: 20, suggestEnd: 21 },
   ];
 
   // These eleven indices are byte-identical to the ones the width-gated scanner produced. That is
@@ -487,6 +495,7 @@ describe("extractInputDraft", () => {
     { fixture: "omp--v18-6-1-stop-returned--w119.txt", draft: "second message" },
     // The stale frame's old text, not the live editor's: a reading the probe has to prove.
     { fixture: "omp--v18-6-1-stale-frame-below-live--w120.txt", draft: "and what about the design" },
+    { fixture: "omp--v1861-core-working--w120.txt", draft: null },
   ];
 
   it.each(DRAFTS)("$fixture reads its draft", ({ fixture, draft }) => {
@@ -498,6 +507,61 @@ describe("extractInputDraft", () => {
   });
 });
 
+describe("empty-editor hints on a plain-text core read", () => {
+  const top = lineText(fixtureLines("omp--fresh-agents-hint.txt")[1]!);
+  const composer = (text: string, padding = 12) =>
+    lines(`${top}\n╰─${" ".repeat(padding)}${text} ─╯`);
+
+  it.each([
+    "← ← to see 1 running agent",
+    "← to see 3 running agents",
+    "⇧⇥ to change thinking effort",
+  ])("does not offer the right-aligned %s hint as a draft", (hint) => {
+    const buffer = composer(hint);
+    expect(hasComposer(buffer)).toBe(true);
+    expect(extractInputDraft(buffer)).toBeNull();
+  });
+
+  it.each([
+    ["Nerd Font key glyphs", "omp--fresh-effort-hint.txt"],
+    ["Shift+Tab", "omp--v18-12-6-status-ascii-idle--w130.txt"],
+  ])("does not offer the %s effort hint of a plain read as a draft", (_spelling, fixture) => {
+    const buffer = lines(fixtureLines(fixture).map(lineText).join("\n"));
+    expect(hasComposer(buffer)).toBe(true);
+    expect(extractInputDraft(buffer)).toBeNull();
+  });
+
+  it("keeps the same words when typed at the start of the input", () => {
+    expect(extractInputDraft(composer("← ← to see 1 running agent", 1)))
+      .toBe("← ← to see 1 running agent");
+  });
+
+  it("keeps a styled real draft and text beyond a hint", () => {
+    expect(extractInputDraft(composer("\x1b[37m← ← to see 1 running agent\x1b[0m")))
+      .toBe("← ← to see 1 running agent");
+    expect(extractInputDraft(composer("← ← to see 1 running agent please review")))
+      .toBe("← ← to see 1 running agent please review");
+  });
+
+  it("keeps a hint-like first line and the remaining open-ended draft", () => {
+    const buffer = lines(`${top}\n╰─   ← ← to see 1 running agent\n   please investigate`);
+    expect(extractInputDraft(buffer)).toBe("← ← to see 1 running agent please investigate");
+  });
+
+  it("keeps default-ink draft text when the surrounding chrome is styled", () => {
+    const buffer = lines(`\x1b[36m${top}\x1b[0m\n╰─   ← ← to see 1 running agent ─╯`);
+    expect(extractInputDraft(buffer)).toBe("← ← to see 1 running agent");
+  });
+
+  it.each([["boxed", " ─╯"], ["open-ended", ""]])(
+    "keeps a left-aligned hint-shaped draft with trailing padding in the %s editor",
+    (_editor, closer) => {
+      const buffer = lines(`${top}\n╰─   ← ← to see 1 running agent        ${closer}`);
+      expect(extractInputDraft(buffer)).toBe("← ← to see 1 running agent");
+    },
+  );
+});
+
 // The omp gang's rig reads a pane as plain text: these captures carry no SGR, so the band is one segment.
 const PLAIN_READ_FIXTURES = [
   "omp--v18-12-6-image-chip--w120.txt",
@@ -505,6 +569,9 @@ const PLAIN_READ_FIXTURES = [
   "omp--v18-6-1-queued-before-stop--w119.txt",
   "omp--v18-6-1-stop-returned--w119.txt",
   "omp--v18-6-skill-chip--w120.txt",
+  "omp--v1861-core-draft--w120.txt",
+  "omp--v1861-core-idle--w120.txt",
+  "omp--v1861-core-working--w120.txt",
 ];
 
 describe("extractStatusLines", () => {
@@ -541,7 +608,8 @@ describe("extractStatusLines", () => {
         !f.startsWith("omp--v18-6-") &&
         !f.startsWith("omp--v18-11-") &&
         !f.startsWith("omp--v18-12-") &&
-        !f.startsWith("omp--v18.11.1-"),
+        !f.startsWith("omp--v18.11.1-") &&
+        !f.startsWith("omp--v1861-core-"),
     ),
   )(
     "%s: trims the border glyphs off both ends, keeping the whole powerline",

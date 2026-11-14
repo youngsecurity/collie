@@ -129,6 +129,17 @@ harness lab require separate authorization for model calls and scratch agent pro
 keeps the tag checker independent of installed harness versions. Do not install a nightly runner,
 spend model credits, or require Windows VM evidence as part of source-only publication.
 
+   **Every tag, a patch tag too, also runs the legs on herdr-core** (M79, replay, no model turn on
+   recorded versions): the solo leg on the core, `make browser-leg DIR=<release worktree>
+   MUX=herdr-core` (about 30 minutes; that target also runs the crew leg after it, with both machines
+   on the core), and the crew leg with its member on the core, `make browser-leg-crew DIR=<release
+   worktree> MUX=herdr,herdr-core` (the lead on Herdr, the member on the core, about 4 minutes). The
+   same rule holds: every core case passes on the first tap, and a case that failed or was not reached
+   holds the tag. **On the core a red Claude case cascades:** Claude's recordings replay as one ordered
+   session, so after the first red Claude case every later Claude case fails on a recording mismatch,
+   and only the first one says anything about the core. The limits that remain are in `HC_API.md`
+   ("What stays an upstream ask") and in the rig README ("On herdr-core").
+
 **A PR from a fork is the exception: leave all four files alone.** Bump nothing, add no CHANGELOG
 line — send the functional commits only. The version is the maintainer's to pick, because it depends
 on what else lands in the same release and on which axis the *sum* of those changes sits; a bump
@@ -154,7 +165,10 @@ it as part of the change, not after**:
 
 **Upstream's docs website follows upstream releases.** This fork's `release.yml` only verifies
 manual publication; it does not notify or publish to colliepwa.dev. An upstream doc-only fix still
-needs an upstream release or a manual website sync against the intended upstream ref.
+needs an upstream release, or upstream's docs line: a branch `docs/<newest tag>` that the site
+quotes in place of the tag, made by `bun scripts/docs-line.ts <commit>...`. The script is carried
+here unchanged for upstream contributions. Its notify workflow (`docs-line.yml`) is not, so a
+`docs/**` branch pushed to this fork tells no website.
 
 - `scripts/check-version.sh` runs inside `collie build` (a release can't build while versions
   disagree).
@@ -421,7 +435,8 @@ component, not a spec. On 2026-10-17 the specs that did not pass that test moved
   model turns (about 5 minutes and a few cents a run), and it never runs in CI. On this fork it is
   optional and requires separate authorization, never a release or merge gate. Beside it runs **the
   crew leg** (`-c e2e/rig/crew.config.ts`): the same phone against a lead and a member, for the walky
-  talky cases that need a crew; upstream runs both nightly and before every tag, this fork does not. No nightly runner
+  talky cases that need a crew; upstream runs both nightly and before every tag, on Herdr and on
+  herdr-core, this fork does not. No nightly runner
   is installed by adoption. Unit tests do not prove behavior on a live agent; report that limitation
   rather than claiming the imported upstream evidence as a fork rehearsal.
 
@@ -519,13 +534,16 @@ lint guard, the crew-wire guard or the `flake.lock` guard.
   README → "The states playground") before changing a banner, the mark, the boot splash, the idle
   lock, or the crew page — it renders every state at once. Never import playground code from app
   code.
+  A card's label is a number and at most five words. Explanation goes in the report to Altan, not
+  on the page. `reach` and `note` are optional and hidden by default (the page's Notes switch).
 - Data flows through **React Router** (`createBrowserRouter`, data mode): route **loaders**
   (`web/src/lib/loaders.ts`) fetch the snapshot + pane; **polling is `useRevalidator()` on an
   adaptive interval** (`web/src/hooks/use-polling.ts`); mutations are direct `lib/api.ts` calls
   followed by `revalidator.revalidate()`. There is **no TanStack Query** — don't reintroduce it.
 - Routes (`web/src/router.tsx`): `/`, `/space/:spaceId`, `/settings` (an INDEX of four sections:
   `/settings/appearance`, `/settings/device`, `/settings/alerts`, `/settings/system`), `/pane/:paneId`,
-  `/pane/:paneId/history`, `/pane/:paneId/changes` and `/space/:spaceId/changes` (both matched as
+  `/pane/:paneId/history`, `/pane/:paneId/zoom` (the zoomed output, a child of the pane route,
+  so the pane stays mounted under it), `/pane/:paneId/changes` and `/space/:spaceId/changes` (both matched as
   `changes/*`, so the commit view `…/changes/commit` and a folder or file of the tree `…/changes/files`
   share the screen's route; the tree's root is `…/changes` itself, ADR 0083). The router
   instance is module-scoped so it keeps its location.
@@ -587,6 +605,10 @@ lint guard, the crew-wire guard or the `flake.lock` guard.
   maps to ONE binary word in `bridge/harness-launch.ts` and reports per machine on `/api/launchers`;
   a launch with a `requestId` replays from `launch-receipts.json` instead of opening a second pane
   ([ADR 0091](./.adr/0091-launch-by-id-with-a-request-id.md)).
+  In a crew the lead's merged rows are the crew's: a launch of a lead row on a member carries the row
+  over the crew link, accepted only when `caller.via === "crew"`, never from a phone-direct body, and
+  a member's own row wins the same `command`; adds are answered on the lead and the deputy keeps a
+  read-only copy ([ADR 0127](./.adr/0127-the-leads-launcher-rows-are-the-crews-rows.md)).
   Rows a phone adds live in `<stateDir>/launchers-added.json` under the operator's `[phone]` switches,
   never in `launchers.toml`; they are merged into the allowlist at read time, the operator's row wins
   a duplicate line, a recipe row is rebuilt from `bridge/launcher-recipes.ts` and a free line is
@@ -609,7 +631,7 @@ lint guard, the crew-wire guard or the `flake.lock` guard.
   from `virtual:pwa-register` in `main.tsx` (bundled = CSP-safe). Install/SW need a **secure
   context** — over plain HTTP they no-op silently (Chrome insecure-origin flag, or HTTPS, to test).
 - **The app's UI typeface is a per-device SETTING, not the maker's choice** — System / Space Grotesk /
-  Aldrich (default), plus whatever the operator declared, applied pre-paint as a root class by
+  Aldrich / Atkinson Hyperlegible Next (default since 2026-11-06), plus whatever the operator declared, applied pre-paint as a root class by
   `web/public/theme-init.js` and stored in `collie:design:v1` (`web/src/lib/design.ts`). CSS owns
   every stack; JavaScript only swaps a class name. What survives the reversal is the other half of
   the rule: **the chosen face never dresses agent-authored text** — `font-mono` and `font-content`
@@ -762,11 +784,19 @@ exemption is granted by POSITION — the peer check sits after the federated dis
 its own `COLLIE_STANDBY_HOST` and neither gate reaches it; don't route it through the front door's
 `fetch` to share them.
 
-**The bridge makes two outbound calls of its own, and spawns no child for content unless
-`stt.json` names a speech provider.** The two calls are the update check and the Whistle
+**The bridge makes four outbound calls of its own, and spawns no child for content unless
+`stt.json` names a speech provider.** The four calls are the update check, the Whistle
 model download: one file, fetched on a write device's tap or `collie stt whistle`, from a pinned
 address, and kept only when its sha256 matches a pin in this release
-([ADR 0096](./.adr/0096-speech-can-stay-on-the-phone.md)). A `durable` peer configured with `COLLIE_DURABLE_URL` makes a third, to the program's URL the
+([ADR 0096](./.adr/0096-speech-can-stay-on-the-phone.md)), and the math pack: the running
+version's release manifest and the one asset it names, fetched on a write device's tap only, kept
+only when the size and sha256 match, and unpacked in the bridge with no child, never under `web/dist`
+([ADR 0132](./.adr/0132-the-math-engines-are-a-pack-the-host-downloads.md)), and the community theme
+registry: one fixed file, `https://colliepwa.dev/themes/registry.json` (the operator's
+`COLLIE_THEME_REGISTRY_URL` replaces it for a test against a staged site, https or tailnet http
+only), fetched on a write device's tap only, never forwarded, refused past 1 MB or 500 entries, each entry kept only when `parseTheme`
+passes it, and stored under `<stateDir>/themes` (M59 spec 06; the page itself keeps
+`connect-src 'self'`, ADR 0106). A `durable` peer configured with `COLLIE_DURABLE_URL` makes a fifth, to the program's URL the
 operator set, with the bearer token from `COLLIE_DURABLE_TOKEN`, and it is declined by setting
 nothing ([ADR 0103](./.adr/0103-the-wire-has-two-transports-a-private-socket-or-tls-with-a-token.md)). Speech-to-text (`bridge/stt/`, CLI
 `cli/stt.ts`) is a registered provider seam, absent until `stt.json` names a provider. Then it may

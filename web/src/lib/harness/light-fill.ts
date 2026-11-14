@@ -22,10 +22,10 @@ function luma(r: number, g: number, b: number): number {
 // index.css owns the fixed mirror palette. Keep a DOM-free luminance projection for indexed
 // backgrounds; light-fill.test.ts pins all sixteen slots to the rendered CSS, including boundaries.
 const INDEXED_LUMA: readonly number[] = [
-  0x000000, 0xcd3131, 0x0dbc79, 0xe5e510,
-  0x2472c8, 0xbc3fbc, 0x11a8cd, 0xe5e5e5,
-  0x666666, 0xf14c4c, 0x23d18b, 0xf5f543,
-  0x3b8eea, 0xd670d6, 0x29b8db, 0xffffff,
+  0x000000, 0xea8885, 0x4dbb75, 0xe5e510,
+  0x57a7c7, 0xbe85c6, 0x4cbbbb, 0xe5e5e5,
+  0x9a9a9a, 0xffa6a3, 0x45d07e, 0xf5f543,
+  0x709aeb, 0xcf83d6, 0x65d0dc, 0xffffff,
 ].map((n) => luma((n >> 16) & 255, (n >> 8) & 255, n & 255));
 
 /** Whether a parsed segment background is at or above `floor`, light enough to invert into a bar. */

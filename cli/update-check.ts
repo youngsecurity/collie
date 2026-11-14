@@ -36,7 +36,7 @@ import { EXIT, type Io } from "./io.ts";
 import { type LinkReader, realLinkFs } from "./link.ts";
 import { agentFilePath, agentLabel, unitFilePath, unitName } from "./unit.ts";
 import { supervisionTier } from "./lifecycle.ts";
-import { queryTask } from "./task-scheduler.ts";
+import { queryTask, TASK_QUERY_PATIENT_MS } from "./task-scheduler.ts";
 import {
   type RemoteResult,
   type RemoteRunner,
@@ -277,6 +277,9 @@ const red = (id: string, reason: string, remedy?: string): PreflightCheck =>
  */
 const PACKAGE_CHECK_ID = "package";
 
+/** The doctor rows that say sends do not arrive (cli/send-findings.ts): amber here even as an error. */
+const SENDS_CHECK_PREFIX = "sends-";
+
 // ── Instance checks ──────────────────────────────────────────────────────────
 
 /**
@@ -306,8 +309,14 @@ export async function doctorCheck(deps: UpdateCheckDeps): Promise<PreflightCheck
   //
   // ADR 0045's floor check is NOT here and is untouched — it is `skewCheck`, its own preflight check
   // on the member walk. A member the update would strand still blocks the confirm.
+  //
+  // ONE LOCAL ERROR IS AMBER: a `sends-<harness>` row (M71 spec 01, cli/send-findings.ts). It says
+  // Collie cannot send to that harness on this machine, and a new version is often the fix: a reader
+  // or a profile that does not know the harness's new build. Holding the update back on it would keep
+  // the machine on the version that cannot send. It is named by check id, like a crew error.
   const errors = findings.filter((f) => f.status === "error");
-  const local = errors.filter(isLocal).map((f) => f.check);
+  const sends = errors.filter((f) => isLocal(f) && f.check.startsWith(SENDS_CHECK_PREFIX)).map((f) => f.check);
+  const local = errors.filter((f) => isLocal(f) && !f.check.startsWith(SENDS_CHECK_PREFIX)).map((f) => f.check);
   if (local.length > 0) {
     return red(
       "doctor",
@@ -329,9 +338,11 @@ export async function doctorCheck(deps: UpdateCheckDeps): Promise<PreflightCheck
   // unreachable and, once a rotation passes it, enrolled but inactive — and reporting one would hide
   // the other behind a fault the operator then cannot see.
   const crew = errors.filter((f) => !isLocal(f)).map((f) => f.check);
+  const notSent = sends.length === 0 ? "" : `; sends do not arrive: ${sends.join(", ")}, and an update may fix them`;
   if (crew.length > 0) {
-    return amber("doctor", `this machine can still update; the crew reports: ${crew.join(", ")}`);
+    return amber("doctor", `this machine can still update; the crew reports: ${crew.join(", ")}${notSent}`);
   }
+  if (sends.length > 0) return amber("doctor", `this machine can still update${notSent}`);
   const warns = findings.filter((f) => f.status === "warn").map((f) => f.check);
   if (warns.length > 0) {
     return amber("doctor", `collie doctor warns about ${warns.join(", ")} — an update still proceeds`);
@@ -678,13 +689,15 @@ export function serviceCheck(deps: UpdateCheckDeps): PreflightCheck {
     // be there. This branch was missing, and the systemd one below refused every update from the
     // phone with "no systemd user unit" (M43 spec 08 rehearsal, 2026-10-02).
     const name = agentLabel(deps.ctx.instance);
-    const task = queryTask(deps.exec, name, deps.host);
-    if (task === undefined) {
-      return amber("service", `Task Scheduler could not be asked about the task ${name} (no PowerShell), and the update will still try to restart it`);
+    const task = queryTask(deps.exec, name, deps.host, TASK_QUERY_PATIENT_MS);
+    // Amber, never red: a query that timed out is not a missing task, and a red here would block the
+    // phone's Update button on a machine whose task is fine (#762).
+    if (task.kind === "unknown") {
+      return amber("service", `Collie could not check the Task Scheduler task ${name} in time (${task.why}), and the update can go on`);
     }
-    return task === null
+    return task.kind === "absent"
       ? red("service", `no Task Scheduler task ${name}, so an update would have nothing to restart`, "collie start")
-      : green("service", `the Task Scheduler task ${name} is ${task.state}, and the update can restart it`);
+      : green("service", `the Task Scheduler task ${name} is ${task.task.state}, and the update can restart it`);
   }
   if (tier === "unsupervised") {
     return amber(

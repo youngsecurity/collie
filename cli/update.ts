@@ -2,6 +2,7 @@ import { basename, dirname, join } from "node:path";
 
 import { binaryName, collieBinary, HOST, type Host } from "../bridge/host.ts";
 import { envGet } from "../bridge/tools.ts";
+import { drivesHerdrCore } from "../bridge/mux/herdr-core/pick.ts";
 import type { JsonValue } from "../bridge/json.ts";
 import {
   type ApiTag,
@@ -40,7 +41,7 @@ import { STAGING_LOG_LINES, STAGING_LOG_PREFIX, stagingLogPath } from "../bridge
 import { inFlight, parseUpdateRun, type RunAction, STALE_AFTER_MS, type UpdateLock, type UpdateRun, updateLockPath, updateRunPath } from "../bridge/update-run.ts";
 import { manifestMinHerdrFrom, manifestVersionFrom, readBuildInfo } from "../bridge/version.ts";
 import { type BuildDeps, cmdBuild } from "./build.ts";
-import { logFilePath, systemdUserReachable } from "./lifecycle.ts";
+import { logFilePath, systemdUserSession } from "./lifecycle.ts";
 import {
   binaryLayout,
   type BinaryLayout,
@@ -74,6 +75,7 @@ import {
 } from "./sys.ts";
 import { tagRemote } from "./update-remote.ts";
 import { unitName } from "./unit.ts";
+import { insideOwnUnit } from "../bridge/systemd-user.ts";
 import {
   driveApply,
   HEALTH_POLL_MS,
@@ -895,7 +897,7 @@ export function updateCheckout(
 
   if (!isGitCheckout(deps.exec, root)) {
     deps.io.err(`error: ${root} is not a git checkout — refresh it with:`);
-    deps.io.err(`       ${REINSTALL_COMMAND}`);
+    deps.io.err(`       ${refreshHint(deps)}`);
     return { code: EXIT.FAIL, moved: false, to: null, higher: null };
   }
 
@@ -1162,6 +1164,28 @@ function detachOnto(deps: UpdateDeps, git: (args: readonly string[]) => number, 
 }
 
 /**
+ * Does this install drive herdr-core (M74 spec 04)? Then no `herdr plugin` command runs, and the
+ * refresh hints name the installer instead of `herdr plugin install`.
+ */
+export function drivesCore(deps: Pick<UpdateDeps, "ctx" | "files" | "host">): boolean {
+  if (deps.host.platform === "win32") return false;
+  // `ctx.env` is the merged one, so the instance's own `COLLIE_MUX` (its `.env`, its unit) decides
+  // first; then a Herdr TUI install; only then the sockets (`bridge/mux/herdr-core/pick.ts`).
+  return drivesHerdrCore(deps.ctx.socket, deps.ctx.env, {
+    home: deps.ctx.home,
+    exists: (path) => deps.files.exists(path),
+    list: (dir) => deps.files.list(dir),
+  });
+}
+
+/** The line that refreshes a checkout that is not a git checkout: Herdr's installer, or Collie's own. */
+function refreshHint(deps: Pick<UpdateDeps, "ctx" | "files" | "host">): string {
+  return drivesCore(deps)
+    ? "run the installer again (docs/install.md)"
+    : REINSTALL_COMMAND;
+}
+
+/**
  * After an update, Herdr's plugin registry still holds the action set + version CACHED at the last
  * `plugin link`, so a newly added action returns `plugin_action_not_found` until a re-link. Re-link
  * here so `update` self-heals it. Best-effort: never fails the update — Herdr may be down, or this
@@ -1172,6 +1196,8 @@ function detachOnto(deps: UpdateDeps, git: (args: readonly string[]) => number, 
  * reinstall that is the operator's only other way to refresh (ADR 0006).
  */
 export function refreshRegistry(deps: UpdateDeps, at: string = deps.ctx.root): void {
+  // A herdr-core host has no Herdr plugin registry, and `herdr` there may be a TUI it does not use.
+  if (drivesCore(deps)) return;
   // `at` is the path Herdr should register, which on a STAGED checkout is the `current` symlink —
   // so a plugin action always runs the version that is live, not the one that happened to be live
   // when the link was made. Whether we may re-link at all is still decided from the checkout we are
@@ -1556,7 +1582,7 @@ export async function cmdUpdate(deps: UpdateDeps, args: readonly string[] = []):
   if (install.kind === "unknown") {
     deps.io.err(`error: cannot tell how this Collie was installed (${unknownEvidence(deps, install.why)}).`);
     deps.io.err("       `collie update` will not guess. A git checkout refreshes with:");
-    deps.io.err(`       ${REINSTALL_COMMAND}`);
+    deps.io.err(`       ${refreshHint(deps)}`);
     deps.io.err("       A downloaded install — and a staged checkout — lives under a `versions/` layout");
     deps.io.err("       with a `current` symlink beside it; see docs/install.md.");
     return EXIT.FAIL;
@@ -1634,12 +1660,50 @@ function clockTime(ms: number): string {
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
+/**
+ * Refuse an in-place update that runs inside this instance's own service, before anything moves.
+ * `null` means the way is clear.
+ *
+ * The in-place path restarts the service from inside its own process tree (`_apply-update` → stop,
+ * then start). A process in the service's cgroup is stopped with it, between the two, so nothing ever
+ * runs the start: the 1.28.1 rehearsal (case d-B) left the service inactive (dead) that way. And when
+ * the user manager did not answer this process either, the restart took the unsupervised tier, started
+ * a second bridge that died on the port the service still held, and the run still recorded `done`
+ * (cases d1, d2). Both were a `setsid` runner the bridge started inside its own unit; the bridge now
+ * refuses that launch (`updateLaunchRefusal`), and this is the same rule at the second door, so any
+ * other way into the unit's cgroup fails here, loudly, instead of after the build.
+ *
+ * Only the instance's OWN unit counts (`insideOwnUnit` says why): the detached runner's transient unit
+ * (`collie-api-update-<stamp>.service`) and an operator's shell are outside it, and update as before.
+ * The record ends `idle` with the reason, the shape {@link handOff}'s refusal writes, so a phone that
+ * started this run reads why instead of the previous run's `done`.
+ */
+function refuseInsideOwnUnit(deps: UpdateDeps, runId: string | null, from: string | null): number | null {
+  if (deps.host.platform !== "linux") return null;
+  const unit = unitName(deps.ctx.instance);
+  if (!insideOwnUnit(deps.files.read("/proc/self/cgroup"), unit)) return null;
+  const reason = `the update cannot run from inside ${unit}.service: its restart would stop the update with the service`;
+  try {
+    const now = deps.now();
+    const begun = reduce(idleRun(now), { kind: "begin", from, to: null, pid: deps.pid, runId }, now);
+    writeRun(deps.files, deps.ctx.stateDir, reduce(begun, { kind: "abort", reason }, now));
+  } catch {
+    /* a record nobody could write is a record the phone reads as absent; the refusal still stands */
+  }
+  deps.io.err(`error: ${reason}.`);
+  deps.io.err("       Nothing was changed. Run `collie update` in a shell on this machine.");
+  return EXIT.FAIL;
+}
+
 /** The in-place path: advance the checkout where it stands, then build and restart from it. */
 async function updateInPlace(deps: UpdateDeps, args: readonly string[]): Promise<number> {
   // Read BEFORE the advance rewrites the manifest — this is the version being left behind, and it is
   // the only moment it is still on disk. `handOff`'s callers get theirs from the `versions/` layout;
   // an in-place checkout has no previous directory to name, so the manifest is the whole record of it.
   const from = installedVersion(deps);
+  // Before the fetch, so a refusal leaves the checkout exactly where it is. See {@link refuseInsideOwnUnit}.
+  const inside = refuseInsideOwnUnit(deps, wantsRunId(args), from);
+  if (inside !== null) return inside;
   // The run's real start, for the record written at the end of it. Everything below this line is
   // the run: the fetch, the advance, the build, the restart.
   const startedAt = deps.now();
@@ -1792,6 +1856,11 @@ function netError(deps: UpdateDeps, what: string, url: string, failure: NetFailu
   }
   if (failure.status !== null) {
     deps.io.err(`error: ${what} failed (HTTP ${failure.status}). Nothing was changed.`);
+    return;
+  }
+  if (failure.kind === "stall" || failure.kind === "slow") {
+    // The host answered and then went quiet or too slow, so it is NOT "could not reach" (#613).
+    deps.io.err(`error: ${what} ${failure.message}. Nothing was changed.`);
     return;
   }
   deps.io.err(`error: could not reach github.com — ${what} failed (${failure.message}). Nothing was changed.`);
@@ -2871,7 +2940,7 @@ async function updateStagedCheckout(
 
   if (!isGitCheckout(deps.exec, git)) {
     deps.io.err(`error: ${git} is not a git checkout — refresh it with:`);
-    deps.io.err(`       ${REINSTALL_COMMAND}`);
+    deps.io.err(`       ${refreshHint(deps)}`);
     return EXIT.FAIL;
   }
   // BEFORE any fetch. See {@link assertOrigin}: a fork's tags are not this install's to take.
@@ -3402,17 +3471,25 @@ function handOff(
     return EXIT.FAIL;
   }
   let plan: ReturnType<typeof launchPlan>;
+  let runnerEnvironment: EnvVars;
   try {
     writeRun(deps.files, deps.ctx.stateDir, staging);
+    // One probe, two answers from it: whether the systemd tier may be taken, and — when the manager
+    // was reachable only through the derived session dir — the variables the `systemd-run` CLIENT needs
+    // to find that same bus. The client is not a unit: `--setenv` cannot help it, and `runnerEnv` only
+    // forwards what this process already carries (#194).
+    const session = systemdUserSession(deps.exec, deps.ctx.env);
     plan = launchPlan({
       host: deps.host,
       binary: runnerBinary(deps),
       args: applyArgv({ ...a, handoff: deps.pid }),
       unit: unitName(deps.ctx.instance),
       stamp: now.toString(36),
-      hasSystemdRun: deps.exec.which("systemd-run") !== null && systemdUserReachable(deps.exec, deps.ctx.env),
+      hasSystemdRun: deps.exec.which("systemd-run") !== null && session.reachable,
       hasSetsid: deps.exec.which("setsid") !== null,
+      env: deps.ctx.env,
     });
+    runnerEnvironment = { ...runnerEnv(deps.ctx.env), ...session.envAdd };
   } catch (err) {
     return notStarted(err);
   }
@@ -3447,7 +3524,7 @@ function handOff(
     // throw it cannot tell apart from a launch.
     const client = deps.exec.runLogged(plan.command, {
       cwd: layout.installRoot,
-      env: runnerEnv(deps.ctx.env),
+      env: runnerEnvironment,
       logPath,
       timeoutMs: HANDOFF_CONFIRM_MS,
     });
@@ -3477,7 +3554,7 @@ function handOff(
     try {
       pid = deps.exec.spawnDetached(plan.command, {
         cwd: layout.installRoot,
-        env: runnerEnv(deps.ctx.env),
+        env: runnerEnvironment,
         logPath,
       });
     } catch (err) {

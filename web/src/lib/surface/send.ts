@@ -179,8 +179,10 @@ export interface ReadMark {
  * `commandSettle`: a command on a harness with a command list, from the S1 read that first passed to the
  * read at least the settle interval later that agreed with it on the rows under the box (2026-10-26); S1's
  * gap ends at the first of the two.
+ * `probeWrite`: the multiplexer's time for the probe character's write and its Backspace (2026-10-30); the
+ * probe's gap leaves it out, as the probe's read bound does.
  */
-export type SendStep = "profile" | "settle" | "s0" | "proof" | "clear" | "probe" | "write" | "s1" | "commandSettle" | "commit" | "s2";
+export type SendStep = "profile" | "settle" | "s0" | "proof" | "clear" | "probe" | "probeWrite" | "write" | "s1" | "commandSettle" | "commit" | "s2";
 
 /**
  * The receipt, a closed list of fields. It is written to disk, so it holds no screen text and no
@@ -421,9 +423,15 @@ export interface SendAnswer {
  * The rules an answer may name beside its reason. `notice_key`: the send's whole text is one of the
  * keys a notice above the box printed, which a box holding it alone would answer. `stale_screen`: the
  * input box on the screen does not take keys (a probe character landed elsewhere or nowhere) and a
- * second S0 read showed the same rows, so the screen is a stale image (2026-10-25).
+ * second S0 read showed the same rows, so the screen is a stale image (2026-10-25). `short_pane`: the
+ * read holds fewer rows than the profile's input box takes, so the pane is too short to draw it (a
+ * Herdr tab full of splits squeezed a Claude Code pane to two rows, 2026-10-30); the bridge's detail
+ * names the rows and the fix, and the phone shows it under its sentence. `late_keys`: the box held only
+ * Collie's earlier probe characters, which the agent drew after the probe had stopped looking, and its
+ * proof did not show in time either (Claude Code 2.1.314 busy under its agents footer, #623); the
+ * bridge's detail says to wait and send again, and the phone shows it under its sentence.
  */
-export const SEND_CAUSES = ["notice_key", "stale_screen"] as const;
+export const SEND_CAUSES = ["notice_key", "stale_screen", "short_pane", "late_keys"] as const;
 export type SendCause = (typeof SEND_CAUSES)[number];
 
 /**
@@ -471,10 +479,25 @@ export function sendLines(text: string): string[] {
   return lines;
 }
 
-/** The reserved lead a text starts with (after leading blanks), or null. */
+/**
+ * The first word of a text is a file the bridge saved from an upload: an absolute path whose last two
+ * segments are `uploads/<pane>-<base36 time>-<8 hex>.<ext>` (the name `bridge/server.ts` gives it).
+ * Pure and shape only, so the phone and the bridge agree and neither touches the disk. A real command
+ * name never holds a second slash.
+ */
+export function startsWithUploadPath(text: string): boolean {
+  const word = text.trimStart().split(/\s/u, 1)[0] ?? "";
+  return /^\/(?:[^/]+\/)*uploads\/[A-Za-z0-9_-]+-[a-z0-9]+-[0-9a-f]{8}\.[A-Za-z0-9]+$/u.test(word);
+}
+
+/**
+ * The reserved lead a text starts with (after leading blanks), or null. A text whose first word is
+ * the path of a saved upload (a screenshot sent with no words) starts with `/` but is no command.
+ */
 export function reservedLead(text: string, leads: readonly string[]): string | null {
   const head = text.trimStart();
-  return leads.find((lead) => head.startsWith(lead)) ?? null;
+  const lead = leads.find((candidate) => head.startsWith(candidate)) ?? null;
+  return lead === "/" && startsWithUploadPath(head) ? null : lead;
 }
 
 /** The text with every white-space character removed: the compare form for wrapped rows. */

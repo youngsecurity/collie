@@ -54,7 +54,44 @@ interface Leg {
 export function memberBehind(member: Member, current: string): boolean {
   if (current === "" || member.version === null) return false;
   if (member.installKind === "packaged") return false;
-  return compareRelease(member.version, current) < 0;
+  return compareRelease(levelVersion(member.version), current) < 0;
+}
+
+/**
+ * The version a DEVELOPMENT build is built on, or null when `reported` is not one: `1.28.0-dev+b178eb6`
+ * → `1.28.0`. The twin of `developmentBase` in `bridge/version.ts`, copied because this file imports
+ * nothing but `./semver`; split at the `+` exactly as that one does.
+ */
+export function developmentBase(reported: string): string | null {
+  const plus = reported.indexOf("+");
+  const core = plus < 0 ? reported : reported.slice(0, plus);
+  return core.endsWith(DEV_MARKER) && core.length > DEV_MARKER.length ? core.slice(0, -DEV_MARKER.length) : null;
+}
+
+const DEV_MARKER = "-dev";
+
+/**
+ * The version a member's report is LEVELLED by: a development build by its base, anything else as it
+ * is. A `-dev` build is that release plus later commits, and no run can move it, so it is not behind
+ * its own base; one of an OLDER base still is.
+ *
+ * Only the `-dev` marker is dropped; the build metadata stays, because this fork's release counter
+ * lives there (`1.28.3-dev+ys.1.b178eb6` → `1.28.3+ys.1.b178eb6`) and `compareRelease` orders by it.
+ */
+function levelVersion(version: string): string {
+  const base = developmentBase(version);
+  if (base === null) return version;
+  const plus = version.indexOf("+");
+  return plus < 0 ? base : `${base}${version.slice(plus)}`;
+}
+
+/**
+ * Can the lead hand a member the turn? Not on a development build: it states no release, so a crew
+ * run from it waits for the wall clock (2026-11-09). `build` is `update.build`, the build the lead
+ * answers the crew with; absent (an older bridge) reads as a release.
+ */
+export function leadLevelsCrew(build: string | undefined): boolean {
+  return build === undefined || developmentBase(build) === null;
 }
 
 /**
@@ -73,10 +110,22 @@ export function legStillFailed(leg: Leg, crew: readonly Member[], current: strin
   if (current === "") return true;
   const version = member?.version ?? null;
   if (version === null) return true;
-  return compareRelease(version, current) < 0;
+  return compareRelease(levelVersion(version), current) < 0;
 }
 
-/** Is there anything for a peers-only run to do? The twin of `peersNeedLevelling` on the bridge. */
-export function crewNeedsLevelling(crew: readonly Member[], legs: readonly Leg[], current: string): boolean {
-  return crew.some((member) => memberBehind(member, current)) || legs.some((leg) => legStillFailed(leg, crew, current));
+/**
+ * Is there anything for a peers-only run to do? Never from a lead on a development build. The twin of
+ * `crewNeedsLevelling` on the bridge.
+ */
+export function crewNeedsLevelling(a: {
+  readonly crew: readonly Member[];
+  readonly legs: readonly Leg[];
+  readonly current: string;
+  readonly build?: string;
+}): boolean {
+  if (!leadLevelsCrew(a.build)) return false;
+  return (
+    a.crew.some((member) => memberBehind(member, a.current)) ||
+    a.legs.some((leg) => legStillFailed(leg, a.crew, a.current))
+  );
 }

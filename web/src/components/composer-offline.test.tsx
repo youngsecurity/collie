@@ -70,7 +70,7 @@ describe("Composer — no action from cached state (M46 spec 11)", () => {
     await user.type(box, "hold this thought");
 
     const send = screen.getByRole("button", { name: "Reconnect to send" });
-    expect(send).toBeDisabled();
+    expect(send).toHaveAttribute("aria-disabled", "true");
     expect(send).toHaveAttribute("title", "Reconnect to send");
     expect(box).toHaveValue("hold this thought"); // typing works
     expect(loadDraft(undefined, "w1:p1")).toBe("hold this thought"); // and the draft saves
@@ -85,7 +85,7 @@ describe("Composer — no action from cached state (M46 spec 11)", () => {
     const calls = watchNetwork();
     renderComposer();
     await user.type(screen.getByPlaceholderText(/type a reply/i), "later");
-    expect(screen.getByRole("button", { name: "Reconnect to send" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Reconnect to send" })).toHaveAttribute("aria-disabled", "true");
 
     act(() => markLive("w1:p1"));
 
@@ -107,7 +107,7 @@ describe("Composer — no action from cached state (M46 spec 11)", () => {
       act(() => {
         vi.advanceTimersByTime(DEAD_DEBOUNCE_MS + 10);
       });
-      expect(screen.getByRole("button", { name: "Reconnect to send" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Reconnect to send" })).toHaveAttribute("aria-disabled", "true");
     } finally {
       vi.useRealTimers();
     }
@@ -127,7 +127,7 @@ describe("Composer — no action from cached state (M46 spec 11)", () => {
       act(() => {
         vi.advanceTimersByTime(LIVE_CAP_MS);
       });
-      expect(screen.getByRole("button", { name: "Reconnect to send" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Reconnect to send" })).toHaveAttribute("aria-disabled", "true");
     } finally {
       vi.useRealTimers();
     }
@@ -140,7 +140,7 @@ describe("Composer — no action from cached state (M46 spec 11)", () => {
     renderComposer({ stale: true });
     await user.type(screen.getByPlaceholderText(/type a reply/i), "from the cache");
     const send = screen.getByRole("button", { name: "Reconnect to send" });
-    expect(send).toBeDisabled();
+    expect(send).toHaveAttribute("aria-disabled", "true");
     await user.click(send);
     expect(calls).toEqual([]);
   });
@@ -150,7 +150,7 @@ describe("Composer — no action from cached state (M46 spec 11)", () => {
     markLive("w1:p2");
     renderComposer();
     await user.type(screen.getByPlaceholderText(/type a reply/i), "x");
-    expect(screen.getByRole("button", { name: "Reconnect to send" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Reconnect to send" })).toHaveAttribute("aria-disabled", "true");
   });
 
   it("shows no note while offline until something is typed", () => {
@@ -160,7 +160,7 @@ describe("Composer — no action from cached state (M46 spec 11)", () => {
       act(() => {
         vi.advanceTimersByTime(10_000);
       });
-      expect(screen.getByRole("button", { name: "Reconnect to send" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Reconnect to send" })).toHaveAttribute("aria-disabled", "true");
       expect(screen.queryByText(NOTE)).toBeNull();
     } finally {
       vi.useRealTimers();
@@ -188,7 +188,7 @@ describe("Composer — no action from cached state (M46 spec 11)", () => {
     expect(screen.queryByText(NOTE)).toBeNull();
     act(() => markSavedCopy("w1:p1"));
     await user.type(box, "i");
-    expect(screen.getByRole("button", { name: "Reconnect to send" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Reconnect to send" })).toHaveAttribute("aria-disabled", "true");
     expect(screen.queryByText(NOTE)).toBeNull();
   });
 
@@ -228,7 +228,7 @@ describe("Composer — no action from cached state (M46 spec 11)", () => {
     saveDraft(undefined, "w1:p1", "left from before");
     renderComposer();
     expect(screen.getByPlaceholderText(/type a reply/i)).toHaveValue("left from before");
-    expect(screen.getByRole("button", { name: "Reconnect to send" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Reconnect to send" })).toHaveAttribute("aria-disabled", "true");
     expect(screen.queryByText(NOTE)).toBeNull();
   });
 
@@ -259,7 +259,7 @@ describe("Composer — no action from cached state (M46 spec 11)", () => {
     await user.click(screen.getByRole("button", { name: "Dismiss the offline draft note" }));
     expect(screen.queryByText(NOTE)).toBeNull();
     // Dismissing changes nothing about the gate.
-    expect(screen.getByRole("button", { name: "Reconnect to send" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Reconnect to send" })).toHaveAttribute("aria-disabled", "true");
     // Spent: more typing does not bring it back, nor after a live stretch and a second outage.
     await user.type(box, "yz");
     expect(screen.queryByText(NOTE)).toBeNull();
@@ -288,6 +288,6 @@ describe("Composer — no action from cached state (M46 spec 11)", () => {
     markLive("w1:p1", Date.now() - LIVE_CAP_MS - 1_000);
     renderComposer();
     await user.type(screen.getByPlaceholderText(/type a reply/i), "x");
-    expect(screen.getByRole("button", { name: "Reconnect to send" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Reconnect to send" })).toHaveAttribute("aria-disabled", "true");
   });
 });

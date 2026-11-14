@@ -9,6 +9,7 @@
 import { asJsonBoolean, asJsonNumber, asJsonObject, asJsonString, type JsonValue } from "./json";
 import { scopeFromSearchParams, scopeSearch, SESSION_PARAM, type Scope } from "./scope";
 import type { AgentView } from "./types";
+import type { AgentLaunch } from "./agent-startup";
 
 // The two Machines paths live in `machine-paths.ts` so the service worker can build them: this file
 // reads `window`, which a worker has no type for. Re-exported, so every caller still asks nav.ts.
@@ -25,6 +26,15 @@ export function panePath(paneId: string, scope?: Scope): string {
  */
 export function historyPath(paneId: string, scope?: Scope): string {
   return `/pane/${encodeURIComponent(paneId)}/history${scopeSearch(scope)}`;
+}
+
+/**
+ * A pane's output, zoomed: the mirror's text alone, full screen, for pinch and pan. A child path of
+ * the pane, like History, so it is a level and the phone's back closes it (ADR 0067). It reads the
+ * pane's own loader and never moves the pane (ADR 0008).
+ */
+export function zoomPath(paneId: string, scope?: Scope): string {
+  return `/pane/${encodeURIComponent(paneId)}/zoom${scopeSearch(scope)}`;
 }
 
 /**
@@ -189,8 +199,8 @@ export function settingsPath(scope?: Scope): string {
  * Where the New page was opened from, which it reads back off its own address so a reload keeps it.
  * `machine` is the crew member it opens on (absent is the machine the view shows, else the lead);
  * `pane` is the pane whose folder and branch a worktree starts from, a pane's ⋯ "New agent in a
- * worktree"; `session` is that pane's named Herdr session. A pane is the lead's, so `machine` rides
- * beside it only to name the lead's own id.
+ * worktree"; `session` is that pane's named Herdr session. `machine` rides beside it as the pane's
+ * own machine, where the worktree is made (ADR 0126).
  *
  * `beside` is a pane whose SPACE the new agent starts in, as a new tab there (a large screen's "New
  * agent in this space", ADR 0120): the bridge's launch route takes it as `paneId`. It is not `pane`:
@@ -312,6 +322,22 @@ export function updatesPath(scope?: Scope): string {
  */
 export const PAIRED_DEVICES_HASH = "paired-devices";
 
+/** The fragment naming the Telemetry card on its page (M86 spec 02). */
+export const TELEMETRY_SETTINGS_HASH = "install-count";
+
+/**
+ * Settings → System → Telemetry: the page below System that holds the switch and its
+ * explanation (the dashboard notice's button lands here). A CHILD of System, carrying the scope.
+ */
+export function installCountPath(scope?: Scope): string {
+  return `/settings/system/install-count${scopeSearch(scope)}`;
+}
+
+/** Where the dashboard notice's button opens the Telemetry card. */
+export function telemetrySettingsPath(scope?: Scope): string {
+  return installCountPath(scope);
+}
+
 /** The fragment naming the Changes card inside Settings, which `changes-control.tsx` answers to. */
 export const CHANGES_SETTINGS_HASH = "changes";
 
@@ -361,12 +387,14 @@ export function pairLandingPath(search: string): string | null {
 // components and `lib/nav-entry.ts` seeds a cold deep link.
 
 /**
- * What Collie keeps in `location.state`: where a DOWN move came from, beside the one other field a
- * navigation carries (`freshPane`, a just-created pane the snapshot does not list yet).
+ * What Collie keeps in `location.state`: where a DOWN move came from, beside route-local extras
+ * such as a just-created pane and its independently scoped launch intent.
  */
 export interface NavState {
   from?: string;
   freshPane?: AgentView;
+  /** A named terminal-agent launch, scoped separately from the optimistic shell bootstrap. */
+  agentLaunch?: AgentLaunch;
   /**
    * The Changes tree opened this file from a `link` row. A symlink is listed and never followed, so
    * the row cannot say whether it points at a file or a folder, and the file read answers
@@ -420,7 +448,7 @@ const ANY_PANE = "/pane/*";
  *   L0 `/`
  *   L1 `/space/:id`, `/settings`, `/crew`, `/new` (from the dashboard, a space or a pane)
  *   L2 `/pane/:id`, `/new/add` (below the New page), `/space/:id/changes`, `/settings/:section`, `/settings/updates`, `/machines`
- *   L3 `/settings/voice/host`, `/settings/voice/model`, `/pane/:id/history`, `/pane/:id/changes` (a file view is the same path with `?repo=&path=`),
+ *   L3 `/settings/voice/host`, `/settings/voice/model`, `/settings/system/install-count`, `/pane/:id/history`, `/pane/:id/zoom`, `/pane/:id/changes` (a file view is the same path with `?repo=&path=`),
  *      `/space/:id/changes/commit`, `/space/:id/changes/files` (a folder or a file of the tree, with
  *      `?dir=` or `?path=`)
  *   L4 `/pane/:id/changes/commit` (the commit's file view adds `&path=`), `/pane/:id/changes/files`
@@ -450,7 +478,7 @@ export function ancestorsOf(pathname: string): string[] {
     return [`/pane/${id}/changes`, `/pane/${id}`, ANY_SPACE, "/"];
   }
   if (head === "pane" && seg.length === 2) return [ANY_SPACE, "/"];
-  if (head === "pane" && seg.length === 3 && (leaf === "history" || leaf === "changes")) {
+  if (head === "pane" && seg.length === 3 && (leaf === "history" || leaf === "zoom" || leaf === "changes")) {
     return [`/pane/${id}`, ANY_SPACE, "/"];
   }
   if (head === "settings" && seg.length === 1) return ["/"];
@@ -462,16 +490,20 @@ export function ancestorsOf(pathname: string): string[] {
   if (head === "new" && seg.length === 1) return ["/", ANY_SPACE, ANY_PANE];
   // "Add your own" is a level below the New page.
   if (head === "new" && seg.length === 2 && id === "add") return ["/new", "/", ANY_SPACE, ANY_PANE];
-  // Updates and the crew census are opened from the System section, so that is their nearest
-  // legitimate parent. `/settings` stays in the list behind it: both were reachable straight from
-  // the index before the split, and a stored `from` pointing there is still a step UP, not a push.
+  // Updates is the first row of the Settings index, so the index is its parent. `/settings/system`
+  // stays behind it: Updates sat in that section before, and a stored `from` pointing there is still
+  // a step UP, not a push. The crew census is opened from the System section.
   if (head === "settings" && seg.length === 2 && id === "updates") {
-    return ["/settings/system", "/settings", "/"];
+    return ["/settings", "/settings/system", "/"];
   }
   if (head === "settings" && seg.length === 2) return ["/settings", "/"];
   // Host speech and the Whistle model sit one level below Voice.
   if (head === "settings" && seg.length === 3 && id === "voice" && (leaf === "host" || leaf === "model")) {
     return ["/settings/voice", "/settings", "/"];
+  }
+  // The install count's page sits one level below System.
+  if (head === "settings" && seg.length === 3 && id === "system" && leaf === "install-count") {
+    return ["/settings/system", "/settings", "/"];
   }
   if (head === "crew" && seg.length === 1) return ["/settings/system", "/settings", "/"];
   // Machines is opened from the Settings index and from the crew card in System, so both are
@@ -678,7 +710,7 @@ export function parentChain(pathname: string, search: string): string[] {
     return [...chain, filesUnder(list), ...filesFolders(at).slice(0, at.path !== undefined ? undefined : -1).map((dir) => filesUnder(list, { dir }))];
   }
   if (head === "pane" && seg.length === 2) return [home];
-  if (head === "pane" && seg.length === 3 && (leaf === "history" || leaf === "changes")) {
+  if (head === "pane" && seg.length === 3 && (leaf === "history" || leaf === "zoom" || leaf === "changes")) {
     const pane = `/pane/${id}${q}`;
     return file ? [home, pane, `/pane/${id}/changes${q}`] : [home, pane];
   }
@@ -706,11 +738,14 @@ export function parentChain(pathname: string, search: string): string[] {
     return [...chain, newPath({ machine: at.machine, pane: at.pane, beside: at.beside, session: at.session })];
   }
   if (head === "settings" && seg.length === 2 && id === "updates") {
-    return [home, `/settings${q}`, `/settings/system${q}`];
+    return [home, `/settings${q}`];
   }
   if (head === "settings" && seg.length === 2) return [home, `/settings${q}`];
   if (head === "settings" && seg.length === 3 && id === "voice" && (leaf === "host" || leaf === "model")) {
     return [home, `/settings${q}`, `/settings/voice${q}`];
+  }
+  if (head === "settings" && seg.length === 3 && id === "system" && leaf === "install-count") {
+    return [home, `/settings${q}`, `/settings/system${q}`];
   }
   if (head === "crew" && seg.length === 1) return [home, `/settings${q}`, `/settings/system${q}`];
   if (head === "machines" && seg.length === 1) return [home, `/settings${q}`];

@@ -266,6 +266,9 @@ const CARD_FIXTURES = {
       // /resume list is read (session-picker.ts) and lifts as a menu, so it is not here.
       "codex--v0162-picker-model.txt",
       "codex--v0162-picker-permissions.txt",
+      // Codex 0.167.0's agent command center (`codex agents`, `/agents`, `←` on an empty box, and the
+      // trust prompt's `esc back`): a full-screen task list nothing lifts, `esc back` its way out.
+      "codex--v0167-command-center--w120.txt",
     ],
     notModals: [],
   },
@@ -296,11 +299,10 @@ const CARD_FIXTURES = {
   // README: the `/resume` Conversations picker after a search that matched nothing, a real dialog
   // with no row to select, so the menu grammar declines it and Escape is the way out, and a checkbox
   // question, which no recipe here ticks. Every other AGY dialog fixture is one its grammars read.
-  // agy--working.txt is a mid-turn screen (M56 spec 14 review restored the first capture): its footer
-  // `esc to cancel` is also the key hint of an agy dialog, so the card shows on a busy pane and offers
-  // Escape over it. A known false positive of the agy grammar, left for its own fix.
-  agy: { modals: ["agy--ask-multi.txt", "agy--resume-picker-nomatch.txt"], notModals: ["agy--working.txt"] },
-  antigravity: { modals: ["agy--ask-multi.txt", "agy--resume-picker-nomatch.txt"], notModals: ["agy--working.txt"] },
+  // `agy--working.txt` keeps its composer live (`OWN_ESC_STATUS` in `agy/chrome.ts`), so no card shows
+  // on a busy pane.
+  agy: { modals: ["agy--ask-multi.txt", "agy--resume-picker-nomatch.txt", "agy--v1412-subagent-band-permission.txt"], notModals: [] },
+  antigravity: { modals: ["agy--ask-multi.txt", "agy--resume-picker-nomatch.txt", "agy--v1412-subagent-band-permission.txt"], notModals: [] },
   // Every opencode picker: composerReady refuses it (the picker shape) and no grammar reads it, so
   // Escape, which closes a picker (probed on 1.18.32), is its way out. The permission steps and every
   // question dialog the grammars lift (single select, multi select, a many-question call, the Confirm
@@ -319,6 +321,10 @@ const CARD_FIXTURES = {
       // opencode 2.1.1's open free-text input: the list's footer becomes `enter done  esc close`, so
       // no grammar lifts it and the card still has to stand over it (2026-10-27).
       "oc--v211-question--multi--free-text.txt",
+      // opencode 2.2.6's ctrl+p palette and `/models` picker: still pickers with `esc` on the title
+      // row, so the card stands over them as over 1.18's (#749, 2026-11-09).
+      "oc--v226-command-palette.txt",
+      "oc--v226-models-picker.txt",
     ],
     notModals: [],
   },
@@ -349,7 +355,12 @@ const CARD_FIXTURES = {
       // omp 18.12.2's goal menu, which a bare `/goal` opens in a goal turn (lab, 2026-10-22).
       "omp--v18-12-2-goal-bare-menu--w119.txt",
       "omp--v18-4-resume-nomatch.txt",
-      "omp--v18-4-switch-nerd.txt",
+      // omp 18.17.0's `/usage` dashboard, a full-screen modal nothing lifts (lab, 2026-11-06).
+      "omp--v18-17-0-usage-dashboard--w120.txt",
+      // omp 18.18.0's `nerd` review with every question unanswered: ask.ts reads only a complete review.
+      "omp--v18-18-0-nerd-ask-review-unanswered--w250.txt",
+      // omp 18.18.2's batch review with questions still unanswered: never lifted (lab, 2026-11-09).
+      "omp--v18-18-2-ask-batch-review-unanswered--w120.txt",
       "omp--v18-4-switch-nomatch.txt",
       "omp--v18-4-switch-quick-roles.txt",
       "omp--v18-4-switch-task.txt",

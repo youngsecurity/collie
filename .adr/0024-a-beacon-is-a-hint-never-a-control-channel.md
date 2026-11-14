@@ -111,3 +111,29 @@ stayed empty). The `SessionStart` hook input already carries `model` in an inter
 
 The blast radius is unchanged: a hostile edge can make a tag name a wrong model, a lie on screen. No
 rule, TTL, cache state or send reads it.
+
+## Amended 2026-10-30: on herdr-core a beacon adds only the session ref
+
+On herdr-core the core names the agent and its status from the program's own report, so the
+decorator wraps it in a session-only mode (M74 spec 04, `bridge/beacon/decorate.ts`): a live beacon
+adds only the agent session ref (`agentSessionRef`) to a pane the core already reads as that harness,
+and never sets the agent or the status. The decorator's rule that a wrapped adapter declares neither
+capability is narrowed to neither the agent nor the status: an adapter that declares
+`agentSessionRef` is still refused at construction, and one that declares only `agentDetection` gets
+the session ref and nothing else. The blast radius shrinks: a hostile edge can make such a pane look
+up a wrong session, a lie on screen, and can no longer rename it or change its status.
+
+## Amended 2026-11-04: a terminal label is a path hint
+
+On herdr-core a program inside the terminal can set a label (`hc label`). Collie reads
+`<harness>.session_file` as a session hint (#675, PR #677), with exactly the standing of pi's `path`
+ref: confined per root after symlink resolution, inside the folder for the pane's cwd, a session id
+for a name, or not read at all. It comes before the command line's path, because the live file moves
+on `/new` and `/resume` and the command line cannot follow.
+
+Accepted residual risk. A stale label (the extension removed while the terminal lives; it relabels on
+every session start) or a label set by another process of the same user in the same terminal can name
+the pane's own earlier session in that folder. It cannot name a neighbour's folder, and it cannot name
+a file outside the roots. The bound is a Chat of one's own earlier session in the same folder. A pid
+or start-time token beside the label is the next step if that bound ever bites in the field. It is
+not built.

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import {
   Outlet,
   useLoaderData,
+  useLocation,
   useNavigation,
   useParams,
   useRouteError,
@@ -9,10 +10,13 @@ import {
 } from "react-router";
 
 import { useNavTrail } from "@/hooks/use-nav";
+import { useSlotMemory } from "@/hooks/use-slot-memory";
+import { readAgentLaunch } from "@/lib/agent-startup";
 import { usePolling } from "@/hooks/use-polling";
 import { usePollBusy } from "@/hooks/use-poll-busy";
 import { useBusyWhile } from "@/lib/busy";
 import { useAgentTransitions } from "@/hooks/use-transitions";
+import { useNotificationSweep } from "@/hooks/use-notification-sweep";
 import { usePushSetup } from "@/hooks/use-push";
 import { useConnectionLost } from "@/hooks/use-connection-lost";
 import { UpdateRibbon } from "@/components/update-ribbon";
@@ -27,6 +31,7 @@ import { CrewProvider } from "@/components/crew-provider";
 import { CollieMark } from "@/components/collie-mark";
 import { TourHost } from "@/components/tour-sheet";
 import { describeThrownError } from "@/lib/api-error-message";
+import { findPane, paneRowKey } from "@/lib/hosts";
 import { homePath } from "@/lib/nav";
 import { scopeFromUrl } from "@/lib/session";
 import { noteLeadName, noteSnapshotCrew, noteSnapshotRun } from "@/lib/update-run-store";
@@ -106,7 +111,9 @@ export function RootLayout() {
 
   // The scope rides along so a "look now" on foreground lands on the machine and session the page is
   // actually showing — a refresh aimed at the lead would leave a peer's herd exactly as stale.
-  const pollMs = usePolling(data, paneId, data.scope);
+  const location = useLocation();
+  const launch = paneId === undefined ? undefined : readAgentLaunch(location.state, paneId, data.scope);
+  const pollMs = usePolling(data, paneId, data.scope, undefined, launch?.id);
   // Surface the busy bar when a navigation or a poll runs slow, each against its own threshold —
   // routine fast polls/navigations stay invisible. Mounted here so the whole app shares one
   // detector inside the router context.
@@ -121,7 +128,17 @@ export function RootLayout() {
   useBusyWhile(useNavigation().state !== "idle");
   // The history the tab has walked, for the Files breadcrumb's pop (lib/nav-trail.ts).
   useNavTrail();
-  useAgentTransitions(data.agents, paneId ?? null);
+  // Which pane this tab reopens on, when it came through `/slot/<n>` (lib/slots.ts).
+  useSlotMemory();
+  // The open pane as a ROW, so a peer's pane that shares its id is not silenced along with it.
+  const openPane =
+    paneId === undefined
+      ? undefined
+      : findPane(data.agents, paneId, pane?.scope ?? data.scope, data.servers, data.sessions);
+  useAgentTransitions(data.agents, openPane ? paneRowKey(openPane) : null);
+  // A notification whose clear the bridge skipped (its daily budget, bridge/push.ts rule 4) closes here
+  // instead, once a live snapshot says nothing waits on it any more.
+  useNotificationSweep(data);
   // THE PUSH RACE. `usePushSetup` can raise the browser's permission prompt on its own, behind the
   // tour's backdrop, so it waits until the tour has decided it is not showing. "pending" is what
   // makes this correct rather than racy: a child's effect runs before the parent's, but the state it
@@ -177,7 +194,11 @@ export function RootLayout() {
       {/* Report a problem (ADR 0123): the one sheet the composer's card, the pane menu and Settings open
           through lib/report/store.ts. Renders nothing until the first open, and loads the sheet then. */}
       <ReportDoor />
-      <div className="flex h-(--app-h) flex-col overflow-hidden">
+      {/* `relative` makes this column the containing block of last resort, so its `overflow-hidden`
+          also clips an absolute element no closer box contains (an `sr-only` word deep in a list).
+          Without it such an element grew the DOCUMENT, and the page scrolled under the header
+          (1.27.1). Its box is the viewport's, so nothing that was placed against the page moves. */}
+      <div className="relative flex h-(--app-h) flex-col overflow-hidden">
         {/* THE ONE HEADER, and the first thing on the screen in every state. It survives a
             navigation because it is rendered HERE rather than inside `<Outlet/>`: all six routes used
             to mount their own copy, and a header inside the outlet unmounts and remounts on every
@@ -278,7 +299,7 @@ export function BootSplash() {
             screen's ground, `bg-background`, the knockout that puts a near-side bead in front of
             the head. The "Connecting to the herd…" copy below carries the accessible meaning, so
             the mark is decorative. */}
-        <CollieMark size={64} weight="header" loading paper="var(--background)" />
+        <CollieMark size={64} weight="header" state="loading" paper="var(--background)" />
         <span className="text-sm">{t("error.boot.connecting")}</span>
       </div>
     );
@@ -291,7 +312,7 @@ export function BootSplash() {
           `paper` is this screen's ground, `bg-background`, which is the knockout colour that puts a
           near-side bead in front of the head. The "Not connected" copy below carries the accessible
           meaning, so the mark is decorative. */}
-      <CollieMark size={64} weight="header" paper="var(--background)" className="opacity-40 grayscale" />
+      <CollieMark size={64} weight="header" state="idle" paper="var(--background)" />
       <p className="font-medium text-foreground">{t("error.boot.title")}</p>
       <p className="max-w-xs text-sm text-muted-foreground">{t("error.boot.body")}</p>
       <button

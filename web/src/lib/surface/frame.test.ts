@@ -160,7 +160,10 @@ const DRAWS_THE_SAME_BOX = (name: string): boolean =>
   name.startsWith("pi--omo-") ||
   name.startsWith("hermes--") ||
   name === "pi--prose-quoted-omo-dialog-above-editor.txt" ||
-  name === "pi--v130-gentle-draft-wrapped.txt";
+  name === "pi--v130-gentle-draft-wrapped.txt" ||
+  // An extension's editor with `❯` in column 0 between pi's own rules (issue 722).
+  name.startsWith("pi--v150-gentle-quiet-") ||
+  name.startsWith("pi--v130-quiet-prompt-");
 
 describe("non-Claude fixtures", () => {
   it("yield null with the Claude profile, except the harnesses that draw the same box", () => {
@@ -418,6 +421,43 @@ describe("findInputFrame", () => {
     expect(findInputFrame(lines(RULE, "❯", RULE), IDLE)!.interior.text).toBe("");
   });
 
+  it("a cursor on the first glyph of a ghost suggestion is a placeholder, not a draft (issue 659)", () => {
+    // Claude Code with the next-steps plugin draws the suggestion in the empty box with its cursor, a
+    // reverse-video cell, on the first letter: `ESC[7m` + "A", then the dim rest.
+    const cursor = (text: string): AnsiSegment => ({ ...plainRun(text), inverse: true });
+    const box = (...runs: AnsiSegment[]): StyledLine[] => [styled(plainRun(RULE)), styled(plainRun("❯ "), ...runs), styled(plainRun(RULE))];
+
+    const ghost = findInputFrame(box(cursor("A"), dim("dd unit tests for parse_csv_line")), IDLE)!;
+    expect(ghost.placeholder).toBe(true);
+    expect(ghost.anchorsHit).toContain("placeholder-sgr");
+  });
+
+  it("a one-letter draft under the cursor stays a draft: nothing dim follows the cursor cell", () => {
+    const cursor = (text: string): AnsiSegment => ({ ...plainRun(text), inverse: true });
+    const box = (...runs: AnsiSegment[]): StyledLine[] => [styled(plainRun(RULE)), styled(plainRun("❯ "), ...runs), styled(plainRun(RULE))];
+
+    expect(findInputFrame(box(cursor("A")), IDLE)!.placeholder).toBe(false);
+    expect(findInputFrame(box(plainRun("a"), cursor(" ")), IDLE)!.placeholder).toBe(false);
+  });
+
+  it("a typed word before dim completion text stays a draft: typed cells are not dim", () => {
+    const cursor = (text: string): AnsiSegment => ({ ...plainRun(text), inverse: true });
+    const box = (...runs: AnsiSegment[]): StyledLine[] => [styled(plainRun(RULE)), styled(plainRun("❯ "), ...runs), styled(plainRun(RULE))];
+
+    expect(findInputFrame(box(plainRun("add"), dim(" unit tests")), IDLE)!.placeholder).toBe(false);
+    expect(findInputFrame(box(plainRun("add"), cursor(" "), dim("unit tests")), IDLE)!.placeholder).toBe(false);
+    // The cursor skip is for the first cell only: a reverse-video cell after typed text is no ghost cursor.
+    expect(findInputFrame(box(plainRun("a"), cursor("d"), dim("d unit tests")), IDLE)!.placeholder).toBe(false);
+  });
+
+  it("an all-dim hole is still a placeholder, and a non-dim cell after the cursor cell leaves a draft", () => {
+    const cursor = (text: string): AnsiSegment => ({ ...plainRun(text), inverse: true });
+    const box = (...runs: AnsiSegment[]): StyledLine[] => [styled(plainRun(RULE)), styled(plainRun("❯ "), ...runs), styled(plainRun(RULE))];
+
+    expect(findInputFrame(box(dim("add unit tests")), IDLE)!.placeholder).toBe(true);
+    expect(findInputFrame(box(cursor("a"), plainRun("dd unit tests")), IDLE)!.placeholder).toBe(false);
+  });
+
   it("marks a placeholder by its colours alone: a whole hole in the placeholder colour, no faint attribute (issue 510)", () => {
     // Muse paints the empty box's tip — and the model's prompt suggestion, whose words no text list
     // can name — in rgb(175,177,179) with no SGR 2, where typed text is rgb(31,35,40)
@@ -449,6 +489,49 @@ describe("findInputFrame", () => {
     expect(typedUnder.placeholder).toBe(false);
     const nearMiss = findInputFrame(box(promptRow({ text: "Run the test suite", fg: "rgb(175,176,180)" })), MUSE)!;
     expect(nearMiss.placeholder).toBe(false);
+  });
+
+  it("marks Claude Code's rotating `Try \"…\"` hint by its shape on a plain-text read (herdr-core, 2026-10-30)", () => {
+    // herdr-core reads the screen as plain text: the hint's faint attribute is gone, so only its shape
+    // tells it from typed text. Live on Claude Code 2.1.314; a walky talky delivery stayed held.
+    const capture = readFileSync(join(FIXTURES_DIR, "surface", "claude--v2-1-314-placeholder-plain--w120.txt"), "utf8");
+    const live = findInputFrame(splitLines(parseAnsi(capture)), IDLE)!;
+    expect(live.interior.text).toBe('Try "refactor <filepath>"');
+    expect(live.placeholder).toBe(true);
+    expect(live.anchorsHit).toContain("placeholder-text");
+    for (const hint of ['Try "fix lint errors"', 'Try "how do I log an error?"', 'Try ""']) {
+      expect(findInputFrame(lines(RULE, `❯ ${hint}`, RULE), IDLE)!.placeholder).toBe(true);
+      expect(findInputFrame(lines(RULE, `❯\u00a0${hint}`, RULE), IDLE)!.placeholder).toBe(true);
+    }
+    // Typed text around the shape, or a quote inside it, is a draft.
+    for (const draft of ['Try "fix lint errors" now', 'please Try "fix lint errors"', 'Try "a" and "b"', 'Try "unclosed', "Try fix lint errors"]) {
+      expect(findInputFrame(lines(RULE, `❯ ${draft}`, RULE), IDLE)!.placeholder).toBe(false);
+    }
+  });
+
+  it("counts the `Try \"…\"` shape only on a read with no styling: a typed one on a coloured read stays a draft", () => {
+    // tmux, zellij and the Herdr TUI hand out colour. Typed text is default ink there, with no colour or
+    // flag of its own, but the prompt marker and the rules carry colour, so the read is styled and the
+    // shape rule stands down. Only a read with no styling anywhere (herdr-core) lets the shape decide.
+    const GREY = "rgb(153,153,153)";
+    const rule: FrameRow = { segments: [{ text: RULE, fg: GREY }] };
+    const marker: FrameRun = { text: "❯ ", fg: GREY };
+    const hint = 'Try "fix lint errors"';
+
+    const typed = findInputFrame([rule, { segments: [marker, { text: hint }] }, rule], IDLE)!;
+    expect(typed.placeholder).toBe(false);
+    expect(typed.interior.text).toBe(hint);
+    expect(typed.anchorsHit).not.toContain("placeholder-text");
+
+    const faint = findInputFrame([rule, { segments: [marker, { text: hint, dim: true }] }, rule], IDLE)!;
+    expect(faint.placeholder).toBe(true);
+    expect(faint.interior.text).toBe(hint);
+    expect(faint.anchorsHit).toContain("placeholder-sgr");
+    expect(faint.anchorsHit).not.toContain("placeholder-text");
+
+    const plain = findInputFrame(plainRows([RULE, `❯ ${hint}`, RULE]), IDLE)!;
+    expect(plain.placeholder).toBe(true);
+    expect(plain.anchorsHit).toContain("placeholder-text");
   });
 
   it("a faint marker in front of a real draft is not a placeholder", () => {
@@ -649,6 +732,17 @@ describe("the interior walk on rules with no prompt glyph (M56 spec 14)", () => 
     expect(findInputFrame(lines("reply", RULE, "", RULE, ...footer), PI)!.interior.text).toBe("");
     expect(findInputFrame(lines("reply", RULE, "hello there", RULE, ...footer), PI)!.interior.text).toBe("hello there");
     expect(findInputFrame(lines(RULE, "  line one", "  line two", RULE, ...footer), PI)!.interior.text).toBe("line one line two");
+  });
+
+  // M80 spec 04 (lab, pi 1.4.0, 2026-11-01): a message with rule rows of its own. Its last typed rule
+  // was read as the top edge, the box read `end`, and the send ended typed_not_submitted (mismatch).
+  it("reads rule rows the draft holds as draft rows: only a row as wide as the box is its edge", () => {
+    const typed = "─".repeat(20);
+    const frame = findInputFrame(lines("reply", RULE, "Reply with only OK.", typed, "some text", typed, "end", RULE, ...footer), PI)!;
+    expect(frame.top).toBe(1);
+    expect(frame.interior.text).toBe(`Reply with only OK. ${typed} some text ${typed} end`);
+    // A typed rule as wide as the box is still read as the edge: the reader cannot tell the two apart.
+    expect(findInputFrame(lines("reply", RULE, "some text", RULE, "end", RULE, ...footer), PI)!.interior.text).toBe("end");
   });
 
   it("reads the Working label on the top rule", () => {

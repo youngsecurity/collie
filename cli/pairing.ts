@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { envBool } from "../bridge/config.ts";
 
-import { formatAuditLine } from "../bridge/audit.ts";
+import { type AuditEntry, formatAuditLine } from "../bridge/audit.ts";
 import { ADDED_FILE, formatAddedFile, parseAddedText } from "../bridge/launchers-added.ts";
 import {
   acquireRegistryLockSync,
@@ -24,7 +24,8 @@ import type { CliContext } from "./context.ts";
 import { EXIT, type Io } from "./io.ts";
 import { urlToEncode } from "./qr.ts";
 import type { Exec, Files } from "./sys.ts";
-import { renderQr } from "../scripts/qr.ts";
+import type { PanePlace } from "./walky.ts";
+import { qrModules, renderQr } from "../scripts/qr.ts";
 
 // `pair`, `devices list`, `devices revoke` — the operator's half of device pairing. The pure
 // decisions all live in `bridge/pairing.ts`; this module is the terminal, the two files under the
@@ -71,6 +72,11 @@ export interface PairingDeps {
    * launcher rows it removes there (ADR 0094). Absent writes no line.
    */
   appendAudit?: (line: string) => void;
+  /**
+   * Where the running bridge places the pane `pair` runs in (`askPanePlace`, cli/walky.ts). Absent: not
+   * asked, so `pair` runs as it always did.
+   */
+  panePlace?: () => Promise<PanePlace>;
 }
 
 /**
@@ -150,10 +156,17 @@ function lifetimeText(ms: number): string {
  * else is refused rather than ignored — `--expire 30d` silently minting a token that never expires
  * is the one typo this verb must not forgive.
  */
-function parsePairArgs(args: readonly string[]): { ok: true; lifetimeMs?: number } | { ok: false; reason: string } {
+function parsePairArgs(
+  args: readonly string[],
+): { ok: true; lifetimeMs?: number; json: boolean } | { ok: false; reason: string } {
   let raw: string | undefined;
+  let json = false;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!;
+    if (arg === "--json") {
+      json = true;
+      continue;
+    }
     if (arg === "--expires") {
       const next = args[i + 1];
       if (next === undefined || next.startsWith("--")) return { ok: false, reason: "--expires needs a duration, for example `--expires 30d`" };
@@ -167,12 +180,52 @@ function parsePairArgs(args: readonly string[]): { ok: true; lifetimeMs?: number
     }
     return { ok: false, reason: `unknown argument \`${arg}\`` };
   }
-  if (raw === undefined) return { ok: true };
+  if (raw === undefined) return { ok: true, json };
   const parsed = parseLifetime(raw);
-  return parsed.ok ? { ok: true, lifetimeMs: parsed.ms } : { ok: false, reason: parsed.reason };
+  return parsed.ok ? { ok: true, lifetimeMs: parsed.ms, json } : { ok: false, reason: parsed.reason };
 }
 
 // ── pair ─────────────────────────────────────────────────────────────────────
+
+/**
+ * What `collie pair` (every form, `--json` included) says inside an agent's pane, on stderr. A SPEED BUMP,
+ * NOT A WALL: the CLI asks the running bridge over the walky socket whether the pane its markers name
+ * runs an agent, and refuses only on a yes. A paired device can read and drive every pane, so an agent
+ * that pairs one for itself has skipped every tap Collie asks a person for. No bridge, a bridge
+ * that does not know the pane, or no markers at all lets `pair` run as before; a process that strips the
+ * markers, or writes the pending file itself, gets past any check here. The user account is the real
+ * boundary (docs/security.md, "What a program running as you can still do").
+ */
+export const PAIR_AGENT_PANE_REFUSAL: readonly string[] = [
+  "error: collie pair makes a code that gives a device full access, and this runs in a pane where an agent works.",
+  "An agent does not pair a device for itself. Tell your operator that a device needs pairing.",
+  "A person runs collie pair in a shell pane or a terminal of their own.",
+];
+
+/**
+ * Where the bridge places this pane. Unasked, or with no answer: `unknown` (see above). Outside a pane
+ * `askPanePlace` answers `unknown` without asking anything. The marker check stays there and is not
+ * repeated here: `cli/beacon.ts` reaches the surface profiles, and this module is on the bare-checkout
+ * path to `build` (cli/main.test.ts), which must stay free of them.
+ */
+async function placeOfPane(deps: PairingDeps): Promise<PanePlace> {
+  if (deps.panePlace === undefined) return { kind: "unknown" };
+  return deps.panePlace().catch((): PanePlace => ({ kind: "unknown" }));
+}
+
+/** The audit line of a refused `pair`: the pane the bridge placed, and why. No code was made. */
+function auditRefusal(deps: PairingDeps, place: PanePlace): void {
+  const content = deps.ctx.env.COLLIE_AUDIT_CONTENT === "none" ? "none" : "preview";
+  const entry: AuditEntry = { action: "pair-refused", detail: { reason: "agent-pane" } };
+  if (place.paneId !== undefined) entry.paneId = place.paneId;
+  if (place.session !== undefined) entry.session = place.session;
+  try {
+    deps.appendAudit?.(formatAuditLine(entry, (deps.now ?? Date.now)(), content));
+  } catch (err) {
+    // The refusal stands whether or not its line lands, as every audit write in Collie does.
+    deps.io.err(`note: could not write the audit line: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
 
 /**
  * `collie pair` — mint the one-time code the phone spends on `/api/pair`.
@@ -188,12 +241,23 @@ export async function cmdPair(deps: PairingDeps, args: readonly string[] = []): 
   const parsed = parsePairArgs(args);
   if (!parsed.ok) {
     deps.io.err(`error: ${parsed.reason}`);
-    deps.io.err("usage: collie pair [--expires <duration>]   durations: 12h, 30d, 2w");
+    deps.io.err("usage: collie pair [--expires <duration>] [--json]   durations: 12h, 30d, 2w");
     return EXIT.USAGE;
+  }
+  const place = await placeOfPane(deps);
+  if (place.kind === "agent") {
+    for (const line of PAIR_AGENT_PANE_REFUSAL) deps.io.err(line);
+    auditRefusal(deps, place);
+    return EXIT.REFUSED;
   }
   const now = (deps.now ?? Date.now)();
   const code = generateCode(deps.random);
   const pending = newPending(code, now, CODE_TTL_MS, parsed.lifetimeMs);
+  // The pane this ran in, for the pairing's audit line (bridge/pair-audit.ts). Only a pane the bridge
+  // placed and named; otherwise the file stays exactly as it was before the field existed.
+  if (place.session !== undefined && place.paneId !== undefined) {
+    pending.mintedIn = { session: place.session, paneId: place.paneId };
+  }
   const path = pendingPath(deps.ctx);
   const replaced = deps.files.exists(path);
 
@@ -204,6 +268,10 @@ export async function cmdPair(deps: PairingDeps, args: readonly string[] = []): 
     return EXIT.FAIL;
   }
 
+  if (parsed.json) {
+    deps.io.out(JSON.stringify(await pairJson(deps, code, pending.expiresAt, parsed.lifetimeMs, replaced)));
+    return EXIT.OK;
+  }
   const minutes = Math.round((pending.expiresAt - now) / 60_000);
   deps.io.out(code);
   deps.io.out("");
@@ -234,18 +302,11 @@ export async function cmdPair(deps: PairingDeps, args: readonly string[] = []): 
  * on its own, and the operator can still type it.
  */
 async function printPairQr(deps: PairingDeps, code: string): Promise<void> {
-  const base = urlToEncode({ ctx: deps.ctx, io: deps.io, exec: deps.exec });
-  if (base === null) {
+  const url = pairUrl(deps, code);
+  if (url === null) {
     deps.io.out("  No QR: the bridge URL is unknown, see the note above; the code above still works.");
     return;
   }
-  // NO `#paired-devices` FRAGMENT, deliberately, even though the Settings card answers to one. HTML
-  // runs the focusing steps on a fragment target once it exists, and it does that AFTER the page's
-  // scripts — so the browser itself would pull focus onto the card and off the name field, which is
-  // the only thing left to type. `pair` alone is the signal: the card scrolls itself into view when
-  // it sees it (web/src/components/paired-devices.tsx). Measured in a browser, not reasoned about.
-  // `CODE_ALPHABET` is URL-safe, so the encode is a no-op — it is here so it stays true if it isn't.
-  const url = `${base.replace(/\/+$/, "")}/settings?pair=${encodeURIComponent(code)}`;
   let drawn: string;
   try {
     drawn = await renderQr(url);
@@ -258,6 +319,67 @@ async function printPairQr(deps: PairingDeps, code: string): Promise<void> {
   deps.io.out("");
   deps.io.out(url);
   deps.io.out("  Scan it: Collie opens Settings on the phone with the code filled in.");
+}
+
+/**
+ * The URL the QR carries: Settings on the bridge's door with the code filled in, or null with the
+ * reason already on stderr (`urlToEncode`).
+ */
+function pairUrl(deps: PairingDeps, code: string): string | null {
+  const base = urlToEncode({ ctx: deps.ctx, io: deps.io, exec: deps.exec });
+  if (base === null) return null;
+  // NO `#paired-devices` FRAGMENT, deliberately, even though the Settings card answers to one. HTML
+  // runs the focusing steps on a fragment target once it exists, and it does that AFTER the page's
+  // scripts — so the browser itself would pull focus onto the card and off the name field, which is
+  // the only thing left to type. `pair` alone is the signal: the card scrolls itself into view when
+  // it sees it (web/src/components/paired-devices.tsx). Measured in a browser, not reasoned about.
+  // `CODE_ALPHABET` is URL-safe, so the encode is a no-op — it is here so it stays true if it isn't.
+  return `${base.replace(/\/+$/, "")}/settings?pair=${encodeURIComponent(code)}`;
+}
+
+/**
+ * `collie pair --json`: the same code, for a program that shows it in its own window (the herdr-app
+ * mod in `herdr-app-mod/collie/`). One line on stdout and nothing else there; `urlToEncode`'s
+ * refusals still go to stderr. `qr` is {@link qrModules}'s bitmap of `url`, so the program draws the
+ * code without a QR library of its own; both are null when there is no URL worth scanning. Field
+ * names are a contract; add, do not rename.
+ */
+export interface PairJson {
+  readonly code: string;
+  /** ISO 8601, when the code dies unclaimed. */
+  readonly expiresAt: string;
+  /** How long the device's token lives once claimed, or null for a token that never expires. */
+  readonly tokenLifetimeMs: number | null;
+  /** A code from an earlier `pair` was still pending and is now dead. */
+  readonly replaced: boolean;
+  readonly url: string | null;
+  readonly qr: readonly string[] | null;
+}
+
+async function pairJson(
+  deps: PairingDeps,
+  code: string,
+  expiresAt: number,
+  lifetimeMs: number | undefined,
+  replaced: boolean,
+): Promise<PairJson> {
+  const url = pairUrl(deps, code);
+  let qr: string[] | null = null;
+  if (url !== null) {
+    try {
+      qr = await qrModules(url);
+    } catch (err) {
+      deps.io.err(`note: no QR bitmap: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  return {
+    code,
+    expiresAt: new Date(expiresAt).toISOString(),
+    tokenLifetimeMs: lifetimeMs ?? null,
+    replaced,
+    url,
+    qr,
+  };
 }
 
 // ── devices ──────────────────────────────────────────────────────────────────

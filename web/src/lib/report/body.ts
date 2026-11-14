@@ -9,6 +9,10 @@
 // both off by default, add the line the bridge kept of each text (`row.line`, which the bridge already
 // leaves out when it looks like a secret) and the pane's last rows, masked by the bridge.
 //
+// The setup block also lists the doctor's `sends-<harness>`, `holds-<harness>` and `screen-<harness>`
+// rows the bridge answered (M71 spec 05), one line each, `<status> <check>: <detail>`: counts, ages,
+// request ids and causes. Never a held text, never a typed line, never a remedy.
+//
 // ── HOW IT LEAVES ────────────────────────────────────────────────────────────
 // A plain link to `github.com/AltanS/collie/issues/new?template=from-app.yml&title=…&<field id>=…`,
 // opened in the person's own browser under their own GitHub login. GitHub fills an issue form's fields
@@ -17,9 +21,15 @@
 // `labels` parameter needs triage rights, so the label comes from the template itself.
 //
 // ── THE LINK HAS A LENGTH ────────────────────────────────────────────────────
-// GitHub answers a URL past its server limit with a 414. The link stays under {@link ISSUE_URL_MAX}
-// characters: the screen loses rows from its top first, then the oldest sends go, then the person's
-// own line is cut. The sheet says what was cut, and Copy report holds the whole text.
+// GitHub drops a body, or answers a 414, when the URL passes its server limit, and only the title
+// survives. The link stays under {@link ISSUE_URL_MAX} characters: the screen loses rows from its top
+// first (a `... N rows cut` line says so), then the doctor rows go (`screen-*`, then `holds-*`, then
+// `sends-*`), then the oldest sends go, then the person's own line is cut. The signature line and the
+// setup block always stay. The sheet says what was cut, and Copy report holds the whole text.
+//
+// When the link still does not fit after all of that, the link is not the way out: `ReportLink.clipboard`
+// is true, the sheet copies the whole report and opens an issue whose body is one line that says the
+// report is on the clipboard ({@link CLIPBOARD_LINE}). The phone never files an empty body.
 //
 // ── FROM THE UNREAD-DIALOG CARD ──────────────────────────────────────────────
 // The fourth door (amendment 2026-10-28, #554). The trouble is a screen the phone's reader could not
@@ -32,8 +42,10 @@
 // The report's own words stay English on purpose: it is filed in an English tracker. The sheet around
 // it is translated.
 
-import type { ReportContext } from "./context";
+import { asJsonObject, asJsonString, parseJson, type JsonObject } from "../json";
+import type { ReportContext, ReportDoctorRow } from "./context";
 import type { SendReceiptRow, SendStep } from "../surface/send";
+import { harnessOf } from "./signal";
 import type { DialogTrouble, Episode } from "./store";
 
 export type { ReportContext } from "./context";
@@ -42,8 +54,16 @@ export type { ReportContext } from "./context";
 export const ISSUE_REPO = "AltanS/collie";
 export const ISSUE_TEMPLATE = "from-app.yml";
 
-/** The longest link the sheet opens. GitHub's limit is about 8 KB; this leaves room for its own redirect. */
-export const ISSUE_URL_MAX = 6000;
+/**
+ * The longest link the sheet opens, in characters of the percent-encoded URL. GitHub's new-issue URL
+ * limit is about 8 KB (8192 bytes); past it the body is dropped and only the title survives. Signed out,
+ * GitHub carries the whole link once more inside its sign-in redirect (`return_to=`), where each `%XX`
+ * grows from 3 to 5 characters, so the worst case is 5/3 of this number: 4800 * 5/3 = 8000, under 8192.
+ */
+export const ISSUE_URL_MAX = 4800;
+
+/** The one-line body of the issue when the report did not fit the link and went to the clipboard instead. */
+export const CLIPBOARD_LINE = "The report did not fit this link. It is on the reporter's clipboard: paste it here.";
 
 /** The issue form's field ids (`.github/ISSUE_TEMPLATE/from-app.yml`). Renaming one breaks the prefill. */
 export const FIELD_IDS = { what: "what-happened", sends: "sends", setup: "setup", screen: "screen" } as const;
@@ -100,27 +120,6 @@ function endWord(row: Pick<SendReceiptRow, "outcome" | "reason">): string {
   return row.reason === undefined ? row.outcome : `${row.outcome}/${row.reason}`;
 }
 
-function harnessWord(harness: string | null | undefined): string {
-  if (harness === null || harness === undefined) return "no pane";
-  return harness === "" ? "shell" : harness;
-}
-
-/** Which agent a report is about, and its version. */
-interface HarnessFacts {
-  readonly harness: string;
-  readonly version: string | null;
-}
-
-/**
- * The newest receipt names the harness and its version; the context names the pane's agent when none
- * does, and the unread-dialog card's adapter when the context did not answer.
- */
-function harnessOf(input: ReportInput): HarnessFacts {
-  const newest = input.sends[0];
-  if (newest !== undefined) return { harness: harnessWord(newest.harness), version: newest.version };
-  return { harness: harnessWord(input.context?.harness ?? input.dialog?.agent), version: null };
-}
-
 /**
  * The line a duplicate search finds: what failed, on which harness and version, under which multiplexer.
  * The same words for the same trouble, whoever files it.
@@ -143,7 +142,7 @@ function title(input: ReportInput): string {
   return `Send not landing: ${endWord(bad)}, ${who}, ${mux}`;
 }
 
-const STEP_ORDER: readonly SendStep[] = ["settle", "s0", "clear", "probe", "write", "s1", "commandSettle", "commit", "s2"];
+const STEP_ORDER: readonly SendStep[] = ["settle", "s0", "clear", "probe", "probeWrite", "write", "s1", "commandSettle", "commit", "s2"];
 
 /** One send as one line: when, how it ended, its id, keys and gaps, what the bridge saw and said. */
 export function sendLine(row: SendReceiptRow, includeTyped: boolean): string {
@@ -192,6 +191,11 @@ function clientSetup(client: ClientFacts): ClientSetup {
   };
 }
 
+/** One doctor row as the setup block lists it. */
+export function doctorLine(row: ReportDoctorRow): string {
+  return `${row.status} ${row.check}: ${row.detail}`;
+}
+
 function setup(input: ReportInput): string {
   const { harness, version } = harnessOf(input);
   const newest = input.sends[0];
@@ -206,7 +210,9 @@ function setup(input: ReportInput): string {
     profile: newest?.profileId ?? null,
     profileStatus: newest?.profileStatus ?? null,
   } satisfies Record<string, string | null>;
-  return JSON.stringify(input.client === undefined ? block : { ...block, ...clientSetup(input.client) }, null, 2);
+  const doctor = (input.context?.doctor ?? []).map(doctorLine);
+  const withClient = input.client === undefined ? block : { ...block, ...clientSetup(input.client) };
+  return JSON.stringify(doctor.length === 0 ? withClient : { ...withClient, doctor }, null, 2);
 }
 
 /** Whether any listed send carries a kept line, so "Include what I typed" has something to add. */
@@ -235,8 +241,21 @@ export function reportFields(input: ReportInput): ReportFields {
     what: note === "" ? summary(input) : note,
     sends: sendsBlock,
     setup: setup(input),
-    screen: input.screen ?? "",
+    screen: trimScreen(input.screen),
   };
+}
+
+/**
+ * The screen as the report holds it: each row without its trailing spaces and the empty rows under the
+ * last one gone. A pane pads rows to its width, and a padded row spends the link's budget on blanks.
+ */
+function trimScreen(screen: string | null): string {
+  if (screen === null) return "";
+  return screen
+    .split("\n")
+    .map((row) => row.trimEnd())
+    .join("\n")
+    .trimEnd();
 }
 
 /** The issue as the preview shows it: the title, then each field under the form's own label. */
@@ -257,8 +276,8 @@ export function issueLink(fields: ReportFields): string {
     ["template", ISSUE_TEMPLATE],
     ["title", fields.title],
     [FIELD_IDS.what, fields.what],
-    [FIELD_IDS.sends, fields.sends],
-    [FIELD_IDS.setup, fields.setup],
+    ...(fields.sends === "" ? [] : [[FIELD_IDS.sends, fields.sends]]),
+    ...(fields.setup === "" ? [] : [[FIELD_IDS.setup, fields.setup]]),
     ...(fields.screen === "" ? [] : [[FIELD_IDS.screen, fields.screen]]),
   ]
     .map(([key, value]) => `${key ?? ""}=${encodeURIComponent(value ?? "")}`)
@@ -275,22 +294,59 @@ export function searchLink(input: ReportInput): string {
 export interface ReportCut {
   /** `part`: rows from the top of the screen; `all`: the whole screen. */
   readonly screen: "none" | "part" | "all";
+  /** How many of the doctor rows in the setup block were left out. */
+  readonly doctor: number;
   /** How many of the oldest sends were left out. */
   readonly sends: number;
   /** Whether the person's own line was shortened. */
   readonly note: boolean;
 }
 
+/** `... N rows cut`, the first line of a screen that lost its top rows. */
+export function rowsCutLine(rows: number): string {
+  return `... ${String(rows)} ${rows === 1 ? "row" : "rows"} cut`;
+}
+
 export interface ReportLink {
   readonly url: string;
-  /** The fields the link carries, which the preview shows. */
+  /** The fields the link carries, which the preview shows. With `clipboard`, the one-line body. */
   readonly fields: ReportFields;
   readonly cut: ReportCut;
+  /** True when no cut made the report fit: the sheet copies the whole report, and the link opens with {@link CLIPBOARD_LINE}. */
+  readonly clipboard: boolean;
+}
+
+/** The order doctor rows leave the setup block in: the screen's first, the sends' last. */
+const DOCTOR_CUT_ORDER = ["screen-", "holds-", "sends-"] as const;
+
+/** The check a doctor line names: `<status> <check>: <detail>`. */
+function doctorCheck(line: string): string {
+  const rest = line.slice(line.indexOf(" ") + 1);
+  const colon = rest.indexOf(":");
+  return colon < 0 ? rest : rest.slice(0, colon);
+}
+
+/** The index of the next doctor line to cut: the last row of the first kind in {@link DOCTOR_CUT_ORDER} that has one, else the last row. */
+function nextDoctorCut(lines: readonly string[]): number {
+  for (const prefix of DOCTOR_CUT_ORDER) {
+    const at = lines.findLastIndex((line) => doctorCheck(line).startsWith(prefix));
+    if (at >= 0) return at;
+  }
+  return lines.length - 1;
+}
+
+/** The setup block read back, and its doctor lines. A block that does not parse has none to cut. */
+function setupDoctor(text: string): { readonly block: JsonObject; readonly lines: string[] } | null {
+  const block = asJsonObject(parseJson(text));
+  if (block === undefined || !Array.isArray(block.doctor)) return null;
+  return { block, lines: block.doctor.flatMap((line) => asJsonString(line) ?? []) };
 }
 
 /**
- * The link under `max` characters. The screen loses its top rows first, then the screen goes, then the
- * oldest send lines go (the signature line stays), then the person's line is cut.
+ * The link under `max` characters. The screen loses its top rows first (and says `... N rows cut`), then
+ * the screen goes, then the doctor rows leave the setup block (`screen-*`, then `holds-*`, then
+ * `sends-*`), then the oldest send lines go (the signature line stays), then the person's line is cut.
+ * When even that does not fit, `clipboard` is true and the link carries only {@link CLIPBOARD_LINE}.
  */
 export function fitLink(full: ReportFields, max: number = ISSUE_URL_MAX): ReportLink {
   let screen = full.screen === "" ? [] : full.screen.split("\n");
@@ -304,13 +360,29 @@ export function fitLink(full: ReportFields, max: number = ISSUE_URL_MAX): Report
     else entries.push([line]);
   }
   let what = full.what;
-  const current = (): ReportFields => ({ title: full.title, what, sends: [...entries.flat(), sig].join("\n"), setup: full.setup, screen: screen.join("\n") });
+  const doctor = setupDoctor(full.setup);
+  let doctorLines = doctor?.lines ?? [];
+  let doctorCut = 0;
+  const setupNow = (): string => {
+    if (doctor === null || doctorCut === 0) return full.setup;
+    const { doctor: _rows, ...rest } = doctor.block;
+    return JSON.stringify(doctorLines.length === 0 ? rest : { ...rest, doctor: doctorLines }, null, 2);
+  };
+  let rowsCut = 0;
+  const screenNow = (): string => (screen.length === 0 || rowsCut === 0 ? screen.join("\n") : [rowsCutLine(rowsCut), ...screen].join("\n"));
+  const current = (): ReportFields => ({ title: full.title, what, sends: [...entries.flat(), sig].join("\n"), setup: setupNow(), screen: screenNow() });
   const fits = () => issueLink(current()).length <= max;
 
   let screenCut: ReportCut["screen"] = "none";
   while (!fits() && screen.length > 0) {
     screen = screen.slice(1);
+    rowsCut += 1;
     screenCut = screen.length === 0 ? "all" : "part";
+  }
+  while (!fits() && doctorLines.length > 0) {
+    const at = nextDoctorCut(doctorLines);
+    doctorLines = doctorLines.filter((_, n) => n !== at);
+    doctorCut += 1;
   }
   let sendsCut = 0;
   while (!fits() && entries.length > 0) {
@@ -324,6 +396,11 @@ export function fitLink(full: ReportFields, max: number = ISSUE_URL_MAX): Report
     const chars = [...what];
     what = `${chars.slice(0, Math.floor(chars.length / 2)).join("")}…`;
   }
-  const fields = screenCut === "none" && sendsCut === 0 && !noteCut ? full : current();
-  return { url: issueLink(fields), fields, cut: { screen: screenCut, sends: sendsCut, note: noteCut } };
+  const cut: ReportCut = { screen: screenCut, doctor: doctorCut, sends: sendsCut, note: noteCut };
+  if (!fits()) {
+    const fields: ReportFields = { title: full.title, what: CLIPBOARD_LINE, sends: "", setup: "", screen: "" };
+    return { url: issueLink(fields), fields, cut, clipboard: true };
+  }
+  const fields = screenCut === "none" && doctorCut === 0 && sendsCut === 0 && !noteCut ? full : current();
+  return { url: issueLink(fields), fields, cut, clipboard: false };
 }

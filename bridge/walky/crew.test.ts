@@ -3,10 +3,12 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { CREW, leadStore, material, member, peerStore } from "../crew/fixtures.ts";
+import { createTrustStore, selfIdentity } from "../crew/enrollment.ts";
+import { CREW, leadStore, material, member, peerStore, T0 } from "../crew/fixtures.ts";
+import type { TrustStoreData } from "../crew/trust-store.ts";
 import type { PaneWire } from "../types.ts";
 import { compareSemver } from "../update.ts";
-import { signMessage, attestationString } from "./canonical.ts";
+import { signMessage, attestationString, verifyMessage } from "./canonical.ts";
 import { verifyCanonical } from "../crew/signing.ts";
 import {
   attestFor,
@@ -16,8 +18,11 @@ import {
   crewSkipped,
   crewTargets,
   leadRouteRemote,
+  LEAD_OLDER_THAN_WAKE,
+  LEAD_REFUSED_WAKE,
   memberRouteRemote,
   mergeReport,
+  olderThanWake,
   olderThanWalky,
   receiptsOfAnswer,
   senderBlockFor,
@@ -32,12 +37,15 @@ import {
 } from "./crew.ts";
 import type { SendResult, WalkyHost, WalkyPane } from "./deliver.ts";
 import { WalkyLog } from "./log.ts";
-import { readWalkyReport } from "./parse.ts";
+import { readWalkyReport, readWalkyRequest } from "./parse.ts";
+import { answerRequest, type PlaceTarget } from "./socket.ts";
+import type { BeaconMatcher } from "../beacon/decorate.ts";
 import { RateLimiter } from "./rate.ts";
+import { OUT_OF_SCOPE, scopeEmpty, scopeIsMember } from "./refusals.ts";
 import { WalkyService, type WalkyServiceDeps } from "./service.ts";
 import type { JsonValue } from "../json.ts";
 import { parseJson } from "../../web/src/lib/json.ts";
-import { movesForward, type WalkyMessage, type WalkyReceipt } from "./types.ts";
+import { movesForward, type WalkyMessage, type WalkyReceipt, type WalkyTarget } from "./types.ts";
 
 /** A value as it arrives off the wire: through JSON, so a test hands a handler exactly what a request would. */
 function wire<T>(value: T): JsonValue {
@@ -84,7 +92,7 @@ function OPERATOR(memberId: string): Partial<WalkyMessage> {
 }
 
 function pane(paneId: string, over: Partial<WalkyPane> = {}): WalkyPane {
-  return { session: "main", paneId, agent: true, harness: "agent-x", label: `repo#${paneId}`, state: "idle", instance: "aaaa", terminal: true, ...over };
+  return { session: "main", paneId, agent: true, harness: "agent-x", label: `repo#${paneId}`, state: "idle", activeAt: null, instance: "aaaa", terminal: true, off: false, ...over };
 }
 
 class FakeHost implements WalkyHost {
@@ -588,6 +596,109 @@ describe("what an answer from the other side stands for", () => {
   });
 });
 
+describe("wake across versions (M85)", () => {
+  const lead = member({ memberId: "desk", role: "lead" });
+
+  /** A lead routing to two members; `old` is the one below 1.26.1. Each leg's body is kept per member. */
+  function rig() {
+    const bodies = new Map<string, { message: WalkyMessage; attest: string; sender?: unknown }>();
+    const checked = new Map<string, string>();
+    const route = leadRouteRemote({
+      self: "desk",
+      members: () => ["old", "new"],
+      signing: () => ({ keyPem: material("desk").keyPem, crewId: CREW.crewId }),
+      senderCert: (memberId) => material(memberId).certPem,
+      olderThanWake: (memberId) => memberId === "old",
+      post: async (memberId, segment, payload) => {
+        // SAFETY: the route posts the JSON it built itself.
+        const body = JSON.parse(payload) as { message: WalkyMessage; attest: string; sender?: unknown };
+        bodies.set(memberId, body);
+        const check = checkFromLead(wire(body), segment, lead, CREW.crewId, memberId);
+        checked.set(memberId, check.ok ? check.verified : "refused");
+        return { kind: "answer", status: 200, body: { receipts: [] } };
+      },
+      now: () => AT,
+    });
+    return { route, bodies, checked };
+  }
+
+  test("an older member's leg is a plain send: no wake, an attestation over the copy, no sender block, read as the lead's word", async () => {
+    const { route, bodies, checked } = rig();
+    await route(signed("wt_aaaaaaaaaaa1", "sender", "all", { wake: true }), "all");
+    const old = bodies.get("old")!;
+    expect(old.message).not.toHaveProperty("wake");
+    expect(old).not.toHaveProperty("sender");
+    // The sender's signer stays (the member's shape check needs it); its signature no longer verifies and is never asked.
+    expect(old.message.signer).toBe("sender");
+    expect(verifyMessage(old.message, material("sender").certPem)).toBe(false);
+    // The attestation covers the copy: checkFromLead verifies it, and `verified` is the lead's word.
+    expect(checked.get("old")).toBe("lead");
+    const fresh = bodies.get("new")!;
+    expect(fresh.message.wake).toBe(true);
+    expect(fresh.message.signer).toBe("sender");
+    expect(fresh.sender).toMatchObject({ certPem: material("sender").certPem });
+    expect(checked.get("new")).toBe("origin");
+  });
+
+  test("a message without wake is the same for both legs as before", async () => {
+    const { route, bodies } = rig();
+    const message = signed("wt_aaaaaaaaaaa2", "sender", "all");
+    await route(message, "all");
+    for (const memberId of ["old", "new"]) {
+      expect(bodies.get(memberId)!.message).toEqual(message);
+      expect(bodies.get(memberId)).toMatchObject({ sender: { certPem: material("sender").certPem } });
+    }
+  });
+
+  test("a wake message the lead wrote itself is re-signed for the older member, which still reads it as origin", async () => {
+    const { route, bodies, checked } = rig();
+    await route(signed("wt_aaaaaaaaaaa3", "desk", "all", { wake: true }), "all");
+    expect(bodies.get("old")!.message).not.toHaveProperty("wake");
+    expect(verifyMessage(bodies.get("old")!.message, material("desk").certPem)).toBe(true);
+    expect(checked.get("old")).toBe("origin");
+    expect(bodies.get("new")!.message.wake).toBe(true);
+  });
+
+  test("olderThanWake: below 1.26.1, the build's own version when it predates it, no release is never older", () => {
+    expect(olderThanWake("1.26.0", "1.26.1", compareSemver)).toBe(true);
+    expect(olderThanWake("1.26.1", "1.26.1", compareSemver)).toBe(false);
+    expect(olderThanWake("1.27.0", "1.26.1", compareSemver)).toBe(false);
+    // A development lead at 1.26.0 carries the feature: members at its version are not older.
+    expect(olderThanWake("1.26.0", "1.26.0", compareSemver)).toBe(false);
+    expect(olderThanWake("1.25.9", "1.26.0", compareSemver)).toBe(true);
+    expect(olderThanWake(null, "1.26.1", compareSemver)).toBe(false);
+    expect(olderThanWake("unknown", "1.26.1", compareSemver)).toBe(false);
+  });
+
+  test("a member that knows its lead is below 1.26.1 refuses wake before any dial", async () => {
+    const payloads: string[] = [];
+    const route = memberRouteRemote({
+      self: "laptop",
+      post: async (payload) => {
+        payloads.push(payload);
+        return { kind: "answer", status: 200, body: { receipts: [] } };
+      },
+      leadRelease: () => "1.26.0",
+      own: "1.26.1",
+      compare: compareSemver,
+      now: () => AT,
+    });
+    expect(await route(signed("wt_aaaaaaaaaaa4", "laptop", "all", { wake: true }), "all")).toMatchObject([{ state: "refused", reason: LEAD_OLDER_THAN_WAKE, target: "all" }]);
+    expect(payloads).toEqual([]);
+    // A plain send to the same lead still goes.
+    await route(signed("wt_aaaaaaaaaaa5", "laptop", "all"), "all");
+    expect(payloads.length).toBe(1);
+  });
+
+  test("a member that does not know its lead's release dials, and reads a 401 to wake as the lead being too old", async () => {
+    const answers: CrewDialAnswer[] = [{ kind: "answer", status: 401, body: { error: "unauthorized" } }, { kind: "answer", status: 401, body: { error: "unauthorized" } }];
+    const route = memberRouteRemote({ self: "laptop", post: async () => answers.shift()!, leadRelease: () => null, own: "1.26.1", compare: compareSemver, now: () => AT });
+    expect(await route(signed("wt_aaaaaaaaaaa6", "laptop", "all", { wake: true }), "all")).toMatchObject([{ state: "refused", reason: LEAD_REFUSED_WAKE }]);
+    // Without wake, the 401 keeps its own word.
+    expect(await route(signed("wt_aaaaaaaaaaa7", "laptop", "all"), "all")).toMatchObject([{ state: "refused", reason: "signature" }]);
+  });
+});
+
 describe("the outcome report", () => {
   /** A delivered receipt for a message from `desk` to this member's pane, as the log hands it to the report. */
   function record(id: string, state: WalkyReceipt["state"] = "delivered", at = AT, reason?: string) {
@@ -808,6 +919,25 @@ describe("`who` on a lead", () => {
     );
     expect(targets.map((target) => target.address)).toEqual(["laptop/w1:p1#k3f9", "laptop/w1:p2", "laptop/w1:p3"]);
   });
+
+  test("copies a member's off flag to its row; a member body without it reads as on (M89)", () => {
+    const paneOf = (paneId: string, over: Partial<PaneWire> = {}): PaneWire =>
+      // SAFETY: a test fixture carrying the fields `crewTargets` reads; the rest of the wire shape is irrelevant here.
+      ({ paneId, agent: "agent-x", status: "idle", cwd: "/home/a/collie", ...over }) as PaneWire;
+    const targets = crewTargets(
+      [{ memberId: "laptop", name: "laptop", reachable: true, body: { sessions: [], agents: [paneOf("w1:p1", { walkyOff: true }), paneOf("w1:p2")], shellPanes: [], workspaces: [], tabs: [] } }],
+      true,
+    );
+    expect(targets[0]).toMatchObject({ address: "laptop/w1:p1", walky: "off", state: "idle" });
+    expect("walky" in targets[1]!).toBe(false);
+  });
+
+  test("only `true` means off: any other value from a member reads as on (M89)", () => {
+    // SAFETY: a member's bytes are not checked at the merge; this parsed fixture is what such a member could send.
+    const odd = JSON.parse('{"paneId":"w1:p1","agent":"agent-x","status":"idle","cwd":"/home/a/collie","walkyOff":"yes"}') as PaneWire;
+    const [target] = crewTargets([{ memberId: "laptop", name: "laptop", reachable: true, body: { sessions: [], agents: [odd], shellPanes: [], workspaces: [], tabs: [] } }], true);
+    expect("walky" in target!).toBe(false);
+  });
 });
 
 describe("an older member (CREW_PROTOCOL §21)", () => {
@@ -861,9 +991,30 @@ describe("the skipped list on a lead", () => {
       true,
     );
     expect(skipped).toEqual([
-      { address: "laptop/w1:p3", memberId: "laptop", machine: "laptop", label: "collie#main" },
-      { address: "laptop/w1:p4", memberId: "laptop", machine: "laptop", label: "collie#main" },
+      { address: "laptop/w1:p3", memberId: "laptop", machine: "laptop", label: "collie#main", reason: "shell" },
+      { address: "laptop/w1:p4", memberId: "laptop", machine: "laptop", label: "collie#main", reason: "shell" },
     ]);
+  });
+
+  test("lists a reachable member's resting agent panes too, by the bridge's rule, and none of an unreachable member", () => {
+    const paneOf = (paneId: string, over: Partial<PaneWire> = {}): PaneWire =>
+      // SAFETY: a test fixture carrying the fields `crewSkipped` reads; the rest of the wire shape is irrelevant here.
+      ({ paneId, agent: "agent-x", kind: "agent", status: "done", cwd: "/home/a/collie", gitHead: { kind: "branch", name: "main" }, ...over }) as PaneWire;
+    const body = { sessions: [], agents: [paneOf("w1:p1", { lastActiveAt: 100 }), paneOf("w1:p2", { lastActiveAt: 900 }), paneOf("w1:p3")], shellPanes: [], workspaces: [], tabs: [] };
+    const seen: unknown[] = [];
+    const skipped = crewSkipped(
+      [
+        { memberId: "laptop", name: "laptop", reachable: true, body },
+        { memberId: "gone", name: "gone", reachable: false, body },
+      ],
+      true,
+      (quiet) => {
+        seen.push(quiet);
+        return quiet.activeAt !== null && quiet.activeAt < 500;
+      },
+    );
+    expect(skipped).toEqual([{ address: "laptop/w1:p1", memberId: "laptop", machine: "laptop", label: "collie#main", reason: "resting" }]);
+    expect(seen).toContainEqual({ state: "done", activeAt: null });
   });
 });
 
@@ -1271,5 +1422,155 @@ describe("a pane receipt under a leg sent as a whole (§21, added 2026-10-18)", 
     const theirs = signed("wt_aaaaaaaaaaa2", "desk", "all");
     laptop.log.record(theirs, "other/all", placement, { ...accepted(theirs.id, "other/all") });
     expect(writeOutcomes(laptop.log, "laptop", [pane8(theirs.id, "other/w1:p9", "other")])).toBe(0);
+  });
+});
+
+describe("a workspace scope across a crew of two members (M75 spec 02)", () => {
+  /** `who` on the lead, from a member's panes: what its sweep would hold. */
+  const listed = (memberId: string, panes: readonly WalkyPane[]): WalkyTarget[] =>
+    panes.filter((p) => p.agent).map((p) => ({ address: `${memberId}/${p.paneId}#${p.instance}`, memberId, machine: memberId, harness: p.harness, label: p.label, state: "idle" }));
+  const otherStore = (): TrustStoreData => peerStore({ self: createTrustStore(selfIdentity("other", material("other"), T0)).self });
+
+  /** A lead `desk` and two members, `laptop` and `other`, wired end to end through the real crew halves. */
+  function crewOfThree() {
+    const crews = new Map<string, WalkyCrew>();
+    const deskPanes = [pane("w1:p1", { label: "collie-workspace#main" }), pane("w1:p2", { label: "elsewhere#main" })];
+    const laptopPanes = [pane("w1:p8", { label: "collie-workspace#main" }), pane("w1:p9", { label: "collie-workspace#feat" })];
+    const otherPanes = [pane("w2:p1", { label: "collie-workspace#main" }), pane("w2:p2", { label: "elsewhere#main" })];
+    const legs: string[] = [];
+    const lead = service(
+      "desk",
+      deskPanes,
+      async (memberId, segment, payload) => {
+        legs.push(`${memberId} ${segment}`);
+        // SAFETY: the route posts the JSON it built itself.
+        const answer = await crews.get(memberId)!.fromLead(segment, JSON.parse(payload) as JsonValue, "desk");
+        return { kind: "answer", status: answer.status, body: wire(answer.body) };
+      },
+      { remoteTargets: () => [...listed("laptop", laptopPanes), ...listed("other", otherPanes)], knownMembers: () => ["desk", "laptop", "other"] },
+    );
+    const leadCrew = new WalkyCrew({ service: lead.service, trust: () => leadStore(), now: () => AT });
+    const laptop = service("laptop", laptopPanes, undefined, {
+      outcomesOnLead: true,
+      knownMembers: () => ["laptop", "desk"],
+      routeRemote: memberRouteRemote({
+        self: "laptop",
+        post: async (payload) => {
+          // SAFETY: the member posts the JSON it built itself.
+          const answer = await leadCrew.fromMember(JSON.parse(payload) as JsonValue, member({ memberId: "laptop" }));
+          return { kind: "answer", status: answer.status, body: wire(answer.body) };
+        },
+        now: () => AT,
+      }),
+    });
+    const other = service("other", otherPanes);
+    crews.set("laptop", new WalkyCrew({ service: laptop.service, trust: () => peerStore(), now: () => AT }));
+    crews.set("other", new WalkyCrew({ service: other.service, trust: otherStore, now: () => AT }));
+    return { lead, laptop, other, laptopPanes, legs };
+  }
+
+  const settledAll = async (...rigs: Rig[]) => {
+    for (const r of rigs) await r.service.deliverer.settled();
+  };
+
+  test("a scope from a member's pane: the lead expands it once, one delivery per matching pane on every member, each with its own receipt", async () => {
+    const { lead, laptop, other, laptopPanes, legs } = crewOfThree();
+    const answer = await laptop.service.send({ id: "wt_aaaaaaaaaaa1", to: "collie-workspace", body: "hi", replyTo: null }, { kind: "agent", pane: laptopPanes[0]! });
+    const receipts = answer.ok ? answer.receipts : [];
+    expect(receipts.map((r) => `${r.target} ${r.state} ${r.by}`)).toEqual(["desk/w1:p1 accepted desk", "laptop/w1:p9 accepted laptop", "other/w2:p1 accepted other"]);
+    // One leg per pane, the sender's own machine included: it handed the scope over whole.
+    expect(legs.toSorted()).toEqual(["laptop w1:p9", "other w2:p1"]);
+    await settledAll(lead, laptop, other);
+    expect(lead.host.sends).toEqual(["w1:p1"]);
+    expect(laptop.host.sends).toEqual(["w1:p9"]);
+    expect(other.host.sends).toEqual(["w2:p1"]);
+    // Every machine logged its own delivery under the one parent id, with `to` as typed.
+    for (const [r, target] of [
+      [lead, "desk/w1:p1"],
+      [laptop, "laptop/w1:p9"],
+      [other, "other/w2:p1"],
+    ] as const) {
+      expect(r.log.get("wt_aaaaaaaaaaa1", target)?.receipt.state).toBe("delivered");
+      expect(r.log.get("wt_aaaaaaaaaaa1", target)?.message.to).toBe("collie-workspace");
+    }
+    // The lead's parent lists all three, each with its member.
+    expect(lead.service.status("wt_aaaaaaaaaaa1").deliveries?.map((d) => `${d.address} ${d.member}`)).toEqual(["desk/w1:p1 desk", "laptop/w1:p9 laptop", "other/w2:p1 other"]);
+    // The sender's own machine reports its delivery, though the message is its own: the lead routed it there.
+    const report = new WalkyReport("laptop", { epoch: "0a1b2c3d", now: () => AT });
+    report.note(laptop.log.get("wt_aaaaaaaaaaa1", "laptop/w1:p9")!);
+    expect(report.report()?.receipts).toMatchObject([{ target: "laptop/w1:p9", state: "delivered", by: "laptop" }]);
+    expect(mergeReport(lead.log, "laptop", report.report()!.receipts)).toBe(1);
+    expect(lead.log.get("wt_aaaaaaaaaaa1", "laptop/w1:p9")?.receipt.state).toBe("delivered");
+  });
+
+  test("`here` from a member's pane reaches its siblings on both members and never the sender", async () => {
+    const { laptop, lead, other, laptopPanes } = crewOfThree();
+    const answer = await laptop.service.send({ id: "wt_aaaaaaaaaaa2", to: "here", body: "hi", replyTo: null }, { kind: "agent", pane: laptopPanes[0]! });
+    expect(answer.ok && answer.receipts.map((r) => r.target)).toEqual(["desk/w1:p1", "laptop/w1:p9", "other/w2:p1"]);
+    await settledAll(lead, laptop, other);
+    expect(laptop.host.sends).toEqual(["w1:p9"]);
+  });
+
+  test("`here` from a herdr-core member's flat pane, through that member's socket and the crew hop, reaches the lead's pane in the same folder (2026-10-30)", async () => {
+    // The live shape: member `bluefin-hc` (a hyphen), its pane the flat `t1`, placed by HC_TERMINAL_* markers.
+    const hcPanes = [pane("t1", { label: "collie-workspace#main" })];
+    const deskPanes = [pane("w1:p1", { label: "collie-workspace#main" }), pane("w1:p2", { label: "elsewhere#main" })];
+    const lead = service("desk", deskPanes, undefined, { remoteTargets: () => listed("bluefin-hc", hcPanes), knownMembers: () => ["desk", "bluefin-hc"] });
+    const leadCrew = new WalkyCrew({ service: lead.service, trust: () => leadStore(), now: () => AT });
+    const hops: string[] = [];
+    const hc = service("bluefin-hc", hcPanes, undefined, {
+      outcomesOnLead: true,
+      knownMembers: () => ["bluefin-hc", "desk"],
+      routeRemote: memberRouteRemote({
+        self: "bluefin-hc",
+        post: async (payload) => {
+          // SAFETY: the member posts the JSON it built itself.
+          const body = JSON.parse(payload) as JsonValue;
+          hops.push(JSON.stringify(body));
+          const answer = await leadCrew.fromMember(body, member({ memberId: "bluefin-hc" }));
+          return { kind: "answer", status: answer.status, body: wire(answer.body) };
+        },
+        now: () => AT,
+      }),
+    });
+    const hcMatcher: BeaconMatcher = {
+      namespace: "hc",
+      scope: async () => "/run/user/1000/herdr-core/default.sock",
+      matches: (at, marker, scope) => marker.scope === scope && at.paneId === marker.pane,
+      notesWithoutHooks: { agentDetection: "", agentSessionRef: "" },
+    };
+    const place: PlaceTarget = { session: "main", matcher: hcMatcher, paneIds: () => ["t1"] };
+    const line = JSON.stringify({ v: 1, op: "send", markers: [{ namespace: "hc", scope: "/run/user/1000/herdr-core/default.sock", pane: "t1" }], id: "wt_aaaaaaaaaah1", to: "here", body: "scope proof", replyTo: null });
+    const read = readWalkyRequest(line);
+    if (!read.ok) throw new Error(read.reason);
+    const answer = await answerRequest(hc.service, read.request, [place]);
+    expect(answer).toMatchObject({ ok: true, receipts: [{ target: "desk/w1:p1", state: "accepted", by: "desk" }] });
+    // The member handed `here` over whole, signed by `bluefin-hc`, with the label the lead resolves it from.
+    expect(hops).toHaveLength(1);
+    expect(JSON.parse(hops[0]!)).toMatchObject({ to: "here", from: { memberId: "bluefin-hc", address: "bluefin-hc/t1#aaaa", label: "collie-workspace#main" }, signer: "bluefin-hc" });
+    await lead.service.deliverer.settled();
+    await hc.service.deliverer.settled();
+    expect(lead.host.sends).toEqual(["w1:p1"]);
+    expect(hc.host.sends).toEqual([]);
+    expect(lead.log.get("wt_aaaaaaaaaah1", "desk/w1:p1")?.receipt.state).toBe("delivered");
+  });
+
+  test("a member refuses a routed scope for a pane whose label is not in it, and a scope routed to `all`", async () => {
+    const { other } = crewOfThree();
+    const crew = new WalkyCrew({ service: other.service, trust: () => peerStore({ self: createTrustStore(selfIdentity("other", material("other"), T0)).self }), now: () => AT });
+    const message = signed("wt_aaaaaaaaaaa3", "desk", "collie-workspace", OPERATOR("desk"));
+    const body = { message, attest: attestFor(message, material("desk").keyPem, CREW.crewId, "other") };
+    expect(await fromLeadOf(crew, "w2:p2", body, "desk")).toMatchObject({ status: 200, body: { receipts: [{ target: "other/w2:p2", state: "refused", reason: OUT_OF_SCOPE }] } });
+    expect(await fromLeadOf(crew, "all", body, "desk")).toMatchObject({ status: 400 });
+    await other.service.deliverer.settled();
+    expect(other.host.sends).toEqual([]);
+  });
+
+  test("the lead refuses a member's id as a bare word, and a scope with no pane, before anything is dialled", async () => {
+    const { laptop, laptopPanes, legs } = crewOfThree();
+    const send = (id: string, to: string) => laptop.service.send({ id, to, body: "hi", replyTo: null }, { kind: "agent", pane: laptopPanes[0]! });
+    expect(await send("wt_aaaaaaaaaaa4", "other")).toMatchObject({ ok: true, receipts: [{ target: "other", state: "refused", reason: scopeIsMember("other") }] });
+    expect(await send("wt_aaaaaaaaaaa5", "nowhere")).toMatchObject({ ok: true, receipts: [{ target: "nowhere", state: "refused", reason: scopeEmpty("nowhere") }] });
+    expect(legs).toEqual([]);
   });
 });
