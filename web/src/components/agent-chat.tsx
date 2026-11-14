@@ -1456,7 +1456,7 @@ export function AgentChat({
         const sentStatus =
           action.kind === "option"
             ? t("chat.status.sent")
-            : prompt.feedback?.purpose === "answer"
+            : prompt.feedback?.purpose === "answer" || prompt.feedback?.purpose === "custom-answer"
               ? t("chat.status.answerSent")
               : t("chat.status.feedbackSent");
         setStatus(sentStatus, "success");

@@ -212,7 +212,8 @@ export interface AnswerFieldSurfaceProps {
  * AskUserQuestion's `Type something.` field (ADR 0113), below a card's options: our own send in
  * flight, else the editor, else what the field holds with an offer to change it, else the focused
  * banner (where the card shows it) with the offer, else the offer alone. Shared by the
- * single-question card, the wizard step and the multi-select question.
+ * single-question card, the wizard step and the multi-select question, and by a stock pi question's
+ * custom answer (.adr/0126), whose copy has no `change`: text in its editor is shown and left alone.
  */
 export function AnswerFieldSurface(props: AnswerFieldSurfaceProps) {
   const { field, copy, locked, editor } = props;
@@ -256,11 +257,13 @@ export function AnswerFieldSurface(props: AnswerFieldSurfaceProps) {
     return (
       <>
         {props.showTyped ? <TypedFieldCard prefix={copy.typedPrefix} text={field.text} /> : focusedBanner}
-        <InlineEditorOffer
-          label={copy.change ?? ""}
-          disabled={locked}
-          onClick={() => editor.open(field.text, field.text, props.asked)}
-        />
+        {copy.change !== null ? (
+          <InlineEditorOffer
+            label={copy.change}
+            disabled={locked}
+            onClick={() => editor.open(field.text, field.text, props.asked)}
+          />
+        ) : null}
       </>
     );
   }

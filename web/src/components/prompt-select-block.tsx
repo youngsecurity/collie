@@ -202,11 +202,14 @@ function SubjectBody({ lines }: { lines: PromptSubjectLine[] }) {
 }
 
 // Copy is purpose-aware: Claude's plan-approval input is deny-with-feedback; AskUserQuestion's field
-// is the question's answer; Grok's `z` row and a permission amend note are read, never typed into.
+// is the question's answer; a stock pi question's free-text row is one too, typed into its inline
+// editor (.adr/0126); Grok's `z` row and a permission amend note are read, never typed into.
 // Missing purpose is Claude's plan input.
 // A function (not a module-level object) for the same locale-freshness reason as familyCaption.
 function feedbackCopyFor(purpose: PromptFeedbackPurpose): FeedbackCopy {
   if (purpose === "answer") return answerFieldCopy(t("prompt.feedback.answer.help"));
+  // Text already in pi's editor is shown, never replaced: no key that clears it was measured.
+  if (purpose === "custom-answer") return { ...answerFieldCopy(t("prompt.feedback.customAnswer.help")), change: null };
   if (purpose === "free-text") {
     // No phone composer: neither Claude recipe fits this row.
     return {
@@ -275,13 +278,17 @@ export function PromptSelectBlock({ prompt, lines, onAction, disabled, paneId, s
   const asked = { question: prompt.question, step: "" };
   const terminalFocused = feedback?.focused ?? false;
   const locked = Boolean(disabled) || offline || sending !== null || terminalFocused;
-  const isAnswer = feedback?.purpose === "answer";
+  // pi's open answer editor leaves the card one button, the footer's way out, which is no character:
+  // locking it would leave no way back from the phone (.adr/0126).
+  const isCustom = feedback?.purpose === "custom-answer";
+  const isAnswer = feedback?.purpose === "answer" || isCustom;
   // The answer recipe reaches a focused field itself, so the terminal's focus locks the options only.
   const answerLocked = Boolean(disabled) || offline || sending !== null;
+  const optionsLocked = isCustom ? answerLocked : locked;
   const feedbackCopy = feedback ? feedbackCopyFor(feedback.purpose ?? "plan-change") : null;
 
   async function press(id: string, action: PromptBlockAction): Promise<boolean> {
-    if (action.kind === "feedback" && isAnswer ? answerLocked : locked) return false;
+    if (action.kind === "feedback" && isAnswer ? answerLocked : optionsLocked) return false;
     setSending(id);
     try {
       // A handler that returns nothing is taken at its word (the presentational tests inject one);
@@ -338,7 +345,7 @@ export function PromptSelectBlock({ prompt, lines, onAction, disabled, paneId, s
               keyLabel={option.keyLabel ?? keyBadgeFallback(option.keys[0]!)}
               label={option.label}
               description={option.description}
-              disabled={locked}
+              disabled={optionsLocked}
               onClick={() => press(id, { kind: "option", option })}
               trailing={
                 busy ? (
@@ -369,7 +376,7 @@ export function PromptSelectBlock({ prompt, lines, onAction, disabled, paneId, s
           locked={answerLocked}
           busyIcon={busyIcon}
           showTyped
-          showFocused
+          showFocused={!isCustom}
         />
       ) : feedback && feedbackCopy && sending === "feedback" ? (
         <div className="flex items-center gap-2 rounded-lg border border-border/70 bg-muted/30 px-3 py-2 text-xs text-muted-foreground">

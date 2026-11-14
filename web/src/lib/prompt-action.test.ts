@@ -18,6 +18,7 @@ vi.mock("./api", () => ({
 import { fetchPane, sendKeys, sendReply } from "./api";
 import { parseAnsi } from "./ansi";
 import { splitLines } from "./blocks";
+import { dialogDetector } from "./dialog-guard";
 import { detectPromptSelect } from "./harness/claude/prompt-select";
 import { detectApproval } from "./harness/omp/approval";
 import { kiroAdapter } from "./harness/kiro";
@@ -918,5 +919,81 @@ describe("submitPromptOption: the real Kiro approval panels", () => {
     // Then: the changed diff holds back the Enter.
     expect(result.status).toBe("changed");
     expect(mockSendKeys.mock.calls).toEqual([["w1:p1", ["Down"], undefined, m.signature]]);
+  });
+});
+
+// .adr/0126: a stock pi question's free-text row is a `custom-answer`, routed to its own recipe
+// (lib/pi-answer.test.ts pins the recipe; this pins the routing and the one focus exception).
+describe("a stock pi question's custom answer", () => {
+  const PANES = join(import.meta.dirname, "..", "fixtures", "panes");
+  const text = (name: string) => readFileSync(join(PANES, name), "utf8");
+  const pane = (name: string) => ({ paneId: "w1:p1", text: text(name), truncated: false, revision: 5 });
+  const readPi = dialogDetector("prompt-select", "pi");
+  const piModel = (name: string) => {
+    const model = readPi(splitLines(parseAnsi(text(name))));
+    if (!model) throw new Error(`fixture ${name} did not read as a pi question`);
+    return model;
+  };
+  const pi = { ...base, agent: "pi" };
+  const ON_ROW = "pi--v110-question-other-focused.txt";
+  const EDITOR = "pi--v110-question-answer-editor.txt";
+  const TYPED = "pi--v110-question-answer-editor-typed.txt";
+
+  it("routes the row to the pi recipe: Enter opens the editor, the text is proved, Enter answers", async () => {
+    mockFetchPane
+      .mockResolvedValueOnce(pane(ON_ROW))
+      .mockResolvedValueOnce(pane(EDITOR))
+      .mockResolvedValue(pane(TYPED));
+
+    const result = await submitPromptFeedback({ ...pi, prompt: piModel(ON_ROW), text: "teal" });
+
+    expect(result).toEqual({ status: "sent" });
+    expect(mockSendKeys.mock.calls.map((c) => [c[1], c[3]])).toEqual([
+      [["Enter"], piModel(ON_ROW).signature],
+      [["Enter"], piModel(TYPED).signature],
+    ]);
+    expect(mockSendReply.mock.calls).toEqual([["w1:p1", "teal", false, undefined, piModel(EDITOR).signature]]);
+  });
+
+  it("takes the send from the open, empty editor too, which the other rows refuse as focused", async () => {
+    mockFetchPane.mockResolvedValueOnce(pane(EDITOR)).mockResolvedValue(pane(TYPED));
+
+    const result = await submitPromptFeedback({ ...pi, prompt: piModel(EDITOR), text: "teal" });
+
+    expect(result).toEqual({ status: "sent" });
+    expect(mockSendKeys.mock.calls.map((c) => c[1])).toEqual([["Enter"]]);
+  });
+
+  it("still refuses a pi free-text row whose keys were never measured (OmO)", async () => {
+    const omo = piModel("pi--omo-v5130-single-described.txt");
+    expect(omo.feedback?.purpose).toBe("free-text");
+
+    const result = await submitPromptFeedback({ ...pi, prompt: omo, text: "teal" });
+
+    expect(result).toEqual({ status: "error", error: t("promptAction.feedback.freeTextUnsupported") });
+    expect(mockFetchPane).not.toHaveBeenCalled();
+    expect(mockSendKeys).not.toHaveBeenCalled();
+    expect(mockSendReply).not.toHaveBeenCalled();
+  });
+
+  it("lets the way out through while pi's answer editor is open", async () => {
+    const editor = piModel(EDITOR);
+    expect(editor.options.map((o) => o.keys)).toEqual([["Escape"]]);
+    mockFetchPane.mockResolvedValue(pane(EDITOR));
+
+    const result = await submitPromptOption({ ...pi, prompt: editor, option: editor.options[0]! });
+
+    expect(result.status).toBe("sent");
+    expect(mockSendKeys.mock.calls.map((c) => [c[1], c[3]])).toEqual([[["Escape"], editor.signature]]);
+  });
+
+  it("holds the way out back when the editor's text is no longer what the card showed", async () => {
+    const editor = piModel(EDITOR);
+    mockFetchPane.mockResolvedValue(pane(TYPED));
+
+    const result = await submitPromptOption({ ...pi, prompt: editor, option: editor.options[0]! });
+
+    expect(result.status).toBe("changed");
+    expect(mockSendKeys).not.toHaveBeenCalled();
   });
 });
