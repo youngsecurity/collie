@@ -93,8 +93,8 @@ installed app, run `collie pair` on your computer, and enter the code under
 **Settings → System → Paired devices**. Pair within the home-screen app, not the browser: iOS keeps
 their storage separate. The app displays no panes until paired.
 
-Agents awaiting input appear first. Tap an agent to reply. To configure Collie using an agent,
-instruct it to run `collie skill` and follow the instructions.
+Agents awaiting input are marked in their workspaces. Tap an agent to reply. To configure Collie
+using an agent, instruct it to run `collie skill` and follow the instructions.
 
 > Collie exposes remote shell access to your machine. Keep it on your tailnet (`tailscale serve`,
 > never `funnel`). Read [Security](#security-read-this-first) before running.
