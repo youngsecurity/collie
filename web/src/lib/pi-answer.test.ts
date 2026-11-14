@@ -123,7 +123,7 @@ function screens(...texts: string[]) {
 const writes = () => mockSendKeys.mock.calls.map((c) => ({ keys: c[1], bound: c[3] }));
 const keys = () => mockSendKeys.mock.calls.map((c) => c[1]);
 const bound = (text: string) => model(text).signature;
-const refusal = { ok: false as const, error: "prompt changed", code: "prompt_changed" };
+const refusal = { ok: false, error: "prompt changed", code: "prompt_changed" } as const;
 
 const ON_ROW = ask({ pointer: 3 });
 const EMPTY = ask({ pointer: 3, editor: "" });
