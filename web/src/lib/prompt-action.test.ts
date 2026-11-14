@@ -930,9 +930,9 @@ describe("a stock pi question's custom answer", () => {
   const pane = (name: string) => ({ paneId: "w1:p1", text: text(name), truncated: false, revision: 5 });
   const readPi = dialogDetector("prompt-select", "pi");
   const piModel = (name: string) => {
-    const model = readPi(splitLines(parseAnsi(text(name))));
-    if (!model) throw new Error(`fixture ${name} did not read as a pi question`);
-    return model;
+    const read = readPi(splitLines(parseAnsi(text(name))));
+    if (!read) throw new Error(`fixture ${name} did not read as a pi question`);
+    return read;
   };
   const pi = { ...base, agent: "pi" };
   const ON_ROW = "pi--v110-question-other-focused.txt";

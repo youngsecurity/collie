@@ -746,7 +746,8 @@ describe("the custom-answer row of a stock question (.adr/0126)", () => {
   it("stays untyped beside OmO's side panel, where the bridge compares columns", () => {
     // No capture holds a stock question beside the panel, so the panel is drawn onto one: text
     // straight after each rule of the frame is sign (a) of panel.ts.
-    const beside = (name: string) => linesOf(raw(name).replace(/(─{120})((?:\x1b\[[0-9;]*m)*)$/gm, "$1$2Context 12%"));
+    const sgrTail = new RegExp(`(─{120})((?:${String.fromCharCode(27)}\\[[0-9;]*m)*)$`, "gm");
+    const beside = (name: string) => linesOf(raw(name).replace(sgrTail, "$1$2Context 12%"));
     const lifted = (lines: StyledLine[]) => piAdapter.buildBlocks(lines).find((b) => b.kind === "prompt-select")?.prompt;
     expect(lifted(load("pi--v110-question-single.txt"))?.feedback?.purpose).toBe("custom-answer");
     const list = lifted(beside("pi--v110-question-single.txt"));
