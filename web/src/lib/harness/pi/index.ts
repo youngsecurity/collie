@@ -50,12 +50,21 @@ export function piBuildBlocks(lines: StyledLine[]): Block[] {
  * compares only those columns; the panel ticks beside it and must not refuse the tap. Only a
  * question card takes the range: a Submit page beside the panel has no capture and stays raw with
  * the Escape card.
+ *
+ * A custom answer (.adr/0126) is not typed beside the panel: the text goes out bound to whole rows,
+ * which the panel's clock would refuse, and no stock question was captured there. Its row falls back
+ * to the `free-text` field, and a pointer on it or an open editor stays raw, as before.
  */
 function boundQuestion(view: PiView): PiQuestion | null {
   const question = detectPiQuestion(view.lines);
   if (question === null || view.column === null) return question;
   if (question.kind !== "prompt-select") return null;
-  return { ...question, model: { ...question.model, bindColumns: { start: 0, end: view.column } } };
+  const model = { ...question.model, bindColumns: { start: 0, end: view.column } };
+  if (model.feedback?.purpose === "custom-answer") {
+    if (model.feedback.pointer !== "above") return null;
+    model.feedback = { key: "", focused: false, text: "", purpose: "free-text" };
+  }
+  return { ...question, model };
 }
 
 /** The trust prompt fills the screen before any editor or side panel exists, so it is read whole. */
@@ -70,7 +79,8 @@ const PI_DIALOG_DETECTORS: readonly DialogDetector[] = [
 ];
 
 /** The editor is on screen and no pi modal is: the only screen a reply may be typed into. A question's
- *  inline answer editor is not a place the phone types (.adr/0098), so it answers false. */
+ *  inline answer editor is not a place a reply goes, so it answers false; the one thing typed there
+ *  is a custom answer, by its own verified recipe (lib/pi-answer.ts, .adr/0126). */
 function ready(view: StyledLine[]): boolean {
   return locateComposer(view) !== null && !piModalOnScreen(view);
 }

@@ -50,8 +50,13 @@
 // Multi-select (checkbox rows) is not lifted here; it stays raw (see the ADR). The footer's Esc hint
 // becomes the last row, sending Escape, in the footer's own words.
 //
-// The free-text row is never a button. It is the `free-text` field of the model, read so the walk
-// knows the row is there; a screen whose pointer stands on it stays raw, and nothing here types.
+// The free-text row is never a button. It is a field of the model, read so the walk knows the row is
+// there, and nothing here types. On one shape the field is a `custom-answer` (.adr/0126): the stock
+// question, whose rows are all numbered at column 0, whose footer gives plan (a), and whose
+// free-text row opens an inline editor between two inset rules with a footer naming Enter as submit.
+// That shape reads in three states that are one question (the same `coreSignature`): the pointer on
+// a choice, the pointer on the row, and the editor open. lib/pi-answer.ts walks them. On every other
+// shape the field keeps the `free-text` purpose and a screen whose pointer stands on it stays raw.
 //
 // Pure functions over StyledLine[], tail-anchored, fail closed.
 
@@ -79,6 +84,15 @@ const POINTERS = new Set([">", "→"]);
 const FREE_TEXT = /^Type\b.*(?:\.|…)(?: ✎)?$/;
 /** gentle-pi's free-text row in an unnumbered list (`allowCustomResponse`); Enter on it opens an editor. */
 const OTHER = /^Other(?:…|\.\.\.)$/;
+/** The rule over and under a stock question's inline answer editor, one column in
+ *  (pi--v110-question-answer-editor.txt). */
+const EDITOR_RULE = /^ ─{8,}$/;
+/** What the free-text row carries while its editor is open. */
+const EDITOR_MARK = " ✎";
+/** Rows the editor's label may take above its top rule (`Your answer:`, wrapped on a narrow pane). */
+const MAX_EDITOR_LABEL_ROWS = 3;
+/** Rows of text an answer editor may hold and still be read. */
+const MAX_ANSWER_ROWS = 8;
 /** A header row, one space in. */
 const HEADER_ROW = /^ \S/;
 /** A row at column 0: the footer and the header block of a frameless dialog. */
@@ -467,7 +481,24 @@ export function detectPiQuestion(lines: StyledLine[]): PiQuestion | null {
   let trailers = 0;
   let counter: { answered: number; total: number } | null = null;
   if (frameless && !framelessNote(lines, texts, options.end, bodyEnd)) return null;
-  for (let i = frameless ? bodyEnd : options.end; i < bodyEnd; i++) {
+  // The stock shape, the only one whose free-text row is a custom answer (.adr/0126).
+  const stock = numbered && !frameless && pointerCol === 0 && options.rows.every((r) => r.n !== null && !r.checkbox);
+  // Its inline answer editor: the footer names Enter as submit and no key that moves or picks, and
+  // the pointed free-text row carries the editor mark. Then the rows under the options must be the
+  // editor and nothing else.
+  const lastRow = options.rows.at(-1)!;
+  const editing =
+    stock &&
+    footer.enter === "submit" &&
+    !footer.arrowsMove &&
+    !footer.digitsSelect &&
+    !footer.spaceToggles &&
+    lastRow.freeText &&
+    lastRow.pointed &&
+    lastRow.label.endsWith(EDITOR_MARK);
+  const answer = editing ? readAnswerEditor(texts, options.end, bodyEnd) : null;
+  if (editing && answer === null) return null;
+  for (let i = frameless || editing ? bodyEnd : options.end; i < bodyEnd; i++) {
     const t = texts[i]!;
     if (t === "") continue;
     if (!numbered || !HEADER_ROW.test(t) || /^ [─>]/.test(t) || ++trailers > MAX_TRAILER_ROWS) return null;
@@ -496,17 +527,19 @@ export function detectPiQuestion(lines: StyledLine[]): PiQuestion | null {
   if (counter !== null && counter.total !== questions) return null;
   const pointed = rows.findIndex((r) => r.pointed);
   const free = rows.at(-1)!.freeText ? rows.at(-1)! : null;
-  // A pointer on the free-text row stays raw: one keystroke there (Enter) opens the extension's own
-  // editor, and the phone never types into it (pi--v0871-question-other-focused.txt,
-  // pi--omo-v5130-single-other-focused.txt).
-  if (free?.pointed === true) return null;
   const choices = free === null ? rows : rows.slice(0, -1);
   if (choices.length < 1) return null;
 
-  let plan: "walk" | "digit";
-  if (footer.arrowsMove && footer.enter === "select") plan = "walk";
+  let plan: "walk" | "digit" | "editor";
+  if (answer !== null) plan = "editor";
+  else if (footer.arrowsMove && footer.enter === "select") plan = "walk";
   else if (footer.digitsSelect && footer.enter !== "select" && questions === 1) plan = "digit";
   else return null;
+  // The stock question's free-text row is a custom answer lib/pi-answer.ts types (.adr/0126). Anywhere
+  // else a pointer on the free-text row stays raw: one keystroke there (Enter) opens the extension's
+  // own editor, whose keys were never measured (pi--omo-v5130-single-other-focused.txt).
+  const custom = free !== null && stock && plan !== "digit";
+  if (free?.pointed === true && !custom) return null;
   if (plan === "digit" && choices.some((r) => r.n === null)) return null;
   // A digit on a question already answered is a state no capture shows; fail closed (PR 412's notes).
   if (plan === "digit" && counter !== null && counter.answered !== 0) return null;
@@ -514,18 +547,19 @@ export function detectPiQuestion(lines: StyledLine[]): PiQuestion | null {
   let caption: string | undefined;
   if (strip !== null && questions > 1) {
     // A page of several questions: (a) only, and the page must be named by its current chip.
-    if (plan !== "walk") return null;
+    if (plan === "digit") return null;
     const current = strip.chips.filter((c) => c.current);
     if (current.length !== 1 || current[0]!.submit) return null;
     caption = current[0]!.label;
   }
 
   const glyph = texts[rows[pointed]!.row]![pointerCol]!;
-  const options_: PromptOption[] = choices.map((r, i) => {
+  // With the editor open no arrow moves the pointer, so no choice is offered: only the way out.
+  const options_: PromptOption[] = (plan === "editor" ? [] : choices).map((r, i) => {
     const option: PromptOption =
-      plan === "walk"
-        ? { label: r.label, keys: pointerWalk(pointed, i), keyLabel: i === pointed ? glyph : "" }
-        : { label: r.label, keys: [String(r.n)] };
+      plan === "digit"
+        ? { label: r.label, keys: [String(r.n)] }
+        : { label: r.label, keys: pointerWalk(pointed, i), keyLabel: i === pointed ? glyph : "" };
     if (r.description !== undefined) option.description = r.description;
     return option;
   });
@@ -536,18 +570,19 @@ export function detectPiQuestion(lines: StyledLine[]): PiQuestion | null {
     options: options_,
     family: "select",
     signature,
-    coreSignature: coreSignatureOf(texts, top, bottom, rows[pointed]!.row, pointerCol, header, strip, frameless ? options.end : bodyEnd, bodyEnd),
+    coreSignature:
+      custom && free !== null
+        ? customCoreOf(coreSignatureOf(texts, top, free.row, rows[pointed]!.row, pointerCol, header, strip, bodyEnd, bodyEnd))
+        : coreSignatureOf(texts, top, bottom, rows[pointed]!.row, pointerCol, header, strip, frameless ? options.end : bodyEnd, bodyEnd),
   };
   if (caption !== undefined) model.caption = caption;
   if (free !== null) {
-    const feedback: PromptFeedback = {
-      // No key: nothing is ever sent for this row (prompt-action refuses the `free-text` purpose), and
-      // its printed number is not a key the footer names (ADR 0009).
-      key: "",
-      focused: false,
-      text: "",
-      purpose: "free-text",
-    };
+    // No key: the row's printed number is not a key the footer names (ADR 0009). A custom answer is
+    // reached by the arrows the footer does name (lib/pi-answer.ts); for a `free-text` row nothing
+    // is ever sent (prompt-action refuses the purpose).
+    const feedback: PromptFeedback = custom
+      ? { key: "", focused: answer !== null, text: answer ?? "", purpose: "custom-answer", pointer: free.pointed ? "on" : "above" }
+      : { key: "", focused: false, text: "", purpose: "free-text" };
     model.feedback = feedback;
   }
   return { kind: "prompt-select", model, startLine: top };
@@ -859,6 +894,46 @@ function coreSignatureOf(
     out.push(t);
   }
   return out.join("\n");
+}
+
+/**
+ * The identity of a custom-answer question (.adr/0126), from a `coreSignatureOf` cut at its free-text
+ * row: the rows from the top rule down to that row, without the editor mark the row gains while its
+ * editor is open. The rows under it (the editor, the footer, the bottom rule) change as the answer is
+ * walked to, opened and typed, so they are no part of what the question is; `signature` keeps them,
+ * and every write is bound to it.
+ */
+function customCoreOf(core: string): string {
+  return core.endsWith(EDITOR_MARK) ? core.slice(0, -EDITOR_MARK.length) : core;
+}
+
+/**
+ * The stock question's inline answer editor, in rows `from` to `to` (exclusive) under the options:
+ * blank rows, one to three label rows one column in, an inset rule, the editor's rows, the same inset
+ * rule, then blank rows only. Read by shape: the label's words are not matched (.adr/0098). Returns
+ * what the editor holds, its rows joined by a newline, so an answer that wrapped or holds a line
+ * break never reads as one line; null when the rows are anything else.
+ *
+ * An editor row is one column in (` teal`, pi--v110-question-answer-editor-typed.txt). The caret is
+ * a reverse-video cell, a space at the end of the text, and `texts` are trimmed at the right.
+ */
+function readAnswerEditor(texts: string[], from: number, to: number): string | null {
+  let i = from;
+  while (i < to && texts[i] === "") i++;
+  const labelStart = i;
+  while (i < to && HEADER_ROW.test(texts[i]!) && !EDITOR_RULE.test(texts[i]!)) i++;
+  const labels = i - labelStart;
+  if (labels < 1 || labels > MAX_EDITOR_LABEL_ROWS || i >= to || !EDITOR_RULE.test(texts[i]!)) return null;
+  const rule = texts[i]!;
+  const held: string[] = [];
+  for (i++; i < to && texts[i] !== rule; i++) {
+    const t = texts[i]!;
+    if ((t !== "" && !t.startsWith(" ")) || held.length === MAX_ANSWER_ROWS) return null;
+    held.push(t.slice(1));
+  }
+  if (i >= to || held.length === 0) return null;
+  for (i++; i < to; i++) if (texts[i] !== "") return null;
+  return held.join("\n");
 }
 
 function capitalise(word: string): string {

@@ -64,12 +64,19 @@ export interface PromptOption {
  *     note, or another harness's custom-answer row (Grok's `z`). Parsed so a focused row can lock
  *     the option buttons. Neither Claude recipe fits it (different key, different Enter,
  *     unmeasured caret/wrap).
+ *   - `custom-answer` — the free-text row of a stock pi question (`Type something.`), typed and
+ *     submitted as the question's answer by `lib/pi-answer.ts` (.adr/0126). The row is not a field:
+ *     Enter on it opens an inline editor. `focused` says that editor is open and `text` is what it
+ *     holds; `pointer` is `on` when the pointer stands on the row, editor open or not. Collie types
+ *     only into an empty editor: no key that clears one was measured.
  */
-export type PromptFeedbackPurpose = "plan-change" | "answer" | "free-text";
+export type PromptFeedbackPurpose = "plan-change" | "answer" | "free-text" | "custom-answer";
 
 /**
  * Where `❯` sits relative to an `answer` field, among the menu's rows: on a row above it, on the
  * field itself (`on`, exactly when `focused`), on a row below it (`Chat about this`), or nowhere.
+ * A pi `custom-answer` row uses `above` and `on` only, and `on` there does not say `focused`: the
+ * pointer stands on the row before Enter opens its editor.
  */
 export type AnswerFieldPointer = "above" | "on" | "below" | "none";
 
@@ -99,7 +106,7 @@ export interface PromptFeedback {
   text: string;
   /** Absent = `plan-change` (Claude). Set explicitly when the row is not that input. */
   purpose?: PromptFeedbackPurpose;
-  /** Set on `answer` rows only: where the pointer stands, which the walk onto a filled field reads.
+  /** Set on `answer` and `custom-answer` rows only: where the pointer stands, which the walk onto the row reads.
    *  Not part of the dialog's identity (`identityDiff`): the walk moves it on purpose. */
   pointer?: AnswerFieldPointer;
 }

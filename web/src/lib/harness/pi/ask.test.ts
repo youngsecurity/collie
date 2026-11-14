@@ -34,9 +34,10 @@ function prompt(lines: StyledLine[]): PromptModel {
 const PI_FIXTURES = readdirSync(PANES).filter((name) => name.startsWith("pi--") && name.endsWith(".txt")).toSorted();
 
 // What every pi screen in the corpus reads as. `walk` is plan (a), arrows then Enter; `digit` is plan
-// (b), the digit OmO's footer names; `review` is a Submit page lifted as a wizard review. Everything
-// else is `raw`, and `modal` says whether the unread-dialog card may offer Escape.
-type Expect = "walk" | "digit" | "review" | "raw";
+// (b), the digit OmO's footer names; `review` is a Submit page lifted as a wizard review; `editor` is
+// a stock question whose inline answer editor is open (.adr/0126), a card offering only the way back.
+// Everything else is `raw`, and `modal` says whether the unread-dialog card may offer Escape.
+type Expect = "walk" | "digit" | "review" | "editor" | "raw";
 const LIFTS = new Map<string, Expect>([
   // pi's stock `question` example, pi 0.87.1 and 1.1.0 (live captures 2026-10-12).
   ["question-single", "walk"],
@@ -45,6 +46,11 @@ const LIFTS = new Map<string, Expect>([
   ["question-plain-moved", "walk"],
   ["question-narrow", "walk"],
   ["question-narrow-moved", "walk"],
+  // The custom-answer row (.adr/0126): the pointer on it, then its inline editor open.
+  ["question-other-focused", "walk"],
+  ["question-answer-editor", "editor"],
+  ["question-answer-editor-typed", "editor"],
+  ["questionnaire-answer-editor", "editor"],
   // pi's stock `questionnaire` example: one question, then the tabbed pages and the Submit page.
   ["questionnaire-single", "walk"],
   ["questionnaire-single-moved", "walk"],
@@ -60,6 +66,7 @@ const LIFTS_397 = new Map<string, Expect>([
   ["pi--v110-single-desc.txt", "walk"],
   ["pi--v110-single-moved.txt", "walk"],
   ["pi--v110-single-narrow.txt", "walk"],
+  ["pi--v110-single-editor-open.txt", "editor"],
   ["pi--v110-tabs-single.txt", "walk"],
   ["pi--v110-tabs-single-recorded.txt", "walk"],
   ["pi--v110-tabs-compact.txt", "walk"],
@@ -106,7 +113,6 @@ const RAW_MODALS = new Set([
   "pi--v110-multi-moved.txt",
   "pi--v110-multi-pointer-other.txt",
   "pi--v110-multi-editor-open.txt",
-  "pi--v110-single-editor-open.txt",
   "pi--v110-tabs-editor-open.txt",
   "pi--v110-tabs-multi.txt",
   "pi--v110-review-incomplete.txt",
@@ -131,10 +137,6 @@ const RAW_MODALS = new Set([
   // live 2026-10-20): pi's selector still takes the editor's place in column zero.
   "pi--v130-powerline-model-selector--w120.txt",
   ...["v0871", "v110"].flatMap((v) => [
-    `pi--${v}-question-other-focused.txt`,
-    `pi--${v}-question-answer-editor.txt`,
-    `pi--${v}-question-answer-editor-typed.txt`,
-    `pi--${v}-questionnaire-answer-editor.txt`,
     `pi--${v}-questionnaire-submit-incomplete.txt`,
   ]),
 ]);
@@ -151,6 +153,7 @@ function actual(lines: StyledLine[]): Expect {
   if (block === undefined) return "raw";
   if (block.kind === "wizard") return "review";
   if (block.kind !== "prompt-select") throw new Error(`unexpected ${block.kind}`);
+  if (block.prompt.feedback?.focused === true) return "editor";
   return block.prompt.options[0]!.keys.every((k) => /^[1-9]$/.test(k)) ? "digit" : "walk";
 }
 
@@ -170,7 +173,7 @@ describe("every pi screen in the corpus", () => {
 });
 
 describe("plan (a): arrows move and Enter selects", () => {
-  it("walks the stock question with arrows and Enter, offers Esc as Cancel, and keeps the free-text row a field", () => {
+  it("walks the stock question with arrows and Enter, offers Esc as Cancel, and keeps the custom-answer row a field", () => {
     const model = prompt(load("pi--v0871-question-single.txt"));
     expect(model.question).toBe("Pick a color for the Collie probe?");
     expect(model.family).toBe("select");
@@ -180,7 +183,7 @@ describe("plan (a): arrows move and Enter selects", () => {
       { label: "Blue", description: "Cool and deep.", keys: ["Down", "Down", "Enter"], keyLabel: "" },
       { label: "Cancel", keys: ["Escape"], keyLabel: "Esc" },
     ]);
-    expect(model.feedback).toEqual({ key: "", focused: false, text: "", purpose: "free-text" });
+    expect(model.feedback).toEqual({ key: "", focused: false, text: "", purpose: "custom-answer", pointer: "above" });
     // The free-text row is one more arrow stop below the last option, so the ends are not proven to
     // clamp at the option list (pi's stock question.ts clamps over every row, the free-text one too).
     expect(model.clampedEnds).toBeUndefined();
@@ -621,9 +624,140 @@ describe("the shape declines anything unexpected", () => {
     expect(detectPiQuestion(linesOf(toggles))).toBeNull();
   });
 
-  it("leaves a pointer on the free-text row raw", () => {
-    expect(detectPiQuestion(load("pi--v0871-question-other-focused.txt"))).toBeNull();
+  it("leaves a pointer on OmO's free-text row raw", () => {
     expect(detectPiQuestion(load("pi--omo-v5130-single-other-focused.txt"))).toBeNull();
+  });
+});
+
+describe("the custom-answer row of a stock question (.adr/0126)", () => {
+  const custom = (name: string) => prompt(load(name)).feedback;
+
+  it.each([
+    "pi--v0871-question-single.txt", "pi--v110-question-single.txt", "pi--v110-question-plain.txt", "pi--v110-question-narrow.txt",
+    "pi--v0871-questionnaire-single.txt", "pi--v110-questionnaire-tabs.txt", "pi--v110-single.txt",
+  ])("%s: the pointer on a choice, the row offered as a custom answer", (name) => {
+    expect(custom(name)).toEqual({ key: "", focused: false, text: "", purpose: "custom-answer", pointer: "above" });
+  });
+
+  it.each(["pi--v0871-question-other-focused.txt", "pi--v110-question-other-focused.txt"])(
+    "%s: the pointer on the row, the choices walked back up to",
+    (name) => {
+      const model = prompt(load(name));
+      expect(model.feedback).toEqual({ key: "", focused: false, text: "", purpose: "custom-answer", pointer: "on" });
+      expect(model.options).toEqual([
+        { label: "Red", description: "Warm and loud.", keys: ["Up", "Up", "Up", "Enter"], keyLabel: "" },
+        { label: "Green", description: "Calm and natural.", keys: ["Up", "Up", "Enter"], keyLabel: "" },
+        { label: "Blue", description: "Cool and deep.", keys: ["Up", "Enter"], keyLabel: "" },
+        { label: "Cancel", keys: ["Escape"], keyLabel: "Esc" },
+      ]);
+    },
+  );
+
+  it.each([
+    ["pi--v0871-question-answer-editor.txt", "Go back"],
+    ["pi--v110-question-answer-editor.txt", "Go back"],
+    ["pi--v0871-questionnaire-answer-editor.txt", "Cancel"],
+    ["pi--v110-questionnaire-answer-editor.txt", "Cancel"],
+    ["pi--v110-single-editor-open.txt", "Go back"],
+  ])("%s: the editor open and empty, only the way out offered", (name, escape) => {
+    const model = prompt(load(name));
+    expect(model.feedback).toEqual({ key: "", focused: true, text: "", purpose: "custom-answer", pointer: "on" });
+    expect(model.options).toEqual([{ label: escape, keys: ["Escape"], keyLabel: "Esc" }]);
+  });
+
+  it.each(["pi--v0871-question-answer-editor-typed.txt", "pi--v110-question-answer-editor-typed.txt"])(
+    "%s: reads what the editor holds",
+    (name) => {
+      expect(custom(name)).toEqual({ key: "", focused: true, text: "teal", purpose: "custom-answer", pointer: "on" });
+    },
+  );
+
+  it("names the page of a questionnaire whose editor is open", () => {
+    expect(prompt(load("pi--v110-questionnaire-answer-editor.txt")).caption).toBe("Color");
+  });
+
+  it("reads the three states of one question as one question", () => {
+    for (const v of ["v0871", "v110"]) {
+      const list = prompt(load(`pi--${v}-question-single.txt`));
+      const onRow = prompt(load(`pi--${v}-question-other-focused.txt`));
+      const editor = prompt(load(`pi--${v}-question-answer-editor.txt`));
+      const typed = prompt(load(`pi--${v}-question-answer-editor-typed.txt`));
+      expect(promptsSameIdentity(list, onRow), v).toBe(true);
+      for (const state of [onRow, editor, typed]) {
+        expect(state.question, v).toBe(list.question);
+        expect(state.coreSignature, v).toBe(list.coreSignature);
+      }
+      // The states are still told apart: each has its own rows, and the entry guard compares them.
+      expect(new Set([list, onRow, editor, typed].map((m) => m.signature)).size, v).toBe(4);
+      expect(promptsEqual(editor, typed), v).toBe(false);
+    }
+  });
+
+  it("is another question when a choice above the row changes", () => {
+    const open = raw("pi--v110-question-answer-editor.txt");
+    const model = prompt(linesOf(open));
+    const other = prompt(linesOf(replaceLast(open, "3. Blue", "3. Cyan")));
+    expect(other.coreSignature).not.toBe(model.coreSignature);
+  });
+
+  it("reads an editor whose answer wrapped as rows, never as one line", () => {
+    const typed = raw("pi--v110-question-answer-editor-typed.txt");
+    const at = typed.lastIndexOf(" teal");
+    const row = typed.slice(typed.lastIndexOf("\n", at) + 1, typed.indexOf("\n", at));
+    const wrapped = prompt(linesOf(replaceLast(typed, row, `${row}\n blue`)));
+    expect(wrapped.feedback?.text).toBe("teal\nblue");
+  });
+
+  it("keeps every other free-text row untyped", () => {
+    // OmO answers by digit and its editor's Enter saves and moves on. gentle-pi's `Other…` row, which
+    // carries no number, is pinned with issue 455 above.
+    expect(custom("pi--omo-v5130-single-described.txt")?.purpose).toBe("free-text");
+    for (const name of ["pi--omo-v5130-answer-editor.txt", "pi--omo-v5130-single-other-focused.txt"]) {
+      expect(detectPiQuestion(load(name)), name).toBeNull();
+    }
+  });
+
+  it("leaves a multi-select's editor and its pointed row raw", () => {
+    for (const name of ["pi--v110-multi-editor-open.txt", "pi--v110-tabs-editor-open.txt", "pi--v110-multi-pointer-other.txt"]) {
+      expect(detectPiQuestion(load(name)), name).toBeNull();
+    }
+  });
+
+  const editor = raw("pi--v110-question-answer-editor-typed.txt");
+  it.each([
+    ["a row without the editor mark", replaceLast(editor, "Type something. ✎", "Type something.")],
+    ["an editor with no closing rule", editor.replace(/( teal[^\n]*\n[^\n]*?)─+/, "$1")],
+    ["a row under the closing rule", replaceLast(editor, "Enter to submit", "extra row\x1b[0m\n \x1b[38;2;126;136;142mEnter to submit")],
+    ["text against the left edge", replaceLast(editor, " teal", "teal ")],
+    ["a footer that still moves the pointer", replaceLast(editor, "Enter to submit", "↑↓ navigate • Enter to submit")],
+  ])("declines %s", (_name, text) => {
+    expect(text).not.toBe(editor);
+    expect(detectPiQuestion(linesOf(text))).toBeNull();
+  });
+
+  it("keeps the editor a modal: the composer is not ready and nothing is typed as a reply", () => {
+    for (const name of ["pi--v110-question-other-focused.txt", "pi--v110-question-answer-editor.txt"]) {
+      const lines = load(name);
+      expect(piModalOnScreen(lines), name).toBe(true);
+      expect(piAdapter.composerReady?.(lines), name).toBe(false);
+    }
+  });
+
+  it("stays untyped beside OmO's side panel, where the bridge compares columns", () => {
+    // No capture holds a stock question beside the panel, so the panel is drawn onto one: text
+    // straight after each rule of the frame is sign (a) of panel.ts.
+    const beside = (name: string) => linesOf(raw(name).replace(/(─{120})((?:\x1b\[[0-9;]*m)*)$/gm, "$1$2Context 12%"));
+    const lifted = (lines: StyledLine[]) => piAdapter.buildBlocks(lines).find((b) => b.kind === "prompt-select")?.prompt;
+    expect(lifted(load("pi--v110-question-single.txt"))?.feedback?.purpose).toBe("custom-answer");
+    const list = lifted(beside("pi--v110-question-single.txt"));
+    expect(list?.bindColumns).toEqual({ start: 0, end: 120 });
+    expect(list?.feedback).toEqual({ key: "", focused: false, text: "", purpose: "free-text" });
+    for (const name of ["pi--v110-question-other-focused.txt", "pi--v110-question-answer-editor.txt"]) {
+      expect(piView(load(name)).column, name).toBeNull();
+      expect(piView(beside(name)).column, name).toBe(120);
+      expect(lifted(beside(name)), name).toBeUndefined();
+      expect(piAdapter.modalOnScreen?.(beside(name)), name).toBe(true);
+    }
   });
 });
 
