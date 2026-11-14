@@ -37,6 +37,10 @@ here: a fork checkout is a source install. Herdr must be at least 0.8.0. Fork re
 
 ## [Unreleased]
 
+### Fixed
+
+- **Type mode holds pasted line breaks instead of pressing Enter.** A multi-line paste used to go out with an Enter at every line break, which could submit the first line of a Pi custom answer and type the rest into whatever came next. The text now stays whole in the field with nothing sent until you choose: send it as one line, or discard it. A shell pane can also send it line by line, which is the old behaviour. Enter, arrows, Tab, Escape and the Keys dock wait while a paste is held, and stopping Type mode drops it unsent. Thanks @yousecjoe (#134).
+
 ## [1.24.2+ys.2] - 2026-11-09
 
 ### Fixed

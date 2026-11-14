@@ -96,6 +96,7 @@ import type { PaneSubagent, PaneTodo } from "@/lib/types";
 import { AgentsSheet, subagentName } from "@/components/agents-sheet";
 import { SubagentSheetCtx, type SubagentTarget } from "@/components/chat-cards";
 import { DirectTypingStrip } from "@/components/direct-typing-strip";
+import { HeldPasteStrip } from "@/components/held-paste-strip";
 import { VoiceTakeover } from "@/components/voice-takeover";
 import { usePhoneEngineUse } from "@/hooks/use-phone-engine";
 import { useSttRecorder } from "@/hooks/use-stt-recorder";
@@ -2537,6 +2538,18 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           {/* Armed indicator for direct typing, deliberately NOT only on the button and textarea —
               see the component. */}
           {direct.active && <DirectTypingStrip onStop={() => direct.deactivate()} />}
+        </Collapse>
+        {/* A pasted line break is not an Enter (issue #134): the text waits in the field until one of
+            these is tapped. Sending it line by line is a shell's business only. */}
+        <Collapse open={direct.active && direct.heldLines > 0}>
+          {direct.active && direct.heldLines > 0 && (
+            <HeldPasteStrip
+              allowLineByLine={isShell}
+              onOneLine={direct.sendHeldAsOneLine}
+              onLineByLine={direct.sendHeldLineByLine}
+              onDiscard={direct.discardHeld}
+            />
+          )}
         </Collapse>
         {/* WHERE A MESSAGE IS GOING AND WHAT BECAME OF THE LAST ONE (M62). The aim stands while a reply is
             in the box; the note stands until it is dismissed. Both are conditions with a control. */}

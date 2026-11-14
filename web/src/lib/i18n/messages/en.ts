@@ -1775,6 +1775,11 @@ export const en = {
   "directTyping.status.idleTimeout": "Type mode off. No key for 60 seconds.",
   "directTyping.status.interrupted":
     "Stopped typing into the terminal. The pane view was interrupted.",
+  "directTyping.status.pasteHeld": "Pasted lines are waiting. Choose how to send them first.",
+  "directTyping.heldPaste.title": "Pasted text has line breaks. Nothing sent yet.",
+  "directTyping.heldPaste.oneLine": "One line",
+  "directTyping.heldPaste.lineByLine": "Line by line",
+  "directTyping.heldPaste.discard": "Discard",
   "directTyping.status.backgrounded":
     "Stopped typing into the terminal. The app was backgrounded.",
 

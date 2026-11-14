@@ -3,7 +3,7 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { clearStatus } from "@/lib/status";
-import { graphemes, keysForLineChange, useDirectTyping } from "./use-direct-typing";
+import { graphemes, joinLines, keysForLineChange, useDirectTyping } from "./use-direct-typing";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -40,7 +40,11 @@ function Harness({ sendKeys, suspended = false, agentKey = "claude", paneKey = "
       <button type="button" onClick={direct.activate}>Start typing</button>
       <button type="button" onClick={direct.deactivate}>Stop typing</button>
       <button type="button" onClick={() => void direct.sendPaneKeys(["Tab"]).then(onDock)}>Dock key</button>
+      <button type="button" onClick={direct.sendHeldAsOneLine}>One line</button>
+      <button type="button" onClick={direct.sendHeldLineByLine}>Line by line</button>
+      <button type="button" onClick={direct.discardHeld}>Discard</button>
       <output aria-label="Typing mode">{direct.active ? "active" : "inactive"}</output>
+      <output aria-label="Held lines">{direct.heldLines}</output>
       <textarea
         aria-label="Terminal input"
         ref={inputRef}
@@ -458,22 +462,6 @@ describe("useDirectTyping: the line-end rule, pastes, graphemes and the keyboard
     expect(onDock).toHaveBeenCalledExactlyOnceWith(false);
   });
 
-  it("a paste with line breaks sends the text and its Enters, and keeps the line after the last break", async () => {
-    const sendKeys = mockSend();
-    render(<Harness sendKeys={sendKeys} />);
-    const box = startTyping();
-    fireEvent.change(box, { target: { value: "echo a" } });
-    fireEvent.change(box, { target: { value: "echo a\r\nls -l\npw" } });
-    expect(box).toHaveValue("pw");
-    fireEvent.change(box, { target: { value: "p" } });
-    await act(async () => {});
-    expect(sent(sendKeys)).toEqual([
-      "e", "c", "h", "o", "Space", "a",
-      "Enter", "l", "s", "Space", "-", "l", "Enter", "p", "w",
-      "Backspace",
-    ]);
-  });
-
   it("deleting one emoji sends one Backspace, whatever code points it is made of", async () => {
     const sendKeys = mockSend();
     render(<Harness sendKeys={sendKeys} />);
@@ -548,5 +536,193 @@ describe("useDirectTyping: the line-end rule, pastes, graphemes and the keyboard
     } finally {
       now.mockRestore();
     }
+  });
+});
+
+// Issue #134. A pasted line break is data: it reaches the pane as Enter only through a labelled action.
+describe("useDirectTyping: text with a line break is held until an explicit action", () => {
+  const PASTE = "echo a\r\nls -l\npw";
+  function sent(sendKeys: { mock: { calls: [string[]][] } }) {
+    return sendKeys.mock.calls.flatMap(([keys]) => keys);
+  }
+  function mockSend() {
+    return vi.fn<(keys: string[]) => Promise<boolean>>().mockResolvedValue(true);
+  }
+  function tap(name: string) {
+    fireEvent.click(screen.getByRole("button", { name }));
+  }
+  /** Type `echo a`, then paste two more lines after it. */
+  function typeThenPaste(sendKeys: (keys: string[]) => Promise<boolean>) {
+    render(<Harness sendKeys={sendKeys} />);
+    const box = startTyping();
+    fireEvent.change(box, { target: { value: "echo a" } });
+    fireEvent.change(box, { target: { value: PASTE } });
+    return box;
+  }
+
+  it("a paste with line breaks sends nothing and stays in the field whole", async () => {
+    const sendKeys = mockSend();
+    const box = typeThenPaste(sendKeys);
+    await act(async () => {});
+    // A textarea reports its value with every line ending normalised to LF.
+    expect(box).toHaveValue("echo a\nls -l\npw");
+    expect(screen.getByLabelText("Held lines")).toHaveTextContent(/^3$/);
+    expect(sent(sendKeys)).toEqual(["e", "c", "h", "o", "Space", "a"]);
+  });
+
+  it.each([["LF", "one\ntwo"], ["CRLF", "one\r\ntwo"], ["CR", "one\rtwo"]])(
+    "a two-line %s paste into an empty field sends no key at all",
+    async (_name, text) => {
+      const sendKeys = mockSend();
+      render(<Harness sendKeys={sendKeys} />);
+      const box = startTyping();
+      fireEvent.change(box, { target: { value: text } });
+      await act(async () => {});
+      expect(sendKeys).not.toHaveBeenCalled();
+      expect(box).toHaveValue("one\ntwo");
+      expect(screen.getByLabelText("Held lines")).toHaveTextContent(/^2$/);
+    },
+  );
+
+  it("refuses Enter, an arrow, Escape, Tab and a dock key while text is held", async () => {
+    const sendKeys = mockSend();
+    const onDock = vi.fn<(ok: boolean) => void>();
+    render(<Harness sendKeys={sendKeys} onDock={onDock} />);
+    const box = startTyping();
+    fireEvent.change(box, { target: { value: "one\ntwo" } });
+    // Refused, but still not left to the field: a default Enter would only add another break.
+    for (const key of ["Enter", "ArrowUp", "Escape", "Tab"]) {
+      expect(fireEvent.keyDown(box, { key })).toBe(false);
+    }
+    expect(fireEvent(box, new InputEvent("beforeinput", {
+      bubbles: true,
+      cancelable: true,
+      inputType: "insertLineBreak",
+    }))).toBe(false);
+    tap("Dock key");
+    await act(async () => {});
+    expect(sendKeys).not.toHaveBeenCalled();
+    expect(onDock).toHaveBeenCalledExactlyOnceWith(false);
+    expect(box).toHaveValue("one\ntwo");
+    expect(screen.getByLabelText("Typing mode")).toHaveTextContent(/^active$/);
+  });
+
+  it("One line sends the lines joined by spaces with no Enter, and a typed Enter then sends one", async () => {
+    const sendKeys = mockSend();
+    const box = typeThenPaste(sendKeys);
+    tap("One line");
+    expect(box).toHaveValue("echo a ls -l pw");
+    expect(screen.getByLabelText("Held lines")).toHaveTextContent(/^0$/);
+    await act(async () => {});
+    expect(sent(sendKeys)).toEqual([
+      "e", "c", "h", "o", "Space", "a",
+      "Space", "l", "s", "Space", "-", "l", "Space", "p", "w",
+    ]);
+    fireEvent.keyDown(box, { key: "Enter" });
+    await act(async () => {});
+    expect(sent(sendKeys).filter((key) => key === "Enter")).toEqual(["Enter"]);
+    expect(box).toHaveValue("");
+  });
+
+  it("joins lines without a space at either end, whatever the line ending", () => {
+    expect(joinLines("a\r\n  b\n\nc\n")).toBe("a b c");
+    expect(joinLines("\nfoo")).toBe("foo");
+    expect(joinLines("a \t\r b")).toBe("a b");
+    expect(joinLines(" kept \n")).toBe(" kept");
+  });
+
+  it("Line by line sends an Enter at each break and keeps the line after the last one", async () => {
+    const sendKeys = mockSend();
+    const box = typeThenPaste(sendKeys);
+    tap("Line by line");
+    expect(box).toHaveValue("pw");
+    fireEvent.change(box, { target: { value: "p" } });
+    await act(async () => {});
+    expect(sent(sendKeys)).toEqual([
+      "e", "c", "h", "o", "Space", "a",
+      "Enter", "l", "s", "Space", "-", "l", "Enter", "p", "w",
+      "Backspace",
+    ]);
+  });
+
+  it("Discard puts back the line the pane already has and sends nothing", async () => {
+    const sendKeys = mockSend();
+    const box = typeThenPaste(sendKeys);
+    tap("Discard");
+    expect(box).toHaveValue("echo a");
+    fireEvent.change(box, { target: { value: "echo ab" } });
+    await act(async () => {});
+    expect(sent(sendKeys)).toEqual(["e", "c", "h", "o", "Space", "a", "b"]);
+  });
+
+  it("editing the breaks out by hand resumes sending, with the right difference", async () => {
+    const sendKeys = mockSend();
+    const box = typeThenPaste(sendKeys);
+    fireEvent.change(box, { target: { value: "echo a\nls" } });
+    fireEvent.change(box, { target: { value: "echo als" } });
+    await act(async () => {});
+    expect(sent(sendKeys)).toEqual(["e", "c", "h", "o", "Space", "a", "l", "s"]);
+    expect(screen.getByLabelText("Held lines")).toHaveTextContent(/^0$/);
+  });
+
+  it("holds a composition that ends with a line break in the field", async () => {
+    const sendKeys = mockSend();
+    render(<Harness sendKeys={sendKeys} />);
+    const box = startTyping();
+    compose(box, "one\ntwo");
+    await act(async () => {});
+    expect(sendKeys).not.toHaveBeenCalled();
+    expect(box).toHaveValue("one\ntwo");
+  });
+
+  it("the three actions do nothing when no text is held, or when the mode is off", async () => {
+    const sendKeys = mockSend();
+    render(<Harness sendKeys={sendKeys} />);
+    for (const name of ["One line", "Line by line", "Discard"]) tap(name);
+    const box = startTyping();
+    fireEvent.change(box, { target: { value: "ls" } });
+    for (const name of ["One line", "Line by line", "Discard"]) tap(name);
+    await act(async () => {});
+    expect(sent(sendKeys)).toEqual(["l", "s"]);
+    expect(box).toHaveValue("ls");
+  });
+
+  it.each(["stop", "timeout", "agent"] as const)("a %s disarm drops held text unsent", async (reason) => {
+    vi.useFakeTimers();
+    const sendKeys = mockSend();
+    const view = render(<Harness sendKeys={sendKeys} />);
+    const box = startTyping();
+    fireEvent.change(box, { target: { value: "one\ntwo" } });
+    if (reason === "stop") tap("Stop typing");
+    if (reason === "timeout") act(() => vi.advanceTimersByTime(60_000));
+    if (reason === "agent") view.rerender(<Harness sendKeys={sendKeys} agentKey="shell" />);
+    await act(async () => {});
+    expect(screen.getByLabelText("Typing mode")).toHaveTextContent("inactive");
+    expect(box).toHaveValue("");
+    expect(sendKeys).not.toHaveBeenCalled();
+  });
+
+  it("editing held text keeps the idle watchdog from disarming mid-decision", () => {
+    vi.useFakeTimers();
+    const sendKeys = mockSend();
+    render(<Harness sendKeys={sendKeys} />);
+    const box = startTyping();
+    act(() => vi.advanceTimersByTime(50_000));
+    fireEvent.change(box, { target: { value: "one\ntwo" } });
+    act(() => vi.advanceTimersByTime(50_000));
+    expect(screen.getByLabelText("Typing mode")).toHaveTextContent(/^active$/);
+    expect(box).toHaveValue("one\ntwo");
+  });
+
+  it("a failed send during One line disarms, and no Enter ever goes out", async () => {
+    const sendKeys = vi.fn<(keys: string[]) => Promise<boolean>>().mockResolvedValue(false);
+    render(<Harness sendKeys={sendKeys} />);
+    const box = startTyping();
+    fireEvent.change(box, { target: { value: "one\ntwo" } });
+    tap("One line");
+    await act(async () => {});
+    expect(screen.getByLabelText("Typing mode")).toHaveTextContent("inactive");
+    expect(box).toHaveValue("");
+    expect(sent(sendKeys)).not.toContain("Enter");
   });
 });

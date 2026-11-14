@@ -28,6 +28,11 @@ back`), an incomplete Submit or Review page (`Unanswered: …`, `Enter goes to t
 every picker (below), and a Submit page beside OmO's side panel (below). A question beside the
 panel lifts, bound to the columns left of it (below).
 
+Type mode is the way into an inline answer editor, and that editor submits on Enter. So Type mode
+never sends a pasted line break as Enter (issue #134): it holds the text and offers to send it as
+one line. What the editor does with a multi-line paste has not been captured, so no multi-line
+answer is delivered yet.
+
 A dialog quoted in agent prose or a tool result stays prose (`pi--prose-quoted-*`). The tail
 decides: the bottom rule must be the last row, or have one to four status rows under it and nothing
 else, every one styled except the last, which may be plain under a styled one (pi's extension-status

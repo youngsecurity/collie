@@ -1653,6 +1653,11 @@ export const zhTW: Dictionary = {
   "directTyping.status.agentChanged": "輸入模式已關閉：窗格的智能體已更換。",
   "directTyping.status.idleTimeout": "輸入模式已關閉：60秒無按鍵。",
   "directTyping.status.interrupted": "已中斷終端機直接連線：窗格檢視被中斷。",
+  "directTyping.status.pasteHeld": "貼上的多行內容正在等待。請先選擇傳送方式。",
+  "directTyping.heldPaste.title": "貼上的文字包含換行，尚未傳送任何內容。",
+  "directTyping.heldPaste.oneLine": "合併為一行",
+  "directTyping.heldPaste.lineByLine": "逐行傳送",
+  "directTyping.heldPaste.discard": "捨棄",
   "directTyping.status.backgrounded": "已中斷終端機直接連線：應用程式進入背景。",
 
   // --- apiError (the bridge's refusals, keyed by the code on the wire) ---

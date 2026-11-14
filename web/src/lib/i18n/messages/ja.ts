@@ -1670,6 +1670,11 @@ export const ja: Dictionary = {
   "directTyping.status.idleTimeout": "入力モードをオフにしました。60秒間キー入力がありません。",
   "directTyping.status.interrupted":
     "ターミナル入力を中断しました。ペイン表示が切り替わりました。",
+  "directTyping.status.pasteHeld": "貼り付けた行は保留中です。先に送信方法を選んでください。",
+  "directTyping.heldPaste.title": "貼り付けたテキストに改行があります。まだ何も送信していません。",
+  "directTyping.heldPaste.oneLine": "1行にまとめる",
+  "directTyping.heldPaste.lineByLine": "1行ずつ",
+  "directTyping.heldPaste.discard": "破棄",
   "directTyping.status.backgrounded":
     "アプリがバックグラウンドに移動したため、ターミナル入力を停止しました。",
 

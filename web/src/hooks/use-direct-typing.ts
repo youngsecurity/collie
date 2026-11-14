@@ -71,6 +71,17 @@ export function keysForLineChange(sent: string, next: string): string[] {
 
 /** The line break a paste can carry; Enter typed on a keyboard never reaches the field. */
 const LINE_BREAK = /\r\n|\r|\n/g;
+/** Not global, so `.test` keeps no position between calls. */
+const HAS_LINE_BREAK = /[\r\n]/;
+/** A run of line breaks with the spaces and tabs around it: what "One line" turns into one space. */
+const LINE_BREAK_RUN = /[ \t]*(?:\r\n|\r|\n)[ \t\r\n]*/g;
+
+/** A held value as one line: each run of line breaks becomes one space, none at either end. */
+export function joinLines(text: string): string {
+  return text.replace(LINE_BREAK_RUN, (run, at: number) =>
+    at === 0 || at + run.length === text.length ? "" : " ",
+  );
+}
 
 /** True when `next` is the keyboard writing back the end of the line that just ended: the whole
  *  line, or its last word or words, starting at a word boundary. */
@@ -133,8 +144,18 @@ interface DirectTypingOptions {
 // beside the queue could overtake a batch still in flight and land before the text. A Backspace on the empty field goes straight to the pane too, but finds no line to end.
 // From there the field holds only what was typed after that key, which the pane
 // inserts at its own caret, so a later Backspace, autocorrect or word delete can never erase text the
-// field did not type (a Tab completion, a recalled history line). A paste that carries a line break
-// ends the line at its last break: the text and its Enters go out, and the field keeps what follows.
+// field did not type (a Tab completion, a recalled history line).
+//
+// THE HOLD RULE (issue #134, a deliberate difference from upstream). A field value that contains a
+// line break is HELD: nothing of it is sent, `sentLine` stays what the pane already has, and the
+// whole text stays in the field to edit. Upstream sent each pasted break as Enter, which is right
+// for a shell and wrong for an answer editor that submits on Enter (Pi's, omp's): the first line
+// went in as the whole answer and the rest spilled into whatever took the keyboard next. A pasted
+// break is data, not a command, so it reaches the pane only through a labelled action: `One line`
+// (joined with spaces, no Enter), `Line by line` (the old behaviour, on purpose) or `Discard`.
+// While text is held, every line-end key is REFUSED with a notice instead of flushing it, and every
+// disarm drops it unsent: it never becomes a reply draft. The rule reads the field, not the paste
+// event, so a keyboard's clipboard chip, a drop or autofill are held the same way.
 //
 // THE WRITE-BACK GUARD. Emptying the field at a line end is the one place this hook still clears the
 // field under the keyboard, and a composing keyboard (SwiftKey, Gboard) may write the word it still
@@ -282,9 +303,15 @@ export function useDirectTyping({
   }
 
   /** End the line (the rule at the top): whatever the field still holds unsent, then `key` if one
-   *  is given (a Keys dock key is queued by `sendPaneKeys` instead), then an empty field and record. */
-  function endLine(key: string | null) {
+   *  is given (a Keys dock key is queued by `sendPaneKeys` instead), then an empty field and record.
+   *  False when held text refused it (the hold rule): nothing was sent and nothing changed. */
+  function endLine(key: string | null): boolean {
     const line = inputRef.current?.value ?? "";
+    if (HAS_LINE_BREAK.test(line)) {
+      setStatus(t("directTyping.status.pasteHeld"), "info");
+      pokeIdleTimer();
+      return false;
+    }
     sendLineChange(line);
     if (key !== null) {
       sender.enqueue([key]);
@@ -296,6 +323,7 @@ export function useDirectTyping({
         : null;
     sentLine.current = "";
     replaceField("");
+    return true;
   }
 
   /** The write-back guard (see the note at the top). True when `next` was dropped. */
@@ -310,16 +338,52 @@ export function useDirectTyping({
     return true;
   }
 
-  /** A settled field value: send the difference, ending the line at a pasted line break. */
+  /** A settled field value: send the difference, unless it carries a line break (the hold rule). */
   function settle(next: string, viaComposition: boolean) {
     if (dropLineEndWriteBack(next, viaComposition)) return;
+    if (HAS_LINE_BREAK.test(next)) {
+      // Editing held text is activity too: the watchdog must not disarm mid-decision.
+      pokeIdleTimer();
+      return;
+    }
     sendLineChange(next);
-    const lines = next.split(LINE_BREAK);
-    if (lines.length === 1) return;
-    // The text and its Enters are on their way; the pane now edits the line after the last break.
+  }
+
+  /** The held text, or null when the mode is off or the field holds no line break. */
+  function heldText(): string | null {
+    if (!activeRef.current) return null;
+    const held = inputRef.current?.value ?? "";
+    return HAS_LINE_BREAK.test(held) ? held : null;
+  }
+
+  /** Send the held text as ONE line: breaks become spaces, and no Enter is sent. */
+  function sendHeldAsOneLine() {
+    const held = heldText();
+    if (held === null) return;
+    const joined = joinLines(held);
+    replaceField(joined);
+    sendLineChange(joined);
+    pokeIdleTimer();
+  }
+
+  /** Send the held text with an Enter at each break, and keep the line after the last one. This is
+   *  what every paste used to do unasked; it is only right where Enter runs a line (a shell). */
+  function sendHeldLineByLine() {
+    const held = heldText();
+    if (held === null) return;
+    sendLineChange(held);
+    const lines = held.split(LINE_BREAK);
     const tail = lines[lines.length - 1] ?? "";
     sentLine.current = tail;
     replaceField(tail);
+    pokeIdleTimer();
+  }
+
+  /** Drop the held text and put back the line the pane already has. Sends nothing. */
+  function discardHeld() {
+    if (heldText() === null) return;
+    replaceField(sentLine.current);
+    pokeIdleTimer();
   }
 
   /** Keys from the Keys dock. Outside Type mode they take the composer's own path, unchanged. In
@@ -327,7 +391,7 @@ export function useDirectTyping({
    *  key always follows the text in queue order. Answers the verdict of the batch that carried them. */
   function sendPaneKeys(keys: string[]): Promise<boolean> {
     if (!activeRef.current) return writeKeys(keys);
-    endLine(null);
+    if (!endLine(null)) return Promise.resolve(false);
     pokeIdleTimer();
     return sender.enqueue(keys);
   }
@@ -587,6 +651,8 @@ export function useDirectTyping({
     active,
     value,
     busy: sender.busy,
+    /** How many lines the field is holding unsent (the hold rule); 0 when nothing is held. */
+    heldLines: active && HAS_LINE_BREAK.test(value) ? value.split(LINE_BREAK).length : 0,
     activate,
     deactivate,
     deactivateSilently,
@@ -595,5 +661,8 @@ export function useDirectTyping({
     onCompositionEnd,
     onKeyDown,
     sendPaneKeys,
+    sendHeldAsOneLine,
+    sendHeldLineByLine,
+    discardHeld,
   };
 }
