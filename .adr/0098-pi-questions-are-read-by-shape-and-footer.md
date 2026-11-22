@@ -167,7 +167,7 @@ proof.
 ## Amendment, 2026-11-14 (this fork): a stock question's free-text row is typed
 
 Status: **Accepted for this fork** (2026-11-14), a live run still owed. Amends the Decision's last
-bullet for one shape. Nothing above is rewritten. Trail: [ADR 0126](./0126-a-pi-question-answer-is-typed-into-its-inline-editor.md).
+bullet for one shape. Nothing above is rewritten. Trail: [ADR 0175](./0175-a-pi-question-answer-is-typed-into-its-inline-editor.md).
 
 On a stock question (every row numbered at column 0, the walk plan, the free-text row last) a
 pointer on the free-text row and the inline answer editor are now read as states of the same card,

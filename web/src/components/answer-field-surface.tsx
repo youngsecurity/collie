@@ -213,7 +213,7 @@ export interface AnswerFieldSurfaceProps {
  * flight, else the editor, else what the field holds with an offer to change it, else the focused
  * banner (where the card shows it) with the offer, else the offer alone. Shared by the
  * single-question card, the wizard step and the multi-select question, and by a stock pi question's
- * custom answer (.adr/0126), whose copy has no `change`: text in its editor is shown and left alone.
+ * custom answer (.adr/0175), whose copy has no `change`: text in its editor is shown and left alone.
  */
 export function AnswerFieldSurface(props: AnswerFieldSurfaceProps) {
   const { field, copy, locked, editor } = props;

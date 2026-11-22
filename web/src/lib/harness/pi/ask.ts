@@ -51,7 +51,7 @@
 // becomes the last row, sending Escape, in the footer's own words.
 //
 // The free-text row is never a button. It is a field of the model, read so the walk knows the row is
-// there, and nothing here types. On one shape the field is a `custom-answer` (.adr/0126): the stock
+// there, and nothing here types. On one shape the field is a `custom-answer` (.adr/0175): the stock
 // question, whose rows are all numbered at column 0, whose footer gives plan (a), and whose
 // free-text row opens an inline editor between two inset rules with a footer naming Enter as submit.
 // That shape reads in three states that are one question (the same `coreSignature`): the pointer on
@@ -481,7 +481,7 @@ export function detectPiQuestion(lines: StyledLine[]): PiQuestion | null {
   let trailers = 0;
   let counter: { answered: number; total: number } | null = null;
   if (frameless && !framelessNote(lines, texts, options.end, bodyEnd)) return null;
-  // The stock shape, the only one whose free-text row is a custom answer (.adr/0126).
+  // The stock shape, the only one whose free-text row is a custom answer (.adr/0175).
   const stock = numbered && !frameless && pointerCol === 0 && options.rows.every((r) => r.n !== null && !r.checkbox);
   // Its inline answer editor: the footer names Enter as submit and no key that moves or picks, and
   // the pointed free-text row carries the editor mark. Then the rows under the options must be the
@@ -535,7 +535,7 @@ export function detectPiQuestion(lines: StyledLine[]): PiQuestion | null {
   else if (footer.arrowsMove && footer.enter === "select") plan = "walk";
   else if (footer.digitsSelect && footer.enter !== "select" && questions === 1) plan = "digit";
   else return null;
-  // The stock question's free-text row is a custom answer lib/pi-answer.ts types (.adr/0126). Anywhere
+  // The stock question's free-text row is a custom answer lib/pi-answer.ts types (.adr/0175). Anywhere
   // else a pointer on the free-text row stays raw: one keystroke there (Enter) opens the extension's
   // own editor, whose keys were never measured (pi--omo-v5130-single-other-focused.txt).
   const custom = free !== null && stock && plan !== "digit";
@@ -897,7 +897,7 @@ function coreSignatureOf(
 }
 
 /**
- * The identity of a custom-answer question (.adr/0126), from a `coreSignatureOf` cut at its free-text
+ * The identity of a custom-answer question (.adr/0175), from a `coreSignatureOf` cut at its free-text
  * row: the rows from the top rule down to that row, without the editor mark the row gains while its
  * editor is open. The rows under it (the editor, the footer, the bottom rule) change as the answer is
  * walked to, opened and typed, so they are no part of what the question is; `signature` keeps them,

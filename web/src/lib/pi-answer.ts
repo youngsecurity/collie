@@ -1,4 +1,4 @@
-// The one recipe that answers a stock pi question in the person's own words (.adr/0126). The reader
+// The one recipe that answers a stock pi question in the person's own words (.adr/0175). The reader
 // (harness/pi/ask.ts) reports the question's `custom-answer` row in three states, and this walks them:
 //
 //   1. LIST, the pointer on a choice. One `Down` per verified read, bound to that read, until a read

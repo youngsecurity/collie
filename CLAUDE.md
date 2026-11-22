@@ -673,7 +673,7 @@ lint guard, the crew-wire guard or the `flake.lock` guard.
   untyped.
 - **A stock pi question's "Type something." row is typed into its inline editor, by its own
   recipe** (`lib/pi-answer.ts`,
-  [ADR 0126](./.adr/0126-a-pi-question-answer-is-typed-into-its-inline-editor.md)): the reader
+  [ADR 0175](./.adr/0175-a-pi-question-answer-is-typed-into-its-inline-editor.md)): the reader
   gives the row the `custom-answer` purpose in three states (list, on the row, editor open) under
   one core signature; the recipe walks, opens, types into an EMPTY editor only, waits for the exact
   text and then sends the one committing `Enter`. One line only, keys from `pi.json`. It is not

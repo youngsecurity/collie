@@ -203,7 +203,7 @@ function SubjectBody({ lines }: { lines: PromptSubjectLine[] }) {
 
 // Copy is purpose-aware: Claude's plan-approval input is deny-with-feedback; AskUserQuestion's field
 // is the question's answer; a stock pi question's free-text row is one too, typed into its inline
-// editor (.adr/0126); Grok's `z` row and a permission amend note are read, never typed into.
+// editor (.adr/0175); Grok's `z` row and a permission amend note are read, never typed into.
 // Missing purpose is Claude's plan input.
 // A function (not a module-level object) for the same locale-freshness reason as familyCaption.
 function feedbackCopyFor(purpose: PromptFeedbackPurpose): FeedbackCopy {
@@ -279,7 +279,7 @@ export function PromptSelectBlock({ prompt, lines, onAction, disabled, paneId, s
   const terminalFocused = feedback?.focused ?? false;
   const locked = Boolean(disabled) || offline || sending !== null || terminalFocused;
   // pi's open answer editor leaves the card one button, the footer's way out, which is no character:
-  // locking it would leave no way back from the phone (.adr/0126).
+  // locking it would leave no way back from the phone (.adr/0175).
   const isCustom = feedback?.purpose === "custom-answer";
   const isAnswer = feedback?.purpose === "answer" || isCustom;
   // The answer recipe reaches a focused field itself, so the terminal's focus locks the options only.

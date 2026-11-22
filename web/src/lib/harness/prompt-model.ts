@@ -65,7 +65,7 @@ export interface PromptOption {
  *     the option buttons. Neither Claude recipe fits it (different key, different Enter,
  *     unmeasured caret/wrap).
  *   - `custom-answer` — the free-text row of a stock pi question (`Type something.`), typed and
- *     submitted as the question's answer by `lib/pi-answer.ts` (.adr/0126). The row is not a field:
+ *     submitted as the question's answer by `lib/pi-answer.ts` (.adr/0175). The row is not a field:
  *     Enter on it opens an inline editor. `focused` says that editor is open and `text` is what it
  *     holds; `pointer` is `on` when the pointer stands on the row, editor open or not. Collie types
  *     only into an empty editor: no key that clears one was measured.

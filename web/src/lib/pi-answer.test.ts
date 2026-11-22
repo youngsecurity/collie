@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// The pi custom-answer recipe (.adr/0126, harness/pi/ASK_NOTES.md): walk the pointer to the free-text
+// The pi custom-answer recipe (.adr/0175, harness/pi/ASK_NOTES.md): walk the pointer to the free-text
 // row, open its inline editor, type into it only while it is empty, prove the text, then the one
 // answering Enter. The api layer is mocked so every fresh screen is scripted; the adapter, the reader
 // and the guard are the real thing. Each test pins one rule, and what was NOT sent.

@@ -922,7 +922,7 @@ describe("submitPromptOption: the real Kiro approval panels", () => {
   });
 });
 
-// .adr/0126: a stock pi question's free-text row is a `custom-answer`, routed to its own recipe
+// .adr/0175: a stock pi question's free-text row is a `custom-answer`, routed to its own recipe
 // (lib/pi-answer.test.ts pins the recipe; this pins the routing and the one focus exception).
 describe("a stock pi question's custom answer", () => {
   const PANES = join(import.meta.dirname, "..", "fixtures", "panes");

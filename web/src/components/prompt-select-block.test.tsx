@@ -949,7 +949,7 @@ describe("PromptSelectBlock, no action from cached state (M46 spec 11)", () => {
   });
 });
 
-// .adr/0126: a stock pi question's `Type something.` row is answered from the card. Real pi 1.1.0
+// .adr/0175: a stock pi question's `Type something.` row is answered from the card. Real pi 1.1.0
 // captures of its three states: the pointer on a choice, on the row, and the inline editor open.
 describe("PromptSelectBlock, a stock pi question's custom answer", () => {
   const OFFER = "Type your own answer";

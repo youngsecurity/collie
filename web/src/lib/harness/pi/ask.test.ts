@@ -35,7 +35,7 @@ const PI_FIXTURES = readdirSync(PANES).filter((name) => name.startsWith("pi--") 
 
 // What every pi screen in the corpus reads as. `walk` is plan (a), arrows then Enter; `digit` is plan
 // (b), the digit OmO's footer names; `review` is a Submit page lifted as a wizard review; `editor` is
-// a stock question whose inline answer editor is open (.adr/0126), a card offering only the way back.
+// a stock question whose inline answer editor is open (.adr/0175), a card offering only the way back.
 // Everything else is `raw`, and `modal` says whether the unread-dialog card may offer Escape.
 type Expect = "walk" | "digit" | "review" | "editor" | "raw";
 const LIFTS = new Map<string, Expect>([
@@ -46,7 +46,7 @@ const LIFTS = new Map<string, Expect>([
   ["question-plain-moved", "walk"],
   ["question-narrow", "walk"],
   ["question-narrow-moved", "walk"],
-  // The custom-answer row (.adr/0126): the pointer on it, then its inline editor open.
+  // The custom-answer row (.adr/0175): the pointer on it, then its inline editor open.
   ["question-other-focused", "walk"],
   ["question-answer-editor", "editor"],
   ["question-answer-editor-typed", "editor"],
@@ -629,7 +629,7 @@ describe("the shape declines anything unexpected", () => {
   });
 });
 
-describe("the custom-answer row of a stock question (.adr/0126)", () => {
+describe("the custom-answer row of a stock question (.adr/0175)", () => {
   const custom = (name: string) => prompt(load(name)).feedback;
 
   it.each([

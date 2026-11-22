@@ -15,7 +15,7 @@ const load = (name: string) => splitLines(parseAnsi(readFileSync(join(PANES, nam
 const pi = fixtures.filter((name) => name.startsWith("pi--"));
 // Every pi screen that lifts (pi/ask.test.ts names what each one lifts as). The rest of the pi corpus
 // is the raw cohort: editors, multi-selects, an incomplete Submit page, pi's own /model picker, and
-// outside the stock question (.adr/0126) a pointer on the free-text row and an answer editor.
+// outside the stock question (.adr/0175) a pointer on the free-text row and an answer editor.
 const lifted = pi.filter((name) => piAdapter.buildBlocks(load(name)).some((block) => block.kind !== "raw"));
 
 describeAdapterConformance(piAdapter, {
@@ -70,7 +70,7 @@ describe("pi adapter routing", () => {
     ["pi--v0871-nocolor-question.txt", "prompt-select"],
     ["pi--omo-v5130-nocolor-question.txt", "prompt-select"],
     ["pi--v0871-question-single.txt", "prompt-select"],
-    // A stock question with the pointer on its free-text row, and with its answer editor open (.adr/0126).
+    // A stock question with the pointer on its free-text row, and with its answer editor open (.adr/0175).
     ["pi--v0871-question-other-focused.txt", "prompt-select"],
     ["pi--v0871-question-answer-editor.txt", "prompt-select"],
     ["pi--v0871-permission-gate.txt", "prompt-select"],

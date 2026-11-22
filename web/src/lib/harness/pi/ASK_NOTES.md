@@ -174,7 +174,7 @@ the canary's `15-rule` message. `composerReady` is false whenever `piModalOnScre
 reply never goes into a question's answer editor. The one thing typed there is a custom answer, by
 its own recipe (next section).
 
-## The custom answer (ADR 0126)
+## The custom answer (ADR 0175)
 
 On a stock question (`question`, `questionnaire`, and the PR 397 single-select, which draws the
 same shape) the free-text row is a `custom-answer` field and the reader lifts three states of one
