@@ -7770,6 +7770,52 @@ describe("a slash command over pi's and omp's own command list (field case, 2026
     }
   }
 
+  // The same screens while pi works, which is the state the issue reports: only a running turn makes a steer
+  // a steer, on an idle screen `when: "steer"` goes as a plain send. The box's top rule is the labelled rule
+  // pi draws mid-turn, taken from the lab's steering capture (pi 1.3.0). A controlled replay built from
+  // captures, not a new live capture. Without `leadOpens` no box is found, so the turn never reads as running.
+  const WORKING = readFileSync(join(import.meta.dir, "../../web/src/fixtures/panes/pi--v130-steer-typed--w120.txt"), "utf8")
+    .split(/\r?\n/u)
+    .find((row) => /^─+ \S Working ─+$/u.test(plain(row).trimEnd()));
+  const working = (pane: FakePane): void => {
+    const drawn = pane.beforeRead!;
+    pane.beforeRead = (p, n) => {
+      void drawn(p, n);
+      const rows = p.fixed!.split("\r\n");
+      const rules = rows.flatMap((row, i) => (/^─{20,}$/u.test(plain(row).trimEnd()) ? [i] : []));
+      rows[rules.at(-2)!] = WORKING!;
+      p.fixed = rows.join("\r\n");
+    };
+  };
+  for (const [name, typed] of LEFT_TYPED) {
+    for (const version of ["1.4.0", "1.5.0"]) {
+      test(`${name} on pi ${version}: mid-turn, a steer over ${typed} left under pi's list is refused draft_present, not unconfirmed, and Discard frees the box (issue 135)`, async () => {
+        expect(WORKING).toBeDefined();
+        const pane = new FakePane("claude");
+        const { send, protocol } = rig({ pane, harness: "pi", version });
+        const probe = "⌁";
+        captured(pane, name, PI130.opened, { shows: (text) => text.startsWith("/") && !text.includes(probe) });
+        working(pane);
+        pane.box = typed;
+        const steer = await send(STEER_TEXT, { when: "steer", fromPhone: true });
+        // A draft under a running turn is refused on the read alone: no probe, nothing typed.
+        expect(steer.receipt).toMatchObject({ outcome: "refused", reason: "draft_present", keys: [] });
+        expect(steer.receipt?.detail).not.toBe(UNREAD);
+        expect(steer.surface).toMatchObject({ turn: "running", modal: "none", composer: "draft" });
+        expect(steer.offers).toEqual(["append", "replace", "cancel"]);
+        expect(pane.box).toBe(typed);
+        expect(pane.calls).toEqual([]);
+        const discarded = await send(typed, { mode: "discard", rowsHash: steer.rowsHash! });
+        expect(discarded.receipt?.outcome).toBe("discarded");
+        expect(pane.box).toBe("");
+        expect(pane.keysSeen).not.toContain("Enter");
+        // The pane is a working pi with an empty box again, the screen a steer needs.
+        const prepared = await protocol.handle({ id: `steer-135-prep-${version.replaceAll(".", "-")}`, text: "", mode: "prepare" }, { session: "main", paneId: "%1", harness: "pi" });
+        expect(prepared.surface).toMatchObject({ turn: "running", modal: "none", composer: "empty" });
+      });
+    }
+  }
+
   // The manual Send is kept where it belongs: a screen pi drew over its box is still not read as a draft.
   test.each(["1.4.0", "1.5.0"])("pi's model selector on pi %s: a steer is still refused unconfirmed, nothing typed (issue 135)", async (version) => {
     const pane = new FakePane("claude");
