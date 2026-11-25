@@ -784,7 +784,7 @@ export const tr: Dictionary = {
   "prompt.feedback.answer.textAria": "Yanıt metni",
   "prompt.feedback.answer.placeholder": "Yanıtınızı yazın…",
   "prompt.feedback.answer.help": "Sorunun yanıt alanına yazılır ve yanıtın olarak gönderilir.",
-  "prompt.feedback.customAnswer.help": "Sorunun kendi yanıt düzenleyicisine yazılır ve yanıtın olarak gönderilir. Yalnızca tek satır.",
+  "prompt.feedback.customAnswer.help": "Sorunun kendi yanıt düzenleyicisine yazılır ve yanıtın olarak gönderilir. En fazla {count} satır.",
   "prompt.feedback.answer.helpWizard":
     "Bu sorunun yanıt alanına yazıldı. Göndermek soruyu yanıtlar ve bir sonraki soruya geçer.",
   "prompt.feedback.answer.helpMulti":
@@ -1508,8 +1508,9 @@ export const tr: Dictionary = {
   "promptAction.feedback.empty": "Gönderilecek bir şey yok",
   "promptAction.feedback.boxNotOpened": "Geri bildirim kutusu açılmadı, bölmeyi kontrol edin",
   "promptAction.feedback.notArrived": "Geri bildirim ulaşmadı, hiçbir şey gönderilmedi",
-  "promptAction.customAnswer.multiline": "Bu soru tek satırlık bir yanıt alır. Yanıtı tek satıra yazıp yeniden gönder. Hiçbir şey yazılmadı",
+  "promptAction.customAnswer.tooManyLines": "Bu sorunun yanıt düzenleyicisi en fazla {count} satır alır. Yanıtı kısaltıp yeniden gönder. Hiçbir şey yazılmadı",
   "promptAction.customAnswer.tooLong": "Bu yanıt, bu terminal genişliğinde sorunun yanıt düzenleyicisi için çok uzun. Kısalt ya da terminali genişlet. Hiçbir şey yazılmadı",
+  "promptAction.customAnswer.trailingBackslash": "pi'nin yanıt düzenleyicisi yanıtın sonundaki ters eğik çizgiyi satır sonu olarak alır, bu yüzden yanıt gönderilmez. Kaldırıp yeniden gönderin. Hiçbir şey yazılmadı",
   "promptAction.customAnswer.editorBusy": "Sorunun yanıt düzenleyicisinde zaten metin var, bu yüzden hiçbir şey yazılmadı. Terminalde temizle ya da geri dönüp yeniden dene",
   "promptAction.customAnswer.notOpened": "Sorunun yanıt düzenleyicisi açılmadı. Hiçbir şey yazılmadı",
   "promptAction.answer.fieldNotReached": "Yanıt alanına ulaşılamadı. Hiçbir şey gönderilmedi",

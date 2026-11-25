@@ -939,7 +939,7 @@ export const en = {
   "prompt.feedback.answer.textAria": "Answer text",
   "prompt.feedback.answer.placeholder": "Write your answer…",
   "prompt.feedback.answer.help": "Typed into the question's answer field and sent as your answer.",
-  "prompt.feedback.customAnswer.help": "Typed into the question's own answer editor and sent as your answer. One line only.",
+  "prompt.feedback.customAnswer.help": "Typed into the question's own answer editor and sent as your answer. Up to {count} lines.",
   "prompt.feedback.answer.helpWizard":
     "Typed into this question's answer field. Sending answers it and moves to the next question.",
   "prompt.feedback.answer.helpMulti":
@@ -1739,8 +1739,9 @@ export const en = {
   "promptAction.feedback.empty": "Nothing to send",
   "promptAction.feedback.boxNotOpened": "The feedback box didn't open. Check the pane",
   "promptAction.feedback.notArrived": "The feedback didn't arrive. Nothing was submitted",
-  "promptAction.customAnswer.multiline": "This question takes a one-line answer. Put it on one line and send again. Nothing was typed",
+  "promptAction.customAnswer.tooManyLines": "This question's answer editor takes at most {count} lines. Shorten the answer and send again. Nothing was typed",
   "promptAction.customAnswer.tooLong": "This answer is too long for the question's answer editor at this terminal width. Shorten it or widen the terminal. Nothing was typed",
+  "promptAction.customAnswer.trailingBackslash": "Pi's answer editor takes a backslash at the end of an answer as a line break, so the answer would not be sent. Remove it and send again. Nothing was typed",
   "promptAction.customAnswer.editorBusy": "The question's answer editor already holds text, so nothing was typed. Clear it in the terminal, or go back and try again",
   "promptAction.customAnswer.notOpened": "The question's answer editor did not open. Nothing was typed",
   "promptAction.answer.fieldNotReached": "Couldn't reach the answer field. Nothing was sent",

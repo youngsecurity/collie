@@ -861,7 +861,7 @@ export const de: Dictionary = {
   "prompt.feedback.answer.textAria": "Antworttext",
   "prompt.feedback.answer.placeholder": "Schreibe deine Antwort…",
   "prompt.feedback.answer.help": "Wird in das Antwortfeld der Frage eingegeben und als deine Antwort gesendet.",
-  "prompt.feedback.customAnswer.help": "Wird in den Antwort-Editor der Frage eingegeben und als deine Antwort gesendet. Nur eine Zeile.",
+  "prompt.feedback.customAnswer.help": "Wird in den Antwort-Editor der Frage eingegeben und als deine Antwort gesendet. Höchstens {count} Zeilen.",
   "prompt.feedback.answer.helpWizard":
     "Wird in das Antwortfeld dieser Frage eingegeben. Das Senden beantwortet sie und wechselt zur nächsten Frage.",
   "prompt.feedback.answer.helpMulti":
@@ -1644,8 +1644,9 @@ export const de: Dictionary = {
   "promptAction.feedback.empty": "Keine Daten zum Senden.",
   "promptAction.feedback.boxNotOpened": "Das Feedback-Feld hat sich nicht geöffnet. Pane prüfen.",
   "promptAction.feedback.notArrived": "Das Feedback ist nicht angekommen. Es wurde nichts gesendet.",
-  "promptAction.customAnswer.multiline": "Diese Frage nimmt nur eine einzeilige Antwort an. Schreibe sie in eine Zeile und sende erneut. Es wurde nichts eingegeben",
+  "promptAction.customAnswer.tooManyLines": "Der Antwort-Editor dieser Frage nimmt höchstens {count} Zeilen an. Kürze die Antwort und sende erneut. Es wurde nichts eingegeben",
   "promptAction.customAnswer.tooLong": "Diese Antwort ist bei dieser Terminalbreite zu lang für den Antwort-Editor der Frage. Kürze sie oder verbreitere das Terminal. Es wurde nichts eingegeben",
+  "promptAction.customAnswer.trailingBackslash": "Pis Antwort-Editor liest einen Backslash am Ende einer Antwort als Zeilenumbruch, deshalb würde die Antwort nicht gesendet. Entferne ihn und sende erneut. Es wurde nichts eingegeben",
   "promptAction.customAnswer.editorBusy": "Der Antwort-Editor der Frage enthält bereits Text, deshalb wurde nichts eingegeben. Leere ihn im Terminal oder gehe zurück und versuche es erneut",
   "promptAction.customAnswer.notOpened": "Der Antwort-Editor der Frage hat sich nicht geöffnet. Es wurde nichts eingegeben",
   "promptAction.answer.fieldNotReached": "Konnte das Antwortfeld nicht erreichen. Es wurde nichts gesendet",

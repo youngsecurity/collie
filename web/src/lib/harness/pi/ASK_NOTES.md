@@ -188,26 +188,33 @@ card:
 
 The editor is read by shape: one to three label rows one column in (the label's words are not
 matched), a rule one column in, up to eight text rows one column in, the same rule. The caret is a
-reverse-video cell and trailing padding is trimmed. A wrapped answer reads as rows joined by a
-newline, which never equals a one-line answer, so it is never committed.
+reverse-video cell and trailing padding is trimmed. The rows are joined by a newline, so a
+multi-line answer reads as its lines, and a wrapped line reads as two rows, which never equals the
+line typed, so it is never committed.
 
 All three states share a core signature cut at the free-text row, with the pointer and the `✎`
 blanked. `lib/pi-answer.ts` follows the question by that, the question text and the tab caption,
 because the editor state has no choices for the shared identity to compare.
 
-The recipe: `Down` one verified read at a time to the row, `Enter` bound to that read, the text
-through the reply path bound to the read of the EMPTY editor, a wait for the exact text, then
-`Enter` bound to that read. The keys are `keys.navigation` in `pi.json`. An editor that already
-holds text is refused: no clearing key was measured.
+The recipe: `Down` one verified read at a time to the row, `Enter` bound to that read, then each
+line through the reply path bound to the read before it (the EMPTY editor for the first), with a
+wait for the exact lines so far, and `keys.newline` (`ctrl+j`) between lines with a wait for the
+new empty row; then `Enter` bound to the read of the whole answer. The keys are `keys.navigation`
+and `keys.newline` in `pi.json`. An editor that already holds text is refused: no clearing key was
+measured. Refused before any key: more than five lines (pi-tui's Editor shows at least five rows
+before it scrolls), a line wider than the dialog less four columns, and a last line ending in `\`
+(pi-tui's Editor reads `\` then Enter as a line break, so the answer would not submit).
 
 Not typed: OmO (`Enter` in its editor is "save and next" and its plan is a digit), gentle-pi's
 `Other…`, every multi-select, and a stock question beside OmO's side panel, where the list keeps a
 `free-text` row and the other two states stay raw.
 
-NOT measured live as of 2026-11-14. The source walk above and the captures give the keys; the
-recipe has run only against scripted panes. Owed on a real pi: that the bridge's text path lands in
-the inline editor as plain text, that `Enter` submits it on the pi version in use (captures stop at
-1.1.0), and the `questionnaire` editor with text in it.
+NOT measured live. On 2026-11-25 the recipe ran against the real code of pi-coding-agent 1.6.1's
+`question` and `questionnaire` examples and pi-tui 1.6.1's Editor, keys through pi-tui's
+`StdinBuffer` and frames painted on a headless xterm grid (ADR 0175, *Not yet measured*). Owed on a
+real pi through a real terminal and bridge: that the text path lands in the inline editor as plain
+text on tmux and Herdr, that `ctrl+j` arrives as a line break, and that `Enter` submits on the pi
+version in use.
 
 The status rows are styled, except the last, which may be plain under a styled row. pi's footer
 (`components/footer.js` in pi-coding-agent 1.1.0) joins every extension's `ctx.ui.setStatus` text

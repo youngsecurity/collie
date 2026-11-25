@@ -676,8 +676,10 @@ lint guard, the crew-wire guard or the `flake.lock` guard.
   [ADR 0175](./.adr/0175-a-pi-question-answer-is-typed-into-its-inline-editor.md)): the reader
   gives the row the `custom-answer` purpose in three states (list, on the row, editor open) under
   one core signature; the recipe walks, opens, types into an EMPTY editor only, waits for the exact
-  text and then sends the one committing `Enter`. One line only, keys from `pi.json`. It is not
-  the Claude recipe and shares no keys with it. Not yet run against a live pi; see the ADR and
+  text and then sends the one committing `Enter`. Up to five lines, typed one at a time with
+  `keys.newline` between; keys from `pi.json`. It is not
+  the Claude recipe and shares no keys with it. Run against pi 1.6.1's own question code, not yet
+  against a live pi; see the ADR and
   [`ASK_NOTES.md`](./web/src/lib/harness/pi/ASK_NOTES.md) before touching it.
 - **The phone parses what the phone draws; the bridge parses only what it must act on alone.** Every
   pane grammar is client-side, under `web/src/lib/harness/`. The bridge holds one,

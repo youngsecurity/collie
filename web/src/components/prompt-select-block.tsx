@@ -9,6 +9,7 @@ import type {
   PromptSubjectLine,
   StyledLine,
 } from "@/lib/blocks";
+import { MAX_ANSWER_LINES } from "@/lib/pi-answer";
 import { FEEDBACK_MAX_LENGTH } from "@/lib/prompt-action";
 import {
   AnswerFieldSurface,
@@ -209,7 +210,9 @@ function SubjectBody({ lines }: { lines: PromptSubjectLine[] }) {
 function feedbackCopyFor(purpose: PromptFeedbackPurpose): FeedbackCopy {
   if (purpose === "answer") return answerFieldCopy(t("prompt.feedback.answer.help"));
   // Text already in pi's editor is shown, never replaced: no key that clears it was measured.
-  if (purpose === "custom-answer") return { ...answerFieldCopy(t("prompt.feedback.customAnswer.help")), change: null };
+  if (purpose === "custom-answer") {
+    return { ...answerFieldCopy(t("prompt.feedback.customAnswer.help", { count: MAX_ANSWER_LINES })), change: null };
+  }
   if (purpose === "free-text") {
     // No phone composer: neither Claude recipe fits this row.
     return {

@@ -18,7 +18,7 @@ import { splitLines, type PromptModel } from "./blocks";
 import { dialogDetector } from "./dialog-guard";
 import { POLL_ATTEMPTS } from "./harness/guard";
 import { t } from "./i18n";
-import { samePiQuestion, submitPiAnswer } from "./pi-answer";
+import { MAX_ANSWER_LINES, samePiQuestion, submitPiAnswer } from "./pi-answer";
 
 const mockFetchPane = vi.mocked(fetchPane);
 const mockSendKeys = vi.mocked(sendKeys);
@@ -249,14 +249,75 @@ describe("submitPiAnswer", () => {
     expect(mockSendKeys).not.toHaveBeenCalled();
   });
 
-  it("refuses an answer of several lines before any read or key", async () => {
-    expect(await answer(ask(), "first line\nsecond line")).toEqual({
+  it("types each line, with pi's newline key between them, every write bound to the read before it", async () => {
+    const typed = (editor: string) => ask({ pointer: 3, editor });
+    screens(EMPTY, typed("Navy"), typed("Navy\n"), typed("Navy\nwith a white stripe"));
+    expect(await answer(EMPTY, "Navy\r\nwith a white stripe")).toEqual({ status: "sent" });
+    expect(writes()).toEqual([
+      { keys: ["ctrl+j"], bound: bound(typed("Navy")) },
+      { keys: ["Enter"], bound: bound(typed("Navy\nwith a white stripe")) },
+    ]);
+    expect(mockSendReply.mock.calls).toEqual([
+      ["w1:p1", "Navy", false, undefined, bound(EMPTY)],
+      ["w1:p1", "with a white stripe", false, undefined, bound(typed("Navy\n"))],
+    ]);
+  });
+
+  it("keeps an inner blank line as a bare newline key, and drops the ones around the answer", async () => {
+    const typed = (editor: string) => ask({ pointer: 3, editor });
+    screens(EMPTY, typed("Navy"), typed("Navy\n"), typed("Navy\n\n"), typed("Navy\n\nTeal"));
+    expect(await answer(EMPTY, "\n\nNavy\n\nTeal\n")).toEqual({ status: "sent" });
+    expect(keys()).toEqual([["ctrl+j"], ["ctrl+j"], ["Enter"]]);
+    expect(mockSendReply.mock.calls.map((c) => c[1])).toEqual(["Navy", "Teal"]);
+  });
+
+  it("types no further line when the newline does not land, and never answers", async () => {
+    screens(EMPTY, ask({ pointer: 3, editor: "Navy" }));
+    expect(await answer(EMPTY, "Navy\nTeal")).toEqual({ status: "error", error: t("promptAction.answer.notArrived") });
+    expect(keys()).toEqual([["ctrl+j"]]);
+    expect(mockSendReply).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops when the question goes away after a line break", async () => {
+    screens(EMPTY, ask({ pointer: 3, editor: "Navy" }), "pi is working\n");
+    expect(await answer(EMPTY, "Navy\nTeal")).toEqual({ status: "changed", why: "break: drift" });
+    expect(keys()).toEqual([["ctrl+j"]]);
+    expect(mockSendReply).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses more lines than the editor shows unscrolled before any read or key", async () => {
+    const many = Array.from({ length: MAX_ANSWER_LINES + 1 }, (_, i) => `line ${i + 1}`).join("\n");
+    expect(await answer(ask(), many)).toEqual({
       status: "error",
-      error: t("promptAction.customAnswer.multiline"),
+      error: t("promptAction.customAnswer.tooManyLines", { count: MAX_ANSWER_LINES }),
     });
     expect(mockFetchPane).not.toHaveBeenCalled();
     expect(mockSendKeys).not.toHaveBeenCalled();
     expect(mockSendReply).not.toHaveBeenCalled();
+  });
+
+  it("refuses an answer that ends in a backslash, which pi's Enter would turn into a line break", async () => {
+    expect(await answer(ask(), "C:\\temp\\")).toEqual({
+      status: "error",
+      error: t("promptAction.customAnswer.trailingBackslash"),
+    });
+    expect(mockFetchPane).not.toHaveBeenCalled();
+    expect(mockSendKeys).not.toHaveBeenCalled();
+    expect(mockSendReply).not.toHaveBeenCalled();
+  });
+
+  it("types a backslash that ends an inner line, since only the answering Enter reads it", async () => {
+    screens(ON_ROW, EMPTY, ask({ pointer: 3, editor: "C:\\" }), ask({ pointer: 3, editor: "C:\\\n" }), ask({ pointer: 3, editor: "C:\\\nTeal" }));
+    expect(await answer(ON_ROW, "C:\\\nTeal")).toEqual({ status: "sent" });
+    expect(keys()).toEqual([["Enter"], ["ctrl+j"], ["Enter"]]);
+  });
+
+  it("refuses an answer with any line wider than one editor row before any read or key", async () => {
+    expect(await answer(ask(), `Navy\n${"a".repeat(117)}`)).toEqual({
+      status: "error",
+      error: t("promptAction.customAnswer.tooLong"),
+    });
+    expect(mockFetchPane).not.toHaveBeenCalled();
   });
 
   it("refuses an answer wider than one editor row before any key, wide characters counted double", async () => {
@@ -270,6 +331,7 @@ describe("submitPiAnswer", () => {
 
   it("refuses an empty answer", async () => {
     expect(await answer(ask(), "   ")).toEqual({ status: "error", error: t("promptAction.feedback.empty") });
+    expect(await answer(ask(), " \n \n ")).toEqual({ status: "error", error: t("promptAction.feedback.empty") });
     expect(mockSendKeys).not.toHaveBeenCalled();
   });
 

@@ -976,6 +976,17 @@ describe("PromptSelectBlock, a stock pi question's custom answer", () => {
     expect(onAction).toHaveBeenCalledWith({ kind: "feedback", text: "Navy" });
   });
 
+  it("takes an answer of several lines, says how many fit, and hands them over as written", async () => {
+    const onAction = vi.fn();
+    const user = userEvent.setup();
+    render(<PromptSelectBlock prompt={piModel("pi--v110-question-single.txt")} onAction={onAction} />);
+    await user.click(screen.getByRole("button", { name: OFFER }));
+    expect(screen.getByText(/Up to 5 lines/)).toBeInTheDocument();
+    await user.type(screen.getByRole("textbox", { name: "Answer text" }), "Navy{Enter}with a white stripe");
+    await user.click(screen.getByRole("button", { name: "Send answer" }));
+    expect(onAction).toHaveBeenCalledWith({ kind: "feedback", text: "Navy\nwith a white stripe" });
+  });
+
   it("offers nothing on a free-text row whose keys were never measured (OmO)", () => {
     const model = piModel("pi--omo-v5130-single-described.txt");
     expect(model.feedback?.purpose).toBe("free-text");

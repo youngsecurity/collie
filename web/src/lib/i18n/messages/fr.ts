@@ -785,7 +785,7 @@ export const fr: Dictionary = {
   "prompt.feedback.answer.placeholder": "Écrivez votre réponse…",
   "prompt.feedback.answer.help":
     "Saisi dans le champ de réponse de la question et envoyé comme votre réponse.",
-  "prompt.feedback.customAnswer.help": "Saisi dans l'éditeur de réponse de la question elle-même et envoyé comme votre réponse. Une seule ligne.",
+  "prompt.feedback.customAnswer.help": "Saisi dans l'éditeur de réponse de la question elle-même et envoyé comme votre réponse. {count} lignes au plus.",
   "prompt.feedback.answer.helpWizard":
     "Saisi dans le champ de réponse de cette question. L'envoi y répond et passe à la question suivante.",
   "prompt.feedback.answer.helpMulti":
@@ -1509,8 +1509,9 @@ export const fr: Dictionary = {
   "promptAction.feedback.empty": "Rien à envoyer",
   "promptAction.feedback.boxNotOpened": "La zone de commentaires ne s'est pas ouverte : vérifiez le volet",
   "promptAction.feedback.notArrived": "Le commentaire n'est pas arrivé : rien n'a été envoyé",
-  "promptAction.customAnswer.multiline": "Cette question accepte une réponse d'une seule ligne. Mettez-la sur une ligne et renvoyez-la. Rien n'a été saisi",
+  "promptAction.customAnswer.tooManyLines": "L'éditeur de réponse de cette question accepte {count} lignes au plus. Raccourcissez la réponse et renvoyez-la. Rien n'a été saisi",
   "promptAction.customAnswer.tooLong": "Cette réponse est trop longue pour l'éditeur de réponse de la question à cette largeur de terminal. Raccourcissez-la ou élargissez le terminal. Rien n'a été saisi",
+  "promptAction.customAnswer.trailingBackslash": "L'éditeur de réponse de pi lit une barre oblique inverse en fin de réponse comme un saut de ligne, la réponse ne serait donc pas envoyée. Retire-la et renvoie. Rien n'a été saisi",
   "promptAction.customAnswer.editorBusy": "L'éditeur de réponse de la question contient déjà du texte, rien n'a donc été saisi. Videz-le dans le terminal, ou revenez en arrière et réessayez",
   "promptAction.customAnswer.notOpened": "L'éditeur de réponse de la question ne s'est pas ouvert. Rien n'a été saisi",
   "promptAction.answer.fieldNotReached": "Impossible d'atteindre le champ de réponse. Rien n'a été envoyé",

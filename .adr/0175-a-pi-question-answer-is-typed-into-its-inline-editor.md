@@ -1,7 +1,7 @@
 # 0175: a pi question answer is typed into its inline editor
 
-- **Status:** Accepted for this fork (2026-11-14). A live run on a phone is still owed, see
-  *Not yet measured*.
+- **Status:** Accepted for this fork (2026-11-14; multi-line answers 2026-11-25). A live run on a
+  phone is still owed, see *Not yet measured*.
 - **Date:** 2026-11-14
 - **Shipped in:** unreleased
 - **Trail:** [issue 133](https://github.com/youngsecurity/collie/issues/133) (answering a pi
@@ -9,7 +9,7 @@
   on the card saying so) · `web/src/lib/pi-answer.ts` · `web/src/lib/harness/pi/ask.ts`
   (`readAnswerEditor`, `customCoreOf`) · `web/src/lib/harness/pi/index.ts` ·
   `web/src/lib/prompt-action.ts` · `web/src/components/prompt-select-block.tsx` ·
-  `web/src/lib/surface/profiles/pi.json` (`keys.navigation`) ·
+  `web/src/lib/surface/profiles/pi.json` (`keys.navigation`, `keys.newline`) ·
   [`ASK_NOTES.md`](../web/src/lib/harness/pi/ASK_NOTES.md) ·
   `web/src/fixtures/panes/pi--v0871-question*.txt`, `pi--v110-question*.txt` ·
   [ADR 0098](./0098-pi-questions-are-read-by-shape-and-footer.md) ·
@@ -54,18 +54,29 @@ Escape goes back to the list.
    - one `Down` per verified read until the pointer is on the row, capped at the option count
      plus two;
    - `Enter`, bound to the read that proved the pointer is on the row, then a wait for the editor;
-   - the reply path with `submit: false`, bound to the read of the empty editor, then a wait until
-     the editor reads exactly the text;
-   - `Enter`, bound to that read. It is the only key that commits an answer.
+   - for each line of the answer: the reply path with `submit: false`, bound to the read before
+     it (the empty editor for the first line), then a wait until the editor reads exactly the lines
+     typed so far; between two lines the profile's newline key, bound to the read that proved the
+     line before, then a wait for the new empty row;
+   - `Enter`, bound to the read that proved the whole answer. It is the only key that commits an
+     answer.
    Any drift refuses and nothing is sent after it.
 4. **Collie types only into an empty editor.** No key that clears pi's editor was measured, so an
    editor that already holds text is shown read-only and a send is refused. ADR 0113's "clear only
    what the person saw" has no counterpart here, and the card offers no "change this answer".
-5. **One line only.** A draft with a line break, or one wider than the dialog, is refused before
-   any key, and the draft stays in the phone's editor. The reader joins wrapped editor rows with a
-   newline, so a wrapped answer never equals the typed text and is never committed.
-6. **The keys come from profile data**: `keys.navigation.down` and `.confirm` in `pi.json`, which
-   is what ADR 0113's addendum asks of a second harness.
+5. **Up to five lines, each one editor row wide.** The draft is split at its line breaks (CRLF and
+   CR too), each line is sanitised on its own, blank lines at the ends are dropped and blank lines
+   inside are kept. Each of these is refused before any key, with the draft kept in the phone's
+   editor: more than `MAX_ANSWER_LINES` (5) lines, because pi-tui's Editor shows at least five rows
+   before it scrolls and a scrolled editor no longer shows the whole answer; a line wider than the
+   dialog less four columns, because the reader joins a wrapped row with a newline and the read-back
+   would never match; a last line ending in a backslash, because pi-tui's Editor turns `\` then
+   Enter into a line break, so the answering Enter would not submit (a backslash ending an inner
+   line is typed, since the newline key never reads it). (2026-11-25: this replaces "one line
+   only", which refused every line break.)
+6. **The keys come from profile data**: `keys.navigation.down` and `.confirm`, and `keys.newline`
+   (`ctrl+j`, pi-tui's `tui.input.newLine` beside `shift+enter`) in `pi.json`, which is what ADR
+   0113's addendum asks of a second harness.
 7. **The way out stays live while pi's editor is open.** `submitPromptOption` refuses every tap on
    a focused field (issue 95) except this one: the only option offered then is Escape, which types
    no character, and the guard still refuses if the editor's text is no longer what the card
@@ -97,16 +108,25 @@ Escape goes back to the list.
 
 ## Not yet measured
 
-The reader is tested on the captures and the recipe against a scripted pane. Nothing here was run
-against a live pi. Before this ships in a release, one run on a phone must confirm, and record
-with its versions:
+The reader is tested on the captures and the recipe against a scripted pane.
 
-- that the bridge's text path lands in pi's inline editor as plain text (a bracketed paste that pi
-  folds into a marker would fail the read-back and refuse, not mis-send);
-- that Enter in the editor submits the typed text as the answer on the pi version in use (the
-  reporter ran pi 1.4.0; the newest capture is 1.1.0);
-- the `questionnaire` variant, whose tab strip the recipe reads but no capture shows with text
-  typed.
+On 2026-11-25 the recipe also ran, in a throwaway test that is not in the tree, against the real
+code of pi-coding-agent 1.6.1's `question` and `questionnaire` examples and pi-tui 1.6.1's Editor
+(the examples are the same in 1.4.0): keys went in through pi-tui's own `StdinBuffer`, each frame
+was painted on an `@xterm/headless` 5.5.0 grid and read back by Collie's reader. One line, two
+lines, CRLF, an inner blank line, five lines (also on a 12-row terminal), a line as wide as the
+recipe allows, Unicode, a one-question questionnaire and the first tab of a two-question one were
+all submitted with the exact text in pi's tool result. A last line ending in `\` was found to open
+a new line instead of submitting, which is why decision 5 refuses it.
 
-Multi-line answers, a clear key for a filled editor, OmO and gentle-pi each need their own
-measurement and are not decided here.
+Nothing here was run against a live pi through a real terminal and bridge. Before this ships in a
+release, one run on a phone must confirm, and record with its versions:
+
+- that the bridge's text path lands in pi's inline editor as plain text on tmux and on Herdr (a
+  bracketed paste that pi folds into a marker would fail the read-back and refuse, not mis-send);
+- that `ctrl+j` reaches pi's editor as a line break through the terminal in use (a terminal that
+  sends it as something else fails the read-back and refuses);
+- that Enter in the editor submits the typed answer on the pi version in use.
+
+A clear key for a filled editor, OmO and gentle-pi each need their own measurement and are not
+decided here.
