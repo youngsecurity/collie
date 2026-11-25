@@ -76,6 +76,9 @@ const HAS_LINE_BREAK = /[\r\n]/;
 /** A run of line breaks with the spaces and tabs around it: what "One line" turns into one space. */
 const LINE_BREAK_RUN = /[ \t]*(?:\r\n|\r|\n)[ \t\r\n]*/g;
 
+/** What a tab goes out as when the lines are kept: pi's own paste makes the same four spaces of it. */
+const TAB_AS_SPACES = "    ";
+
 /** A held value as one line: each run of line breaks becomes one space, none at either end. */
 export function joinLines(text: string): string {
   return text.replace(LINE_BREAK_RUN, (run, at: number) =>
@@ -151,8 +154,10 @@ interface DirectTypingOptions {
 // whole text stays in the field to edit. Upstream sent each pasted break as Enter, which is right
 // for a shell and wrong for an answer editor that submits on Enter (Pi's, omp's): the first line
 // went in as the whole answer and the rest spilled into whatever took the keyboard next. A pasted
-// break is data, not a command, so it reaches the pane only through a labelled action: `One line`
-// (joined with spaces, no Enter), `Line by line` (the old behaviour, on purpose) or `Discard`.
+// break is data, not a command, so it reaches the pane only through a labelled action: `Keep lines`
+// (the program's own line-break key at each break, no Enter, and only on a screen where that key was
+// measured: HarnessAdapter.lineBreakKeys), `One line` (joined with spaces, no Enter), `Line by line`
+// (the old behaviour, on purpose) or `Discard`.
 // While text is held, every line-end key is REFUSED with a notice instead of flushing it, and every
 // disarm drops it unsent: it never becomes a reply draft. The rule reads the field, not the paste
 // event, so a keyboard's clipboard chip, a drop or autofill are held the same way.
@@ -376,6 +381,25 @@ export function useDirectTyping({
     const tail = lines[lines.length - 1] ?? "";
     sentLine.current = tail;
     replaceField(tail);
+    pokeIdleTimer();
+  }
+
+  /** Send the held text with its lines KEPT: `breakKeys` go out at each break, where "Line by line"
+   *  sends Enter. The caller vouches that on the screen in front of the person those keys add a line
+   *  and submit nothing (HarnessAdapter.lineBreakKeys); this hook cannot know. The field keeps the
+   *  last line, as it does after any line end, so the person's own Enter is what submits, once.
+   *  A tab is a key in such an editor (it completes a name) and never text, so it goes as spaces. */
+  function sendHeldKeepingLines(breakKeys: readonly string[]) {
+    const held = heldText();
+    if (held === null || breakKeys.length === 0) return;
+    const text = held.replace(/\t/g, TAB_AS_SPACES);
+    // `Enter` here is only ever a line break: one character of text is never that five-letter key.
+    const keys = keysForLineChange(sentLine.current, text).flatMap((key) => (key === "Enter" ? breakKeys : [key]));
+    const lines = text.split(LINE_BREAK);
+    const tail = lines[lines.length - 1] ?? "";
+    sentLine.current = tail;
+    replaceField(tail);
+    sender.enqueue(keys);
     pokeIdleTimer();
   }
 
@@ -662,6 +686,7 @@ export function useDirectTyping({
     onKeyDown,
     sendPaneKeys,
     sendHeldAsOneLine,
+    sendHeldKeepingLines,
     sendHeldLineByLine,
     discardHeld,
   };

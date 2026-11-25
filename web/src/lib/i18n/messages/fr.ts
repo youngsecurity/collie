@@ -1542,6 +1542,7 @@ export const fr: Dictionary = {
   "directTyping.status.interrupted": "Saisie dans le terminal interrompue : la vue du volet a été interrompue.",
   "directTyping.status.pasteHeld": "Les lignes collées sont en attente. Choisissez d'abord comment les envoyer.",
   "directTyping.heldPaste.title": "Le texte collé contient des sauts de ligne. Rien n'a encore été envoyé.",
+  "directTyping.heldPaste.keepLines": "Garder les lignes",
   "directTyping.heldPaste.oneLine": "Une ligne",
   "directTyping.heldPaste.lineByLine": "Ligne par ligne",
   "directTyping.heldPaste.discard": "Ignorer",

@@ -1611,6 +1611,7 @@ export const ru: Dictionary = {
   "directTyping.status.interrupted": "Ввод в терминал остановлен: отображение панели прервано.",
   "directTyping.status.pasteHeld": "Вставленные строки ожидают. Сначала выберите, как их отправить.",
   "directTyping.heldPaste.title": "Во вставленном тексте есть переносы строк. Пока ничего не отправлено.",
+  "directTyping.heldPaste.keepLines": "Сохранить строки",
   "directTyping.heldPaste.oneLine": "Одной строкой",
   "directTyping.heldPaste.lineByLine": "Построчно",
   "directTyping.heldPaste.discard": "Удалить",

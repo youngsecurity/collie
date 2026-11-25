@@ -1672,6 +1672,7 @@ export const ja: Dictionary = {
     "ターミナル入力を中断しました。ペイン表示が切り替わりました。",
   "directTyping.status.pasteHeld": "貼り付けた行は保留中です。先に送信方法を選んでください。",
   "directTyping.heldPaste.title": "貼り付けたテキストに改行があります。まだ何も送信していません。",
+  "directTyping.heldPaste.keepLines": "改行を保つ",
   "directTyping.heldPaste.oneLine": "1行にまとめる",
   "directTyping.heldPaste.lineByLine": "1行ずつ",
   "directTyping.heldPaste.discard": "破棄",

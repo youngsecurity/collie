@@ -9,7 +9,9 @@
 // (panel.ts). Rows keep their indices. A question read from a cropped view binds to the columns it
 // was read from (`bindColumns`); the editor beside the panel binds nothing.
 import { trimTrailingBlank, type Block, type StyledLine } from "../../blocks";
+import { requireProfile } from "../../surface/profile";
 import type { DialogDetector, HarnessAdapter } from "../types";
+import { stockAnswerEditorOpen } from "./answer-editor";
 import { detectPiQuestion, piModalOnScreen, piQuestionBanner, type PiQuestion } from "./ask";
 import { composerDraft, composerPrompt, composerStatusLines, locateComposer } from "./composer";
 import { piView, type PiView } from "./panel";
@@ -86,6 +88,17 @@ function boundPrompt(lines: StyledLine[]): string | null {
   return !view.cropped && ready(view.lines) ? composerPrompt(view.lines) : null;
 }
 
+/**
+ * The profile's newline key, on the two screens where it was measured to add a line and submit
+ * nothing: pi's own editor (the key the Send Protocol already puts between a reply's lines) and the
+ * stock question's inline answer editor (answer-editor.ts). Null on every other screen: a picker's
+ * search row and an extension's own editor may take the same key as Enter.
+ */
+function lineBreakKeys(lines: StyledLine[]): readonly string[] | null {
+  const view = piView(lines).lines;
+  return ready(view) || stockAnswerEditorOpen(view) ? requireProfile("pi").keys.newline : null;
+}
+
 /** Herdr reports stock pi and OmO as exactly `pi`; no prefix or executable-name inference. */
 export const piAdapter: HarnessAdapter = {
   agent: "pi",
@@ -102,6 +115,7 @@ export const piAdapter: HarnessAdapter = {
   },
   composerReady,
   composerPrompt: boundPrompt,
+  lineBreakKeys,
   // The way out every pi question screen prints: `Esc to cancel` (stock question, pi--v0871-*),
   // `Esc cancel` (stock questionnaire), `esc cancel` (OmO, pi--omo-v5130-*), `Esc to go back` and
   // `esc discard` in the inline answer editors, and `Escape/Ctrl+C to cancel` on pi's own pickers

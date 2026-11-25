@@ -909,6 +909,11 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     // falls back to shell) — a change there disarms with a notice.
     agentKey: agent ?? "shell",
   });
+  // The key that adds a line without submitting on the screen now showing, or null (issue #134).
+  // Asked only while a paste is held, of the same pane text the mirror shows, so the offer and the
+  // screen the person is looking at cannot disagree. A shell has no adapter and so no such key.
+  const heldBreakKeys =
+    direct.heldLines > 0 ? (adapterFor(agent ?? undefined)?.lineBreakKeys?.(splitLines(parseAnsi(text))) ?? null) : null;
   // The mask belongs to the handoff's armed session only. A refused arm, a Stop or any disarm ends
   // it, so a later Type mode armed by hand shows clear text.
   useEffect(() => {
@@ -2540,11 +2545,13 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           {direct.active && <DirectTypingStrip onStop={() => direct.deactivate()} />}
         </Collapse>
         {/* A pasted line break is not an Enter (issue #134): the text waits in the field until one of
-            these is tapped. Sending it line by line is a shell's business only. */}
+            these is tapped. Sending it line by line is a shell's business only, and keeping its lines
+            is offered only where the screen's own line-break key is known. */}
         <Collapse open={direct.active && direct.heldLines > 0}>
           {direct.active && direct.heldLines > 0 && (
             <HeldPasteStrip
               allowLineByLine={isShell}
+              onKeepLines={heldBreakKeys === null ? null : () => direct.sendHeldKeepingLines(heldBreakKeys)}
               onOneLine={direct.sendHeldAsOneLine}
               onLineByLine={direct.sendHeldLineByLine}
               onDiscard={direct.discardHeld}

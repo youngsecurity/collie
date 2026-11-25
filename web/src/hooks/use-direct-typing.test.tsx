@@ -20,9 +20,14 @@ interface HarnessProps {
   paneKey?: string;
   /** Receives the verdict `sendPaneKeys` answers for a tap on the dock button. */
   onDock?: (ok: boolean) => void;
+  /** What the Keep lines button hands the hook; the composer reads it from the screen. */
+  breakKeys?: readonly string[];
 }
 
-function Harness({ sendKeys, suspended = false, agentKey = "claude", paneKey = "pane-1", onDock }: HarnessProps) {
+/** The line-break key the Keep lines button sends unless a case names another. */
+const BREAK_KEYS: readonly string[] = ["ctrl+j"];
+
+function Harness({ sendKeys, suspended = false, agentKey = "claude", paneKey = "pane-1", onDock, breakKeys = BREAK_KEYS }: HarnessProps) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const direct = useDirectTyping({
     paneKey,
@@ -40,6 +45,7 @@ function Harness({ sendKeys, suspended = false, agentKey = "claude", paneKey = "
       <button type="button" onClick={direct.activate}>Start typing</button>
       <button type="button" onClick={direct.deactivate}>Stop typing</button>
       <button type="button" onClick={() => void direct.sendPaneKeys(["Tab"]).then(onDock)}>Dock key</button>
+      <button type="button" onClick={() => direct.sendHeldKeepingLines(breakKeys)}>Keep lines</button>
       <button type="button" onClick={direct.sendHeldAsOneLine}>One line</button>
       <button type="button" onClick={direct.sendHeldLineByLine}>Line by line</button>
       <button type="button" onClick={direct.discardHeld}>Discard</button>
@@ -645,6 +651,60 @@ describe("useDirectTyping: text with a line break is held until an explicit acti
     ]);
   });
 
+  it("Keep lines sends the line-break key at each break and never Enter, and a typed Enter then sends one", async () => {
+    const sendKeys = mockSend();
+    const box = typeThenPaste(sendKeys);
+    tap("Keep lines");
+    expect(box).toHaveValue("pw");
+    expect(screen.getByLabelText("Held lines")).toHaveTextContent(/^0$/);
+    await act(async () => {});
+    expect(sent(sendKeys)).toEqual([
+      "e", "c", "h", "o", "Space", "a",
+      "ctrl+j", "l", "s", "Space", "-", "l", "ctrl+j", "p", "w",
+    ]);
+    // The field is the last line now: an edit is one key, and Enter is the person's own, once.
+    fireEvent.change(box, { target: { value: "p" } });
+    fireEvent.keyDown(box, { key: "Enter" });
+    await act(async () => {});
+    expect(sent(sendKeys).slice(-2)).toEqual(["Backspace", "Enter"]);
+    expect(sent(sendKeys).filter((key) => key === "Enter")).toEqual(["Enter"]);
+  });
+
+  it("Keep lines keeps a blank line and a last break, and sends a tab as spaces, never as the Tab key", async () => {
+    const sendKeys = mockSend();
+    render(<Harness sendKeys={sendKeys} breakKeys={["alt+Enter"]} />);
+    const box = startTyping();
+    fireEvent.change(box, { target: { value: "a\n\n\tb\n" } });
+    tap("Keep lines");
+    await act(async () => {});
+    expect(sent(sendKeys)).toEqual(["a", "alt+Enter", "alt+Enter", "Space", "Space", "Space", "Space", "b", "alt+Enter"]);
+    expect(box).toHaveValue("");
+  });
+
+  it("Keep lines with no line-break key sends nothing and leaves the text held", async () => {
+    const sendKeys = mockSend();
+    render(<Harness sendKeys={sendKeys} breakKeys={[]} />);
+    const box = startTyping();
+    fireEvent.change(box, { target: { value: "one\ntwo" } });
+    tap("Keep lines");
+    await act(async () => {});
+    expect(sendKeys).not.toHaveBeenCalled();
+    expect(box).toHaveValue("one\ntwo");
+    expect(screen.getByLabelText("Held lines")).toHaveTextContent(/^2$/);
+  });
+
+  it("a failed send during Keep lines disarms, and no Enter ever goes out", async () => {
+    const sendKeys = vi.fn<(keys: string[]) => Promise<boolean>>().mockResolvedValue(false);
+    render(<Harness sendKeys={sendKeys} />);
+    const box = startTyping();
+    fireEvent.change(box, { target: { value: "one\ntwo" } });
+    tap("Keep lines");
+    await act(async () => {});
+    expect(screen.getByLabelText("Typing mode")).toHaveTextContent("inactive");
+    expect(box).toHaveValue("");
+    expect(sent(sendKeys)).not.toContain("Enter");
+  });
+
   it("Discard puts back the line the pane already has and sends nothing", async () => {
     const sendKeys = mockSend();
     const box = typeThenPaste(sendKeys);
@@ -675,13 +735,13 @@ describe("useDirectTyping: text with a line break is held until an explicit acti
     expect(box).toHaveValue("one\ntwo");
   });
 
-  it("the three actions do nothing when no text is held, or when the mode is off", async () => {
+  it("the actions do nothing when no text is held, or when the mode is off", async () => {
     const sendKeys = mockSend();
     render(<Harness sendKeys={sendKeys} />);
-    for (const name of ["One line", "Line by line", "Discard"]) tap(name);
+    for (const name of ["Keep lines", "One line", "Line by line", "Discard"]) tap(name);
     const box = startTyping();
     fireEvent.change(box, { target: { value: "ls" } });
-    for (const name of ["One line", "Line by line", "Discard"]) tap(name);
+    for (const name of ["Keep lines", "One line", "Line by line", "Discard"]) tap(name);
     await act(async () => {});
     expect(sent(sendKeys)).toEqual(["l", "s"]);
     expect(box).toHaveValue("ls");

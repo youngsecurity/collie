@@ -1668,6 +1668,7 @@ export const ko: Dictionary = {
   "directTyping.status.interrupted": "창 상태가 바뀌어 터미널 직접 입력을 멈췄습니다.",
   "directTyping.status.pasteHeld": "붙여넣은 줄이 대기 중입니다. 먼저 보내는 방법을 선택하세요.",
   "directTyping.heldPaste.title": "붙여넣은 텍스트에 줄바꿈이 있습니다. 아직 아무것도 보내지 않았습니다.",
+  "directTyping.heldPaste.keepLines": "줄 유지",
   "directTyping.heldPaste.oneLine": "한 줄로",
   "directTyping.heldPaste.lineByLine": "한 줄씩",
   "directTyping.heldPaste.discard": "버리기",

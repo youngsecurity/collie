@@ -174,6 +174,19 @@ export interface HarnessAdapter {
    */
   newlineSubmits?(lines: StyledLine[]): boolean;
   /**
+   * The keys that add a line break WITHOUT submitting, on the screen as it stands, or null when this
+   * screen was not measured to take them that way. Type mode asks it before it offers to send a held
+   * multi-line paste with its lines kept (hooks/use-direct-typing.ts, issue #134).
+   *
+   * Per screen and not per harness, because the same key means different things in one program: a raw
+   * line feed adds a line in pi's editor and SUBMITS in omp's answer editor and in pi-tui's one-row
+   * input. So an adapter names only the screens whose input it measured, and answers null for every
+   * other one. A wrong answer here is the bug this exists to prevent: the first line submitted alone.
+   *
+   * OPTIONAL; absence means "never", which every harness that has not measured its own keys gets.
+   */
+  lineBreakKeys?(lines: StyledLine[]): readonly string[] | null;
+  /**
    * SUPPLEMENTAL evidence that `sent` reached the input box, for the case the reply guard's own
    * literal-substring match structurally cannot see: a harness that swallows what was typed and paints
    * a TOKEN of its own instead (Claude's `[Pasted text #N +M lines]`), so the box never holds our

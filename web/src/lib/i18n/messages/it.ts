@@ -1543,6 +1543,7 @@ export const it: Dictionary = {
   "directTyping.status.interrupted": "Digitazione nel terminale interrotta: la vista del riquadro è stata interrotta.",
   "directTyping.status.pasteHeld": "Le righe incollate sono in attesa. Scegli prima come inviarle.",
   "directTyping.heldPaste.title": "Il testo incollato contiene interruzioni di riga. Non è stato ancora inviato nulla.",
+  "directTyping.heldPaste.keepLines": "Mantieni righe",
   "directTyping.heldPaste.oneLine": "Una riga",
   "directTyping.heldPaste.lineByLine": "Riga per riga",
   "directTyping.heldPaste.discard": "Scarta",

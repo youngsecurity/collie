@@ -1541,6 +1541,7 @@ export const pt: Dictionary = {
   "directTyping.status.interrupted": "Digitação no terminal interrompida: a exibição do painel foi interrompida.",
   "directTyping.status.pasteHeld": "As linhas coladas estão aguardando. Escolha primeiro como enviá-las.",
   "directTyping.heldPaste.title": "O texto colado tem quebras de linha. Nada foi enviado ainda.",
+  "directTyping.heldPaste.keepLines": "Manter linhas",
   "directTyping.heldPaste.oneLine": "Uma linha",
   "directTyping.heldPaste.lineByLine": "Linha por linha",
   "directTyping.heldPaste.discard": "Descartar",

@@ -1684,6 +1684,7 @@ export const es: Dictionary = {
     "Escritura en terminal detenida. Se interrumpió la vista del panel.",
   "directTyping.status.pasteHeld": "Las líneas pegadas están en espera. Elige primero cómo enviarlas.",
   "directTyping.heldPaste.title": "El texto pegado tiene saltos de línea. Aún no se ha enviado nada.",
+  "directTyping.heldPaste.keepLines": "Mantener líneas",
   "directTyping.heldPaste.oneLine": "Una línea",
   "directTyping.heldPaste.lineByLine": "Línea por línea",
   "directTyping.heldPaste.discard": "Descartar",

@@ -1685,6 +1685,7 @@ export const de: Dictionary = {
     "Direkteingabe im Terminal beendet, da die Pane-Ansicht unterbrochen wurde.",
   "directTyping.status.pasteHeld": "Eingefügte Zeilen warten. Zuerst wählen, wie sie gesendet werden.",
   "directTyping.heldPaste.title": "Eingefügter Text enthält Zeilenumbrüche. Noch nichts gesendet.",
+  "directTyping.heldPaste.keepLines": "Zeilen behalten",
   "directTyping.heldPaste.oneLine": "Eine Zeile",
   "directTyping.heldPaste.lineByLine": "Zeile für Zeile",
   "directTyping.heldPaste.discard": "Verwerfen",

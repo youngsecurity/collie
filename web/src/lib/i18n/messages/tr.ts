@@ -1541,6 +1541,7 @@ export const tr: Dictionary = {
   "directTyping.status.interrupted": "Terminale yazma durduruldu, bölme görünümü kesintiye uğradı.",
   "directTyping.status.pasteHeld": "Yapıştırılan satırlar bekliyor. Önce nasıl gönderileceğini seçin.",
   "directTyping.heldPaste.title": "Yapıştırılan metinde satır sonları var. Henüz hiçbir şey gönderilmedi.",
+  "directTyping.heldPaste.keepLines": "Satırları koru",
   "directTyping.heldPaste.oneLine": "Tek satır",
   "directTyping.heldPaste.lineByLine": "Satır satır",
   "directTyping.heldPaste.discard": "Sil",

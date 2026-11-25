@@ -1655,6 +1655,7 @@ export const zhTW: Dictionary = {
   "directTyping.status.interrupted": "已中斷終端機直接連線：窗格檢視被中斷。",
   "directTyping.status.pasteHeld": "貼上的多行內容正在等待。請先選擇傳送方式。",
   "directTyping.heldPaste.title": "貼上的文字包含換行，尚未傳送任何內容。",
+  "directTyping.heldPaste.keepLines": "保留換行",
   "directTyping.heldPaste.oneLine": "合併為一行",
   "directTyping.heldPaste.lineByLine": "逐行傳送",
   "directTyping.heldPaste.discard": "捨棄",
