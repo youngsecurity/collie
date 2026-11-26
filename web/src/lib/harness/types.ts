@@ -179,9 +179,11 @@ export interface HarnessAdapter {
    * multi-line paste with its lines kept (hooks/use-direct-typing.ts, issue #134).
    *
    * Per screen and not per harness, because the same key means different things in one program: a raw
-   * line feed adds a line in pi's editor and SUBMITS in omp's answer editor and in pi-tui's one-row
-   * input. So an adapter names only the screens whose input it measured, and answers null for every
-   * other one. A wrong answer here is the bug this exists to prevent: the first line submitted alone.
+   * line feed adds a line in pi's answer editor, SUBMITS in omp's answer editor and in pi-tui's one-row
+   * input, and accepts a completion in pi's own editor while its list is open. So an adapter names
+   * only the screens whose input it measured to add a line and do nothing else, and answers null for
+   * every other one. A wrong answer here is the bug this exists to prevent: the first line submitted
+   * alone, or a text that is no longer what the person pasted.
    *
    * OPTIONAL; absence means "never", which every harness that has not measured its own keys gets.
    */

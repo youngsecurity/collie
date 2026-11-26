@@ -9,8 +9,8 @@ import { t } from "@/lib/i18n";
 // The text waits in the field and this strip offers the only ways out, each one named.
 //
 // "Keep lines" delivers the text as it was pasted, with the program's own line-break key at each
-// break, and is offered only on a screen where that key was measured to add a line and submit nothing
-// (HarnessAdapter.lineBreakKeys); the person's Enter then submits every line once. It comes first
+// break, and is offered only on a screen where that key was measured to add a line and do nothing
+// else (HarnessAdapter.lineBreakKeys); the person's Enter then submits every line once. It comes first
 // because, where it exists, it is what a paste meant.
 //
 // "Line by line" is the old behaviour, on purpose and on request. It is offered for a shell only,

@@ -13,8 +13,9 @@ import { Composer } from "./composer";
 
 // Issue #134, at the composer: a paste with line breaks into Type mode is held, and what the strip
 // offers depends on the SCREEN the pane shows. The line-break key is offered where it was measured to
-// add a line and submit nothing (pi's stock answer editor, pi's own editor) and nowhere else, because
-// on any other screen the same key may be an Enter. The hook's own rules are in use-direct-typing.test.
+// add a line and do nothing else (pi's stock answer editor) and nowhere else, because on any other
+// screen the same key may be an Enter, or, in pi's own editor, the key that accepts a completion and
+// rewrites the line. The hook's own rules are in use-direct-typing.test.
 
 vi.mock("@/lib/liveness", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/liveness")>()),
@@ -86,12 +87,9 @@ describe("Composer: a held paste and the screen it would go to (issue #134)", ()
     expect(keys.filter((key) => key === "Enter")).toHaveLength(1);
   });
 
-  it("offers it on pi's own editor too", () => {
-    pasteInto({ text: screenOf("pi--v110-idle") });
-    expect(offered()).toEqual(["Keep lines", "One line", "Discard"]);
-  });
-
   it.each([
+    ["pi's own editor, where the key can accept a completion", { text: screenOf("pi--v110-idle") }],
+    ["pi's own editor with a draft in it", { text: screenOf("pi--v110-draft-multiline") }],
     ["an editor whose keys were not measured (OmO)", { text: screenOf("pi--omo-v5130-answer-editor") }],
     ["a pi screen that is no editor at all", { text: screenOf("pi--v110-core-selector") }],
     ["a harness that names no line-break key", { agent: "claude", text: screenOf("pi--v110-question-answer-editor") }],

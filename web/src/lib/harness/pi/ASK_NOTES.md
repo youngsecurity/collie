@@ -34,16 +34,27 @@ its lines kept, or as one line. Kept lines go out with the profile's newline key
 break, and the person's own Enter then submits the whole answer once.
 
 That key is offered per screen, not per harness (`lineBreakKeys` in `index.ts`,
-`answer-editor.ts`): on pi's own editor, and on the stock inline answer editor (`question`,
-`questionnaire`, the PR 397 single-select), which is pi-tui's multi-line `Editor`. Measured against
+`answer-editor.ts`), and on one screen only: the stock inline answer editor (`question`,
+`questionnaire`), which is pi-tui's multi-line `Editor` built with no completion. Measured against
 pi-tui 1.4.0's `Editor` on 2026-11-25, bytes in and submissions out: Enter between two lines submits
 the first and leaves the second; a raw line feed adds a line and submits nothing; three lines and
-one Enter submit all three as one answer. pi-tui's one-row `Input` submits on a raw line feed, so
-OmO's `>` answer row, gentle-pi's `Other…`, every multi-select editor and every picker's search
-row get no such offer, and a paste there goes as one line or not at all.
+one Enter submit all three as one answer. The PR 397 single-select draws the same shape and gets
+the same offer; its source is not published, so that one is read from the screen and not from code.
 
-Owed to a phone rehearsal: that the mux delivers `ctrl+j` to pi as a line feed in the answer editor
-(the Send Protocol already relies on it in pi's own editor), on the pi version in use.
+Every other screen gets no such offer, and a paste there goes as one line or not at all:
+
+- pi-tui's one-row `Input` submits on a raw line feed. That is OmO's `>` answer row, gentle-pi's
+  `Other…`, every multi-select editor and every picker's search row.
+- pi's own editor is the same `Editor` with completion on, and while its list is open the line feed
+  accepts the pointed entry. Measured the same day with the keys arriving 5 to 60 ms apart: `/c`,
+  line feed, `do it` became `/compact ` and `do it`; `thanks @joe`, line feed, `next` became
+  `thanks @src/joe.ts next` on one line. Nothing was submitted, but the text was changed. What opens
+  the list (`/` on the first line, `@`, `#`, whatever an extension adds) is not ours to enumerate,
+  so the offer is withheld there instead of guessed per text. A multi-line message to pi's own
+  editor goes through the reply box, whose Send Protocol reads the draft back before it submits.
+
+Owed to a phone rehearsal: that the mux delivers `ctrl+j` to pi as a line feed in the answer
+editor, on the pi version in use.
 
 A dialog quoted in agent prose or a tool result stays prose (`pi--prose-quoted-*`). The tail
 decides: the bottom rule must be the last row, or have one to four status rows under it and nothing

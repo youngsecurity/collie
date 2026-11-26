@@ -89,14 +89,18 @@ function boundPrompt(lines: StyledLine[]): string | null {
 }
 
 /**
- * The profile's newline key, on the two screens where it was measured to add a line and submit
- * nothing: pi's own editor (the key the Send Protocol already puts between a reply's lines) and the
- * stock question's inline answer editor (answer-editor.ts). Null on every other screen: a picker's
- * search row and an extension's own editor may take the same key as Enter.
+ * The profile's newline key, on the one screen where it was measured to add a line and do nothing
+ * else: the stock question's inline answer editor (answer-editor.ts). Null on every other screen: a
+ * picker's search row and an extension's own editor may take the same key as Enter.
+ *
+ * Null on pi's own editor too, though the key adds a line there. That editor completes `/` commands
+ * and `@` files, and while its list is open the same key ACCEPTS the pointed entry: typed key by key,
+ * `/c` then the key became `/compact`, and `thanks @joe` then the key became `thanks @src/joe.ts`
+ * with the line break gone (answer-editor.ts has the measurement). What opens the list is the
+ * editor's and its extensions' to decide, so no reading of the text can vouch for it.
  */
 function lineBreakKeys(lines: StyledLine[]): readonly string[] | null {
-  const view = piView(lines).lines;
-  return ready(view) || stockAnswerEditorOpen(view) ? requireProfile("pi").keys.newline : null;
+  return stockAnswerEditorOpen(piView(lines).lines) ? requireProfile("pi").keys.newline : null;
 }
 
 /** Herdr reports stock pi and OmO as exactly `pi`; no prefix or executable-name inference. */

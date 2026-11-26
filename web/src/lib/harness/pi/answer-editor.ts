@@ -1,9 +1,9 @@
 // The stock question's inline answer editor (issue #134): is it the thing on screen?
 //
 // Type mode is the way into this editor, and it submits on Enter. It is pi-tui's multi-line `Editor`,
-// the same component as pi's own input: the `question` and `questionnaire` examples that ship with pi
-// both build one and hand it every key but Escape. Measured against pi-tui 1.4.0's Editor on
-// 2026-11-25, bytes in, text and submissions out:
+// the same component as pi's own input, built bare: the `question` and `questionnaire` examples that
+// ship with pi both build one, give it no completion, and hand it every key but Escape. Measured
+// against pi-tui 1.4.0's Editor on 2026-11-25, bytes in, text and submissions out:
 //
 //   Enter between two lines     submits the first line, leaves the second in the editor (the bug)
 //   a raw line feed (`ctrl+j`)  adds a line, submits nothing; a blank line is kept
@@ -11,14 +11,25 @@
 //   Backspace after a break     joins the two lines again
 //   Tab                         is dropped: the editor has no completion to run
 //
-// So here the profile's newline key is a line break and not a submit, which is NOT true of every pi
-// screen: pi-tui's one-row `Input` submits on a raw line feed. Hence a reader for this one shape.
+// So here the profile's newline key is a line break and nothing else, which is NOT true of every pi
+// screen. pi-tui's one-row `Input` submits on a raw line feed. And pi's OWN editor is this component
+// with completion switched on (`/` commands, `@` files, whatever an extension adds): while its list
+// is open the line feed accepts the pointed entry. Measured the same day, with pi-tui's own
+// completion and the keys arriving 5 to 60 ms apart, as a phone's batches may:
+//
+//   `/c`, line feed, `do it`             became `/compact ` and `do it`
+//   `thanks @joe`, line feed, `next`     became `thanks @src/joe.ts next`, the line break gone
+//   the same two in this bare editor     kept as typed
+//
+// Nothing was submitted, but the text was no longer the person's. Hence a reader for this one shape,
+// and no offer on pi's own editor (`lineBreakKeys` in index.ts).
 //
 // Read by shape, never by the label's words (.adr/0098): a rule-bounded frame whose footer gives Enter
 // to submit and names Escape, no key that moves or picks, and above the footer an inset rule, the
 // editor's rows, the same inset rule, one to three label rows, and the pointed, numbered free-text row
 // with its `✎` mark. That is the stock `question`, the stock `questionnaire` and the PR 397
-// single-select, which draws the same shape. OmO's editor (`Enter` saves and goes on), gentle-pi's
+// single-select, which draws the same shape (its source is not published: that it is the same bare
+// editor is read from the inset rules pi-tui's Editor draws, not from its code). OmO's editor (`Enter` saves and goes on), gentle-pi's
 // `Other…` and every multi-select are other shapes, were not measured, and answer false.
 //
 // NOT measured through a real terminal: that Herdr delivers `ctrl+j` as a line feed to the pi version

@@ -43,19 +43,20 @@ describe("pi: where a line break can be typed without submitting (issue #134)", 
     expect(piAdapter.lineBreakKeys?.(load(name))).toEqual(["ctrl+j"]);
   });
 
+  // pi's own editor completes `/` commands and `@` files, and its open list takes the same key as
+  // "accept": a kept line would be rewritten, or lose its break. So the editor being ready is not enough.
   it.each(["pi--v110-idle.txt", "pi--v110-draft-multiline.txt", "pi--v110-working.txt", "pi--omo-v5130-idle.txt"])(
-    "names it on pi's own editor (%s)",
+    "does not name it on pi's own editor, where the key can accept a completion (%s)",
     (name) => {
       expect(piAdapter.composerReady?.(load(name))).toBe(true);
-      expect(piAdapter.lineBreakKeys?.(load(name))).toEqual(["ctrl+j"]);
+      expect(piAdapter.lineBreakKeys?.(load(name))).toBeNull();
     },
   );
 
-  it("names it nowhere else: every other screen is a modal the keys were not measured on", () => {
+  it("names it nowhere else: not on pi's own editor, not on any other modal", () => {
     for (const name of pi) {
-      const lines = load(name);
-      const known = piAdapter.composerReady?.(lines) === true || STOCK_EDITORS.includes(name);
-      expect(piAdapter.lineBreakKeys?.(lines) ?? null, name).toEqual(known ? ["ctrl+j"] : null);
+      const known = STOCK_EDITORS.includes(name);
+      expect(piAdapter.lineBreakKeys?.(load(name)) ?? null, name).toEqual(known ? ["ctrl+j"] : null);
     }
   });
 });

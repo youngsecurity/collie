@@ -386,7 +386,7 @@ export function useDirectTyping({
 
   /** Send the held text with its lines KEPT: `breakKeys` go out at each break, where "Line by line"
    *  sends Enter. The caller vouches that on the screen in front of the person those keys add a line
-   *  and submit nothing (HarnessAdapter.lineBreakKeys); this hook cannot know. The field keeps the
+   *  and do nothing else (HarnessAdapter.lineBreakKeys); this hook cannot know. The field keeps the
    *  last line, as it does after any line end, so the person's own Enter is what submits, once.
    *  A tab is a key in such an editor (it completes a name) and never text, so it goes as spaces. */
   function sendHeldKeepingLines(breakKeys: readonly string[]) {
