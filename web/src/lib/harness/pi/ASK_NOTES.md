@@ -43,8 +43,12 @@ the same offer; its source is not published, so that one is read from the screen
 
 Every other screen gets no such offer, and a paste there goes as one line or not at all:
 
-- pi-tui's one-row `Input` submits on a raw line feed. That is OmO's `>` answer row, gentle-pi's
-  `Other…`, every multi-select editor and every picker's search row.
+- Not measured, so withheld: OmO's `>` answer row, gentle-pi's `Other…`, every multi-select editor
+  and every picker's search row. Which pi-tui component each of them is was never established (the
+  PR 397 multi-selects draw the same ruled box as its single-select, and their source is not
+  published either). The guess is not worth making: pi-tui's one-row `Input` submits on a raw line
+  feed (read in pi-tui 1.4.0), so on any of them that is one, the key would send the first line
+  alone.
 - pi's own editor is the same `Editor` with completion on, and while its list is open the line feed
   accepts the pointed entry. Measured the same day with the keys arriving 5 to 60 ms apart: `/c`,
   line feed, `do it` became `/compact ` and `do it`; `thanks @joe`, line feed, `next` became
