@@ -123,6 +123,8 @@ export const WALK_PAIRS: readonly WalkPair[] = [
   ["pi", "pi--trust-prompt.txt", "pi--trust-prompt-moved.txt"],
   // gentle-pi 4.2.0's ask_user_choice (pi 1.3.0): unnumbered rows, the second capture after a real Down.
   ["pi", "pi--v130-gentle-choice.txt", "pi--v130-gentle-choice-moved.txt"],
+  // A personal ask_user extension drawn in the stock question shape (pi 1.6.0, issue 133): a real Down.
+  ["pi", "pi--v160-ask-user-question.txt", "pi--v160-ask-user-question-moved.txt"],
   // pi's example permission-gate (pi 0.87.1), pi's own selector: Down at 120 columns, Up at 80.
   ["pi", "pi--v0871-permission-gate.txt", "pi--v0871-permission-gate-moved.txt"],
   ["pi", "pi--v0871-permission-gate-narrow.txt", "pi--v0871-permission-gate-narrow-moved.txt"],

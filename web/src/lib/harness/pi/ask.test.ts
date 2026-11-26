@@ -101,6 +101,9 @@ const LIFTS_397 = new Map<string, Expect>([
   // screen's last row (L12 of odd/tasks/gentle-pi-chat-cards.md).
   ["pi--v130-gentle-review-consent.txt", "walk"],
   ["pi--v130-gentle-review-consent-moved.txt", "walk"],
+  // A personal ask_user extension drawn in the stock question shape (issue 133, pi 1.6.0).
+  ["pi--v160-ask-user-question.txt", "walk"],
+  ["pi--v160-ask-user-question-moved.txt", "walk"],
 ]);
 /** Screens with a pi modal up that stay raw: the Escape card's evidence. */
 const RAW_MODALS = new Set([
@@ -635,6 +638,7 @@ describe("the custom-answer row of a stock question (.adr/0175)", () => {
   it.each([
     "pi--v0871-question-single.txt", "pi--v110-question-single.txt", "pi--v110-question-plain.txt", "pi--v110-question-narrow.txt",
     "pi--v0871-questionnaire-single.txt", "pi--v110-questionnaire-tabs.txt", "pi--v110-single.txt",
+    "pi--v160-ask-user-question.txt",
   ])("%s: the pointer on a choice, the row offered as a custom answer", (name) => {
     expect(custom(name)).toEqual({ key: "", focused: false, text: "", purpose: "custom-answer", pointer: "above" });
   });

@@ -1,0 +1,13 @@
+[0m[38;2;167;152;215m─────────────────────────────────────────────────────────────────────────[0m
+ [0m[38;2;222;224;225mWalk-pair capture: wait about 12 seconds. The pointer moves to option 2[0m
+ [0m[38;2;222;224;225mby itself. Then pick any option.[0m
+
+  [0m[38;2;222;224;225m1. Pointer moved, continue[0m
+[0m[38;2;167;152;215m> 2. Pointer did not move[0m
+  [0m[38;2;222;224;225m3. Type your own answer…[0m
+
+ [0m[38;2;126;136;142m↑↓ navigate • Enter to select • Esc to cancel[0m
+[0m[38;2;167;152;215m─────────────────────────────────────────────────────────────────────────[0m
+[0m[38;2;126;136;142m~/demo/sandbox/collie-pi-lab/work0 (factory/issue-133-5ad1e4810e71)[0m
+[0m[38;2;126;136;142m↑145k ↓24k R8.2M W292k CH99.6% $5.131 (sub) 15.8%/1.0M (auto)  claude-opu[0m
+[0m[38;2;167;152;215m44 tok/s[0m [0m[38;2;126;136;142m(32 tok / 0.7s)[0m                                  [0m[38;2;157;165;169m3 files changed[0m

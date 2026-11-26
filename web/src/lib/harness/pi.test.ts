@@ -60,7 +60,7 @@ describe("pi adapter routing", () => {
   });
 
   it("lifts every question screen the corpus proves, and no fewer", () => {
-    expect(lifted).toHaveLength(62);
+    expect(lifted).toHaveLength(64);
   });
 
   it.each([
