@@ -1032,6 +1032,33 @@ describe("PromptSelectBlock, a stock pi question's custom answer", () => {
     expect(screen.getByRole("textbox", { name: "Answer text" })).toHaveValue("Navy");
   });
 
+  it("the next question asks the same words with other choices: Send sends nothing and keeps the draft", async () => {
+    const model = piModel("pi--v110-question-single.txt");
+    const onAction = vi.fn();
+    const user = userEvent.setup();
+    const { rerender } = render(<PromptSelectBlock prompt={model} onAction={onAction} />);
+    await user.click(screen.getByRole("button", { name: OFFER }));
+    await user.type(screen.getByRole("textbox", { name: "Answer text" }), "Navy");
+    const other = { ...model, coreSignature: model.coreSignature.replace("3. Blue", "3. Cyan") };
+    expect(other.coreSignature).not.toBe(model.coreSignature);
+    rerender(<PromptSelectBlock prompt={other} onAction={onAction} />);
+    await user.click(screen.getByRole("button", { name: "Send answer" }));
+    expect(onAction).not.toHaveBeenCalled();
+    expect(screen.getByRole("textbox", { name: "Answer text" })).toHaveValue("Navy");
+  });
+
+  it("the same question moving through its three states keeps the draft sendable", async () => {
+    const onAction = vi.fn();
+    const user = userEvent.setup();
+    const { rerender } = render(<PromptSelectBlock prompt={piModel("pi--v110-question-single.txt")} onAction={onAction} />);
+    await user.click(screen.getByRole("button", { name: OFFER }));
+    await user.type(screen.getByRole("textbox", { name: "Answer text" }), "Navy");
+    rerender(<PromptSelectBlock prompt={piModel("pi--v110-question-other-focused.txt")} onAction={onAction} />);
+    rerender(<PromptSelectBlock prompt={piModel("pi--v110-question-answer-editor.txt")} onAction={onAction} />);
+    await user.click(screen.getByRole("button", { name: "Send answer" }));
+    expect(onAction).toHaveBeenCalledWith({ kind: "feedback", text: "Navy" });
+  });
+
   it("with pi's editor open and empty: the way back stays live, beside the offer", async () => {
     const model = piModel("pi--v110-question-answer-editor.txt");
     const onAction = vi.fn();

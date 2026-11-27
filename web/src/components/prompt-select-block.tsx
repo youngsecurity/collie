@@ -278,12 +278,14 @@ export function PromptSelectBlock({ prompt, lines, onAction, disabled, paneId, s
   // seen-text check never holds a plan-change Send back; a question that changed under it does, once.
   const editor = useAnswerEditor();
   const feedback = prompt.feedback;
-  const asked = { question: prompt.question, step: "" };
   const terminalFocused = feedback?.focused ?? false;
   const locked = Boolean(disabled) || offline || sending !== null || terminalFocused;
   // pi's open answer editor leaves the card one button, the footer's way out, which is no character:
   // locking it would leave no way back from the phone (.adr/0175).
   const isCustom = feedback?.purpose === "custom-answer";
+  // pi's three states of one question share its caption and core signature (.adr/0175); the dock
+  // reuses this card for the next question, which may ask the same words with other choices.
+  const asked = { question: prompt.question, step: isCustom ? `${prompt.caption ?? ""}\n${prompt.coreSignature}` : "" };
   const isAnswer = feedback?.purpose === "answer" || isCustom;
   // The answer recipe reaches a focused field itself, so the terminal's focus locks the options only.
   const answerLocked = Boolean(disabled) || offline || sending !== null;

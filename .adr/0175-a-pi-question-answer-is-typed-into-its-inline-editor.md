@@ -109,6 +109,9 @@ Escape goes back to the list.
   The card then shows that text read-only beside the way back; the phone's draft is kept.
 - If a screen redraw swaps the card for another block kind for one read during a send, the card
   remounts and its draft is lost. Not seen in tests; accepted.
+- A question that goes away from the terminal takes its card with it, and the phone's draft with
+  the card: nothing is sent, and the draft is not kept, since there is no question left to answer.
+  Keeping it would need a draft owned by the pane rather than the card. Deferred (PR 154 review).
 - This is a divergence from upstream, which keeps ADR 0098's rule. `harness/pi/ask.ts` will
   conflict on upstream adoptions until the change is upstreamed or dropped.
 - A pi or extension release that redraws the editor falls back to the raw mirror with the Escape
