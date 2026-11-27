@@ -64,16 +64,24 @@ Escape goes back to the list.
 4. **Collie types only into an empty editor.** No key that clears pi's editor was measured, so an
    editor that already holds text is shown read-only and a send is refused. ADR 0113's "clear only
    what the person saw" has no counterpart here, and the card offers no "change this answer".
-5. **Up to five lines, each one editor row wide.** The draft is split at its line breaks (CRLF and
-   CR too), each line is sanitised on its own, blank lines at the ends are dropped and blank lines
-   inside are kept. Each of these is refused before any key, with the draft kept in the phone's
-   editor: more than `MAX_ANSWER_LINES` (5) lines, because pi-tui's Editor shows at least five rows
-   before it scrolls and a scrolled editor no longer shows the whole answer; a line wider than the
-   dialog less four columns, because the reader joins a wrapped row with a newline and the read-back
-   would never match; a last line ending in a backslash, because pi-tui's Editor turns `\` then
-   Enter into a line break, so the answering Enter would not submit (a backslash ending an inner
-   line is typed, since the newline key never reads it). (2026-11-25: this replaces "one line
-   only", which refused every line break.)
+5. **Up to five lines, and five editor rows once wrapped.** The draft is split at its line breaks
+   (CRLF and CR too), each line is sanitised on its own, blank lines at the ends are dropped and
+   blank lines inside are kept. Each of these is refused before any key, with the draft kept in the
+   phone's editor: more than `MAX_ANSWER_LINES` (5) lines, or more than five rows once each line is
+   wrapped at the dialog's width less four columns (`rowsOf`), because pi-tui's Editor shows at
+   least five rows before it scrolls and a scrolled editor no longer shows the whole answer; a last
+   line ending in a backslash, because pi-tui's Editor turns `\` then Enter into a line break, so
+   the answering Enter would not submit (a backslash ending an inner line is typed, since the
+   newline key never reads it). A line wider than a row is typed and pi wraps it. The reader joins
+   the wrapped rows with a newline, so every read-back is compared by `editorShows`: a row break
+   is one of the answer's own line breaks, or a wrap pi-tui's `wordWrapLine` could have made (after
+   a run of spaces, which the trimmed read drops, or inside a word or CJK run), and only where the
+   next word did not fit beside the row above. Any other break, an extra row or a missing one fails
+   the read-back, and no answering Enter is sent. The cost is that a space the phone typed and a
+   line break typed at the terminal at that exact point read the same; the empty-editor rule and
+   the bound writes are what stand against a second typist. (2026-11-25: this replaced "one line
+   only", which refused every line break. 2026-11-27: this replaced "each line one editor row
+   wide", which refused a 76-character sentence on a 73-column pane in the first phone run.)
 6. **The keys come from profile data**: `keys.navigation.down` and `.confirm`, and `keys.newline`
    (`ctrl+j`, pi-tui's `tui.input.newLine` beside `shift+enter`) in `pi.json`, which is what ADR
    0113's addendum asks of a second harness.

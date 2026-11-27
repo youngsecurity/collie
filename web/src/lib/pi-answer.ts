@@ -15,9 +15,10 @@
 //
 // Every step refuses on drift and sends nothing after the refusal. The keys are the pi profile's
 // `keys.navigation` and `keys.newline` (.adr/0113's addendum: a second harness's keys live in profile
-// data). Every line must fit one row of the editor, since a wrapped line reads back as two rows, which
-// never equal it; and there are at most MAX_ANSWER_LINES of them, so the editor never scrolls a line
-// out of the read (harness/pi/ASK_NOTES.md).
+// data). A line wider than the editor wraps onto further rows, and the reader joins every row with a
+// newline, so a read-back is compared with `editorShows`: the typed lines, each wrapped only where
+// pi-tui's Editor could have wrapped it. The whole answer must fit MAX_ANSWER_LINES rows once wrapped,
+// so the editor never scrolls a row out of the read (harness/pi/ASK_NOTES.md).
 
 import { ANSWER_MAX_LENGTH } from "./answer-field";
 import { sendReply } from "./api";
@@ -39,8 +40,9 @@ const SPARE_ARROWS = 2;
  *  guess on the safe side; the read-back in step 3 is what the answering key stands on. */
 const EDITOR_MARGIN = 4;
 
-/** Lines an answer may hold: pi's editor shows at least five rows before it scrolls (pi-tui's
- *  Editor keeps `max(5, 30% of the terminal)`), and a scrolled editor hides what the read must prove. */
+/** Lines an answer may hold, and rows once wrapped: pi's editor shows at least five rows before it
+ *  scrolls (pi-tui's Editor keeps `max(5, 30% of the terminal)`), and a scrolled editor hides what
+ *  the read must prove. */
 export const MAX_ANSWER_LINES = 5;
 
 type Target = DialogTarget<"prompt-select"> & { sleep?: Sleep };
@@ -75,9 +77,67 @@ function answerLines(text: string): string[] {
     .map((line) => sanitizeTypedText(line, ANSWER_MAX_LENGTH));
 }
 
-/** The text columns one editor row holds, from the dialog's top rule (the first row of its region). */
+/** The text columns one editor row holds, from the dialog's top rule (the first row of its region).
+ *  One column under pi-tui's layout width (the dialog less three), which keeps both uses below on the
+ *  safe side: `rowsOf` counts more rows, and `editorShows` accepts a wrap only when it had to happen. */
 function editorRoom(m: PromptModel): number {
   return displayWidth(m.signature.split("\n", 1)[0]!) - EDITOR_MARGIN;
+}
+
+/**
+ * The rows `line` takes in an editor `width` columns wide, wrapped greedily after a space and broken
+ * inside a word wider than a row. pi-tui's `wordWrapLine` keeps a space at the end of a row and breaks
+ * between CJK characters too, so at a width no wider than its own this never counts fewer rows.
+ */
+export function rowsOf(line: string, width: number): number {
+  let rows = 1;
+  let used = 0;
+  for (const word of line.split(" ")) {
+    let w = displayWidth(word);
+    const gap = used === 0 ? 0 : 1;
+    if (used + gap + w <= width) {
+      used += gap + w;
+      continue;
+    }
+    if (used > 0) rows++;
+    while (w > width) {
+      rows++;
+      w -= width;
+    }
+    used = w;
+  }
+  return rows;
+}
+
+/**
+ * Whether an answer editor whose rows read `read` (joined by newlines, each trimmed at the right, as
+ * the reader reports them) holds exactly `held`, with `width` the columns of a row (`editorRoom`).
+ * Between two rows stands either one of `held`'s own line breaks or a wrap that pi-tui's Editor
+ * would have made: after a run of spaces (the spaces end the upper row, so the read drops them), or
+ * inside a word or CJK run, and only where the next word did not fit beside the row above. So `Navy`
+ * read as `Na` over `vy` on a wide editor is not the answer; the same break at the row's end is.
+ * Measured in pi-tui 1.6.0's `wordWrapLine` (editor.js).
+ */
+export function editorShows(read: string, held: string, width: number): boolean {
+  const rows = read.split("\n");
+  let at = 0;
+  for (const [i, row] of rows.entries()) {
+    if (i > 0) {
+      let next = at;
+      while (held[next] === " ") next++;
+      if (held[next] === "\n") {
+        at = next + 1;
+      } else {
+        if (next === held.length) return false;
+        const word = /^\S*/.exec(held.slice(next))![0];
+        if (displayWidth(rows[i - 1]!) + (next - at) + displayWidth(word) <= width) return false;
+        at = next;
+      }
+    }
+    if (!held.startsWith(row, at)) return false;
+    at += row.length;
+  }
+  return at === held.length;
 }
 
 function sendBoundTo(target: Target, keys: string[], m: PromptModel): Promise<ActionResult> {
@@ -110,7 +170,8 @@ export async function submitPiAnswer(target: Target, text: string): Promise<Acti
     return fail(t("promptAction.customAnswer.tooManyLines", { count: MAX_ANSWER_LINES }));
   }
   const room = editorRoom(target.model);
-  if (lines.some((line) => displayWidth(line) > room)) return fail(t("promptAction.customAnswer.tooLong"));
+  const rows = lines.reduce((sum, line) => sum + rowsOf(line, room), 0);
+  if (rows > MAX_ANSWER_LINES) return fail(t("promptAction.customAnswer.tooLong"));
   // pi's Editor turns `Enter` after a backslash into a line break (its stand-in for Shift+Enter), so
   // the answering key would leave the question open. Measured on pi-tui 1.6.1.
   if (lines[lines.length - 1]?.endsWith("\\")) return fail(t("promptAction.customAnswer.trailingBackslash"));
@@ -149,7 +210,7 @@ export async function submitPiAnswer(target: Target, text: string): Promise<Acti
         const broke = await sendBoundTo(target, [...newline], current);
         if (broke.status !== "sent") return withWhy(broke, "bridge");
         const opened = `${lines.slice(0, i).join("\n")}\n`;
-        const fresh = await poll(target, (m) => m.feedback?.focused === true && m.feedback.text === opened);
+        const fresh = await poll(target, (m) => m.feedback?.focused === true && editorShows(m.feedback.text, opened, room));
         if (fresh.status === "drifted") return refuse("break: drift");
         if (fresh.status === "timeout") return fail(t("promptAction.answer.notArrived"));
         current = fresh.model;
@@ -160,7 +221,7 @@ export async function submitPiAnswer(target: Target, text: string): Promise<Acti
         return typed.code === "prompt_changed" ? refuse("type: bridge") : fail(describeApiError(typed));
       }
       const held = lines.slice(0, i + 1).join("\n");
-      const landed = await poll(target, (m) => m.feedback?.focused === true && m.feedback.text === held);
+      const landed = await poll(target, (m) => m.feedback?.focused === true && editorShows(m.feedback.text, held, room));
       if (landed.status === "drifted") return refuse("type: drift");
       if (landed.status === "timeout") return fail(t("promptAction.answer.notArrived"));
       current = landed.model;

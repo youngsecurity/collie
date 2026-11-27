@@ -189,8 +189,13 @@ card:
 The editor is read by shape: one to three label rows one column in (the label's words are not
 matched), a rule one column in, up to eight text rows one column in, the same rule. The caret is a
 reverse-video cell and trailing padding is trimmed. The rows are joined by a newline, so a
-multi-line answer reads as its lines, and a wrapped line reads as two rows, which never equals the
-line typed, so it is never committed.
+multi-line answer reads as its lines and a wrapped line reads as two rows. The recipe compares a
+read with `editorShows`, which takes a row break as one of the answer's own line breaks or as a
+wrap pi-tui's `wordWrapLine` (pi-tui 1.6.0) could have made: after a run of spaces, which end the
+upper row and so drop out of the trimmed read, or inside a word or CJK run, and only where the next
+word did not fit beside the row above. A break where it still fit is not the answer typed, so it is
+never committed. The editor's layout width is the dialog's less three columns (its one-column inset
+on each side and pi-tui's reserved caret column).
 
 All three states share a core signature cut at the free-text row, with the pointer and the `✎`
 blanked. `lib/pi-answer.ts` follows the question by that, the question text and the tab caption,
@@ -202,8 +207,11 @@ wait for the exact lines so far, and `keys.newline` (`ctrl+j`) between lines wit
 new empty row; then `Enter` bound to the read of the whole answer. The keys are `keys.navigation`
 and `keys.newline` in `pi.json`. An editor that already holds text is refused: no clearing key was
 measured. Refused before any key: more than five lines (pi-tui's Editor shows at least five rows
-before it scrolls), a line wider than the dialog less four columns, and a last line ending in `\`
-(pi-tui's Editor reads `\` then Enter as a line break, so the answer would not submit).
+before it scrolls), an answer that takes more than five rows once wrapped (counted at the dialog's
+width less four columns, one under pi-tui's, so the count is never short), and a last line ending
+in `\` (pi-tui's Editor reads `\` then Enter as a line break, so the answer would not submit).
+Until 2026-11-27 every line had to fit one row, which refused a 76-character sentence on a
+73-column pane in the first phone run (issue 133).
 
 Not typed: OmO (`Enter` in its editor is "save and next" and its plan is a digit), gentle-pi's
 `Other…`, every multi-select, and a stock question beside OmO's side panel, where the list keeps a

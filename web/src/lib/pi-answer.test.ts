@@ -18,7 +18,7 @@ import { splitLines, type PromptModel } from "./blocks";
 import { dialogDetector } from "./dialog-guard";
 import { POLL_ATTEMPTS } from "./harness/guard";
 import { t } from "./i18n";
-import { MAX_ANSWER_LINES, samePiQuestion, submitPiAnswer } from "./pi-answer";
+import { editorShows, MAX_ANSWER_LINES, rowsOf, samePiQuestion, submitPiAnswer } from "./pi-answer";
 
 const mockFetchPane = vi.mocked(fetchPane);
 const mockSendKeys = vi.mocked(sendKeys);
@@ -312,21 +312,61 @@ describe("submitPiAnswer", () => {
     expect(keys()).toEqual([["Enter"], ["ctrl+j"], ["Enter"]]);
   });
 
-  it("refuses an answer with any line wider than one editor row before any read or key", async () => {
-    expect(await answer(ask(), `Navy\n${"a".repeat(117)}`)).toEqual({
-      status: "error",
-      error: t("promptAction.customAnswer.tooLong"),
-    });
+  // pi-tui's layout width for this dialog: the rule's width less the dialog's inset and the caret.
+  const LAYOUT = [...RULE].filter((c) => c === "─").length - 3;
+
+  it("answers with a line pi wrapped after a space, the space dropped from the read", async () => {
+    const first = "a".repeat(LAYOUT - 10);
+    const line = `${first} ${"b".repeat(20)}`;
+    screens(EMPTY, ask({ pointer: 3, editor: `${first}\n${"b".repeat(20)}` }));
+    expect(await answer(EMPTY, line)).toEqual({ status: "sent" });
+    expect(mockSendReply.mock.calls.map((c) => c[1])).toEqual([line]);
+  });
+
+  it("answers with a word too wide for a row, which pi breaks inside the word", async () => {
+    const word = "a".repeat(LAYOUT + 3);
+    screens(EMPTY, ask({ pointer: 3, editor: `${"a".repeat(LAYOUT)}\naaa` }));
+    expect(await answer(EMPTY, word)).toEqual({ status: "sent" });
+  });
+
+  it("sends no answering Enter when a row breaks where the next word still fit", async () => {
+    screens(EMPTY, ask({ pointer: 3, editor: "Navy\nblue" }));
+    expect(await answer(EMPTY, "Navy blue")).toEqual({ status: "error", error: t("promptAction.answer.notArrived") });
+    expect(mockSendKeys).not.toHaveBeenCalled();
+  });
+
+  it("lets an answer of exactly five rows once wrapped through to the guard", async () => {
+    const long = `${"word ".repeat(Math.ceil(LAYOUT / 5))}end`;
+    expect(rowsOf(long, LAYOUT - 1)).toBe(2);
+    screens(ask());
+    await answer(ask(), [long, long, "Navy"].join("\n"));
+    expect(mockFetchPane).toHaveBeenCalled();
+  });
+
+  it("counts wrapped rows, wide characters double, against the five the editor shows", async () => {
+    const tooLong = { status: "error", error: t("promptAction.customAnswer.tooLong") };
+    const room = LAYOUT - 1;
+    expect(await answer(ask(), "a".repeat(room * MAX_ANSWER_LINES + 1))).toEqual(tooLong);
+    expect(await answer(ask(), "色".repeat((room / 2) * MAX_ANSWER_LINES + 1))).toEqual(tooLong);
+    expect(await answer(ask(), ["a".repeat(room + 1), "a".repeat(room + 1), "a".repeat(room + 1)].join("\n"))).toEqual(tooLong);
     expect(mockFetchPane).not.toHaveBeenCalled();
   });
 
-  it("refuses an answer wider than one editor row before any key, wide characters counted double", async () => {
-    const tooLong = { status: "error", error: t("promptAction.customAnswer.tooLong") };
-    expect(await answer(ask(), "a".repeat(117))).toEqual(tooLong);
-    expect(await answer(ask(), "色".repeat(59))).toEqual(tooLong);
-    expect(mockFetchPane).not.toHaveBeenCalled();
-    screens(EMPTY, ask({ pointer: 3, editor: "a".repeat(116) }));
-    expect(await answer(EMPTY, "a".repeat(116))).toEqual({ status: "sent" });
+  it("reads a 76-column sentence on a 73-column pane as the answer (issue 133's phone run)", () => {
+    // The dialog of pi--v160-ask-user-question.txt is 73 columns wide: 69 to a row by `editorRoom`.
+    const sentence = "watch the PR checks and code review threads and resolve code review threads.";
+    expect(rowsOf(sentence, 69)).toBe(2);
+    // pi-tui at layout width 70 ends the first row after "review ", the space dropped by the read.
+    expect(editorShows("watch the PR checks and code review threads and resolve code review\nthreads.", sentence, 69)).toBe(true);
+    expect(editorShows("watch the PR checks and code review threads and resolve code\nreview threads.", sentence, 69)).toBe(false);
+  });
+
+  it("tells a line break it typed from a wrap, and a missing row from a whole answer", () => {
+    expect(editorShows("Navy\n", "Navy\n", 118)).toBe(true);
+    expect(editorShows("Navy", "Navy\n", 118)).toBe(false);
+    expect(editorShows("Navy\n\nTeal", "Navy\n\nTeal", 118)).toBe(true);
+    expect(editorShows("Navy\nTeal\nmore", "Navy\nTeal", 118)).toBe(false);
+    expect(editorShows("", "", 118)).toBe(true);
   });
 
   it("refuses an empty answer", async () => {
