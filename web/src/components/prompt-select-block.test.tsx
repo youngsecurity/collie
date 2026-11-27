@@ -17,6 +17,7 @@ vi.mock("@/lib/api", () => ({
 import { fetchPane, sendKeys, sendReply } from "@/lib/api";
 import { parseAnsi } from "@/lib/ansi";
 import { splitLines, type PromptModel } from "@/lib/blocks";
+import { dialogDetector } from "@/lib/dialog-guard";
 import { buildBlocks } from "@/lib/harness";
 import { detectPromptSelect } from "@/lib/harness/claude/prompt-select";
 import { submitPromptFeedback, submitPromptOption } from "@/lib/prompt-action";
@@ -945,5 +946,173 @@ describe("PromptSelectBlock, no action from cached state (M46 spec 11)", () => {
     render(<PromptSelectBlock prompt={selectModel} onAction={vi.fn()} />);
     expect(screen.queryByText("Reconnect to answer.")).toBeNull();
     expect(screen.getByRole("button", { name: /Red/ })).toBeEnabled();
+  });
+});
+
+// .adr/0175: a stock pi question's `Type something.` row is answered from the card. Real pi 1.1.0
+// captures of its three states: the pointer on a choice, on the row, and the inline editor open.
+describe("PromptSelectBlock, a stock pi question's custom answer", () => {
+  const OFFER = "Type your own answer";
+  const readPi = dialogDetector("prompt-select", "pi");
+  function piModel(name: string): PromptModel {
+    const model = readPi(splitLines(parseAnsi(fixtureText(name))));
+    if (!model) throw new Error(`fixture ${name} did not read as a pi question`);
+    return model;
+  }
+  const pane = (name: string) => ({ paneId: "w1:p1", text: fixtureText(name), truncated: false, revision: 4 });
+
+  it("offers the answer below the choices, and Send hands the card's handler the text", async () => {
+    const model = piModel("pi--v110-question-single.txt");
+    expect(model.feedback?.purpose).toBe("custom-answer");
+    const onAction = vi.fn();
+    const user = userEvent.setup();
+    render(<PromptSelectBlock prompt={model} onAction={onAction} />);
+    expect(screen.getByRole("button", { name: /Red/ })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: OFFER }));
+    expect(screen.getByText(/question's own answer editor/)).toBeInTheDocument();
+    await user.type(screen.getByRole("textbox", { name: "Answer text" }), "Navy");
+    await user.click(screen.getByRole("button", { name: "Send answer" }));
+    expect(onAction).toHaveBeenCalledTimes(1);
+    expect(onAction).toHaveBeenCalledWith({ kind: "feedback", text: "Navy" });
+  });
+
+  it("takes an answer of several lines, says how many fit, and hands them over as written", async () => {
+    const onAction = vi.fn();
+    const user = userEvent.setup();
+    render(<PromptSelectBlock prompt={piModel("pi--v110-question-single.txt")} onAction={onAction} />);
+    await user.click(screen.getByRole("button", { name: OFFER }));
+    expect(screen.getByText(/Up to 5 lines/)).toBeInTheDocument();
+    await user.type(screen.getByRole("textbox", { name: "Answer text" }), "Navy{Enter}with a white stripe");
+    await user.click(screen.getByRole("button", { name: "Send answer" }));
+    expect(onAction).toHaveBeenCalledWith({ kind: "feedback", text: "Navy\nwith a white stripe" });
+  });
+
+  it("offers nothing on a free-text row whose keys were never measured (OmO)", () => {
+    const model = piModel("pi--omo-v5130-single-described.txt");
+    expect(model.feedback?.purpose).toBe("free-text");
+    render(<PromptSelectBlock prompt={model} onAction={vi.fn()} />);
+    expect(screen.queryByRole("button", { name: OFFER })).toBeNull();
+  });
+
+  it("keeps the draft on screen when a send is refused", async () => {
+    const user = userEvent.setup();
+    render(<PromptSelectBlock prompt={piModel("pi--v110-question-single.txt")} onAction={() => false} />);
+    await user.click(screen.getByRole("button", { name: OFFER }));
+    await user.type(screen.getByRole("textbox", { name: "Answer text" }), "keep me");
+    await user.click(screen.getByRole("button", { name: "Send answer" }));
+    expect(screen.getByRole("textbox", { name: "Answer text" })).toHaveValue("keep me");
+  });
+
+  it("Cancel closes the editor and sends nothing", async () => {
+    const onAction = vi.fn();
+    const user = userEvent.setup();
+    render(<PromptSelectBlock prompt={piModel("pi--v110-question-single.txt")} onAction={onAction} />);
+    await user.click(screen.getByRole("button", { name: OFFER }));
+    await user.type(screen.getByRole("textbox", { name: "Answer text" }), "never mind");
+    // Two buttons read "Cancel": the question's own way out (Esc) above, the editor's below.
+    await user.click(screen.getAllByRole("button", { name: "Cancel" }).at(-1)!);
+    expect(screen.queryByRole("textbox", { name: "Answer text" })).toBeNull();
+    expect(screen.getByRole("button", { name: OFFER })).toBeEnabled();
+    expect(onAction).not.toHaveBeenCalled();
+    expect(mockSendKeys).not.toHaveBeenCalled();
+    expect(mockSendReply).not.toHaveBeenCalled();
+  });
+
+  it("a question that changed under the open editor: Send sends nothing and keeps the draft", async () => {
+    const model = piModel("pi--v110-question-single.txt");
+    const onAction = vi.fn();
+    const user = userEvent.setup();
+    const { rerender } = render(<PromptSelectBlock prompt={model} onAction={onAction} />);
+    await user.click(screen.getByRole("button", { name: OFFER }));
+    await user.type(screen.getByRole("textbox", { name: "Answer text" }), "Navy");
+    rerender(<PromptSelectBlock prompt={{ ...model, question: "Pick a size for the Collie probe?" }} onAction={onAction} />);
+    await user.click(screen.getByRole("button", { name: "Send answer" }));
+    expect(onAction).not.toHaveBeenCalled();
+    expect(screen.getByRole("status")).toHaveTextContent("Pick a size for the Collie probe?");
+    expect(screen.getByRole("textbox", { name: "Answer text" })).toHaveValue("Navy");
+  });
+
+  it("the next question asks the same words with other choices: Send sends nothing and keeps the draft", async () => {
+    const model = piModel("pi--v110-question-single.txt");
+    const onAction = vi.fn();
+    const user = userEvent.setup();
+    const { rerender } = render(<PromptSelectBlock prompt={model} onAction={onAction} />);
+    await user.click(screen.getByRole("button", { name: OFFER }));
+    await user.type(screen.getByRole("textbox", { name: "Answer text" }), "Navy");
+    const other = { ...model, coreSignature: model.coreSignature.replace("3. Blue", "3. Cyan") };
+    expect(other.coreSignature).not.toBe(model.coreSignature);
+    rerender(<PromptSelectBlock prompt={other} onAction={onAction} />);
+    await user.click(screen.getByRole("button", { name: "Send answer" }));
+    expect(onAction).not.toHaveBeenCalled();
+    expect(screen.getByRole("textbox", { name: "Answer text" })).toHaveValue("Navy");
+  });
+
+  it("the same question moving through its three states keeps the draft sendable", async () => {
+    const onAction = vi.fn();
+    const user = userEvent.setup();
+    const { rerender } = render(<PromptSelectBlock prompt={piModel("pi--v110-question-single.txt")} onAction={onAction} />);
+    await user.click(screen.getByRole("button", { name: OFFER }));
+    await user.type(screen.getByRole("textbox", { name: "Answer text" }), "Navy");
+    rerender(<PromptSelectBlock prompt={piModel("pi--v110-question-other-focused.txt")} onAction={onAction} />);
+    rerender(<PromptSelectBlock prompt={piModel("pi--v110-question-answer-editor.txt")} onAction={onAction} />);
+    await user.click(screen.getByRole("button", { name: "Send answer" }));
+    expect(onAction).toHaveBeenCalledWith({ kind: "feedback", text: "Navy" });
+  });
+
+  it("with pi's editor open and empty: the way back stays live, beside the offer", async () => {
+    const model = piModel("pi--v110-question-answer-editor.txt");
+    const onAction = vi.fn();
+    const user = userEvent.setup();
+    render(<PromptSelectBlock prompt={model} onAction={onAction} />);
+    expect(screen.queryByText(/has the keyboard in the terminal/)).toBeNull();
+    expect(screen.getByRole("button", { name: OFFER })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: /Go back/ }));
+    expect(onAction).toHaveBeenCalledWith({ kind: "option", option: model.options[0] });
+  });
+
+  it("with text already in pi's editor: shows it, and offers neither to type nor to change it", () => {
+    render(<PromptSelectBlock prompt={piModel("pi--v110-question-answer-editor-typed.txt")} onAction={vi.fn()} />);
+    expect(screen.getByText(/In the answer field:/)).toHaveTextContent("In the answer field: teal");
+    expect(screen.queryByRole("button", { name: OFFER })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Change this answer" })).toBeNull();
+    expect(screen.getByRole("button", { name: /Go back/ })).toBeEnabled();
+  });
+
+  it("wired: from the row it opens the editor, types, proves the text and answers", async () => {
+    const tapped = piModel("pi--v110-question-other-focused.txt");
+    const empty = piModel("pi--v110-question-answer-editor.txt");
+    const typed = piModel("pi--v110-question-answer-editor-typed.txt");
+    mockFetchPane
+      .mockResolvedValueOnce(pane("pi--v110-question-other-focused.txt"))
+      .mockResolvedValueOnce(pane("pi--v110-question-answer-editor.txt"))
+      .mockResolvedValue(pane("pi--v110-question-answer-editor-typed.txt"));
+    const sent = vi.fn();
+    const onAction = async (action: PromptBlockAction) => {
+      if (action.kind !== "feedback") return false;
+      const result = await submitPromptFeedback({
+        paneId: "w1:p1",
+        requestedLines: 600,
+        detectedRevision: 4,
+        agent: "pi",
+        prompt: tapped,
+        text: action.text,
+        sleep: async () => {},
+      });
+      sent(result);
+      return result.status === "sent";
+    };
+    const user = userEvent.setup();
+    render(<PromptSelectBlock prompt={tapped} onAction={onAction} />);
+    await user.click(screen.getByRole("button", { name: OFFER }));
+    await user.type(screen.getByRole("textbox", { name: "Answer text" }), "teal");
+    await user.click(screen.getByRole("button", { name: "Send answer" }));
+
+    await waitFor(() => expect(sent).toHaveBeenCalledWith({ status: "sent" }));
+    expect(mockSendKeys.mock.calls.map((c) => [c[1], c[3]])).toEqual([
+      [["Enter"], tapped.signature],
+      [["Enter"], typed.signature],
+    ]);
+    expect(mockSendReply.mock.calls).toEqual([["w1:p1", "teal", false, undefined, empty.signature]]);
+    await waitFor(() => expect(screen.queryByRole("textbox", { name: "Answer text" })).toBeNull());
   });
 });

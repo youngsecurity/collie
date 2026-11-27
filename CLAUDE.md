@@ -669,7 +669,18 @@ lint guard, the crew-wire guard or the `flake.lock` guard.
   `Up`/`Down` walk and cleared with `ctrl+u ctrl+k` rounds only while it holds exactly what the
   person saw. The ground truth is
   [`ASK_FIELD_NOTES.md`](./web/src/lib/grammar/ASK_FIELD_NOTES.md); re-walk it before touching the
-  recipe. Other harnesses' free-text rows (Grok, pi, opencode) stay `free-text` and untyped.
+  recipe. Other harnesses' free-text rows (Grok, opencode, OmO and gentle-pi) stay `free-text` and
+  untyped.
+- **A stock pi question's "Type something." row is typed into its inline editor, by its own
+  recipe** (`lib/pi-answer.ts`,
+  [ADR 0175](./.adr/0175-a-pi-question-answer-is-typed-into-its-inline-editor.md)): the reader
+  gives the row the `custom-answer` purpose in three states (list, on the row, editor open) under
+  one core signature; the recipe walks, opens, types into an EMPTY editor only, waits for the exact
+  text and then sends the one committing `Enter`. Up to five lines, typed one at a time with
+  `keys.newline` between; keys from `pi.json`. It is not
+  the Claude recipe and shares no keys with it. Run against pi 1.6.1's own question code, not yet
+  against a live pi; see the ADR and
+  [`ASK_NOTES.md`](./web/src/lib/harness/pi/ASK_NOTES.md) before touching it.
 - **The phone parses what the phone draws; the bridge parses only what it must act on alone.** Every
   pane grammar is client-side, under `web/src/lib/harness/`. The bridge holds one,
   `extractClaudeSessionName`, and only because the bridge itself consumes it, for a label that must

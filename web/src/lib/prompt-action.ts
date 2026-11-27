@@ -45,6 +45,7 @@ import {
   splitWalk,
 } from "./harness/prompt-model";
 import { t } from "./i18n";
+import { submitPiAnswer } from "./pi-answer";
 import { sanitizeTypedText, type ActionResult, type Sleep } from "./harness/guard";
 import type { Scope } from "./scope";
 
@@ -85,7 +86,8 @@ function target(args: GuardArgs): DialogTarget<"prompt-select"> & { sleep?: Slee
  *
  * Refuses outright while the dialog's own input row has FOCUS: the terminal then swallows every digit
  * as a character, so the keystroke would silently type into someone's half-written sentence instead
- * of answering (issue #95).
+ * of answering (issue #95). The one exception is a pi `custom-answer` with its editor open, whose
+ * only option is Escape (.adr/0175).
  *
  * This is NOT a duplicate of the renderer's lock, and not belt-and-braces — it is the only thing at
  * the write layer that refuses the STATE. The race guard below verifies SAMENESS: a model captured
@@ -95,7 +97,10 @@ function target(args: GuardArgs): DialogTarget<"prompt-select"> & { sleep?: Slee
 export async function submitPromptOption(
   args: GuardArgs & { option: PromptOption },
 ): Promise<PromptActionResult> {
-  if (args.prompt.feedback?.focused) return { status: "changed" };
+  // A pi custom answer is the exception (.adr/0175): with its editor open the card offers one key,
+  // the footer's way out, which is no character, and the guard below refuses if the text has changed.
+  const field = args.prompt.feedback;
+  if (field?.focused && field.purpose !== "custom-answer") return { status: "changed" };
   const { option } = args;
   const plan = splitWalk(option.keys);
   if (plan === null) return sendGuardedKeys(target(args), option.keys);
@@ -208,6 +213,8 @@ export async function submitPromptFeedback(
   const row = args.prompt.feedback;
   // AskUserQuestion's field has its own recipe, which reaches a focused or filled field safely.
   if (row?.purpose === "answer") return submitPromptAnswer(args);
+  // So has a stock pi question's free-text row, whichever of its three states the card showed.
+  if (row?.purpose === "custom-answer") return submitPiAnswer(target(args), args.text);
   if (!row || row.focused || row.text !== "") return { status: "changed" };
   // Grok's `z` row is a custom answer, not Claude's deny-with-feedback input. The sequence
   // below (digit → focus → type → Enter) was measured on Claude Code; running it on a

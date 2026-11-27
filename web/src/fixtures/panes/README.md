@@ -3506,3 +3506,19 @@ One capture in `fixtures/surface/`, cut to its last 12 rows with its colours kep
 | Fixture | State | What it shows |
 | --- | --- | --- |
 | `omp--v18-6-1-draft-queueing-painted--w120.txt` | `draft` | 18.6.1, `-> hello queue draft` typed at the desk, label and body painted |
+
+## A personal `ask_user` extension drawn in the stock question shape (captured 2026-11-26, pi 1.6.0, Herdr 0.9.5, 73 columns, issue 133)
+
+`pi--v160-ask-user-question.txt` and its `-moved` pair are the maintainer's own `ask_user` pi extension after it was changed to
+draw pi's stock `question` shape (plain accent rules, `> ` at column 0, numbered rows, a last
+`Type your own answer…` row, the stock footer). Before that change it drew a titled top rule, a `❯`
+pointer, a `✎ Write my own answer…` row and a `↑↓ or 1-3 select` footer, and the reader declined it, so
+the phone showed the unread-dialog card and refused a send. Captured with
+`herdr pane read --source visible --format ansi`, cut to the frame's top rule, CRLF as read. Privacy:
+the working directory in the first status row was replaced with `~/demo/sandbox/collie-pi-lab/work0`,
+a path of the same length.
+
+| Fixture | State | Reads as |
+| --- | --- | --- |
+| `pi--v160-ask-user-question.txt` | Two choices and the free-text row, `> 1.` pointed | walk, custom-answer row offered (ADR 0175) |
+| `pi--v160-ask-user-question-moved.txt` | The same dialog after `herdr pane send-keys <pane> Down`, `> 2.` pointed | walk (the pair in `walk-pairs.ts`) |

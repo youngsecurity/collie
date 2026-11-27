@@ -785,6 +785,7 @@ export const it: Dictionary = {
   "prompt.feedback.answer.placeholder": "Scriva la Sua risposta…",
   "prompt.feedback.answer.help":
     "Digitato nel campo di risposta della domanda e inviato come Sua risposta.",
+  "prompt.feedback.customAnswer.help": "Digitato nell'editor di risposta della domanda stessa e inviato come Sua risposta. Al massimo {count} righe.",
   "prompt.feedback.answer.helpWizard":
     "Digitato nel campo di risposta di questa domanda. L'invio risponde alla domanda e passa a quella successiva.",
   "prompt.feedback.answer.helpMulti":
@@ -1508,6 +1509,11 @@ export const it: Dictionary = {
   "promptAction.feedback.empty": "Nulla da inviare",
   "promptAction.feedback.boxNotOpened": "Il campo per il feedback non si è aperto: controlla il riquadro",
   "promptAction.feedback.notArrived": "Il feedback non è arrivato: nulla è stato inviato",
+  "promptAction.customAnswer.tooManyLines": "L'editor di risposta di questa domanda accetta al massimo {count} righe. Accorci la risposta e la invii di nuovo. Non è stato digitato nulla",
+  "promptAction.customAnswer.tooLong": "Questa risposta è troppo lunga per l'editor di risposta della domanda a questa larghezza del terminale. La accorci o allarghi il terminale. Non è stato digitato nulla",
+  "promptAction.customAnswer.trailingBackslash": "L'editor delle risposte di pi legge una barra rovesciata alla fine di una risposta come un a capo, quindi la risposta non verrebbe inviata. Toglila e invia di nuovo. Non è stato digitato nulla",
+  "promptAction.customAnswer.editorBusy": "L'editor di risposta della domanda contiene già del testo, quindi non è stato digitato nulla. Lo svuoti nel terminale, oppure torni indietro e riprovi",
+  "promptAction.customAnswer.notOpened": "L'editor di risposta della domanda non si è aperto. Non è stato digitato nulla",
   "promptAction.answer.fieldNotReached":
     "Impossibile raggiungere il campo di risposta. Non è stato inviato nulla",
   "promptAction.answer.notCleared": "Impossibile cancellare il campo di risposta. Non è stato inviato nulla",

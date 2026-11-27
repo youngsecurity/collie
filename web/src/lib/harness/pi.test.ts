@@ -14,8 +14,8 @@ const fixtures = readdirSync(PANES).filter((name) => name.endsWith(".txt")).toSo
 const load = (name: string) => splitLines(parseAnsi(readFileSync(join(PANES, name), "utf8")));
 const pi = fixtures.filter((name) => name.startsWith("pi--"));
 // Every pi screen that lifts (pi/ask.test.ts names what each one lifts as). The rest of the pi corpus
-// is the raw cohort: editors, answer editors, multi-selects, a pointer on the free-text row, an
-// incomplete Submit page and pi's own /model picker.
+// is the raw cohort: editors, multi-selects, an incomplete Submit page, pi's own /model picker, and
+// outside the stock question (.adr/0175) a pointer on the free-text row and an answer editor.
 const lifted = pi.filter((name) => piAdapter.buildBlocks(load(name)).some((block) => block.kind !== "raw"));
 
 describeAdapterConformance(piAdapter, {
@@ -60,7 +60,7 @@ describe("pi adapter routing", () => {
   });
 
   it("lifts every question screen the corpus proves, and no fewer", () => {
-    expect(lifted).toHaveLength(53);
+    expect(lifted).toHaveLength(64);
   });
 
   it.each([
@@ -70,6 +70,9 @@ describe("pi adapter routing", () => {
     ["pi--v0871-nocolor-question.txt", "prompt-select"],
     ["pi--omo-v5130-nocolor-question.txt", "prompt-select"],
     ["pi--v0871-question-single.txt", "prompt-select"],
+    // A stock question with the pointer on its free-text row, and with its answer editor open (.adr/0175).
+    ["pi--v0871-question-other-focused.txt", "prompt-select"],
+    ["pi--v0871-question-answer-editor.txt", "prompt-select"],
     ["pi--v0871-permission-gate.txt", "prompt-select"],
     ["pi--v110-questionnaire-submit-ready.txt", "wizard"],
   ])("lifts %s through the public pi dispatch", (name, kind) => {
@@ -82,8 +85,8 @@ describe("pi adapter routing", () => {
     "pi--omo-v5130-multi.txt",
     "pi--omo-v5130-single-other-focused.txt",
     "pi--omo-v5130-answer-editor.txt",
-    "pi--v0871-question-other-focused.txt",
-    "pi--v0871-question-answer-editor.txt",
+    "pi--v110-multi-pointer-other.txt",
+    "pi--v110-multi-editor-open.txt",
     "pi--v110-questionnaire-submit-incomplete.txt",
     "pi--v110-multi.txt",
     "pi--v110-core-selector.txt",

@@ -5776,6 +5776,16 @@
    "version": "1.3.0",
    "state": "running"
   },
+  "pi--v160-ask-user-question-moved.txt": {
+   "harness": "pi",
+   "version": "1.6.0",
+   "state": "dialog"
+  },
+  "pi--v160-ask-user-question.txt": {
+   "harness": "pi",
+   "version": "1.6.0",
+   "state": "dialog"
+  },
   "shell--box-table-vs16-emoji.txt": {
    "harness": "shell",
    "version": "unversioned",

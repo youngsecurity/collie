@@ -163,3 +163,13 @@ the labels or the extension, and anything else stays raw.
 The description paragraph describes the pointed option and moves with it, so the core signature blanks
 it and keeps the full signature; the live pair `pi--v130-gentle-review-consent-moved.txt` is its walk
 proof.
+
+## Amendment, 2026-11-14 (this fork): a stock question's free-text row is typed
+
+Status: **Accepted for this fork** (2026-11-14), a live run still owed. Amends the Decision's last
+bullet for one shape. Nothing above is rewritten. Trail: [ADR 0175](./0175-a-pi-question-answer-is-typed-into-its-inline-editor.md).
+
+On a stock question (every row numbered at column 0, the walk plan, the free-text row last) a
+pointer on the free-text row and the inline answer editor are now read as states of the same card,
+and the phone types the answer into that editor by one verified recipe. Multi-select, OmO, the
+unnumbered selectors and a question beside the side panel keep the rule above.
